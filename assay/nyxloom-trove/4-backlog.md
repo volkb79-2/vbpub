@@ -231,6 +231,11 @@ items:
   - {id: B579, title: "release-gate.sh needs a host, a hosts file and an output dir that nothing supplies", type: bugfix, component: gate, context_estimate: small}
   - {id: B580, title: "A seeded run's verdict does not say how much it resumed", type: feature, component: evidence, context_estimate: medium}
   - {id: B581, title: "release-gate.sh reads newline-packed controller values and loses fields when a value contains a newline; an explicit CONTROLLER_HOSTS_FILE at its default spelling that is missing falls through to the module default", type: bugfix, component: gate, context_estimate: small}
+  - {id: B582, title: "DECIDED for v21: a load-independent timeout counts as detected", type: feature, component: mutation, context_estimate: medium}
+  - {id: B583, title: "A missing per-candidate budget leaves the native-R2 retry guard without a threshold", type: bugfix, component: mutation, context_estimate: small}
+  - {id: B584, title: "Synchronize the normative liveness SPEC with P4", type: bugfix, component: mutation, context_estimate: medium}
+  - {id: B585, title: "Candidate code can forge P4 liveness progress", type: bugfix, component: mutation, context_estimate: medium}
+  - {id: B586, title: "On-demand stack evidence for a suspected endless loop", type: feature, component: evidence, context_estimate: medium}
   - {id: B590, title: "release-gate.sh can signal a reaped pid when TERM or INT arrives after the remote child's wait (also in 12.3.0)", type: bugfix, component: gate, context_estimate: small}
   - {id: B591, title: "P-assay-14b final-review follow-ups: a test read race, a wrong CONSUMERS reason, a wrong CHANGES claim about 12.3.0, trap loose ends", type: bugfix, component: gate, context_estimate: small}
   - {id: B592, title: "release-gate.sh can signal a reaped heartbeat pid during heartbeat shutdown", type: bugfix, component: gate, context_estimate: small}
@@ -238,6 +243,9 @@ items:
   - {id: B594, title: "per-attempt canary expiry is reported as a lane-wide deadline expiry", type: bugfix, component: canary, context_estimate: small}
   - {id: B595, title: "native R2 tail retries can start with any positive lane time when the candidate budget is disabled", type: bugfix, component: mutation, context_estimate: small}
   - {id: B596, title: "release gate should simulate the cmru CHANGES fold as a pre-flight", type: bugfix, component: gate, context_estimate: medium}
+  - {id: B597, title: "An armed no-progress wall stop ends the sweep and can repeat on resume", type: bugfix, component: mutation, context_estimate: medium}
+  - {id: B598, title: "P-assay-4f final-review follow-ups M1, M3 and L4-L7", type: bugfix, component: mutation, context_estimate: small}
+  - {id: B599, title: "B105 RAM admission counts reclaimable file cache as used", type: bugfix, component: gate, context_estimate: small}
 ---
 
 # assay — backlog
@@ -14902,6 +14910,8 @@ rather than in its own registered lane until that image ships `pip`.
 
 Related: a `--only-candidates`/`--exclude-candidates` remainder is reported like a campaign-deadline remainder (not-started `budget_exceeded`), so the verdict's reason code reads `BUDGET_EXCEEDED/LANE_TIMEOUT` although nothing timed out; only the claim detail (`PARTIAL: ...`) and the `unselected_total` telemetry name the selection. The reason is re-derived from the buckets by `assay verify`, so it cannot change without a schema version (observed on v1001, 2026-11-11, one selected candidate of 1459).
 
+Seen again 2026-11-27 (reported by the debian-rollback work): a fully judged selected set reads `BUDGET_EXCEEDED` with the unselected candidates counted as `budget_exceeded_unstarted`. `rgw-r2-20261127T074327-r1002`: 45 selected (44 killed, 1 survived), 124 unstarted. `rgw-r2-20261127T081311-v1001`: 1 selected (killed), 168 unstarted, 161 s elapsed. Wanted: the verdict judges the selected set only; unselected candidates are not reported as `budget_exceeded` and do not set the verdict.
+
 **Proposed solution.** At the next verdict schema version after v19 (v19 landed with B251 / `assay-ptleak-20261110`; this item targets v20), add `judgment.r2.carry_over` (`imported_total`, per-source judge counts, reasons) and `judgment.r2.unselected_total` with a `SELECTION_PARTIAL` reason, and have verify re-derive both from the payload.
 
 **Close when.** A carry-over verdict states its imported count, a partial selection names itself in its reason code, and verify refuses a document whose counts disagree.
@@ -15994,19 +16004,17 @@ The single error is at `descendants[0]`, so the only difference between an accep
 - Chunk 2, rgw-r2-20261124T162538-r1002, was seeded with them (STORE-SEEDED). Its `resume` event read `rejected_total: 14, resumed_total: 0`, it re-ran candidates 0-13, and it hit the budget again at candidate 13.
 - The stores are kept at `.controller-state/rollback/gates/icm1a-r2-store-c{1,2}`.
 
-**Cause (verified by the assay controller).** The same candidate record differs between the two chunks only in `judge_sha256` (`bf64c0b6…` vs `7e34b992…`) and in timings.
-- The lane exports `PYTHONPATH={worktree}/assay/src:…` (`scripts/debian-install-v2/run-gate.toml:78`), and `{worktree}` is a fresh throwaway checkout per remote run (`…/.worktrees/rg-<run-id>-<sha>`).
-- `PYTHONPATH` is in the lane's `env_passthrough` (`scripts/debian-install-v2/assay.toml:35`).
-- `judge_sha256` (`src/assay/mutation.py:1531`) folds the SHA-256 of every present passthrough value, so every run has a new judge.
-- This is assay working as designed (B142; its docstring states "changed per-worktree paths … cause a safe cache miss"), not a remote-gate defect.
-- The consumer fix is a checkout-independent value: a relative `PYTHONPATH` (the command already `cd`s into the project), or a declared `env` entry.
-- cmru's and assay's own R2 lanes pass through `PATH` only, so the cross-host backfill (P-assay-08) is not affected by this. Its pilots compare `judge_sha256` across hosts to confirm it.
+**Cause (re-verified in assay source).** `judge_sha256` fingerprints the effective value of every present `env_passthrough` name (`src/assay/mutation.py:1603-1610`). When native liveness is injected, assay prepends a per-run temporary plugin directory to the candidate's `PYTHONPATH` (`src/assay/liveness.py:630-636`); cold-witness execution also prepends its receipt-plugin directory (`src/assay/mutation_witness.py:1165-1168`). The injected path changes between runs, so any `PYTHONPATH` included in `env_passthrough` changes the judge identity even when the consumer's own path spelling is relative.
+
+**Correction to the earlier advice.** The relative-path workaround recorded here does not work: it cannot remove assay's per-run injected entries from the effective value that is fingerprinted. The consumer's declared path is not the changing component; assay's injection is.
+
+**Decided design and workaround.** Fingerprint the pre-injection `PYTHONPATH` value and exclude assay's own injected entries. Do not ask lane authors to encode a workaround in their ambient path. Until that code change lands, the supported workaround is a declared `env` `PYTHONPATH`, which is not hashed as a passthrough value. Assay's own R2 lanes pass through `PATH` only and are unaffected.
 
 **Gap (the assay part).** Nothing tells the operator why. `resume` counts `rejected_total`, but neither the event nor the log names which judge component moved. Diagnosing this took a manual record diff and reading the judge docstring.
 
 **Wanted.**
 1. When a resume rejects records for a judge mismatch, report the judge-identity components that differ between the stored records and this run: tree, argv, declared env, passthrough names and values (by name only, value fingerprints never printed), cwd/prefix, link paths, tool version and fingerprints. For this, the judge's component digests must be stored in the store (for example, beside the store manifest), not only their combined hash.
-2. In CONSUMERS, the env_passthrough section: one paragraph stating that a passthrough value that embeds a checkout path makes every remote-gate run a new judge, so resume, carry-forward and the shard merge across runs never match. Name the relative-path fix.
+2. In CONSUMERS, the `env_passthrough` section: explain that an assay-injected `PYTHONPATH` entry changes the fingerprint even when the consumer's own value is relative. Document the declared `env` workaround while the code fix is pending and the pre-injection fingerprint design; do not recommend a relative path.
 
 **Close when.** A test proves that a mismatch caused by a single passthrough value names that variable in the resume event and on stderr, and the CONSUMERS paragraph is in place. Source: vbpub-rollback's message to vbpub-assay at ~16:58Z; record diff by vbpub-assay.
 
@@ -16076,6 +16084,112 @@ The main controller resumed with `ASSAY_RELEASE_GATE_HOST=v1001 REMOTE_GATE_HOST
 **Not assay's part.** Collecting `r2-progress.jsonl` from remote lanes is the run-gate half; the main controller routed it to vbpub-core.
 
 **Close when.** A seeded run's verdict carries the resume counts, a test pins them for one resumed and one rejected record, and the schema docs list them. Source: main controller's message to vbpub-assay, ~01:35Z 2026-11-25.
+
+## B586 — On-demand stack evidence for a suspected endless loop
+
+Renumbered from B581 on 2026-11-26 at the merge with main, which had taken B581 for another entry.
+
+**Status: OPEN (filed 2026-11-26 from P-assay-P4, item (B) of the operator input `p4-operator-input-20261125.md`); severity: low (diagnosis quality, not a verdict defect); effort: undecided — the first question is whether any of it belongs in assay at all.**
+
+**Question.** P4 replaced the per-candidate wall budget with CPU-based progress bounds (`cpu-without-progress`, `per-test-cpu-bound`, both bucket `hung`). That tells you a candidate hung; it does not tell you WHERE. A suspected endless loop usually has one hot stack, and every language has a cheap way to read it — but assay's blind spot is that it has no on-demand dump, so the operator has to reproduce the hang outside the sweep to see anything.
+
+**Candidate sources, per language** (none implemented; each is a design decision first):
+
+| Runtime | Mechanism | What it needs |
+|---|---|---|
+| Python/pytest | `py-spy dump --pid <pid>` on the candidate tree | py-spy installed in the judge image; no candidate cooperation, no ptrace on modern kernels for the self-attach path |
+| Go | `go test -timeout <d>`, whose own panic dumps every goroutine | the candidate command itself carries the flag; nothing for assay to add beyond keeping it out of the timeout arithmetic |
+| native (Rust/C, R2 ingested) | `gdb -p <pid> -batch -ex 'thread apply all bt'` or `eu-stack` | ptrace permission in the judge container plus debug symbols in the binary — both are consumer facts, not assay facts |
+| Node/JS (R2 ingested via Stryker) | the inspector protocol (`--inspect` + a CDP `Debugger.pause`) | the candidate must have been started with the inspector port; Stryker owns the launch, so assay cannot set it |
+
+**The signal worth automating, and the cheap version first.** The useful output is not one stack, it is the SAME mutated line appearing on the hot stack in N consecutive samples while no test completes. `LivenessRunner` already keeps a monotonic CPU series and a completed-event count; what it lacks is any periodic stack sample. A ten-line py-spy-based sampler for the Python path only would produce exactly that signal; everything else stays a documented manual procedure.
+
+**Why it is filed rather than built.** P4's contract is "a hang is caught and bucketed correctly", which is done. Stack evidence is diagnosis, and the per-language mechanisms differ enough that a universal one would be the wrong shape. Do not add a general "dump on hang" hook before the Python-only version has been argued on its own.
+
+**Close when.** Either a decided scope (Python-only sampler, with a test that pins the "same line in N consecutive samples with no completed test" rule on a fake stack source and a real looping candidate) or a written decision that this stays a documented manual procedure per language, recorded in `docs/CONSUMERS.md`. Source: operator item (B), `p4-operator-input-20261125.md`, 2026-11-25.
+
+## B582 — DECIDED for v21: a load-independent timeout counts as detected
+
+**Status: DECIDED (operator, 2026-11-26; filed 2026-11-26 from P-assay-P4, item (C) of the operator input `p4-operator-input-20261125.md`); severity: medium (it changes how a score reads); NOT IMPLEMENTED — it belongs to the verdict-schema cut (v21) and needs a review there.** P4 itself changes no schema and no verdict vocabulary, and a hang from any bound P4 adds stays `hung`.
+
+**Question.** Assay classifies a hang as `hung` and deliberately NOT as `killed`, so a hung mutant scores exactly like a candidate that never ran: it is excluded from `killed/(killed+survived)`. That is defensible for an IDLE hang — nothing about the mutant was proved — but it is not how the two most-used mutation tools report, and P4 makes the difference sharper: a CPU-based bound that a healthy baseline satisfies is now a statement about the MUTANT, not about the host.
+
+**What the other tools do.**
+
+| Tool | A per-mutant timeout is… | Reported as |
+|---|---|---|
+| PIT (Java) | a per-mutant time limit, default derived from the baseline | **detected** ("TIMED_OUT"): PIT lists it beside KILLED and counts it as caught |
+| Stryker (JS/TS) | a per-mutant `timeoutMS` | **detected** (Timeout): counted with `Killed`, and the default timeout is derived from the baseline suite |
+| cargo-mutants (Rust) | a separate `timeout` outcome file | **SEPARATE**: `Caught` and `Timeout` are two different outcomes and the score keeps them apart |
+
+**The decided rule, precisely.** A load-independent (CPU-based) timeout counts as DETECTED, with its own per-candidate classification: `timeout_kind` is `endless-loop` only when stack evidence exists, otherwise the bound that fired (`cpu-without-progress` or `per-test-bound`). The three conditions for detection are: (1) the candidate was ended by `cpu-without-progress` or `per-test-cpu-bound`, not by the idle rule; (2) the baseline's own run completed inside the SAME bound (so the bound is a property of the mutant's loop, not of a slow host); (3) the bound is Assay's derived formula, not a declared wall clock. An idle hang, a wall-budget expiry (today's `budget_exceeded`) and a per-candidate budget on an unarmed watch all stay NON-detected, unchanged. The exact bucket name and whether `hung` survives beside it are v21's own cut to place; `PLAN-spec-followups.md` §1 item 7 records the decision.
+
+**Why it is not done in P4.** It is a verdict-schema change: a new value in a closed vocabulary, a new score rule, a new `assay analyze` reading, and a decision about whether `hung` stays (the natural shape is `timeout` for CPU-bound kills and `hung` retained only for idle stalls, which is itself a compatibility question). P4's brief forbids touching the vocabulary, so P4 keeps `hung` and files the rule here; its own DESIGN-GUIDE section states the rule as decided and says P4 does not implement it.
+
+**Close when.** v21's own cut adopts it with the three conditions above spelled out, the score arithmetic and the excluded-bucket table are updated together, and `docs/DESIGN-GUIDE.md`'s hung-vs-killed section is rewritten to match the shipped behaviour. Source: operator item (C), `p4-operator-input-20261125.md`, 2026-11-25; operator decision 2026-11-26 (`PLAN-spec-followups.md` §1 item 7).
+
+## B583 — a missing per-candidate budget leaves the native-R2 retry guard without a threshold
+
+**Status: OPEN (filed 2026-11-26 from P-assay-P4 fix round 1, item A); severity: low (retry scheduling can spend the lane tail on a retry); effort: undecided.**
+
+When `budget_per_candidate_seconds` is `None`, the first attempt receives the entire remaining lane deadline as its command timeout (`src/assay/mutation.py:3751-3768`). The tail-retry guard at `src/assay/mutation.py:4882-4884` only compares remaining time when that per-candidate value is present, so it cannot decline a retry because the lane is nearly out of time. The retry then runs with the newly remaining lane deadline and can consume it.
+
+**Wanted.** Decide a retry rule for the no-per-candidate-budget case that is derived from recorded attempt/lane facts. Keep the existing finite lane deadline; do not add a guessed duration or a new config refusal.
+
+**Close when.** A test demonstrates the no-budget retry decision near the lane deadline, the chosen rule is documented, and the retry either proceeds or is skipped for that measured reason.
+
+## B584 — synchronize the normative liveness SPEC with P4
+
+**Status: OPEN (filed 2026-11-26 from P-assay-P4 fix round 1, finding 5); severity: medium (the normative contract currently contradicts shipped behavior).**
+
+P4 changed the pytest event lifecycle, CPU-derived stop rules, per-test windows,
+and post-`session_finish` handling. `docs/SPEC.md` LIV-070/075/080 and
+LIV-110..140 have not been synchronized and still describe pre-P4 behavior.
+The P4 fix round was explicitly forbidden from editing the SPEC, so this entry
+tracks the required follow-up rather than treating the stale text as a second
+contract.
+
+**Wanted.** Update each listed LIV section to describe the shipped `test_finish`
+event and its progress-counting exclusion, the CPU bounds and their resource
+evidence, the complete per-test window lifecycle, runtime watch demotion, and
+the one-time post-`session_finish` window reset. Preserve the fixed rule that a
+stop is never `killed` and make no schema change unless a separate decision
+authorizes it.
+
+**Close when.** Every listed section is checked against the code and tests,
+the SPEC no longer asserts the pre-P4 behavior, and a docs test or review check
+pins the updated normative wording.
+
+## B585 — candidate code can forge P4 liveness progress
+
+**Status: OPEN (filed 2026-11-26 from P-assay-P4 fix round 1, finding 10); severity: low (trust-boundary limitation, not an ordinary candidate defect).**
+
+The candidate receives the liveness events path and can append records that
+look like progress while burning CPU. The materialized plugin is outside the
+snapshot but lives on the same accessible filesystem, so candidate code can
+also rewrite it for a later attempt. Current evidence is `src/assay/liveness.py`
+(`_append` and `PYTHONPATH` injection) and `src/assay/runner.py` (the plugin
+and event directories); the P4 design guide now discloses this boundary.
+
+An event stream breaks after at least one record has been read if the file is
+replaced (device/inode change), truncated, vanishes, or cannot be read; its
+first appearance is not a break. From the detecting poll, the
+CPU-without-progress `hung` bound, the per-test bound, and the no-progress wall
+stop are disarmed for the rest of that candidate run, even if the file
+returns. The candidate budget then binds through the same path used when
+candidate CPU is unreadable; with `budget_per_candidate = "none"`, only the
+lane deadline remains. Detection uses device/inode and length, not content
+comparison. A same-inode rewrite that is not shorter than the reader's offset
+between polls looks like an append, so candidate code can forge progress.
+
+**Wanted.** Decide and implement a candidate-inaccessible write channel or an
+authenticated event stream whose per-run key is unavailable to candidate code.
+Preserve the current read-only consumer interface and the rule that progress
+records do not alter completion counts or candidate verdict vocabulary.
+
+**Close when.** A hostile candidate test attempts to forge progress and rewrite
+the plugin, and the liveness bounds remain enforceable for later candidates
+without changing ordinary pytest event behavior.
 
 ## B581 — release-gate.sh's controller read loses a field on a newline, and one default spelling falls through
 
@@ -16161,3 +16275,97 @@ Second half (deliberate, hence documented rather than taken here): `tools/releas
 **Wanted.** Before the release gate's long lanes, or in a registered lane on every package head, make a disposable copy and fold the changelog with cmru's own functions twice: once for this release and once for the following release. Run the docs tests against both folded states. No design decision is taken here.
 
 **Close when.** A registered pre-flight exercises both consecutive release folds using cmru's implementation and the docs tests pass against both resulting changelogs without mutating the package worktree.
+
+## B597 — an armed no-progress wall stop ends the sweep and can repeat on resume
+
+**Status: OPEN (filed 2026-11-27 from the P-assay-4f final review); severity: medium.**
+
+**Symptom.** The no-progress wall stop is an unclassified fatal lane timeout. It
+leaves no candidate result, so resume retries the missing candidate in normal
+dispatch order. In a serial run, if the stopped candidate is the first
+outstanding one, every resume encounters it again and candidates after it stay
+untried. With `jobs > 1`, already in-flight candidates drain and persist their
+results before the fatal error; unstarted work remains for a later resume.
+
+The stop initially uses wall time. Once the resource comparator has produced
+one `clear` or `stalled` interval, it uses the idle rule's existing
+pressure-credited `liveness_clock`: only `clear` intervals advance it. Any
+positive host or cgroup CPU PSI (`some`), memory or I/O PSI (`some`/`full`),
+or cgroup CPU-throttle counter (`nr_throttled`, `throttled_usec`) makes an
+interval `stalled`; unavailable, incomplete, reset, or mismatched snapshots
+are `unknown`. Both are ineligible. If pressure is unreadable throughout the
+run, the wall fallback remains active. If it is comparable once and becomes
+unreadable later, those `unknown` intervals pause the eligible clock and do
+not restore the fallback; sustained pressure can delay or prevent the stop.
+
+An event stream breaks after at least one record has been read if the file is
+replaced (device/inode change), truncated, vanishes, or cannot be read; its
+first appearance is not a break. From the detecting poll,
+the CPU-without-progress `hung` bound, the per-test bound, and the no-progress
+wall stop are disarmed for the rest of the candidate run, even if the file
+returns. The candidate budget then binds through the same path used when
+candidate CPU is unreadable. With `budget_per_candidate = "none"`, only the
+lane deadline remains. This stream-integrity limitation is separate from this
+entry's sweep-level retry limitation; B585 records the same-inode rewrite case.
+
+When pressure data is never comparable, the wall fallback can stop a
+candidate starved by host load after four times the bound if CPU remains
+readable and no completed event arrives. This ends the sweep as an
+unclassified lane timeout and cannot distinguish host starvation from a
+candidate stall.
+
+**Wanted.** Consider ending only the stopped candidate as an unclassified
+attempt and continuing the sweep, while retaining the no-bucket/no-result
+semantics and making resume safe for the candidate's retry.
+
+**Close when.** A design and tests pin the sweep and resume behavior for both
+serial and parallel jobs, including a repeated stall, without turning the
+attempt into `hung` or `budget_exceeded` and without persisting a candidate
+result for the stopped attempt.
+
+## B598 — P-assay-4f final-review follow-ups M1, M3 and L4-L7
+
+**Status: FIXED (M1 red test `b9b4c775f`, M1 implementation `7010cc267`, M2
+implementation and tests `b34868fa7`, M3/L4/L5 code and tests `13053b72a`,
+characterization and exclusion-pin refresh `c56273ab5`, L6/L7/nit/docs
+`edb509410`); severity: small.**
+
+- **M1:** `assay/tests/core/test_liveness_runner_monitor.py:3047` pins the
+  session-owner PID and nested-pytest exclusion (`b9b4c775f`, red proof;
+  `7010cc267`, implementation). `assay/src/assay/liveness.py:1635` stores the
+  owner, and `assay/tests/core/test_w10_characterization_i4_clusters.py:181`
+  includes it in the reader defaults (`c56273ab5`).
+- **M3:** `assay/tests/core/test_mutation_progress_budget_plan.py:2465` pins
+  lane-remainder versus candidate-budget timeouts and the retry gate;
+  `assay/tests/core/test_runner_run_lane_r2.py:132` pins the injected runner's
+  calibration and advisory budget, including the empty-baseline case
+  (`13053b72a`).
+- **L4:** `assay/src/assay/runner.py:6092` retains `LivenessRunner` whenever
+  liveness is injected and disables armed bounds when calibration is absent;
+  `assay/tests/core/test_liveness_runner_monitor.py:218` pins the idle and
+  `ASSAY_LIVENESS_EXIT` behavior (`13053b72a`).
+- **L5:** `assay/src/assay/liveness.py:1719` clears the in-flight item at
+  `session_finish`; `assay/tests/core/test_liveness_runner_monitor.py:3196`
+  pins teardown survival (`13053b72a`).
+- **L6:** `assay/tools/self-qualification-gate.sh:767` sets the provisional
+  expiry to 3 hours; `assay/assay.toml:499` and `assay/CHANGES.md:6` state the
+  effective cap (`edb509410`).
+- **L7:** `assay/docs/CONSUMERS.md:410` and
+  `assay/docs/DESIGN-GUIDE.md:1181` name all six pinned hooks;
+  `assay/tests/core/test_docs_examples_and_vocabulary.py:1444` derives and
+  checks them from `_LIVENESS_PLUGIN_HOOKS` (`edb509410`).
+- **Nit 8:** `assay/src/assay/liveness.py:1391` corrects the calibration
+  comment without changing the calculation (`edb509410`).
+
+## B599 — B105 RAM admission counts reclaimable file cache as used
+
+**Status: OPEN, filed 2026-11-27 (fix after 12.4.0); severity: medium.**
+
+`assay/tools/cgroup-parent.sh` computes the gates slice headroom as
+`memory.max - memory.current`. `memory.current` includes reclaimable file
+cache and reclaimable slab, so an idle-cached slice refuses a self-qualification
+run although the kernel could reclaim the memory. Observed on v1001 at
+2026-11-27T07:31Z: 2066 MB reported against the 2147 MB requirement, with
+about 3.3 GB of the slice usage in file cache and memory PSI full avg60 0.06
+(`rgw-self-qualification-provisional-20261127T073114-v1001`, refused before
+the lane started). The matching run-gate admission defect is RG-332.

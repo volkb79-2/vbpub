@@ -1810,6 +1810,11 @@ def _execute_plan_inner(
             cwd=run_cwd,
             timeout=child_timeout,
         )
+    except liveness.LivenessNoProgressWallExpired:
+        # This is an unclassified attempt, not the command result used for a
+        # `budget_exceeded` bucket. Preserve the marker until run_mutation can
+        # attach the candidate identity and take its resume-safe fatal path.
+        raise
     except subprocess.TimeoutExpired as exc:
         # (B027) `TimeoutExpired.stdout`/`.stderr` carry whatever partial
         # bytes `Popen._communicate` had buffered when the timeout fired --
@@ -6017,26 +6022,7 @@ def _run_prepared_lane(
                 declared_budget_per_candidate == MUTATION_BUDGET_PER_CANDIDATE_NONE
             )
             explicit_budget_per_candidate_seconds: float | None = None
-            if budget_per_candidate_none:
-                # (B053/DA-D2's own convention: `diagnostics is None` means
-                # the caller asked for no diagnosis and is not an error --
-                # never a fallback to a stream nobody asked for.) Whether or
-                # not there is somewhere to print the WARN, "none" is never
-                # a duration -- checked as its OWN branch, never folded into
-                # the `elif` below, so a `diagnostics=None` caller cannot
-                # accidentally fall through into `parse_duration("none")`.
-                if diagnostics is not None:
-                    print(
-                        f"assay: WARN: lane {lane.name!r} declares "
-                        f"judge.mutation.budget_per_candidate = 'none' -- "
-                        f"every mutant command runs genuinely unbounded "
-                        f"(B090: this is exactly the shape that hung a "
-                        f"whole lane for 37 minutes on an unenforced "
-                        f"candidate); prefer the default 'auto' or an "
-                        f"explicit duration",
-                        file=diagnostics,
-                    )
-            elif not budget_per_candidate_auto:
+            if not budget_per_candidate_none and not budget_per_candidate_auto:
                 assert declared_budget_per_candidate is not None
                 explicit_budget_per_candidate_seconds = parse_duration(
                     declared_budget_per_candidate
@@ -6049,6 +6035,60 @@ def _run_prepared_lane(
             # was not injected into `plan` (non-pytest argv, non-python
             # language, or an ingested lane), `process_runner` is used
             # verbatim -- byte-for-byte the pre-B091 candidate path.
+            # (P4/S3) The plan-time eligibility decision is disclosed by
+            # `plan.progress_bound` on the progress stream only. It is not a
+            # verdict field. CPU readability cannot be known until a
+            # candidate starts, so an unreadable first CPU series demotes
+            # that candidate at runtime and records the evidence decision
+            # `budget-expired-watch-unarmed` instead:
+            #
+            #   * liveness was injected (the plugin is in the plan), AND
+            #   * the BASELINE's own events file carries plugin records (the
+            #     plugin really ran, so a candidate's progress is observable),
+            #     AND
+            #   * the candidate's process-tree CPU is readable at runtime
+            #     (checked at its first successful `/proc` read; if it never
+            #     is, `LivenessRunner` falls back to a binding budget).
+            #
+            # Every other run -- non-pytest argv, non-Python language, an
+            # ingested lane, a plugin that never wrote anything -- keeps its
+            # per-candidate budget EXACTLY as declared. Nothing is refused by
+            # name here: design §3.1's rule is that a cap is removed only where
+            # a watch exists, and this is the per-run form of it.
+            watch_armed = liveness_injected and liveness.plugin_events_observed(
+                liveness_baseline_events_path
+            )
+            progress_watch_reason = (
+                "armed"
+                if watch_armed
+                else (
+                    "liveness-not-injected:" + liveness_reason
+                    if not liveness_injected
+                    else "baseline-produced-no-plugin-events"
+                )
+            )
+            if budget_per_candidate_none and diagnostics is not None:
+                # (P4 fix 1, item A) Do not call this genuinely unbounded:
+                # native R2 still passes the lane's remaining time as the
+                # command timeout, and config refuses budget="unbounded"
+                # with budget_per_candidate="none". With no per-candidate
+                # timeout, though, one candidate may consume all of that
+                # remaining lane time. Name why the progress watch is absent
+                # so the warning describes the actual last bound.
+                if watch_armed:
+                    limit = "the progress watch is armed"
+                else:
+                    limit = (
+                        "the progress watch is not armed because "
+                        f"{progress_watch_reason}"
+                    )
+                print(
+                    f"assay: WARN: lane {lane.name!r} declares "
+                    f"judge.mutation.budget_per_candidate = 'none' -- "
+                    f"there is no per-candidate wall timeout; {limit}, "
+                    f"so a candidate may use the remaining lane budget",
+                    file=diagnostics,
+                )
             if liveness_injected:
                 assert liveness_calibration is not None
                 assert liveness_candidates_dir is not None
@@ -6061,6 +6101,46 @@ def _run_prepared_lane(
                         liveness_calibration.pre_first_event_within_s
                     ),
                     cpu_window_s=lane.judge.mutation.liveness_cpu_window_s,
+                    # (P4/S1,S2) The two CPU progress bounds, from the SAME
+                    # calibration that already governs the idle rule: one
+                    # measurement, one set of bounds, never a second
+                    # derivation of "how long does this suite take".
+                    cpu_without_progress_bound_s=(
+                        liveness_calibration.cpu_without_progress_bound_s
+                        if watch_armed
+                        else None
+                    ),
+                    per_test_cpu_baseline_s=(
+                        liveness_calibration.per_test_baseline_s
+                        if watch_armed
+                        else None
+                    ),
+                    # (P4/S2) `jobs > 1` runs the suite distributed, where
+                    # "exactly one test in flight" is false by construction.
+                    per_test_xdist=lane.judge.mutation.jobs > 1,
+                    # (P4/S3) The budget is advisory while CPU is readable
+                    # and the event stream intact (one WARN on first overrun),
+                    # binding if either becomes unreadable or breaks.
+                    # CPU/per-test/no-progress bounds stop an intact watched
+                    # run; a stream break disarms those bounds.
+                    advisory_budget_s=(
+                        explicit_budget_per_candidate_seconds
+                        if (
+                            watch_armed
+                            and explicit_budget_per_candidate_seconds is not None
+                        )
+                        else (
+                            # The SAME derivation `run_mutation` makes for the
+                            # binding case (`budget_per_candidate_auto`), so the
+                            # advisory number and the derived number can never
+                            # disagree.
+                            mutation.auto_budget_per_candidate_seconds(
+                                mutation.baseline_wall_seconds(result)
+                            )
+                            if watch_armed and budget_per_candidate_auto
+                            else None
+                        )
+                    ),
                 )
             else:
                 candidate_process_runner = lane_process_runner
@@ -6391,6 +6471,22 @@ def _run_prepared_lane(
                     ),
                     liveness_cpu_window_s=liveness_cpu_window_s,
                     liveness_idle_floor_s=liveness_idle_floor_s,
+                    liveness_watch_armed=watch_armed,
+                    liveness_watch_reason=progress_watch_reason,
+                    # (P4/S3) The two figures the `plan` record discloses, from
+                    # the same calibration the runner was built with -- so the
+                    # stream and the runner can never describe different
+                    # bounds.
+                    liveness_cpu_without_progress_bound_s=(
+                        liveness_calibration.cpu_without_progress_bound_s
+                        if watch_armed and liveness_calibration is not None
+                        else None
+                    ),
+                    liveness_per_test_baseline_s=(
+                        liveness_calibration.per_test_baseline_s
+                        if watch_armed and liveness_calibration is not None
+                        else {}
+                    ),
                     liveness_events_dir=liveness_candidates_dir,
                     equivalence_artifact=equivalence_artifact,
                     kill_signal_artifact=kill_signal_artifact,

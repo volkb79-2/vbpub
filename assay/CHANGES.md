@@ -4,7 +4,70 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
+### Changed
+- `self-qualification-provisional` keeps a 150-minute assay-command budget
+  (was 60) and its campaign expiry is now 3 hours from init (was 2). A loaded
+  gate host needed 1991 s for the baseline alone and the lane ended
+  `BUDGET_EXCEEDED` before the canary finished
+  (`rgw-self-qualification-provisional-20261126T225114-v1001`). The whole
+  container invocation is bounded by its 3-hour inner command cap; Run-Gate's
+  outer budget is 210 minutes. The effective total is therefore at most 3
+  hours from container entry, including setup and finalization, while the
+  assay command itself remains capped at 150 minutes.
+- A native Python/pytest R2 lane now detects a candidate that stops making
+  progress, instead of ending it on elapsed wall time. The idle,
+  CPU-without-progress, and per-test bounds are reported as `hung` (never
+  `killed`) and both new decisions are accepted by the durable evidence path,
+  resume and `--rejudge-outcome`:
+  * **CPU without progress** -- process-tree CPU seconds since the last
+    COMPLETED plugin event (a `test` or a `phase` report; stdout/stderr growth,
+    `test_start` and `test_finish` do not reset it) exceeds `max(3x baseline wall,
+    baseline wall + 60s)`. The CPU series is monotonic: a descendant exiting
+    banks its peak instead of lowering the total, so a spinning candidate
+    cannot erase work it did. It ignores pressure state entirely -- no pause,
+    no eligibility.
+  * **Per-test CPU bound** -- while exactly one test is in flight, CPU seconds
+    since its `test_start` exceed `max(10x that nodeid's baseline
+    setup+call+teardown seconds, 60s)`. Skipped under xdist and when more than
+    one test is in flight (the process-tree bound is then the backstop), and
+    skipped for a nodeid the baseline never measured. The evidence names the
+    nodeid, the bound and the measured value.
+  * The existing pressure-adjusted idle rule is unchanged.
+  * An armed watch also has a no-progress wall stop: when no completed
+    `test`/`phase` event arrives for four times the CPU-without-progress bound,
+    the attempt ends unclassified as `BUDGET_EXCEEDED`/`LANE_TIMEOUT`. It
+    writes no candidate result or mutation bucket and is retried on resume; it
+    is neither `hung` nor `budget_exceeded`. It does not depend on candidate
+    CPU readability. Its clock uses the pressure-credit rule described under
+    Known issues below. The CPU and per-test `hung` bounds and lane deadline
+    still win when they fire first.
+  A retained resource trace is now COMPACTED past its 1024-sample cap instead of
+  being marked incomplete, so no hang verdict is disabled by trace length and
+  the stored evidence stays bounded.
+- `judge.mutation.budget_per_candidate` is **advisory** for an armed watch
+  only after that candidate's process-tree CPU is readable; if its CPU remains
+  unreadable, the budget binds at runtime. The `plan` record reports
+  plan-time eligibility only, based on liveness injection and baseline plugin
+  records. Whether a candidate's budget is advisory is decided at runtime
+  after its CPU reads. One WARN is printed the first time a candidate overruns
+  an advisory budget. `budget_per_candidate = "none"` is still refused under
+  `budget = "unbounded"`: unbounded admission is unchanged, and its
+  docstring/message now describe the advisory semantics.
+- README publishes a generated "what each runtime actually watches" matrix
+  (anchor `#mutation-runtime-matrix`), rendered from
+  `src/assay/mutation_runtime.py` and pinned byte for byte by
+  `tests/core/test_mutation_runtime_matrix.py`. It corrects a stale cell: SQL
+  never produces a `hung` result, because liveness is injected only for a
+  Python/pytest lane. `docs/CONSUMERS.md` gains the advisory-budget migration
+  note, and `docs/DESIGN-GUIDE.md` explains why the matrix is generated. The
+  `assay-capabilities/2` output is unchanged.
+
 ### Fixed
+- The CPU-without-progress bound no longer loses a descendant's work when that
+  descendant exits mid-candidate (the process-tree total used to drop, which
+  could have handed a spinning candidate a "no CPU burned" verdict).
+- A resource trace longer than 1024 samples no longer disables the hang
+  verdict it supports.
 - The `[10.1.0]` entry's `--resume --rejudge crashed` is wrong: `--rejudge` takes candidate ids.
   Use `--resume --rejudge-outcome crashed`; README, CONSUMERS and DESIGN-GUIDE are corrected. The
   carried-survivor note no longer names the nonexistent `--rejudge-carried`; it prints
@@ -38,6 +101,59 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   saves the wrapper's stderr and restores it in the handler.
 - assay's backlog frontmatter gains the `B580` line whose entry body already existed (filed
   2026-11-25, recorded in the 12.3.0 notes): a gap fill, with no code or behaviour change.
+
+### Known issues
+- The no-progress wall stop ends the mutation run with
+  `BUDGET_EXCEEDED`/`LANE_TIMEOUT`, leaves the stopped candidate without a
+  result record, and retries that missing identity on resume. With one job,
+  if it is the first outstanding candidate, the same stop repeats on every
+  resume and candidates after it remain untried. With multiple jobs, already
+  in-flight candidates drain and persist their results before the fatal stop;
+  unstarted candidates remain for normal dispatch on resume. Ending only the
+  stopped candidate and continuing the sweep is the remaining design option
+  tracked by B597.
+- The no-progress wall stop uses the idle rule's pressure-credited clock after
+  pressure data has produced one comparable interval. A comparable interval
+  is one the resource comparator calls `clear` or `stalled`. Only `clear`
+  intervals advance `liveness_clock`: any positive delta in host or cgroup
+  CPU PSI (`some`), memory or I/O PSI (`some`/`full`), or cgroup CPU throttle
+  counters (`nr_throttled`, `throttled_usec`) makes an interval `stalled` and
+  ineligible. Missing, incomplete, reset, or mismatched snapshots are
+  `unknown` and also ineligible. Before the first comparable interval the
+  stop uses plain wall time, so pressure data that is unreadable throughout
+  the run does not disable it. Once comparability has been established, later
+  unreadable intervals remain `unknown` and pause the eligible clock; they do
+  not restore the wall fallback. Sustained pressure can therefore delay or
+  prevent the stop.
+- The wall fallback can stop a candidate starved by host load when pressure
+  data is never comparable: with readable CPU and no completed event, four
+  times the bound can pass without the candidate receiving useful CPU. This
+  ends the sweep as an unclassified lane timeout; it does not identify whether
+  the candidate stalled or the host starved it.
+- An event stream breaks after at least one record has been read if the file
+  is replaced (device/inode change), truncated, vanishes, or cannot be read;
+  its first appearance is not a break. From the detecting poll, the
+  CPU-without-progress `hung` bound, the per-test bound, and the no-progress
+  wall stop are disarmed for the rest of that candidate run, even if the file
+  returns. The candidate budget then binds through the same path used when
+  candidate CPU is unreadable. With `budget_per_candidate = "none"`, only the
+  lane deadline remains. The idle rule keeps its origin/main current-file
+  counting: a vanished file reads as zero and an empty return is not progress.
+- Detection uses device/inode and length, not content comparison. A same-inode
+  rewrite that is not shorter than the reader's offset between polls looks
+  like an append, so candidate code can forge progress; B585 tracks this limit.
+- The CPU-without-progress threshold is derived from baseline **wall** seconds
+  (`max(3 x baseline wall, baseline wall + 60s)`) and compared with
+  process-tree CPU. This is lenient for a serial suite because tree CPU grows
+  no faster than wall time. A parallel suite can consume more baseline tree
+  CPU than wall time, so a healthy candidate can be stopped as `hung`; this
+  never counts as `killed`.
+- The per-test threshold (`max(10 x that test's baseline seconds, 60s)`) is
+  also compared with process-tree CPU. Background processes, tests that fan
+  out far beyond 10x, or setup cost moving to another nodeid under randomized
+  test order can stop a healthy candidate as `hung`.
+- The P4 behavior is not yet synchronized with SPEC LIV-070/075/080 and
+  LIV-110..140. Backlog B584 tracks that documentation update.
 
 <!-- cmru: release history -->
 

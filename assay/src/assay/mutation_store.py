@@ -1393,16 +1393,32 @@ def _valid_hung_resource_evidence(value: Any) -> bool:
 
     Mutation-state files are resumable evidence. A historical or malformed
     hang without its time-aligned trace is a cache miss, not a trusted verdict.
+
+    (P4) TWO decisions are now accepted, from two DIFFERENT policies:
+
+    * the idle rule's ``pressure-adjusted-idle-v1`` (``idle-hang`` /
+      ``session-finish-hang``), validated below against its full
+      pressure-adjusted trace; and
+    * the CPU-without-progress bounds (``cpu-without-progress`` /
+      ``per-test-cpu-bound``), validated by :func:`_valid_cpu_hang_evidence`
+      against the CPU series they were derived from -- they never consulted
+      pressure, so the idle trace's snapshot rules must not be applied to
+      them (and must not be quietly relaxed for the idle ones either).
     """
     if not isinstance(value, Mapping):
         return False
     if (
         type(value.get("schema_version")) is not int
         or value["schema_version"] != 1
-        or value.get("policy") != "pressure-adjusted-idle-v1"
-        or value.get("decision") not in {"idle-hang", "session-finish-hang"}
         or type(value.get("candidate_pid")) is not int
         or value["candidate_pid"] <= 0
+    ):
+        return False
+    if value.get("policy") == liveness.CPU_PROGRESS_POLICY:
+        return _valid_cpu_hang_evidence(value)
+    if (
+        value.get("policy") != liveness.IDLE_HANG_POLICY
+        or value.get("decision") not in liveness.IDLE_HANG_DECISIONS
         or value.get("candidate_cpu_source") != "process-tree-cpu-seconds"
         or value.get("trace_complete") is not True
         or value.get("trace_truncated") is not False
@@ -1530,7 +1546,15 @@ def _valid_hung_resource_evidence(value: Any) -> bool:
             if expected_status != interval_kind:
                 return False
         if interval_kind != "clear" and eligible_interval != 0:
-            return False
+            # A compacted `stalled` row can summarize clear time plus a later
+            # resource-counter increase. The endpoints still prove the exact
+            # eligible-time delta and the aggregate pressure deltas; an
+            # un-compacted stalled interval remains wholly ineligible.
+            if not (
+                interval_kind == "stalled"
+                and value.get("trace_compacted") is True
+            ):
+                return False
         deltas = sample.get("resource_deltas")
         if not isinstance(deltas, Mapping):
             return False
@@ -1558,6 +1582,8 @@ def _valid_hung_resource_evidence(value: Any) -> bool:
                 rel_tol=0.0,
                 abs_tol=0.0011,
             ):
+                return False
+            if interval_kind == "stalled" and wall_delta + 0.0011 < eligible_interval:
                 return False
         if interval_kind == "clear" and cpu is not None:
             # A departed descendant can lower the live process-tree total.
@@ -1627,6 +1653,79 @@ def _valid_hung_resource_evidence(value: Any) -> bool:
             and value["required_idle_eligible_s"]
             >= liveness._HUNG_SESSION_FINISH_GRACE_S
         )
+    return True
+
+
+def _valid_cpu_hang_evidence(value: Mapping[str, Any]) -> bool:
+    """(P4) Whether a CPU-without-progress hang carries the numbers that
+    justify it: a bound, a measured value above it, and a readable CPU
+    series -- plus, for the per-test decision, the nodeid and ITS baseline.
+
+    A record whose measured CPU does not reach its own stated bound is not
+    evidence of a hang (it is a writer bug or a hand-edited file), and a
+    record with no bound is a claim with nothing behind it; both are cache
+    misses, never trusted verdicts.
+    """
+
+    def finite_number(item: Any) -> bool:
+        return (
+            type(item) in (int, float)
+            and math.isfinite(item)
+        )
+
+    decision = value.get("decision")
+    if decision not in liveness.CPU_HANG_DECISIONS:
+        return False
+    if value.get("candidate_cpu_source") != liveness.CPU_PROGRESS_SOURCE:
+        return False
+    top = (
+        "wall_elapsed_s",
+        "candidate_cpu_s",
+        "cpu_since_last_completed_event_s",
+        "required_cpu_s",
+    )
+    if any(not finite_number(value.get(key)) for key in top):
+        return False
+    if any(value[key] < 0 for key in top):
+        return False
+    if value["candidate_cpu_s"] < value["cpu_since_last_completed_event_s"]:
+        # The series is monotonic, so the span since the last completed event
+        # can never exceed the total it was measured on.
+        return False
+    if value["required_cpu_s"] <= 0:
+        return False
+    if value["cpu_since_last_completed_event_s"] < value["required_cpu_s"]:
+        return False
+    completed = value.get("completed_events")
+    if type(completed) is not int or completed < 0:
+        return False
+    if not isinstance(value.get("trace_compacted"), bool):
+        return False
+    if not isinstance(value.get("resources"), Mapping):
+        return False
+    if decision == liveness.per_test_cpu_bound_decision:
+        if (
+            not isinstance(value.get("test_nodeid"), str)
+            or not value["test_nodeid"]
+            or not finite_number(value.get("per_test_baseline_s"))
+            or value["per_test_baseline_s"] < 0
+            or not finite_number(value.get("per_test_cpu_s"))
+            or value["per_test_cpu_s"] < 0
+            or value.get("per_test_baseline_s") is None
+        ):
+            return False
+        # The bound actually applied is the formula's, re-derived here rather
+        # than trusted from the record: one formula, so the writer and the
+        # validator cannot disagree about what bounded the run.
+        if not math.isclose(
+            value["required_cpu_s"],
+            liveness.per_test_cpu_bound_from_baseline(value["per_test_baseline_s"]),
+            rel_tol=0.0,
+            abs_tol=1e-6,
+        ):
+            return False
+        if value["per_test_cpu_s"] < value["required_cpu_s"]:
+            return False
     return True
 
 

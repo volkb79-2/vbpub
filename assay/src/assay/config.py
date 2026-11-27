@@ -2625,6 +2625,42 @@ def _refuse_unbounded_without_unit_bounds(
     the lane's work carries its own bound. Refuse at LOAD otherwise, naming
     the unit that has none.
 
+    **(P4) ``unbounded`` is still refused, and its meaning is now stated
+    per-run rather than per-unit.** A native R2 candidate with an armed watch
+    has a CPU-without-progress bound (`max(3 x baseline, baseline + 60 s)` of
+    process-tree CPU), a per-test CPU bound, and a no-progress stop after four
+    times that CPU bound. The no-progress stop uses plain wall time until the
+    resource comparator has classified an interval as `clear` or `stalled`;
+    after that it uses the idle rule's `liveness_clock`, where only `clear`
+    intervals advance and both `stalled` and `unknown` intervals are
+    ineligible. Later unreadable pressure data does not restore the wall-time
+    fallback, so sustained pressure can delay or prevent this stop. The
+    fallback can stop a candidate starved by host load when pressure data is
+    never comparable: readable CPU and no completed event can reach four
+    times the bound without distinguishing host starvation from a candidate
+    stall. This ends the sweep as an unclassified attempt. The per-candidate
+    budget is advisory only after the candidate's CPU reads are available.
+    Arming is a RUNTIME fact -- it needs liveness injection and baseline plugin
+    records -- and a config file is read before either is known. So this rule
+    keeps refusing `"none"` by name and admitting the omitted / `"auto"` key, but it
+    does not promise a total wall bound for every stalled candidate on an
+    armed run. The binding budget still ends runs where the watch is not armed,
+    CPU never becomes readable, or the event stream breaks. An event stream
+    breaks after at least one record has been read if the file is replaced
+    (device/inode change), truncated, vanishes, or cannot be read; its first
+    appearance is not a break. From the detecting poll, the CPU-without-progress
+    `hung` bound, the per-test bound, and the no-progress wall stop are
+    disarmed for the rest of that candidate run, even if the file returns. The
+    candidate budget then binds through the same path used when candidate CPU
+    is unreadable. With `budget_per_candidate = "none"`, only the lane deadline
+    remains. The idle rule keeps its origin/main current-file counting: a
+    vanished file reads as zero and an empty return is not progress. Detection
+    uses device/inode and length, not content comparison; a same-inode rewrite
+    that is not shorter than the reader's offset between polls looks like an
+    append, so candidate code can forge progress (B585). An intact stream that
+    keeps completing events can renew the watch; an `unbounded` lane gives that
+    progressing command no total wall cap by design.
+
     **(B091/D-23) An omitted ``judge.mutation.budget_per_candidate`` is no
     longer such a unit with no bound.** It now means ``"auto"`` -- see
     :data:`MUTATION_BUDGET_PER_CANDIDATE_AUTO` -- so a native R2 lane
@@ -2741,7 +2777,9 @@ def _refuse_unbounded_without_unit_bounds(
     ):
         missing.append(
             "judge.mutation.budget_per_candidate (declared 'none': every "
-            "mutant command would be unbounded)"
+            "mutant command would be unbounded before, and still is wherever "
+            "the no-progress watch is not armed -- declare a duration or the "
+            "omitted 'auto')"
         )
     if r3 and (
         judge is None

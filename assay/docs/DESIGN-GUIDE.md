@@ -1178,15 +1178,27 @@ unchanged function identity or fingerprint. A candidate-only `pytest_configure`
 replacement of the receipt hook is therefore unsupported before a cold result
 can be classified.
 
-When liveness is active, Assay also captures the exact materialized
-`assay_liveness_plugin` registrations for `pytest_configure`,
-`pytest_runtest_logreport`, `pytest_sessionfinish` and `pytest_unconfigure`.
+When liveness is active, Assay captures six pinned hooks from the exact
+materialized `assay_liveness_plugin` registrations: `pytest_configure`,
+`pytest_runtest_logstart`, `pytest_runtest_logreport`,
+`pytest_runtest_logfinish`, `pytest_sessionfinish` and `pytest_unconfigure`.
 They must come from the selected plugin path and retain the same HookImpl,
 function, code object and globals. This closes a same-module/path substitution
 that could otherwise alter a test report before the witness hook sees it while
 leaving the displayed hook fingerprint unchanged. Collection compares all
-four registrations; the registry monitor then checks each hook as pytest calls
+six registrations; the registry monitor then checks each hook as pytest calls
 it. A mismatch disables both cold and replay proof.
+
+`pytest_runtest_logstart` is on that list because of P4/S2, and the failure it
+would cause without being there is worth stating: the liveness plugin's
+`test_start` record dates the per-test CPU bound's window, but the hook itself
+lives in `HOOK_FINGERPRINT_HOOKS`, where an untrusted implementation marks the
+BASELINE unsupported. The visible result was not "one hook is ignored" but
+"cold witness: coverage baseline unsupported pytest hooks:
+pytest_runtest_logstart", refusing the whole lane. A hook the plugin registers
+must therefore be in the pin set, and
+`tests/core/test_mutation_witness_unit.py` now derives the set from the plugin
+itself so the two cannot drift apart again.
 
 The private receipt travels over a per-attempt bounded, length-framed pipe.
 The parent drains it while pytest runs and accepts exactly one complete
@@ -2097,6 +2109,127 @@ The names belong in the public score contract even when a particular lane has
 none of those outcomes. `crashed` is not silently folded into an absent
 payload, and `hung` remains its own diagnostic bucket rather than being
 renamed `budget_exceeded`.
+
+### Why a hang is `hung` and never `killed` (P4)
+
+A candidate ended by the idle rule, CPU-without-progress bound, or per-test CPU
+bound is bucketed `hung`. It is never `killed`, however it was stopped. The
+separate no-progress wall backstop is a fatal `BUDGET_EXCEEDED`/`LANE_TIMEOUT`
+with no candidate bucket or stored candidate result; it is not `hung` and does
+not become `budget_exceeded`. It applies to armed watches after four times the
+CPU-without-progress bound without a completed event. Until the resource
+comparator has classified an interval as `clear` or `stalled`, it measures
+plain wall time; after that it uses the idle rule's `liveness_clock`, where
+only `clear` intervals advance. A `stalled` interval (positive host or
+cgroup CPU, memory or I/O pressure, or cgroup CPU-throttle deltas) and an
+`unknown` interval (unavailable, incomplete, reset or mismatched snapshots)
+are ineligible. Later unreadable pressure intervals do not restore the wall
+fallback, so sustained pressure can delay or prevent the stop. Candidate CPU
+readability is not required. If pressure data is never comparable, a candidate
+starved by host load can still be stopped after four times the bound when CPU
+is readable but no completed event arrives. This ends the sweep as an
+unclassified lane timeout and cannot distinguish host starvation from a
+candidate stall.
+The lane deadline and the CPU/per-test bounds
+still win when they fire first. This is a decision, not an artifact of the
+code path, and it is worth stating plainly because the rest of the
+mutation-tooling world reports the opposite.
+
+An event stream breaks after at least one record has been read if the file is
+replaced (device/inode change), truncated, vanishes, or cannot be read; its
+first appearance is not a break. From the detecting poll, the
+CPU-without-progress `hung` bound, the per-test bound, and the no-progress wall
+stop are disarmed for the rest of that candidate run, even if the file returns.
+The candidate budget then binds through the same path used when candidate CPU
+is unreadable. With `budget_per_candidate = "none"`, only the lane deadline
+remains. The idle rule keeps its origin/main current-file counting: a vanished
+file reads as zero and an empty return is not progress. Detection uses
+device/inode and length, not content comparison; a same-inode rewrite that is
+not shorter than the reader's offset between polls looks like an append, so
+candidate code can forge progress (B585).
+
+The reasoning is what each bucket *claims*. `killed` asserts that the suite
+EXERCISED the mutant and failed on it: a specific test observed the changed
+behaviour and objected. A hang proves something weaker and different -- the
+mutant did not finish -- and that claim holds whether or not any test would
+have caught it. Folding a hang into `killed` would let a mutant that loops
+forever collect kill credit without one assertion ever running against it, so
+`killed/(killed+survived)` would rise for exactly the mutants a suite is
+weakest at judging. `hung` is therefore excluded from that denominator, beside
+`crashed`, `budget_exceeded` and `equivalent`.
+
+The comparison to the field is deliberate rather than accidental:
+
+* **PIT (Java)** treats a per-mutant time limit as *detected*: `TIMED_OUT`
+  is reported alongside `KILLED` and counted as caught.
+* **Stryker (JS/TS)** does the same with its `timeoutMS`; a timeout is
+  counted with `Killed`.
+* **cargo-mutants (Rust)** keeps them apart: `Timeout` is its own outcome,
+  separate from `Caught`.
+
+Assay follows cargo-mutants' structure, and the reason is the one above: with
+five buckets and a stated denominator, a consumer can decide for itself how to
+weigh a hang. Folding it into `killed` would take that decision away silently.
+
+**The counter-argument is settled as a v21 rule, and P4 does not implement it.**
+A CPU-based bound that the unmutated BASELINE satisfies is a statement about
+the mutant (a suite that finishes inside the bound, a mutant that does not),
+which is exactly PIT's and Stryker's position. The operator DECIDED on
+2026-11-26 that a load-independent (CPU-based) timeout counts as DETECTED, with
+its own per-candidate `timeout_kind` -- `endless-loop` only with stack
+evidence, otherwise the bound that fired. That is a verdict-schema change (a
+new closed-vocabulary value, a new score rule, a new `assay analyze` reading,
+and a decision about whether `hung` survives beside it), so it belongs to the
+v21 cut and not to P4: P4 changes no schema and no verdict vocabulary, and a
+hang from any bound it adds stays `hung`. B582 records the decided rule and the
+three conditions it applies under (the candidate was ended by a CPU-based
+bound rather than the idle rule, the baseline completed inside the same bound,
+and the bound is assay's derived formula rather than a declared wall clock);
+an idle hang and a wall-budget expiry stay NON-detected. Until v21 lands, this
+package's behaviour is what is described above: `hung`, and nothing else.
+
+#### P4 candidate visibility is not tamper-proof
+
+The liveness events file is writable by the candidate it judges, and the
+materialized pytest plugin lives outside the candidate snapshot. Candidate code
+can read the absolute events path from its environment and append forged
+progress records, which can defeat the CPU bounds while it spins; it can also
+rewrite the plugin file for a later candidate. P4's event stream is a liveness
+signal, not an authenticated boundary against hostile candidate code. Backlog
+B585 records the trust limitation and a future protected-path or authenticated
+record design.
+
+### Why the runtime matrix is generated from code (P4/S4)
+
+The README's language matrix answered "which rigor levels are registered" and
+said nothing about *what watches a candidate while it runs* -- which, after P4,
+is the question a lane author actually has to answer before declaring
+`budget_per_candidate`, `liveness` or a shard. It also carried a cell that had
+become false without anyone noticing: the SQL row claimed SQL shared Python's
+`hung` results, and `hung` is unreachable on a SQL lane because liveness is
+injected only for a Python/pytest adapter (`runner.py:5081`) with a pytest argv
+(`liveness.py:argv_invokes_pytest`). Nothing failed when that cell went stale,
+which is the defect shape this estate treats as the most expensive one: a
+document that certifies a capability no code path can produce.
+
+So the matrix has ONE source, `src/assay/mutation_runtime.py`, and
+`render_markdown()` prints the README block between two marker comments.
+`tests/core/test_mutation_runtime_matrix.py` compares the rendered block against
+the README byte for byte, refuses a missing or duplicated marker, derives the
+set of languages that must have a row from
+`assay.cli._built_in_registry` (so a newly registered R2 language cannot ship
+undocumented), and carries two must-fail controls: an edited README block, and
+a mutated row whose render must differ. The rejected alternative was a
+hand-written README section plus a parallel list in the test -- two sources that
+drift, with a check that could not fail for the right reason.
+
+Two cells are deliberately dull, because the honest answer is that nothing
+exists: an ingested JavaScript or Rust campaign has no assay candidate watch,
+store, resume or shard, and assay sets none of those tools' timeouts. The
+module says so in words rather than leaving a blank a reader would fill with an
+assumption. The matrix is also NOT exported through `assay-capabilities/2`:
+that output is a closed schema, so publishing this table there is a `/3` bump,
+not an additive tweak.
 
 ### Infrastructure fact injection (B013)
 

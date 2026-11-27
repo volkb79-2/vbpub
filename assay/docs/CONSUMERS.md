@@ -407,11 +407,13 @@ Assay's own generated receipt hooks and their code objects are captured before
 candidate conftests load as well. The reviewed Hypothesis and pytest-cov code
 objects are pinned too; replacing one in place makes the attempt unsupported,
 even when its visible fingerprint stays the same.
-When liveness is active, the materialized liveness plugin's
-`pytest_configure`, `pytest_runtest_logreport`, `pytest_sessionfinish` and
-`pytest_unconfigure` HookImpls, functions, code objects and globals are pinned
-to the selected plugin path too. A candidate that replaces one while
-preserving its visible fingerprint cannot certify a cold kill or survivor.
+When liveness is active, six pinned hooks from the materialized liveness
+plugin are tied to the selected plugin path: `pytest_configure`,
+`pytest_runtest_logstart`, `pytest_runtest_logreport`,
+`pytest_runtest_logfinish`, `pytest_sessionfinish` and `pytest_unconfigure`.
+Their HookImpls, functions, code objects and globals are checked. A candidate
+that replaces one while preserving its visible fingerprint cannot certify a
+cold kill or survivor.
 
 There is one compatibility exception for
 `tests/conftest.py::pytest_sessionfinish`: Assay accepts that hook only when
@@ -4560,13 +4562,12 @@ mutation sweep's own `plan` progress event (below) and recorded in the verdict a
 present when the lane declared an explicit duration (that duration is already on the wire, as the lane
 file itself) or the `"none"` opt-out below.
 
-`budget_per_candidate = "none"` is the explicit, written-down opt-out: every mutant command genuinely
-runs unbounded, exactly as an OMITTED key used to behave before B091. Declaring it prints a WARN
-(`assay: WARN: lane ... declares judge.mutation.budget_per_candidate = 'none' ...`) naming the B090
-incident, because the whole point of B091 is that this shape should be a deliberate choice a human can
-see, not a silent default. `budget = "unbounded"` (below) still refuses a lane that declares `"none"`
-for this reason — genuinely no per-mutant bound is exactly what that admission rule exists to catch —
-but admits an omitted key or an explicit `"auto"` on the same terms as an explicit duration.
+`budget_per_candidate = "none"` is the explicit, written-down opt-out: there is no per-candidate
+wall timeout. A finite lane still passes its remaining lane time as the command timeout, so without
+an armed progress watch one candidate may consume that remainder. Declaring it prints a WARN
+(`assay: WARN: lane ... declares judge.mutation.budget_per_candidate = 'none' ...`) naming why no
+per-candidate wall timeout exists. `budget = "unbounded"` (below) still refuses a lane that declares
+`"none"`; it admits an omitted key or an explicit `"auto"` on the same terms as an explicit duration.
 
 `python:uuid-equality-swap` and `python:enum-comparison-swap` are **withdrawn**
 (A-326). They shipped in 2.3.0 and were measured to produce a byte-identical
@@ -4592,6 +4593,116 @@ but note two consequences:
 
 A candidate that exceeds this bound is recorded in `budget_exceeded`; the lane continues with other
 candidates.
+
+### Migration: the per-candidate budget is ADVISORY when a progress watch is armed (P4/S3)
+
+P4 replaced "a wall budget ends every candidate" with "a progress watch ends it,
+and the wall budget is advice", on exactly the lanes where a watch really
+exists. **Nothing you declare changes**; what changes is what the declaration
+does on one class of lane.
+
+**Plan-time eligibility.** `assay run` prints `progress_bound` on the `plan`
+progress event only; it is not included in the verdict. At plan time, `armed`
+means liveness was injected and the baseline produced at least one plugin
+record. Candidate CPU readability is only known after the candidate starts:
+if its first CPU reads all fail, its wall budget becomes binding at runtime
+and the evidence decision is `budget-expired-watch-unarmed`.
+
+| `progress_bound.armed` | When | What `judge.mutation.budget_per_candidate` does |
+| --- | --- | --- |
+| `true` | liveness was injected for a native Python lane whose argv invokes pytest, and the BASELINE's own events file carries at least one plugin record | **advisory** once that candidate's process-tree CPU is readable and its event stream remains intact: the wall budget never ends it. If CPU remains unreadable or the candidate event stream breaks, the runtime demotes the candidate to a binding budget and writes the evidence decision above. One `assay: WARN: candidate overran judge.mutation.budget_per_candidate ...` line is printed the first time a candidate passes an advisory budget |
+| `false` | every other run: a non-pytest argv, a non-Python language, an ingested R2 lane, or a plugin that wrote nothing | **binding**, exactly as before: a candidate that reaches it is `budget_exceeded` and the lane continues with the next one |
+
+`progress_bound.reason` describes the plan-time state (`armed`,
+`liveness-not-injected:<reason>`, or `baseline-produced-no-plugin-events`).
+`candidate-cpu-unreadable` is not a `progress_bound.reason`; the runtime
+fallback appears on that candidate's evidence as
+`budget-expired-watch-unarmed`. The two CPU bounds and their bucket are in
+[what each runtime actually watches](../README.md#mutation-runtime-matrix);
+`hung` remains native-Python-only.
+
+**No-progress wall stop.** An armed watch also stops a candidate if no
+completed `test` or `phase` event arrives for four times the calibrated
+bound. Its window starts at spawn and is re-dated by each completed event and
+once at the first `session_finish`. Before the first comparable pressure
+interval (`clear` or `stalled` from the resource comparator), it uses plain
+wall time. Thereafter it uses `LivenessRunner`'s existing `liveness_clock`,
+the idle rule's pressure-credited clock: only `clear` intervals advance it.
+Positive deltas in host or cgroup CPU PSI (`some`), memory or I/O PSI
+(`some`/`full`), or cgroup CPU throttle counters (`nr_throttled`,
+`throttled_usec`) make an interval `stalled`; missing, incomplete, reset, or
+mismatched snapshots are `unknown`. Both `stalled` and `unknown` intervals
+are ineligible. If pressure data is never comparable, the wall-time fallback
+keeps the stop active. Once one interval is comparable, later unreadable
+intervals are `unknown` and pause the eligible clock without restoring the
+wall fallback. Continuous pressure can delay or prevent the stop. Candidate
+CPU readability is not required. **False-stop case:** if pressure data is
+never comparable, a candidate starved by host load can still be stopped after
+four times the bound when its CPU is readable but no completed event arrives.
+The stop ends the sweep as an unclassified lane timeout and cannot distinguish
+host starvation from a candidate stall. The CPU and per-test `hung` bounds and the
+lane deadline still win if they fire first. This stop is an unclassified fatal
+`BUDGET_EXCEEDED`/`LANE_TIMEOUT`: it writes no candidate result or mutation
+bucket, and `assay run` ends so `--resume` retries the missing candidate. It
+is never reported as `hung` or placed in the `budget_exceeded` bucket. If CPU
+remains unreadable, the existing binding candidate budget can still expire
+first.
+
+**Broken event stream.** An event stream breaks after at least one record has
+been read if the file is replaced (device/inode change), truncated, vanishes,
+or cannot be read; its first appearance is not a break. From the poll that
+detects the break, the CPU-without-progress `hung` bound, the per-test bound,
+and the no-progress wall stop are disarmed for the rest of that candidate run,
+even if the file returns. The candidate budget then binds through the same
+path used when candidate CPU is unreadable. With
+`budget_per_candidate = "none"`, only the lane deadline remains. The idle rule
+keeps its origin/main current-file counting: a vanished file reads as zero,
+and an empty return is not progress. Detection uses device/inode and length,
+not content comparison; a same-inode rewrite that is not shorter than the
+reader's offset between polls looks like an append, so candidate code can
+forge progress (B585).
+
+For `jobs > 1`, candidates already in flight are allowed to finish and persist
+their results before the fatal error is raised; no additional candidates are
+submitted. Unstarted candidates remain for the normal scheduler on resume. In
+a serial run, when the stopped candidate is the first outstanding candidate,
+it is retried first on every resume, so the same stall can prevent later
+candidates from running. Backlog B597 tracks ending only the stopped candidate
+and continuing the sweep.
+
+**Known false-stop cases.** The CPU-without-progress threshold is derived
+from baseline wall seconds (`max(3 x baseline wall, baseline wall + 60s)`) but
+compared with process-tree CPU, so the time to a `hung` stop is about that
+bound divided by the candidate's average process-tree CPU share. It is lenient
+for a serial suite. A parallel
+suite whose baseline tree CPU exceeds wall time can stop a healthy candidate
+as `hung`, never `killed`. The per-test bound is
+`max(10 x that test's baseline seconds, 60s)`, also compared with process-tree
+CPU. Background processes, tests that fan out far beyond 10x, and session or
+module fixture cost moving to another nodeid under randomized order can stop a
+healthy candidate as `hung`. The first `session_finish` closes the per-test
+window and re-dates the CPU-without-progress window once, giving teardown and
+cleanup one full CPU bound from that event.
+
+If a lane has these conditions and needs a finite candidate wall timeout to
+remain the stop, `judge.mutation.liveness = false` is supported; it disables
+all P4 watches and restores the binding per-candidate budget. A smaller
+`budget_per_candidate` does not protect candidates while the watch is armed.
+
+With `budget_per_candidate = "none"`, there is no per-candidate wall timeout.
+When the progress watch is not armed, one candidate can use the lane's
+remaining budget; the run prints one WARN with the reason the watch is
+unavailable. The command still receives the lane's remaining time as its
+timeout, and config refuses `budget = "unbounded"` together with `"none"`.
+
+**What to do about it.** If a `budget_per_candidate` you declared was really a
+ceiling on a slow-but-progressing suite, expect it to stop binding on a
+Python/pytest lane and to keep binding everywhere else; the WARN is the signal
+that your number was passed, not that the run stopped. If you *want* a wall
+ceiling to end candidates there, `judge.mutation.liveness = false` restores the
+old behaviour exactly (no watch, no advisory budget), at the cost of all hang
+detection. `budget_per_candidate = "none"` and the `budget = "unbounded"`
+admission rule are untouched.
 
 ### Liveness for a native R2 python/pytest lane: the `hung` bucket (B091/RW-33)
 
@@ -4723,7 +4834,8 @@ making progress, on EITHER of two branches:
 - a `session_finish` event was seen but the process is still alive 30 s
   later AND no new event or stdout/stderr growth has occurred for a full
   30 s grace AND process-tree CPU has stayed below the quiet threshold over
-  the complete trailing 30 s CPU window (P7 round-2 B6, RW-57). If CPU keeps
+  the complete trailing 30 s CPU window (P7 round-2 B6, RW-57). Where the
+  progress watch is not armed (see the P4 migration note), if CPU keeps
   growing, the candidate remains incomplete until its configured budget
   rather than being classified `hung`.
 
@@ -4752,7 +4864,8 @@ window exists, the result is `budget_exceeded` and the mutation lane remains
 incomplete. It is not evidence that the mutant was killed, survived, or hung.
 The candidate's `liveness_resource_evidence` is retained in the mutation
 progress record and resumable state record. Its top-level `decision` is
-`idle-hang`, `session-finish-hang`, or `configured-budget-expired`; each sample
+`idle-hang`, `session-finish-hang`, `configured-budget-expired`, or
+`budget-expired-watch-unarmed`; each sample
 has wall/eligible time, candidate-tree CPU, resource-counter deltas, and the
 observed snapshots. `trace_complete = false` or `trace_truncated = true`
 cannot support a `hung` bucket. A cached `hung` record without valid complete
@@ -4771,7 +4884,9 @@ wrote the first `session_start` (the controller), so worker reports forwarded
 to that controller do not duplicate the count; repeated records with an equal
 `nodeid` remain separate events. The monitor recognizes only its candidate
 process's stamped `session_finish`, so a worker finish cannot arm the
-post-finish grace while the candidate is still progressing.
+post-finish grace while the candidate is still progressing. After a stream
+break, `tests_completed` covers only the current event file; the reader does
+not carry the previous file's count across reset.
 
 When all timestamped baseline records carry usable pids, gap calibration orders
 each pid's records by event timestamp, computes that process's own gaps, and
@@ -4921,7 +5036,7 @@ never says `coverage_parsed`.
 | `command_running` | the heartbeat tick, while it runs | `command_elapsed_s`, `phase` |
 | `command_finished` | the command returned | `outcome`, `reason_code`, `returncode`, `started`, `ended`; when processes outlived the command leader (`leaked-process-tree`), also `leaked_descendants` (at most the first 20 of `{pid, ppid, comm}` plus an optional `cmdline` list of strings; `ppid` and `comm` are `null` when the process vanished before it was read; a zombie has no `cmdline`) and `leaked_descendants_total` (the full count). Additive (B233) |
 | `coverage_parsed` | the R1 artifact was read (R1 lanes only) | `parsed`, `reason_code` |
-| `plan` | the mutation sweep's own first record, right after the baseline PASSes (B091/D-23) | `baseline_s`, `budget_per_candidate_s`, `derived`, `liveness` (`{active, reason, plugin}`, B091/RW-36), `slowest_test_s`, `worst_gap_s`, `expect_next_event_within_s`, `pre_first_event_within_s` (B091 A4 + round-1 B2 — all `None` whenever `liveness.active` is `false`) |
+| `plan` | the mutation sweep's own first record, right after the baseline PASSes (B091/D-23) | `baseline_s`, `budget_per_candidate_s`, `derived`, `liveness` (`{active, reason, plugin}`, B091/RW-36), `slowest_test_s`, `worst_gap_s`, `expect_next_event_within_s`, `pre_first_event_within_s` (B091 A4 + round-1 B2 — all `None` whenever `liveness.active` is `false`), `cpu_window_s`, `idle_floor_s`, and (P4/S3) `progress_bound` (`{armed, reason, cpu_without_progress_s, per_test_baseline_tests, budget_per_candidate_role}` — plan-time watch eligibility and budget role; candidate CPU readability can still demote the watch at runtime. This field appears on the plan event only, not in the verdict.) |
 | `test` | one BASELINE test's own outcome, forwarded verbatim, right after `plan` and before any `candidate` line (B091 A4) — **never emitted for a candidate**, and never emitted at all unless liveness is active for this lane | `phase: "baseline"`, `nodeid`, `outcome`, `duration_s`, `setup_s`, `teardown_s` (the test's own setup and teardown durations; `None` when the test reported none) |
 | `candidates` | the mutation sweep's sizes are known | `candidate_total`, `selected_total`, `pending_total`, `judge_sha256` (the digest of the judge that runs the sweep; additive, B108) |
 | `shard` / `resume` | a shard was selected / records were resumed **or refused** (`resume` also gains `rejudged_total`, B091 A5, and `locus_unavailable_total` from advisory locus metadata dropped on load) | `selected_total` / `resumed_total` + `rejected_total` (+ `rejudged_total`, `locus_unavailable_total`) |

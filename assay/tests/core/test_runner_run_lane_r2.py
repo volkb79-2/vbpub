@@ -14,6 +14,7 @@ language for real, minimal Python source).
 
 from __future__ import annotations
 
+import json
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -29,11 +30,11 @@ from conftest import (
     make_r2_judge,
 )
 
-from assay import git as git_module
+from assay import git as git_module, liveness
 from assay import runner, workspace as workspace_module
 from assay.adapters.python import PythonAdapter
 from assay.config import MutationConfig
-from assay.errors import Outcome, ReasonCode
+from assay.errors import AssayError, Outcome, ReasonCode
 from assay.verdict import Judgment
 
 MOMENT_A = datetime(2026, 8, 8, 10, 0, 0, tzinfo=timezone.utc)
@@ -121,6 +122,160 @@ def test_r2_without_r1_kills_the_one_generated_mutant(git_repo: GitRepo):
     assert verdict.judgment.r2.jobs == 1
     assert verdict.judgment.r2.operators == ("python:compare-swap",)
     assert verdict.judgment.r1 is None
+
+
+@pytest.mark.parametrize(
+    ("baseline_has_records", "budget_per_candidate_none"),
+    [(True, False), (False, False), (True, True)],
+    ids=(
+        "baseline-plugin-records",
+        "baseline-plugin-empty",
+        "armed-none-budget-warning",
+    ),
+)
+def test_injected_lane_builds_liveness_runner_with_armed_or_idle_only_bounds(
+    git_repo: GitRepo,
+    monkeypatch: pytest.MonkeyPatch,
+    baseline_has_records: bool,
+    budget_per_candidate_none: bool,
+):
+    import io
+
+    base_rev, head_rev = _seed_compare_swap_site(git_repo)
+    mutation_config = MutationConfig(
+        jobs=1,
+        max_mutants=50,
+        operators=("python:compare-swap",),
+        budget_per_candidate=("none" if budget_per_candidate_none else "45s"),
+    )
+    judge = make_r2_judge(
+        source_root_paths=(git_repo.path / "src",),
+        base=base_rev,
+        mutation=mutation_config,
+    )
+    lane = make_lane(
+        rigor=("R0", "R2"),
+        judge=judge,
+        argv=("python", "-m", "pytest", "-q"),
+    )
+    baseline_path: list[Path] = []
+    captured: dict = {}
+    constructor_kwargs: list[dict] = []
+    calibrations: list[liveness.LivenessCalibration] = []
+    actual_runner_class = liveness.LivenessRunner
+    actual_compute_calibration = liveness.compute_liveness_calibration
+
+    def recording_calibration(*args, **kwargs):
+        calibration = actual_compute_calibration(*args, **kwargs)
+        calibrations.append(calibration)
+        return calibration
+
+    def recording_runner(**kwargs):
+        constructor_kwargs.append(dict(kwargs))
+        return actual_runner_class(**kwargs)
+
+    monkeypatch.setattr(liveness, "compute_liveness_calibration", recording_calibration)
+    monkeypatch.setattr(liveness, "LivenessRunner", recording_runner)
+
+    def fake_process_runner(argv, *, env, cwd, timeout):
+        events_name = env.get(liveness.ASSAY_LIVENESS_EVENTS_ENV)
+        if events_name is not None:
+            path = Path(events_name)
+            baseline_path.append(path)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            records = (
+                [
+                    {"event": "session_start", "pid": 8120, "t": 1.0},
+                    {
+                        "event": "phase",
+                        "when": "setup",
+                        "nodeid": "tests/test_sample.py::test_sample",
+                        "duration_s": 0.25,
+                        "pid": 8120,
+                        "t": 2.0,
+                    },
+                    {
+                        "event": "test",
+                        "when": "call",
+                        "nodeid": "tests/test_sample.py::test_sample",
+                        "duration_s": 1.0,
+                        "outcome": "passed",
+                        "pid": 8120,
+                        "t": 22.0,
+                    },
+                    {
+                        "event": "phase",
+                        "when": "teardown",
+                        "nodeid": "tests/test_sample.py::test_sample",
+                        "duration_s": 0.5,
+                        "pid": 8120,
+                        "t": 24.0,
+                    },
+                    {"event": "session_finish", "pid": 8120, "t": 25.0},
+                ]
+                if baseline_has_records
+                else []
+            )
+            path.write_text(
+                "".join(json.dumps(record) + "\n" for record in records),
+                encoding="utf-8",
+            )
+        return completed_process(list(argv), returncode=0, stdout="", stderr="")
+
+    def capture_run_mutation(**kwargs):
+        captured.update(kwargs)
+        raise AssayError(
+            "captured runner wiring",
+            outcome=Outcome.ERROR,
+            reason_code=ReasonCode.EXEC_FAILED,
+        )
+
+    monkeypatch.setattr(runner.mutation, "run_mutation", capture_run_mutation)
+    diagnostics = io.StringIO() if budget_per_candidate_none else None
+    runner.run_lane(
+        lane,
+        commit=head_rev,
+        repo=git_repo.path,
+        project_root=git_repo.path,
+        adapter=PythonAdapter(),
+        assay_version="0.1.0",
+        process_runner=fake_process_runner,
+        diagnostics=diagnostics,
+    )
+
+    assert len(baseline_path) == 1
+    assert len(calibrations) == 1
+    assert len(constructor_kwargs) == 1
+    assert isinstance(captured["process_runner"], actual_runner_class)
+    expected = calibrations[0]
+    constructed = constructor_kwargs[0]
+    candidate_runner = captured["process_runner"]
+    assert constructed["expect_next_event_within_s"] == expected.expect_next_event_within_s
+    assert constructed["pre_first_event_within_s"] == expected.pre_first_event_within_s
+    if baseline_has_records:
+        assert captured["liveness_watch_armed"] is True
+        assert constructed["cpu_without_progress_bound_s"] == expected.cpu_without_progress_bound_s
+        assert constructed["per_test_cpu_baseline_s"] == expected.per_test_baseline_s
+        assert constructed["advisory_budget_s"] == (
+            None if budget_per_candidate_none else 45.0
+        )
+        assert candidate_runner.cpu_without_progress_bound_s == expected.cpu_without_progress_bound_s
+        assert candidate_runner._per_test_cpu_baseline_s == dict(expected.per_test_baseline_s)
+        assert candidate_runner.advisory_budget_s == (
+            None if budget_per_candidate_none else 45.0
+        )
+        if budget_per_candidate_none:
+            assert diagnostics is not None
+            assert "progress watch is armed" in diagnostics.getvalue()
+    else:
+        assert captured["liveness_watch_armed"] is False
+        assert constructed["cpu_without_progress_bound_s"] is None
+        assert constructed["per_test_cpu_baseline_s"] is None
+        assert constructed["advisory_budget_s"] is None
+        assert candidate_runner.cpu_without_progress_bound_s is None
+        assert candidate_runner._per_test_cpu_baseline_s == {}
+        assert candidate_runner.advisory_budget_s is None
+        assert captured["liveness_cpu_without_progress_bound_s"] is None
 
 
 def test_parallel_r2_refuses_a_plain_snapshot_workspace(
@@ -354,9 +509,10 @@ def test_judgment_r2_budget_per_candidate_none_warns_and_derives_nothing(
     git_repo: GitRepo,
 ):
     """(B091/D-23) The explicit `"none"` opt-out: every mutant command runs
-    genuinely unbounded, `judgment.r2.budget_per_candidate_derived_s` stays
-    absent (nothing was derived), and the run prints a WARN naming B090's own
-    incident rather than passing through silently.
+    without a per-candidate wall timeout, the derived budget field stays
+    absent (nothing was derived), and
+    the run prints one WARN naming why the progress watch is not armed. The
+    lane's remaining deadline is still passed as the command timeout.
     """
     import io
 
@@ -388,19 +544,23 @@ def test_judgment_r2_budget_per_candidate_none_warns_and_derives_nothing(
     assert verdict.judgment.r2.budget_per_candidate_derived_s is None
     warning = diagnostics.getvalue()
     assert "budget_per_candidate = 'none'" in warning
+    assert "no per-candidate wall timeout" in warning
+    assert "progress watch is not armed because" in warning
+    assert "liveness-not-injected:argv-does-not-invoke-pytest" in warning
+    assert warning.count("WARN: lane") == 1
 
 
-def test_judgment_r2_budget_per_candidate_none_without_diagnostics_still_runs_unbounded(
+def test_judgment_r2_budget_per_candidate_none_without_diagnostics_uses_lane_deadline(
     git_repo: GitRepo,
 ):
     """(B091/D-23 regression guard) `diagnostics=None` (the library-caller
     default, B053/DA-D2's own "no diagnosis" convention) must not fall
     through into treating `"none"` as an explicit duration -- an earlier cut
-    of this resolution folded the WARN print and the "is this none at all"
+    of this resolution folded the warning and the "is this none at all"
     question into ONE `if`, so a caller that passed no diagnostics stream at
     all hit `parse_duration("none")` and crashed. `run_lane`'s own default
-    is `diagnostics=None`, so this is the ordinary no-`--verdict-json`-
-    diagnostics library shape, not an edge case.
+    is `diagnostics=None`, so this is the ordinary no-diagnosis library path.
+    The candidate still receives the finite lane deadline as its timeout.
     """
     base_rev, head_rev = _seed_compare_swap_site(git_repo)
     declared = MutationConfig(

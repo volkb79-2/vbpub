@@ -40,6 +40,7 @@ from typing import NamedTuple
 import pytest
 
 from assay.cli import _built_in_registry
+from assay import mutation_witness
 from assay.config import (
     EVIDENCE_SOURCES,
     JUDGE_BASE_SOURCES,
@@ -1381,3 +1382,143 @@ def test_native_r2_resume_and_progress_contract_is_documented_across_public_docs
         assert "resource_limit_changes" in text, (
             f"{document.name} omits the candidate progress field"
         )
+
+
+def test_p4_liveness_issues_and_plan_only_progress_disclosure_are_pinned():
+    # Whole history, not the current sections: the P4 entry stays in its release.
+    changes = " ".join((REPO_ROOT / "CHANGES.md").read_text(encoding="utf-8").split())
+    consumers = " ".join(CONSUMERS.read_text(encoding="utf-8").split())
+    design = " ".join(DESIGN_GUIDE.read_text(encoding="utf-8").split())
+    readme = " ".join(README.read_text(encoding="utf-8").split())
+    assay_toml = " ".join((REPO_ROOT / "assay.toml").read_text(encoding="utf-8").split())
+    config = " ".join(
+        (REPO_ROOT / "src" / "assay" / "config.py")
+        .read_text(encoding="utf-8")
+        .split()
+    )
+    backlog = " ".join(
+        (REPO_ROOT / "nyxloom-trove" / "4-backlog.md")
+        .read_text(encoding="utf-8")
+        .split()
+    )
+
+    assert "max(3 x baseline wall, baseline wall + 60s)" in changes
+    assert "parallel suite can consume more baseline tree CPU than wall time" in changes
+    assert "never counts as `killed`" in changes
+    assert "max(10 x that test's baseline seconds, 60s)" in changes
+    assert "randomized test order can stop a healthy candidate as `hung`" in changes
+    assert "four times the CPU-without-progress bound" in changes
+    assert "unclassified as `BUDGET_EXCEEDED`/`LANE_TIMEOUT`" in changes
+    assert "same stop repeats on every resume" in changes
+    assert "The `plan` record reports plan-time eligibility only" in changes
+    assert "Whether a candidate's budget is advisory is decided at runtime after its CPU reads" in changes
+    assert "150-minute assay-command budget" in changes
+    assert "3-hour inner command cap" in changes
+    assert "effective total is therefore at most 3 hours from container entry" in changes
+    assert "effective whole-container bound is 3h" in assay_toml
+
+    for text, paragraph in (
+        (
+            readme,
+            "Where the progress watch is not armed (see the P4 migration note), "
+            "a configured candidate budget that expires before a complete clean "
+            "idle window remains an incomplete `budget_exceeded` result",
+        ),
+        (
+            readme,
+            "Where the progress watch is not armed (see the P4 migration note), "
+            "continued CPU work reaches the configured budget",
+        ),
+        (
+            consumers,
+            "Where the progress watch is not armed (see the P4 migration note), "
+            "if CPU keeps growing, the candidate remains incomplete until its "
+            "configured budget",
+        ),
+    ):
+        assert paragraph in text
+
+    assert (
+        "progress_bound` on the `plan` progress event only; it is not included "
+        "in the verdict"
+    ) in consumers
+    assert "`candidate-cpu-unreadable` is not a `progress_bound.reason`" in consumers
+    assert "`budget-expired-watch-unarmed`" in consumers
+    assert "The first `session_finish` closes the per-test window" in consumers
+    assert "session or module fixture cost moving to another nodeid under randomized order" in consumers
+    assert (
+        "the time to a `hung` stop is about that bound divided by the candidate's "
+        "average process-tree CPU share"
+    ) in consumers
+    assert "unclassified fatal `BUDGET_EXCEEDED`/`LANE_TIMEOUT`" in consumers
+    assert "writes no candidate result or mutation bucket" in consumers
+    assert "same stall can prevent later candidates from running" in consumers
+    assert "Only `clear` intervals advance `liveness_clock`" in changes
+    assert "Before the first comparable interval the stop uses plain wall time" in changes
+    assert "later unreadable intervals remain `unknown` and pause the eligible clock" in changes
+    assert "The wall fallback can stop a candidate starved by host load when pressure data is never comparable" in changes
+    assert "does not identify whether the candidate stalled or the host starved it" in changes
+    stream_break = (
+        "An event stream breaks after at least one record has been read if the "
+        "file is replaced (device/inode change), truncated, vanishes, or cannot "
+        "be read; its first appearance is not a break."
+    )
+    disarmed_bounds = (
+        "the CPU-without-progress `hung` bound, the per-test bound, and the "
+        "no-progress wall stop are disarmed for the rest of that candidate run"
+    )
+    binding_budget = (
+        "The candidate budget then binds through the same path used when "
+        "candidate CPU is unreadable"
+    )
+    same_inode_limit = (
+        "same-inode rewrite that is not shorter than the reader's offset "
+        "between polls looks like an append, so candidate code can forge progress"
+    )
+    for text in (changes, consumers, design, config, backlog):
+        assert stream_break in text
+        assert disarmed_bounds in text
+        assert binding_budget in text
+    for text in (changes, consumers, design, config):
+        assert same_inode_limit in text
+        assert "With `budget_per_candidate = \"none\"`, only the lane deadline remains" in text
+        assert "The idle rule keeps its origin/main current-file counting" in text
+    assert "After a stream break, `tests_completed` covers only the current event file" in consumers
+    assert "Before the first comparable pressure interval (`clear` or `stalled` from the resource comparator), it uses plain wall time" in consumers
+    assert "only `clear` intervals advance it" in consumers
+    assert "without restoring the wall fallback" in consumers
+    assert "Continuous pressure can delay or prevent the stop" in consumers
+    assert "candidate starved by host load can still be stopped after four times the bound" in consumers
+    assert "cannot distinguish host starvation from a candidate stall" in consumers
+    assert "separate no-progress wall backstop is a fatal `BUDGET_EXCEEDED`/`LANE_TIMEOUT`" in design
+    assert "only `clear` intervals advance" in design
+    assert "does not become `budget_exceeded`" in design
+    assert "candidate starved by host load can still be stopped after four times the bound" in design
+    assert "cannot distinguish host starvation from a candidate stall" in design
+    assert "ends the sweep as an unclassified lane timeout" in design
+    assert "The fallback can stop a candidate starved by host load when pressure data is never comparable" in config
+    assert "This ends the sweep as an unclassified attempt" in config
+    assert "candidate starved by host load after four times the bound" in backlog
+
+
+def test_p4_liveness_hook_docs_follow_the_pinned_hook_list():
+    consumers = " ".join(CONSUMERS.read_text(encoding="utf-8").split())
+    design = " ".join(DESIGN_GUIDE.read_text(encoding="utf-8").split())
+    plugin_namespace: dict[str, object] = {}
+    exec(
+        compile(
+            mutation_witness._PLUGIN_SOURCE,
+            "assay_mutation_witness_plugin.py",
+            "exec",
+        ),
+        plugin_namespace,
+    )
+    hooks = plugin_namespace["_LIVENESS_PLUGIN_HOOKS"]
+
+    assert len(hooks) == 6
+    for text in (consumers, design):
+        assert "six pinned hooks" in text
+        for hook in hooks:
+            assert f"`{hook}`" in text
+    assert "`pytest_runtest_logfinish`" in consumers
+    assert "`pytest_runtest_logfinish`" in design

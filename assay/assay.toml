@@ -171,6 +171,7 @@ targets = [
   "src/assay/mutation_parsers/cargo_mutants_outcomes.py",
   "src/assay/mutation_parsers/model.py",
   "src/assay/mutation_parsers/mutation_report_json.py",
+  "src/assay/mutation_runtime.py",
   "src/assay/mutation_store.py",
   "src/assay/mutation_witness.py",
   "src/assay/observer_windows.py",
@@ -314,6 +315,7 @@ targets = [
   "src/assay/mutation_parsers/cargo_mutants_outcomes.py",
   "src/assay/mutation_parsers/model.py",
   "src/assay/mutation_parsers/mutation_report_json.py",
+  "src/assay/mutation_runtime.py",
   "src/assay/mutation_store.py",
   "src/assay/mutation_witness.py",
   "src/assay/observer_windows.py",
@@ -444,6 +446,7 @@ targets = [
   "src/assay/mutation_parsers/cargo_mutants_outcomes.py",
   "src/assay/mutation_parsers/model.py",
   "src/assay/mutation_parsers/mutation_report_json.py",
+  "src/assay/mutation_runtime.py",
   "src/assay/mutation_store.py",
   "src/assay/mutation_witness.py",
   "src/assay/observer_windows.py",
@@ -493,7 +496,11 @@ argv = [
 ]
 env = {}
 env_passthrough = ["PATH"]
-budget = "60m"
+# Caps the assay lane command at 150m. The campaign expires 3h after init;
+# the container command cap is 3h from entry and Run-Gate allows 210m, so the
+# effective whole-container bound is 3h, with at most 30m beyond the lane cap
+# for setup and finalization (less if the container cap arrives first).
+budget = "150m"
 allow_argv_append = false
 
 [lanes.self-qualification-provisional.infrastructure]
@@ -564,6 +571,7 @@ targets = [
   "src/assay/mutation_parsers/cargo_mutants_outcomes.py",
   "src/assay/mutation_parsers/model.py",
   "src/assay/mutation_parsers/mutation_report_json.py",
+  "src/assay/mutation_runtime.py",
   "src/assay/mutation_store.py",
   "src/assay/mutation_witness.py",
   "src/assay/observer_windows.py",
