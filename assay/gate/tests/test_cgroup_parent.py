@@ -41,9 +41,18 @@ def run_probe(
     absent_inspect_stderr: str = "error: no such object: {target}",
     inspect_stderr_warning: str = "",
     inspect_failures: list[list[object]] | None = None,
+    failing_nul_translator: bool = False,
 ):
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir(exist_ok=True)
+    if failing_nul_translator:
+        # Forwards its input like the real tool, then fails, for one call shape.
+        translator = fake_bin / "tr"
+        translator.write_text(
+            '#!/bin/sh\n/usr/bin/tr "$@" || exit\n[ "$2" != "?" ]\n',
+            encoding="utf-8",
+        )
+        translator.chmod(0o755)
     argv_log = tmp_path / "docker.argv"
     call_order = tmp_path / "call-order"
     docker = fake_bin / "docker"
@@ -1078,6 +1087,37 @@ def test_inexact_absence_keeps_a_created_probe_for_exit_cleanup(
         memory_reserve_bytes=2147483648,
         unit_probe_run_mode="mount-failure-created",
         inspect_failures=inspect_failures,
+    )
+
+    assert proc.returncode != 0
+    assert proc.stdout == ""
+    assert "refusing fallback" in proc.stderr
+    calls = [json.loads(line) for line in argv_log.read_text(encoding="utf-8").splitlines()]
+    assert len([call for call in calls if call[0] == "run"]) == 1
+    assert [call for call in calls if call[0] == "rm"] == [
+        ["rm", "--force", "f" * 64]
+    ]
+    state = json.loads((tmp_path / "unit-probe-state.json").read_text(encoding="utf-8"))
+    assert state["containers"] == {}
+
+
+@pytest.mark.parametrize("docker_status", [0, 2])
+def test_failing_text_tool_cannot_turn_docker_status_into_absence(
+    tmp_path: Path,
+    docker_status: int,
+):
+    proc, argv_log = run_probe(
+        tmp_path,
+        "OK",
+        slice_name="dev-gates.slice",
+        cgroup_values={"memory.current": "5368709120"},
+        memory_reserve_bytes=2147483648,
+        unit_probe_run_mode="mount-failure-created",
+        inspect_failures=[
+            [1, ""],
+            [docker_status, "error: no such object: {target}"],
+        ],
+        failing_nul_translator=True,
     )
 
     assert proc.returncode != 0
