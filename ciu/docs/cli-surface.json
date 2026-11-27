@@ -2426,7 +2426,7 @@
       "shape": {
         "argument_id": "argument:route:entrypoint:ciu/host/enroll/name"
       },
-      "signature": "sha256:599af0978aef6e5a3584e5793f52fe07376252f6313893ad36e4180ad5205470"
+      "signature": "sha256:be47cf029c6e77446fae17af14a78f56a470730907ee39f207af51a846dbd013"
     },
     {
       "id": "case:route:entrypoint:ciu/host/enroll/constraint-conflict/1",
@@ -2444,7 +2444,97 @@
         ],
         "reason": "--abort removes the pending step-1 key pair and takes no other enrollment flag"
       },
-      "signature": "sha256:49ccb2eb25528d26afb7810572ee129aca32331da7e9ddd5d3959a0ded7bc0dd"
+      "signature": "sha256:c091daec83e58ce8374a04735a7413b5fd96fb72aa7e19a50d0afbcf6b301da5"
+    },
+    {
+      "id": "case:route:entrypoint:ciu/host/enroll/constraint-conflict/13",
+      "kind": "constraint-conflict",
+      "members": [
+        "option:route:entrypoint:ciu/host/enroll/--forced-command",
+        "option:route:entrypoint:ciu/host/enroll/--from"
+      ],
+      "route_id": "route:entrypoint:ciu/host/enroll",
+      "shape": {
+        "kind": "conflicts",
+        "options": [
+          "--forced-command",
+          "--from"
+        ],
+        "reason": "the restricted key uses one fixed command option and cannot also use --from"
+      },
+      "signature": "sha256:43f6c08c8c0b73e12810dfcb80e78b0a39a9f9d6f003646efd2aaa889e212500"
+    },
+    {
+      "id": "case:route:entrypoint:ciu/host/enroll/constraint-conflict/14",
+      "kind": "constraint-conflict",
+      "members": [
+        "option:route:entrypoint:ciu/host/enroll/--ssh-host",
+        "option:route:entrypoint:ciu/host/enroll/--forced-command"
+      ],
+      "route_id": "route:entrypoint:ciu/host/enroll",
+      "shape": {
+        "kind": "conflicts",
+        "options": [
+          "--ssh-host",
+          "--forced-command"
+        ],
+        "reason": "forced-command inputs apply only to step 1, before --ssh-host"
+      },
+      "signature": "sha256:2e06ff3264018d97d6fa9e8d7542f9308b92ddcab2cdd8567ee793a3eee6cf23"
+    },
+    {
+      "id": "case:route:entrypoint:ciu/host/enroll/constraint-conflict/15",
+      "kind": "constraint-conflict",
+      "members": [
+        "option:route:entrypoint:ciu/host/enroll/--ssh-host",
+        "option:route:entrypoint:ciu/host/enroll/--agent-path"
+      ],
+      "route_id": "route:entrypoint:ciu/host/enroll",
+      "shape": {
+        "kind": "conflicts",
+        "options": [
+          "--ssh-host",
+          "--agent-path"
+        ],
+        "reason": "forced-command inputs apply only to step 1, before --ssh-host"
+      },
+      "signature": "sha256:147339238891d85b18ab59f20ed172c9214a54f7fd88b6e0058b11454f7dfd17"
+    },
+    {
+      "id": "case:route:entrypoint:ciu/host/enroll/constraint-conflict/16",
+      "kind": "constraint-conflict",
+      "members": [
+        "option:route:entrypoint:ciu/host/enroll/--ssh-host",
+        "option:route:entrypoint:ciu/host/enroll/--fleetd-group"
+      ],
+      "route_id": "route:entrypoint:ciu/host/enroll",
+      "shape": {
+        "kind": "conflicts",
+        "options": [
+          "--ssh-host",
+          "--fleetd-group"
+        ],
+        "reason": "forced-command inputs apply only to step 1, before --ssh-host"
+      },
+      "signature": "sha256:a7481c5ec638e37d5d05542f658b1b03ef2a2a588eb1d581c5d85b0a16ef49fc"
+    },
+    {
+      "id": "case:route:entrypoint:ciu/host/enroll/constraint-conflict/17",
+      "kind": "constraint-conflict",
+      "members": [
+        "option:route:entrypoint:ciu/host/enroll/--ssh-host",
+        "option:route:entrypoint:ciu/host/enroll/--agent-policy"
+      ],
+      "route_id": "route:entrypoint:ciu/host/enroll",
+      "shape": {
+        "kind": "conflicts",
+        "options": [
+          "--ssh-host",
+          "--agent-policy"
+        ],
+        "reason": "forced-command inputs apply only to step 1, before --ssh-host"
+      },
+      "signature": "sha256:1e4acaa464510aac1550ca2f8f97b17dbebdab25fb9fac5c0d5feffd48398120"
     },
     {
       "id": "case:route:entrypoint:ciu/host/enroll/constraint-conflict/2",
@@ -2462,7 +2552,7 @@
         ],
         "reason": "--abort removes the pending step-1 key pair and takes no other enrollment flag"
       },
-      "signature": "sha256:1e41debaa88bab28b45f99fc1e9193a9fb7977d0038498b2703e8ca75b72a9fc"
+      "signature": "sha256:c48546dd0e4a3631677798b5c350d884f3334da7de5b232c84bf0b1d59b9fd9e"
     },
     {
       "id": "case:route:entrypoint:ciu/host/enroll/constraint-conflict/3",
@@ -2480,10 +2570,136 @@
         ],
         "reason": "--abort removes the pending step-1 key pair and takes no other enrollment flag"
       },
-      "signature": "sha256:7a6d4a6080abdd17150b75217ae5eb58e80127e6036b1caafe2e7d7abec06442"
+      "signature": "sha256:61d73a45f4ca6f97feb744dba1bc2896a7b20c9e6222c9d3131bfe5b46024034"
     },
     {
-      "id": "case:route:entrypoint:ciu/host/enroll/constraint-requires/4",
+      "id": "case:route:entrypoint:ciu/host/enroll/constraint-conflict/4",
+      "kind": "constraint-conflict",
+      "members": [
+        "option:route:entrypoint:ciu/host/enroll/--abort",
+        "option:route:entrypoint:ciu/host/enroll/--forced-command"
+      ],
+      "route_id": "route:entrypoint:ciu/host/enroll",
+      "shape": {
+        "kind": "conflicts",
+        "options": [
+          "--abort",
+          "--forced-command"
+        ],
+        "reason": "--abort removes the pending step-1 key pair and takes no other enrollment flag"
+      },
+      "signature": "sha256:6df00015d7d07ef60400e1eef981b434622469e456381859366acac536d252e7"
+    },
+    {
+      "id": "case:route:entrypoint:ciu/host/enroll/constraint-conflict/5",
+      "kind": "constraint-conflict",
+      "members": [
+        "option:route:entrypoint:ciu/host/enroll/--abort",
+        "option:route:entrypoint:ciu/host/enroll/--agent-path"
+      ],
+      "route_id": "route:entrypoint:ciu/host/enroll",
+      "shape": {
+        "kind": "conflicts",
+        "options": [
+          "--abort",
+          "--agent-path"
+        ],
+        "reason": "--abort removes the pending step-1 key pair and takes no other enrollment flag"
+      },
+      "signature": "sha256:b140a551d0c45bf74167238cbe79adf842cf48297c3274e47e0f5f0649062e7a"
+    },
+    {
+      "id": "case:route:entrypoint:ciu/host/enroll/constraint-conflict/6",
+      "kind": "constraint-conflict",
+      "members": [
+        "option:route:entrypoint:ciu/host/enroll/--abort",
+        "option:route:entrypoint:ciu/host/enroll/--fleetd-group"
+      ],
+      "route_id": "route:entrypoint:ciu/host/enroll",
+      "shape": {
+        "kind": "conflicts",
+        "options": [
+          "--abort",
+          "--fleetd-group"
+        ],
+        "reason": "--abort removes the pending step-1 key pair and takes no other enrollment flag"
+      },
+      "signature": "sha256:2272f88661bd5485252349cec0af252eee2934d7b3ac1d2a930608ec357132ad"
+    },
+    {
+      "id": "case:route:entrypoint:ciu/host/enroll/constraint-conflict/7",
+      "kind": "constraint-conflict",
+      "members": [
+        "option:route:entrypoint:ciu/host/enroll/--abort",
+        "option:route:entrypoint:ciu/host/enroll/--agent-policy"
+      ],
+      "route_id": "route:entrypoint:ciu/host/enroll",
+      "shape": {
+        "kind": "conflicts",
+        "options": [
+          "--abort",
+          "--agent-policy"
+        ],
+        "reason": "--abort removes the pending step-1 key pair and takes no other enrollment flag"
+      },
+      "signature": "sha256:7060cc35d2b95866f0afc72813eacf2296920f8809dd46e021cab054175844b4"
+    },
+    {
+      "id": "case:route:entrypoint:ciu/host/enroll/constraint-requires/10",
+      "kind": "constraint-requires",
+      "members": [
+        "option:route:entrypoint:ciu/host/enroll/--agent-path",
+        "option:route:entrypoint:ciu/host/enroll/--forced-command"
+      ],
+      "route_id": "route:entrypoint:ciu/host/enroll",
+      "shape": {
+        "any_of": [
+          "--forced-command"
+        ],
+        "kind": "requires",
+        "option": "--agent-path",
+        "reason": "--agent-path applies only to an opt-in restricted key"
+      },
+      "signature": "sha256:7032a983c82c2e44922ddde51ad57ffdf4b49d8fecadaf10d257691a3cc6c492"
+    },
+    {
+      "id": "case:route:entrypoint:ciu/host/enroll/constraint-requires/11",
+      "kind": "constraint-requires",
+      "members": [
+        "option:route:entrypoint:ciu/host/enroll/--fleetd-group",
+        "option:route:entrypoint:ciu/host/enroll/--forced-command"
+      ],
+      "route_id": "route:entrypoint:ciu/host/enroll",
+      "shape": {
+        "any_of": [
+          "--forced-command"
+        ],
+        "kind": "requires",
+        "option": "--fleetd-group",
+        "reason": "--fleetd-group applies only to an opt-in restricted key"
+      },
+      "signature": "sha256:9779dfb0a16ddcc347241f53608c5dfbed3c2cb4561ef79ef5907ef172304406"
+    },
+    {
+      "id": "case:route:entrypoint:ciu/host/enroll/constraint-requires/12",
+      "kind": "constraint-requires",
+      "members": [
+        "option:route:entrypoint:ciu/host/enroll/--agent-policy",
+        "option:route:entrypoint:ciu/host/enroll/--forced-command"
+      ],
+      "route_id": "route:entrypoint:ciu/host/enroll",
+      "shape": {
+        "any_of": [
+          "--forced-command"
+        ],
+        "kind": "requires",
+        "option": "--agent-policy",
+        "reason": "--agent-policy applies only to an opt-in restricted key"
+      },
+      "signature": "sha256:783191125a4ebcb6e2b6f32b1ce63852f53e7cc7b67e19bc5521c93b55cfa0af"
+    },
+    {
+      "id": "case:route:entrypoint:ciu/host/enroll/constraint-requires/18",
       "kind": "constraint-requires",
       "members": [
         "option:route:entrypoint:ciu/host/enroll/--fingerprint",
@@ -2498,7 +2714,43 @@
         "option": "--fingerprint",
         "reason": "a fingerprint only verifies step 2: there is nothing to keyscan without an address"
       },
-      "signature": "sha256:2ffc07523f38441b3c411c4f90a4ff616860fa5b7ce980da67a6da0fa16d7e1e"
+      "signature": "sha256:1e46df56d5024eb71ffa26bd77d70a133c50e2859262ff2959a5da22b319eadf"
+    },
+    {
+      "id": "case:route:entrypoint:ciu/host/enroll/constraint-requires/8",
+      "kind": "constraint-requires",
+      "members": [
+        "option:route:entrypoint:ciu/host/enroll/--forced-command",
+        "option:route:entrypoint:ciu/host/enroll/--agent-path"
+      ],
+      "route_id": "route:entrypoint:ciu/host/enroll",
+      "shape": {
+        "any_of": [
+          "--agent-path"
+        ],
+        "kind": "requires",
+        "option": "--forced-command",
+        "reason": "the restricted key needs explicit agent and group inputs (--agent-path)"
+      },
+      "signature": "sha256:02ad72589f9cb6381dc5339e7e94ad75a550ddbfdd170883fde320c5cb8f810d"
+    },
+    {
+      "id": "case:route:entrypoint:ciu/host/enroll/constraint-requires/9",
+      "kind": "constraint-requires",
+      "members": [
+        "option:route:entrypoint:ciu/host/enroll/--forced-command",
+        "option:route:entrypoint:ciu/host/enroll/--fleetd-group"
+      ],
+      "route_id": "route:entrypoint:ciu/host/enroll",
+      "shape": {
+        "any_of": [
+          "--fleetd-group"
+        ],
+        "kind": "requires",
+        "option": "--forced-command",
+        "reason": "the restricted key needs explicit agent and group inputs (--fleetd-group)"
+      },
+      "signature": "sha256:2de6a2a4713d205bc93fbc278b55210d959ac2592f18b38ea158c984726b4605"
     },
     {
       "id": "case:route:entrypoint:ciu/host/enroll/exclusive-conflict/ksm-override/option:route:entrypoint:ciu/host/enroll/--ksm/option:route:entrypoint:ciu/host/enroll/--no-ksm",
@@ -2515,7 +2767,7 @@
           "option:route:entrypoint:ciu/host/enroll/--no-ksm"
         ]
       },
-      "signature": "sha256:797782fd3544d97aa531207f6de2f735efd05cc4daefc5dfac0cd244d75456c3"
+      "signature": "sha256:d43203752053175e1129affc5f75d213f685c47c76a544a8f00653d1b2c76dbb"
     },
     {
       "id": "case:route:entrypoint:ciu/host/enroll/exclusive-member/ksm-override/option:route:entrypoint:ciu/host/enroll/--ksm",
@@ -2529,7 +2781,7 @@
         "required": false,
         "selected_option": "option:route:entrypoint:ciu/host/enroll/--ksm"
       },
-      "signature": "sha256:85cb7061dc1813a22922b08dda452e725e6512cabd05949fbdbb96683fec47d7"
+      "signature": "sha256:ab761954444d02ec1941f1934ad211a6c8e73959aa8cb2729f6952bb2dde4587"
     },
     {
       "id": "case:route:entrypoint:ciu/host/enroll/exclusive-member/ksm-override/option:route:entrypoint:ciu/host/enroll/--no-ksm",
@@ -2543,7 +2795,7 @@
         "required": false,
         "selected_option": "option:route:entrypoint:ciu/host/enroll/--no-ksm"
       },
-      "signature": "sha256:b09354c5cccb6a195fb1f194c1053b59d4472d7cc8a1fd22db59a81741659638"
+      "signature": "sha256:e00756257b57dfbdaea531a24e789abe82680b840b6d3c5b82aa6b4315a20fa6"
     },
     {
       "id": "case:route:entrypoint:ciu/host/enroll/minimum",
@@ -2553,6 +2805,7 @@
         "option:route:entrypoint:ciu/host/enroll/--log-prefix-time-short",
         "option:route:entrypoint:ciu/host/enroll/--ksm",
         "option:route:entrypoint:ciu/host/enroll/--no-ksm",
+        "option:route:entrypoint:ciu/host/enroll/--forced-command",
         "option:route:entrypoint:ciu/host/enroll/--docker",
         "option:route:entrypoint:ciu/host/enroll/--replace",
         "option:route:entrypoint:ciu/host/enroll/--abort"
@@ -2563,6 +2816,7 @@
           "option:route:entrypoint:ciu/host/enroll/--log-prefix-time-short",
           "option:route:entrypoint:ciu/host/enroll/--ksm",
           "option:route:entrypoint:ciu/host/enroll/--no-ksm",
+          "option:route:entrypoint:ciu/host/enroll/--forced-command",
           "option:route:entrypoint:ciu/host/enroll/--docker",
           "option:route:entrypoint:ciu/host/enroll/--replace",
           "option:route:entrypoint:ciu/host/enroll/--abort"
@@ -2576,7 +2830,7 @@
         "required_exclusive_groups": {},
         "required_options": []
       },
-      "signature": "sha256:3ca3c264404f70fb7a12be3c04768dcaea8ea7d119d6f95453a3195cec627c73"
+      "signature": "sha256:fe153d3977c1ad94cffb6f505e865d65cf950c0452bd05efba3b5bfad33c6fad"
     },
     {
       "id": "case:route:entrypoint:ciu/host/enroll/option-spelling/option:route:entrypoint:ciu/host/enroll/--abort/--abort",
@@ -2589,7 +2843,33 @@
         "option_id": "option:route:entrypoint:ciu/host/enroll/--abort",
         "spelling": "--abort"
       },
-      "signature": "sha256:7295158751b0460727c2e3cc58d030df50ffc038de8e5ed7b743c90a9c0d83da"
+      "signature": "sha256:cfd598c0e774c2e2fabcbde1120c430de62412727897dfb05b0efe18dcc9375f"
+    },
+    {
+      "id": "case:route:entrypoint:ciu/host/enroll/option-spelling/option:route:entrypoint:ciu/host/enroll/--agent-path/--agent-path",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:ciu/host/enroll/--agent-path"
+      ],
+      "route_id": "route:entrypoint:ciu/host/enroll",
+      "shape": {
+        "option_id": "option:route:entrypoint:ciu/host/enroll/--agent-path",
+        "spelling": "--agent-path"
+      },
+      "signature": "sha256:c54cb9fe3a288126500f8c5264bd3c9ccd5be158e9a32bb2946ad83ef07d6567"
+    },
+    {
+      "id": "case:route:entrypoint:ciu/host/enroll/option-spelling/option:route:entrypoint:ciu/host/enroll/--agent-policy/--agent-policy",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:ciu/host/enroll/--agent-policy"
+      ],
+      "route_id": "route:entrypoint:ciu/host/enroll",
+      "shape": {
+        "option_id": "option:route:entrypoint:ciu/host/enroll/--agent-policy",
+        "spelling": "--agent-policy"
+      },
+      "signature": "sha256:7321d6d12a14259b31438c0eb48f6f1264d088fb57c7574471cd6130eef67f3a"
     },
     {
       "id": "case:route:entrypoint:ciu/host/enroll/option-spelling/option:route:entrypoint:ciu/host/enroll/--controller/--controller",
@@ -2602,7 +2882,7 @@
         "option_id": "option:route:entrypoint:ciu/host/enroll/--controller",
         "spelling": "--controller"
       },
-      "signature": "sha256:13321f3681b480c6b19857af9106f6ab8e0194c0a74391945e41389216b3dd70"
+      "signature": "sha256:db8bcaaa295b993c3a192ca792213c6ee04831e836a479ab558cd8aa9cb698b0"
     },
     {
       "id": "case:route:entrypoint:ciu/host/enroll/option-spelling/option:route:entrypoint:ciu/host/enroll/--debug-raw/--debug-raw",
@@ -2615,7 +2895,7 @@
         "option_id": "option:route:entrypoint:ciu/host/enroll/--debug-raw",
         "spelling": "--debug-raw"
       },
-      "signature": "sha256:ff173467d9f2269843f96642c5b4a935198d2a81309fba490d19f39a6cdab676"
+      "signature": "sha256:e93aa0eeafbe3787d0d100d7354875fa4bafab2dc224fcb8ebbeab98d3113c42"
     },
     {
       "id": "case:route:entrypoint:ciu/host/enroll/option-spelling/option:route:entrypoint:ciu/host/enroll/--docker/--docker",
@@ -2628,7 +2908,7 @@
         "option_id": "option:route:entrypoint:ciu/host/enroll/--docker",
         "spelling": "--docker"
       },
-      "signature": "sha256:4fe20e06adac84738d6e55051d5878ffabc0ddc6fddaefe50e21235e497ac705"
+      "signature": "sha256:b133729175e8d98b5e545852acb7c72145f38d7b55cfcca67524d28155516684"
     },
     {
       "id": "case:route:entrypoint:ciu/host/enroll/option-spelling/option:route:entrypoint:ciu/host/enroll/--fingerprint/--fingerprint",
@@ -2641,7 +2921,33 @@
         "option_id": "option:route:entrypoint:ciu/host/enroll/--fingerprint",
         "spelling": "--fingerprint"
       },
-      "signature": "sha256:5a509748842b2abf7aabd9fe90f176bc1281dcff2bddf03c7327adee8f539134"
+      "signature": "sha256:768d7d0676ac4dcb90a6e6e7a880104cf842be5431c608984951e0387f292089"
+    },
+    {
+      "id": "case:route:entrypoint:ciu/host/enroll/option-spelling/option:route:entrypoint:ciu/host/enroll/--fleetd-group/--fleetd-group",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:ciu/host/enroll/--fleetd-group"
+      ],
+      "route_id": "route:entrypoint:ciu/host/enroll",
+      "shape": {
+        "option_id": "option:route:entrypoint:ciu/host/enroll/--fleetd-group",
+        "spelling": "--fleetd-group"
+      },
+      "signature": "sha256:af481209bad7a8b3bdbaba21116d51453de4e6b75eb1be09e306250a741e0e0b"
+    },
+    {
+      "id": "case:route:entrypoint:ciu/host/enroll/option-spelling/option:route:entrypoint:ciu/host/enroll/--forced-command/--forced-command",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:ciu/host/enroll/--forced-command"
+      ],
+      "route_id": "route:entrypoint:ciu/host/enroll",
+      "shape": {
+        "option_id": "option:route:entrypoint:ciu/host/enroll/--forced-command",
+        "spelling": "--forced-command"
+      },
+      "signature": "sha256:4742f846f7873ddf522ca6eab94a4c2f68cb155039ed982674e809f10ae8e1f1"
     },
     {
       "id": "case:route:entrypoint:ciu/host/enroll/option-spelling/option:route:entrypoint:ciu/host/enroll/--from/--from",
@@ -2654,7 +2960,7 @@
         "option_id": "option:route:entrypoint:ciu/host/enroll/--from",
         "spelling": "--from"
       },
-      "signature": "sha256:dec0347ac39e6446a4fe328f1657bd604ce0542fdd4a8565c64a5ff45e442dfe"
+      "signature": "sha256:b1bcbb71eb0ad7ed65ac99c9f12400621763dd03579fb8d70a1bac9dd6156aae"
     },
     {
       "id": "case:route:entrypoint:ciu/host/enroll/option-spelling/option:route:entrypoint:ciu/host/enroll/--installer-url/--installer-url",
@@ -2667,7 +2973,7 @@
         "option_id": "option:route:entrypoint:ciu/host/enroll/--installer-url",
         "spelling": "--installer-url"
       },
-      "signature": "sha256:ee70fa91a9ee85354d642ee5aca181b0e676e7ce469fcf0465a777f9e9867216"
+      "signature": "sha256:82e12bfeb83a5af7f3952b0017fa90719d377b7372d3280ff46b9698a306d3c4"
     },
     {
       "id": "case:route:entrypoint:ciu/host/enroll/option-spelling/option:route:entrypoint:ciu/host/enroll/--ksm/--ksm",
@@ -2680,7 +2986,7 @@
         "option_id": "option:route:entrypoint:ciu/host/enroll/--ksm",
         "spelling": "--ksm"
       },
-      "signature": "sha256:7064ff773bc2505e6d2a4d14840334f141af443e325795a2b1b1c2e70442b271"
+      "signature": "sha256:c80d8371049594729386660b64426f65b53e856c04fa8bb7dd7e27ccb8b91f49"
     },
     {
       "id": "case:route:entrypoint:ciu/host/enroll/option-spelling/option:route:entrypoint:ciu/host/enroll/--log-prefix-time-short/--log-prefix-time-short",
@@ -2693,7 +2999,7 @@
         "option_id": "option:route:entrypoint:ciu/host/enroll/--log-prefix-time-short",
         "spelling": "--log-prefix-time-short"
       },
-      "signature": "sha256:344d2999ae8882ff2f04462fb1ebe88d11357e89be4464c9019d49e01af8c940"
+      "signature": "sha256:618ec6ac81febcab118e10a291fc4f5abfa762eaeb725a60d4d2a7d681d2634e"
     },
     {
       "id": "case:route:entrypoint:ciu/host/enroll/option-spelling/option:route:entrypoint:ciu/host/enroll/--no-ksm/--no-ksm",
@@ -2706,7 +3012,7 @@
         "option_id": "option:route:entrypoint:ciu/host/enroll/--no-ksm",
         "spelling": "--no-ksm"
       },
-      "signature": "sha256:f87448222b7ee37a0be042a62a21ac18689ba4b0e4882eaac564e93ae250c74e"
+      "signature": "sha256:efbf302c0ab9ea7bed84090fe536bdd085c83d8b3c529fdd323e3b3f55a4a26e"
     },
     {
       "id": "case:route:entrypoint:ciu/host/enroll/option-spelling/option:route:entrypoint:ciu/host/enroll/--port/--port",
@@ -2719,7 +3025,7 @@
         "option_id": "option:route:entrypoint:ciu/host/enroll/--port",
         "spelling": "--port"
       },
-      "signature": "sha256:c68c036154d1a3adcfc8c2f0467eabe827a5e5e18caf4cdaff7fffebe98d94b1"
+      "signature": "sha256:198206374da4377effdbb54b40d58aba74c3650f91ef270da83896ea7de9aac9"
     },
     {
       "id": "case:route:entrypoint:ciu/host/enroll/option-spelling/option:route:entrypoint:ciu/host/enroll/--replace/--replace",
@@ -2732,7 +3038,7 @@
         "option_id": "option:route:entrypoint:ciu/host/enroll/--replace",
         "spelling": "--replace"
       },
-      "signature": "sha256:524bff2f185b79fa32b89cc3521be26556ba6ade82f90ef07c352d6f99f1e238"
+      "signature": "sha256:56d165ac6f238156538598673253afc3a71c783ca68cbefab7288174dd76bb7a"
     },
     {
       "id": "case:route:entrypoint:ciu/host/enroll/option-spelling/option:route:entrypoint:ciu/host/enroll/--root-folder/--root-folder",
@@ -2745,7 +3051,7 @@
         "option_id": "option:route:entrypoint:ciu/host/enroll/--root-folder",
         "spelling": "--root-folder"
       },
-      "signature": "sha256:33bff0f74ffe318a85d915babddd9bea3b1254bfdb70138a78798bde669eeffd"
+      "signature": "sha256:9ca184067a7b0d8f655c87f0d04f02d9c059c5e467f80f480572f2ff0ea9294f"
     },
     {
       "id": "case:route:entrypoint:ciu/host/enroll/option-spelling/option:route:entrypoint:ciu/host/enroll/--ssh-host/--ssh-host",
@@ -2758,7 +3064,7 @@
         "option_id": "option:route:entrypoint:ciu/host/enroll/--ssh-host",
         "spelling": "--ssh-host"
       },
-      "signature": "sha256:ff5396d40f571a8301d3ab484734c6ba8a32b57eb9f5f21b8bbd95097e472bbe"
+      "signature": "sha256:e71d3fd7866434c600698a70edd540957b5e20bdfb97ce3bffd38514f94f6384"
     },
     {
       "id": "case:route:entrypoint:ciu/host/enroll/option-spelling/option:route:entrypoint:ciu/host/enroll/--user/--user",
@@ -2771,7 +3077,7 @@
         "option_id": "option:route:entrypoint:ciu/host/enroll/--user",
         "spelling": "--user"
       },
-      "signature": "sha256:1728223b214cdd083949f340a92e0988f527de1222e576596d88424727c9bd84"
+      "signature": "sha256:c5cd469cf2c2c424b439f4d31b29a8c825693175d287e4e167fbec78c7258076"
     },
     {
       "id": "case:route:entrypoint:ciu/init/exclusive-conflict/ksm-override/option:route:entrypoint:ciu/init/--ksm/option:route:entrypoint:ciu/init/--no-ksm",
@@ -15291,6 +15597,163 @@
         {
           "action": "argparse._StoreTrueAction",
           "before_nested_subcommand": false,
+          "canonical": "--forced-command",
+          "choices": null,
+          "const": true,
+          "default": false,
+          "default_present": true,
+          "description": "opt in to a fleetd-only restricted key (requires explicit --agent-path and --fleetd-group)",
+          "dest": "forced_command",
+          "effective_default": false,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--forced-command"
+          ],
+          "help_group": "STEP 1",
+          "hidden": false,
+          "id": "option:route:entrypoint:ciu/host/enroll/--forced-command",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true",
+            "default": false
+          },
+          "parser_path": [
+            "host",
+            "enroll"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--agent-path",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "absolute normalized path to the installed fleetd-agent executable",
+          "dest": "agent_path",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--agent-path"
+          ],
+          "help_group": "STEP 1",
+          "hidden": false,
+          "id": "option:route:entrypoint:ciu/host/enroll/--agent-path",
+          "kind": "option",
+          "metavar": "PATH",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "host",
+            "enroll"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--fleetd-group",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "authenticated fleetd forced-command group",
+          "dest": "fleetd_group",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--fleetd-group"
+          ],
+          "help_group": "STEP 1",
+          "hidden": false,
+          "id": "option:route:entrypoint:ciu/host/enroll/--fleetd-group",
+          "kind": "option",
+          "metavar": "GROUP",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "host",
+            "enroll"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--agent-policy",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "optional absolute normalized fleetd agent policy path; omitted uses fleetd-agent's policy path",
+          "dest": "agent_policy",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--agent-policy"
+          ],
+          "help_group": "STEP 1",
+          "hidden": false,
+          "id": "option:route:entrypoint:ciu/host/enroll/--agent-policy",
+          "kind": "option",
+          "metavar": "PATH",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "host",
+            "enroll"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
           "canonical": "--docker",
           "choices": null,
           "const": true,
@@ -15568,6 +16031,118 @@
           "reason": "--abort removes the pending step-1 key pair and takes no other enrollment flag"
         },
         {
+          "kind": "conflicts",
+          "options": [
+            "--abort",
+            "--forced-command"
+          ],
+          "reason": "--abort removes the pending step-1 key pair and takes no other enrollment flag"
+        },
+        {
+          "kind": "conflicts",
+          "options": [
+            "--abort",
+            "--agent-path"
+          ],
+          "reason": "--abort removes the pending step-1 key pair and takes no other enrollment flag"
+        },
+        {
+          "kind": "conflicts",
+          "options": [
+            "--abort",
+            "--fleetd-group"
+          ],
+          "reason": "--abort removes the pending step-1 key pair and takes no other enrollment flag"
+        },
+        {
+          "kind": "conflicts",
+          "options": [
+            "--abort",
+            "--agent-policy"
+          ],
+          "reason": "--abort removes the pending step-1 key pair and takes no other enrollment flag"
+        },
+        {
+          "any_of": [
+            "--agent-path"
+          ],
+          "kind": "requires",
+          "option": "--forced-command",
+          "reason": "the restricted key needs explicit agent and group inputs (--agent-path)"
+        },
+        {
+          "any_of": [
+            "--fleetd-group"
+          ],
+          "kind": "requires",
+          "option": "--forced-command",
+          "reason": "the restricted key needs explicit agent and group inputs (--fleetd-group)"
+        },
+        {
+          "any_of": [
+            "--forced-command"
+          ],
+          "kind": "requires",
+          "option": "--agent-path",
+          "reason": "--agent-path applies only to an opt-in restricted key"
+        },
+        {
+          "any_of": [
+            "--forced-command"
+          ],
+          "kind": "requires",
+          "option": "--fleetd-group",
+          "reason": "--fleetd-group applies only to an opt-in restricted key"
+        },
+        {
+          "any_of": [
+            "--forced-command"
+          ],
+          "kind": "requires",
+          "option": "--agent-policy",
+          "reason": "--agent-policy applies only to an opt-in restricted key"
+        },
+        {
+          "kind": "conflicts",
+          "options": [
+            "--forced-command",
+            "--from"
+          ],
+          "reason": "the restricted key uses one fixed command option and cannot also use --from"
+        },
+        {
+          "kind": "conflicts",
+          "options": [
+            "--ssh-host",
+            "--forced-command"
+          ],
+          "reason": "forced-command inputs apply only to step 1, before --ssh-host"
+        },
+        {
+          "kind": "conflicts",
+          "options": [
+            "--ssh-host",
+            "--agent-path"
+          ],
+          "reason": "forced-command inputs apply only to step 1, before --ssh-host"
+        },
+        {
+          "kind": "conflicts",
+          "options": [
+            "--ssh-host",
+            "--fleetd-group"
+          ],
+          "reason": "forced-command inputs apply only to step 1, before --ssh-host"
+        },
+        {
+          "kind": "conflicts",
+          "options": [
+            "--ssh-host",
+            "--agent-policy"
+          ],
+          "reason": "forced-command inputs apply only to step 1, before --ssh-host"
+        },
+        {
           "any_of": [
             "--ssh-host"
           ],
@@ -15590,7 +16165,7 @@
           "synopsis": null
         }
       ],
-      "description": "Enroll a bare remote host into .ciu.hosts.toml (S14.7 / CIU-93). Two steps, one verb: without --ssh-host it generates an ed25519 key pair and PRINTS the public key plus the one command the target's admin runs (nothing is written to the inventory); with --ssh-host/--fingerprint it verifies the host key, proves the login with `ciu version` on the target, and only then writes [deploy.hosts.<name>]. CIU_SSH_INSECURE_TOFU is never set by this verb.",
+      "description": "Enroll a bare remote host into .ciu.hosts.toml (S14.7 / CIU-93). Two steps, one verb: without --ssh-host it generates an ed25519 key pair and PRINTS the public key plus the one command the target's admin runs (nothing is written to the inventory); with --ssh-host/--fingerprint it verifies the host key, proves the login with `ciu version` on the target, and only then writes [deploy.hosts.<name>]. Opt-in --forced-command installs fleetd-agent's fixed forced-command entry; CIU_SSH_INSECURE_TOFU is never set by this verb.",
       "group": "MODIFICATION",
       "id": "route:entrypoint:ciu/host/enroll",
       "kind": "invocation",
@@ -15652,7 +16227,7 @@
       "subcommand_groups": [],
       "subcommands": [],
       "subcommands_required": false,
-      "summary": "Enroll a bare remote host into .ciu.hosts.toml (S14.7 / CIU-93). Two steps, one verb: without --ssh-host it generates an ed25519 key pair and PRINTS the public key plus the one command the target's admin runs (nothing is written to the inventory); with --ssh-host/--fingerprint it verifies the host key, proves the login with `ciu version` on the target, and only then writes [deploy.hosts.<name>]. CIU_SSH_INSECURE_TOFU is never set by this verb. [mutating]",
+      "summary": "Enroll a bare remote host into .ciu.hosts.toml (S14.7 / CIU-93). Two steps, one verb: without --ssh-host it generates an ed25519 key pair and PRINTS the public key plus the one command the target's admin runs (nothing is written to the inventory); with --ssh-host/--fingerprint it verifies the host key, proves the login with `ciu version` on the target, and only then writes [deploy.hosts.<name>]. Opt-in --forced-command installs fleetd-agent's fixed forced-command entry; CIU_SSH_INSECURE_TOFU is never set by this verb. [mutating]",
       "synopsis_override": null,
       "syntax_complete": true,
       "usage_override": null
