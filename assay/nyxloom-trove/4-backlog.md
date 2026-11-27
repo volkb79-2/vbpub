@@ -16359,7 +16359,14 @@ characterization and exclusion-pin refresh `c56273ab5`, L6/L7/nit/docs
 
 ## B599 — B105 RAM admission counts reclaimable file cache as used
 
-**Status: OPEN, filed 2026-11-27 (fix after 12.4.0); severity: medium.**
+**Status: FIXED by b427d48d9; red proof c0f7817d2; severity: medium.**
+
+Implementation: `assay/tools/cgroup-parent.sh:190` (conditional file mount and
+retry), `assay/tools/cgroup-parent.sh:469` (validated reclaimable calculation),
+and `assay/tools/cgroup-parent.sh:543` (bounded admission). Behavioral tests:
+`assay/gate/tests/test_cgroup_parent.py:650`, `:710`, `:750`, `:807`, `:831`,
+and `:852`. Documentation and changelog: `assay/docs/DESIGN-GUIDE.md:3119`
+and `assay/CHANGES.md:7`.
 
 `assay/tools/cgroup-parent.sh` computes the gates slice headroom as
 `memory.max - memory.current`. `memory.current` includes reclaimable file
