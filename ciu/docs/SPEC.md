@@ -4480,7 +4480,7 @@ host-key/Vault/temp-file security envelope applies unchanged to the scp/tar
 fallback (fail-closed pinning; key material never logged; mode-0600 temp files
 cleaned up in `finally`).
 
-### S14.7 — Host enrollment (`ciu host enroll`, CIU-93; backport of the v8 S7.2.4 design, operator direction 2026-09-03)
+### S14.7 — Host enrollment (`ciu host enroll`, CIU-93; backport of the v8 S7.2.4 design, operator direction 2026-09-03; opt-in restricted key, CIU-218)
 
 S14.1–S14.6 assume an inventory row that already works: a reachable
 `ssh_host`, a usable `ssh_key`, a pinned `known_host`. S14.7 is the step
@@ -4491,7 +4491,9 @@ no callback, no listener; the private key never leaves the control host.
 
 - **S14.7a Step 1 — `ciu host enroll <name> [--user U] [--port N]
   [--controller FQDN] [--from PATTERN] [--docker] [--installer-url URL]
-  [--replace]`** on the control host generates an ed25519 key pair with
+  [--forced-command --agent-path PATH --fleetd-group GROUP
+  [--agent-policy PATH]] [--replace]`** on the control host generates an
+  ed25519 key pair with
   `ssh-keygen` into the S14.3a host namespace,
   `<repo>/.ciu/secrets/hosts/<name>/ssh_key` and `ssh_key.pub` (dir `0700`,
   key `0600`, comment `ciu@<controller>:<project>`; `--controller` defaults to
@@ -4500,7 +4502,10 @@ no callback, no listener; the private key never leaves the control host.
   admin runs: ciu's own `get.py` installer, pinned to the control host's ciu
   version (`https://github.com/<owner>/<repo>/releases/download/ciu-v<version>/get.py`,
   or `--installer-url`), with `enroll --authorized-key '<public key>'
-  --controller <FQDN> [--user U] [--name <name>] [--from PATTERN] [--docker]`.
+  --controller <FQDN> [--user U] [--name <name>] [--from PATTERN] [--docker]`
+  and, in opt-in restricted mode, appends `--forced-command --agent-path PATH
+  --fleetd-group GROUP [--agent-policy PATH]`. The restricted mode requires
+  explicit `--agent-path` and `--fleetd-group` and conflicts with `--from`.
   An existing `<name>` is refused with a tagged `[S14.7]` error unless
   `--replace` (rotation: a new key; `ssh_key`/`known_host` overwritten in
   step 2); `--abort` removes a step-1 key pair that will not complete.
@@ -4566,6 +4571,43 @@ no callback, no listener; the private key never leaves the control host.
   client's source address or reverse name, which differs from the
   controller's FQDN behind NAT and on a mesh. Enrollment secrets stay in the
   local store (dstdns D-097), never in Vault.
+
+**S14.7e CIU-218 — opt-in fleetd restricted key.** Without
+`--forced-command`, step 1 and the target's `enroll` behavior are unchanged.
+With the flag, CIU requires an explicit absolute normalized `--agent-path` and
+an explicit `--fleetd-group` matching fleetd's admission identifier grammar
+(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`). An optional explicit `--agent-policy`
+uses the same path grammar; when omitted, fleetd's own policy default applies.
+Paths accept only ASCII letters, digits, `.`, `_`, `+`, `-`, and `/`, with no
+empty, `.` or `..` component; quotes, backslashes, whitespace, controls and
+shell metacharacters are refused. The target installer writes exactly
+`restrict,command="<agent-path> forced-command --group <group> [--policy
+<policy-path>]" <type> <base64> <comment> <CIU marker>`. It adds no option that
+can restore pty, forwarding or user-rc access. CIU installs this fixed argv; it
+does not build a wrapper, accept a remote command string, or parse
+`SSH_ORIGINAL_COMMAND`. fleetd owns the request/operation grammar after the
+forced command starts.
+
+The restricted writer is separate from the general enrollment writer. It
+refuses the same key blob in a second authorized-key form and names the
+conflicting line. It preserves every unrelated byte (including CRLF, a missing
+final newline and unparseable entries), rotates only entries carrying CIU's
+restricted marker and validated fixed-command structure, is idempotent, and
+uses a no-follow temporary file plus atomic replacement with the deploy user's
+ownership and `0700`/`0600` modes. `remove-restricted --name NAME --user USER`
+removes only those structurally validated marked entries. Step 1 prints the
+target-side removal command; it does not remove any general-purpose key. Step 2
+retains the existing pinned host-key check and proof login.
+
+The fixed-command interface is defined by
+`fleetd/src/fleetd/agent_entry.py::build_parser` (`forced-command --group
+GROUP`, with optional `--policy PATH`). fleetd tests the closed request grammar
+in `fleetd/tests/test_agent_protocol.py::test_validate_request_covers_request_shape_argv_candidate_and_dev_errors`
+and `fleetd/tests/test_agent_verbs.py::test_agent_dispatch_returns_admission_documents_for_submit_status_and_cancel`;
+the stdin/stdout forced-command transport and group binding are covered by
+`fleetd/tests/test_agent_server.py::test_forced_command_uses_framed_stdin_stdout_and_transport_group`
+and `test_forced_command_refuses_unknown_transport_group_on_wire`. CIU does not
+duplicate these operation-grammar tests.
 
 ## S15 — Stack-wide resource governance (cgroups)
 

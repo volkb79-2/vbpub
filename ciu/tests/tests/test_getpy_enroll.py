@@ -25,6 +25,7 @@ import contextlib
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -57,10 +58,11 @@ ENROLL_TEST_KEY_2 = (
     " ciu@control-rotated.example"
 )
 
-# Exactly the flags KI-24's proposed contract names, and nothing else (O6).
+# Enrollment flags exposed by the rendered CIU installer (CIU-93/O6 and CIU-218).
 ENROLL_EXPECTED_FLAGS = {
     "-h", "--help",
     "--authorized-key", "--controller", "--user", "--name", "--from",
+    "--forced-command", "--agent-path", "--fleetd-group", "--agent-policy",
     "--docker", "--no-install", "--scope",
 }
 
@@ -82,6 +84,11 @@ def _enroll_args(**kw):
         name=None,
         from_pattern=None,
         docker=False,
+        forced_command=False,
+        agent_path=None,
+        fleetd_group=None,
+        agent_policy=None,
+        remove_restricted=False,
         no_install=False,
         scope="system",
         manifest_pubkey=None,
@@ -115,17 +122,25 @@ class TestEnrollCLIShape:
         assert self._flags_in(usage) | {"-h", "--help"} == ENROLL_EXPECTED_FLAGS
         assert self._flags_in(text) == ENROLL_EXPECTED_FLAGS
 
-    def test_enroll_required_flags_are_required(self):
+    def test_enroll_key_and_controller_flags_remain_required(self):
         text = self._help(GET_PY, "enroll", "--help")
         usage = text.split("options:")[0]
-        # required ⇒ unbracketed; optional ⇒ bracketed
         assert "--authorized-key KEY" in usage
         assert "[--authorized-key" not in usage
         assert "--controller FQDN" in usage
         assert "[--controller" not in usage
         for optional in ("--user USER", "--name NAME", "--from PATTERN",
-                         "--docker", "--no-install"):
+                         "--forced-command", "--agent-path PATH", "--fleetd-group GROUP",
+                         "--agent-policy PATH", "--docker", "--no-install"):
             assert f"[{optional}]" in usage, usage
+
+    def test_remove_restricted_has_only_name_and_user(self):
+        text = self._help(GET_PY, "remove-restricted", "--help")
+        usage = text.split("options:")[0]
+        assert "--name NAME" in usage
+        assert "[--user USER]" in usage
+        assert "--authorized-key" not in text
+        assert "--controller" not in text
 
     def test_enroll_defaults_documented(self):
         text = self._help(GET_PY, "enroll", "--help")
@@ -161,6 +176,7 @@ class TestEnrollCLIShape:
             "enroll", "deploy", "web-01", "user")
         assert args.from_pattern == "10.0.0.0/8"
         assert args.docker is True and args.no_install is True
+        assert args.forced_command is False
         assert args.authorized_key == ENROLL_TEST_KEY
         assert args.controller == "control.example.net"
 
@@ -180,6 +196,57 @@ class TestEnrollCLIShape:
         assert args.scope == "system"
         assert args.name is None and args.from_pattern is None
         assert args.docker is False and args.no_install is False
+        assert args.forced_command is False
+        assert args.agent_path is None and args.fleetd_group is None
+        assert args.agent_policy is None
+
+    def test_main_dispatches_remove_restricted_subcommand(self, monkeypatch):
+        ns = _render_enroll_ns()
+        seen: dict = {}
+        ns["do_enroll"] = lambda args, token: seen.update(args=args)
+        with mock.patch.object(sys, "argv", [
+            "get.py", "remove-restricted", "--name", "web-01", "--user", "deploy",
+        ]):
+            ns["main"]()
+        args = seen["args"]
+        assert args.command == "remove-restricted"
+        assert args.remove_restricted is True
+        assert args.name == "web-01" and args.user == "deploy"
+
+    def test_main_dispatches_forced_command_inputs_without_a_command_string(self, monkeypatch):
+        ns = _render_enroll_ns()
+        seen: dict = {}
+        ns["do_enroll"] = lambda args, token: seen.update(args=args, token=token)
+        ns["check_prerequisites"] = lambda: None
+        argv = [
+            "get.py", "enroll", "--authorized-key", ENROLL_TEST_KEY,
+            "--controller", "control.example.net", "--name", "web-01",
+            "--no-install", "--forced-command", "--agent-path",
+            "/usr/bin/fleetd-agent", "--fleetd-group", "campaigns",
+            "--agent-policy", "/etc/fleetd/agent.toml",
+        ]
+        with mock.patch.object(sys, "argv", argv):
+            ns["main"]()
+        args = seen["args"]
+        assert args.forced_command is True
+        assert args.agent_path == "/usr/bin/fleetd-agent"
+        assert args.fleetd_group == "campaigns"
+        assert args.agent_policy == "/etc/fleetd/agent.toml"
+
+    @pytest.mark.parametrize("args,needle", [
+        (_enroll_args(authorized_key=None, controller=None), "--controller is required"),
+        (_enroll_args(controller="control.example.net", authorized_key=None),
+         "--authorized-key is empty"),
+    ])
+    def test_regular_enrollment_still_requires_key_and_controller_at_runtime(
+        self, monkeypatch, args, needle,
+    ):
+        ns = _render_enroll_ns()
+        monkeypatch.setattr(ns["os"], "geteuid", lambda: 0)
+        ns["_find_sshd"] = lambda: "/usr/sbin/sshd"
+        with pytest.raises(SystemExit) as exc:
+            ns["do_enroll"](args, None)
+        assert exc.value.code == 2
 
     def test_get_py_cli_render_carries_enroll(self, tmp_path, monkeypatch):
         """The `cmru installer render ciu` path renders a script whose enroll flags match.
@@ -265,6 +332,8 @@ class TestEnrollKeyParsing:
         "not-a-key-type AAAAB3NzaC1kZXN0",
         "ssh-ed25519 not+valid+base64!!",
         'from="10.0.0.1",ssh-ed25519 AAAAB3NzaC1kZXN0',
+        'restrict,command="/usr/bin/fleetd-agent forced-command --group worker" '
+        'ssh-ed25519 AAAAB3NzaC1kZXN0',
         "ssh-ed25519 AAAAB3NzaC1kZXN0\nssh-ed25519 AAAAB3NzaC1kZXN1",
     ])
     def test_rejected_with_exit_config(self, ns, bad):
@@ -342,6 +411,304 @@ class TestEnrollAuthorizedKeysLine:
     ])
     def test_uninteresting_lines_are_skipped(self, ns, ignored):
         assert ns["_ak_split_line"](ignored) is None
+
+
+class TestFleetdForcedCommand:
+    """CIU installs one fixed agent argv; the agent owns the request grammar."""
+
+    @pytest.fixture()
+    def ns(self):
+        return _render_enroll_ns()
+
+    @pytest.mark.parametrize("args,expected", [
+        (_enroll_args(
+            forced_command=True, name="web-01", agent_path="/usr/bin/fleetd-agent",
+            fleetd_group="campaigns",
+        ), "/usr/bin/fleetd-agent forced-command --group campaigns"),
+        (_enroll_args(
+            forced_command=True, name="web-01", agent_path="/usr/bin/fleetd-agent",
+            fleetd_group="campaigns", agent_policy="/etc/fleetd/agent.toml",
+        ), "/usr/bin/fleetd-agent forced-command --group campaigns "
+           "--policy /etc/fleetd/agent.toml"),
+    ])
+    def test_builds_only_the_fixed_fleetd_agent_command(self, ns, args, expected):
+        assert ns["_forced_command_from_args"](args) == expected
+
+    @pytest.mark.parametrize("agent_path", [
+        "fleetd-agent", "/usr/bin/../bin/fleetd-agent", "/usr//bin/fleetd-agent",
+        "/usr/bin/fleetd-agent/", "/usr/bin/fleetd agent", "/usr/bin/\"agent\"",
+        "/usr/bin/fleetd\\agent", "/usr/bin/fleetd;id", "/usr/bin/$agent",
+        "/usr/bin/fleetd-agent\nid", "/usr/bin/\x01agent",
+    ])
+    def test_refuses_unsafe_agent_paths(self, ns, agent_path):
+        args = _enroll_args(
+            forced_command=True, name="web-01", agent_path=agent_path,
+            fleetd_group="campaigns",
+        )
+        with pytest.raises(SystemExit) as exc:
+            ns["_forced_command_from_args"](args)
+        assert exc.value.code == 2
+
+    @pytest.mark.parametrize("group", [
+        "", "-bad", "bad group", 'bad"group', "bad;id", "bad\nname", "a" * 129,
+    ])
+    def test_refuses_groups_outside_fleetd_grammar(self, ns, group):
+        args = _enroll_args(
+            forced_command=True, name="web-01", agent_path="/usr/bin/fleetd-agent",
+            fleetd_group=group,
+        )
+        with pytest.raises(SystemExit) as exc:
+            ns["_forced_command_from_args"](args)
+        assert exc.value.code == 2
+
+    @pytest.mark.parametrize("agent_policy", [
+        "relative/policy", "/etc/../policy", "/etc//policy", "/etc/policy/",
+        "/etc/fleetd bad.toml", "/etc/fleetd\\agent.toml", "/etc/policy;id",
+        "/etc/policy\nfile", "/etc/\x01policy",
+    ])
+    def test_refuses_unsafe_policy_paths(self, ns, agent_policy):
+        args = _enroll_args(
+            forced_command=True, name="web-01", agent_path="/usr/bin/fleetd-agent",
+            fleetd_group="campaigns", agent_policy=agent_policy,
+        )
+        with pytest.raises(SystemExit) as exc:
+            ns["_forced_command_from_args"](args)
+        assert exc.value.code == 2
+
+    def test_mode_needs_explicit_path_group_name_and_cannot_combine_from(self, ns):
+        missing_path = _enroll_args(forced_command=True, name="web-01", fleetd_group="g")
+        missing_group = _enroll_args(forced_command=True, name="web-01",
+                                     agent_path="/usr/bin/fleetd-agent")
+        missing_name = _enroll_args(forced_command=True, agent_path="/usr/bin/fleetd-agent",
+                                    fleetd_group="g")
+        with pytest.raises(SystemExit):
+            ns["_forced_command_from_args"](missing_path)
+        with pytest.raises(SystemExit):
+            ns["_forced_command_from_args"](missing_group)
+        with pytest.raises(SystemExit):
+            ns["_forced_command_from_args"](missing_name)
+        with pytest.raises(SystemExit):
+            ns["_forced_command_from_args"](_enroll_args(
+                forced_command=True, name="web-01", agent_path="/usr/bin/fleetd-agent",
+                fleetd_group="g", from_pattern="10.0.0.0/8",
+            ))
+        with pytest.raises(SystemExit):
+            ns["_forced_command_from_args"](_enroll_args(agent_path="/usr/bin/fleetd-agent"))
+        with pytest.raises(SystemExit):
+            ns["_forced_command_from_args"](_enroll_args(
+                forced_command=True, name="web-01", agent_path="/usr/bin/fleetd-agent",
+                fleetd_group="g", from_pattern="",
+            ))
+
+    def test_both_modes_refuse_a_matching_blob_in_an_unparseable_line(
+        self, ns, tmp_path, capsys,
+    ):
+        home = tmp_path / "home"
+        ssh_dir = home / ".ssh"
+        ssh_dir.mkdir(parents=True)
+        authorized = ssh_dir / "authorized_keys"
+        original = (
+            f'broken="quote {ENROLL_TEST_KEY_TYPE} {ENROLL_TEST_KEY_B64}\n'
+        ).encode()
+        authorized.write_bytes(original)
+        entry = argparse.Namespace(pw_dir=str(home), pw_uid=os.getuid(), pw_gid=os.getgid())
+
+        with pytest.raises(SystemExit) as exc:
+            ns["_enroll_install_restricted_key"](
+                entry, (ENROLL_TEST_KEY_TYPE, ENROLL_TEST_KEY_B64, "ciu@control.example"),
+                "web-01", "/usr/bin/fleetd-agent forced-command --group campaigns",
+            )
+        assert exc.value.code == 2
+        assert "line 1" in capsys.readouterr().err
+        assert authorized.read_bytes() == original
+
+        with pytest.raises(SystemExit) as exc:
+            ns["_enroll_install_key"](
+                entry, (ENROLL_TEST_KEY_TYPE, ENROLL_TEST_KEY_B64, "ciu@control.example"),
+                None,
+            )
+        assert exc.value.code == 2
+        assert "line 1" in capsys.readouterr().err
+        assert authorized.read_bytes() == original
+
+    def test_restricted_line_is_atomic_idempotent_and_preserves_unrelated_bytes(
+        self, ns, tmp_path,
+    ):
+        home = tmp_path / "home"
+        home.mkdir()
+        ssh_dir = home / ".ssh"
+        ssh_dir.mkdir()
+        authorized = ssh_dir / "authorized_keys"
+        original = b"# keep CRLF\r\nnot-a-key\xff"
+        authorized.write_bytes(original)
+        original_inode = authorized.stat().st_ino
+        entry = argparse.Namespace(pw_dir=str(home), pw_uid=os.getuid(), pw_gid=os.getgid())
+        command = "/usr/bin/fleetd-agent forced-command --group campaigns"
+
+        ns["_enroll_install_restricted_key"](
+            entry, (ENROLL_TEST_KEY_TYPE, ENROLL_TEST_KEY_B64, "ciu@control.example"),
+            "web-01", command,
+        )
+        marker = ns["_restricted_marker"]("web-01")
+        restricted_line = (
+            f'restrict,command="{command}" {ENROLL_TEST_KEY_TYPE} '
+            f'{ENROLL_TEST_KEY_B64} ciu@control.example {marker}\n'
+        ).encode()
+        expected = original + b"\n" + restricted_line
+        assert authorized.read_bytes() == expected
+        assert authorized.stat().st_ino != original_inode
+        assert stat.S_IMODE(ssh_dir.stat().st_mode) == 0o700
+        assert stat.S_IMODE(authorized.stat().st_mode) == 0o600
+        assert authorized.stat().st_uid == os.getuid()
+        assert authorized.stat().st_gid == os.getgid()
+
+        inode_after_first = authorized.stat().st_ino
+        ns["_enroll_install_restricted_key"](
+            entry, (ENROLL_TEST_KEY_TYPE, ENROLL_TEST_KEY_B64, "ciu@control.example"),
+            "web-01", command,
+        )
+        assert authorized.read_bytes() == expected
+        assert authorized.stat().st_ino == inode_after_first
+
+    def test_same_managed_key_updates_the_fixed_command_without_duplicate_blob(
+        self, ns, tmp_path,
+    ):
+        home = tmp_path / "home"
+        ssh_dir = home / ".ssh"
+        ssh_dir.mkdir(parents=True)
+        authorized = ssh_dir / "authorized_keys"
+        unrelated = b"# keep\r\n"
+        authorized.write_bytes(unrelated)
+        entry = argparse.Namespace(pw_dir=str(home), pw_uid=os.getuid(), pw_gid=os.getgid())
+        key = (ENROLL_TEST_KEY_TYPE, ENROLL_TEST_KEY_B64, "ciu@control.example")
+        first = "/usr/bin/fleetd-agent forced-command --group old-group"
+        second = "/usr/bin/fleetd-agent forced-command --group new-group"
+
+        ns["_enroll_install_restricted_key"](entry, key, "web-01", first)
+        first_inode = authorized.stat().st_ino
+        ns["_enroll_install_restricted_key"](entry, key, "web-01", second)
+
+        result = authorized.read_bytes()
+        assert result.startswith(unrelated)
+        assert result.count(ENROLL_TEST_KEY_B64.encode()) == 1
+        assert b"old-group" not in result and b"new-group" in result
+        assert result.count(ns["_restricted_marker"]("web-01").encode()) == 1
+        assert authorized.stat().st_ino != first_inode
+
+    def test_restricted_install_refuses_existing_unrestricted_key_and_names_line(
+        self, ns, tmp_path, capsys,
+    ):
+        home = tmp_path / "home"
+        ssh_dir = home / ".ssh"
+        ssh_dir.mkdir(parents=True)
+        authorized = ssh_dir / "authorized_keys"
+        original = (ENROLL_TEST_KEY + "\r\n").encode()
+        authorized.write_bytes(original)
+        entry = argparse.Namespace(pw_dir=str(home), pw_uid=os.getuid(), pw_gid=os.getgid())
+        with pytest.raises(SystemExit) as exc:
+            ns["_enroll_install_restricted_key"](
+                entry, (ENROLL_TEST_KEY_TYPE, ENROLL_TEST_KEY_B64, "ciu@control.example"),
+                "web-01", "/usr/bin/fleetd-agent forced-command --group campaigns",
+            )
+        assert exc.value.code == 2
+        assert "line 1" in capsys.readouterr().err
+        assert authorized.read_bytes() == original
+
+    def test_unrestricted_install_refuses_existing_restricted_key_and_names_line(
+        self, ns, tmp_path, capsys,
+    ):
+        home = tmp_path / "home"
+        ssh_dir = home / ".ssh"
+        ssh_dir.mkdir(parents=True)
+        authorized = ssh_dir / "authorized_keys"
+        entry = argparse.Namespace(pw_dir=str(home), pw_uid=os.getuid(), pw_gid=os.getgid())
+        command = "/usr/bin/fleetd-agent forced-command --group campaigns"
+        ns["_enroll_install_restricted_key"](
+            entry, (ENROLL_TEST_KEY_TYPE, ENROLL_TEST_KEY_B64, "ciu@control.example"),
+            "web-01", command,
+        )
+        original = authorized.read_bytes()
+        with pytest.raises(SystemExit) as exc:
+            ns["_enroll_install_key"](
+                entry, (ENROLL_TEST_KEY_TYPE, ENROLL_TEST_KEY_B64, "ciu@control.example"),
+                None,
+            )
+        assert exc.value.code == 2
+        assert "line 1" in capsys.readouterr().err
+        assert authorized.read_bytes() == original
+
+    def test_rotation_replaces_only_the_prior_managed_restricted_line(self, ns, tmp_path):
+        home = tmp_path / "home"
+        ssh_dir = home / ".ssh"
+        ssh_dir.mkdir(parents=True)
+        authorized = ssh_dir / "authorized_keys"
+        unrelated = b"# unrelated\r\nssh-rsa AAAA manual\r\n"
+        authorized.write_bytes(unrelated)
+        entry = argparse.Namespace(pw_dir=str(home), pw_uid=os.getuid(), pw_gid=os.getgid())
+        command = "/usr/bin/fleetd-agent forced-command --group campaigns"
+        ns["_enroll_install_restricted_key"](
+            entry, (ENROLL_TEST_KEY_TYPE, ENROLL_TEST_KEY_B64, "ciu@control.example"),
+            "web-01", command,
+        )
+        rotated_type, rotated_b64, rotated_comment = ENROLL_TEST_KEY_2.split(maxsplit=2)
+        ns["_enroll_install_restricted_key"](
+            entry, (rotated_type, rotated_b64, rotated_comment), "web-01", command,
+        )
+        result = authorized.read_bytes()
+        assert result.startswith(unrelated)
+        assert ENROLL_TEST_KEY_B64.encode() not in result
+        assert rotated_b64.encode() in result
+        assert result.count(ns["_restricted_marker"]("web-01").encode()) == 1
+
+    def test_removal_uses_marker_and_command_structure_and_preserves_other_bytes(
+        self, ns, tmp_path,
+    ):
+        home = tmp_path / "home"
+        ssh_dir = home / ".ssh"
+        ssh_dir.mkdir(parents=True)
+        authorized = ssh_dir / "authorized_keys"
+        marker = ns["_restricted_marker"]("web-01")
+        original = (
+            b"# retained\r\nnot-a-key\xff\r\nssh-rsa AAAA "
+            + marker.encode() + b"\r\n"
+        )
+        authorized.write_bytes(original)
+        entry = argparse.Namespace(pw_dir=str(home), pw_uid=os.getuid(), pw_gid=os.getgid())
+        ns["_enroll_install_restricted_key"](
+            entry, (ENROLL_TEST_KEY_TYPE, ENROLL_TEST_KEY_B64, "ciu@control.example"),
+            "web-01", "/usr/bin/fleetd-agent forced-command --group campaigns",
+        )
+        assert ns["_enroll_remove_restricted_keys"](entry, "web-01") == 1
+        assert authorized.read_bytes() == original
+        assert ns["_enroll_remove_restricted_keys"](entry, "web-01") == 0
+        assert authorized.read_bytes() == original
+
+    def test_restricted_writer_refuses_symlinked_ssh_or_authorized_keys(
+        self, ns, tmp_path,
+    ):
+        command = "/usr/bin/fleetd-agent forced-command --group campaigns"
+        entry_args = (ENROLL_TEST_KEY_TYPE, ENROLL_TEST_KEY_B64, "ciu@control.example")
+
+        home = tmp_path / "ssh-home"
+        home.mkdir()
+        outside_ssh = tmp_path / "outside-ssh"
+        outside_ssh.mkdir()
+        (home / ".ssh").symlink_to(outside_ssh, target_is_directory=True)
+        entry = argparse.Namespace(pw_dir=str(home), pw_uid=os.getuid(), pw_gid=os.getgid())
+        with pytest.raises(SystemExit):
+            ns["_enroll_install_restricted_key"](entry, entry_args, "web-01", command)
+        assert list(outside_ssh.iterdir()) == []
+
+        home2 = tmp_path / "key-home"
+        ssh_dir = home2 / ".ssh"
+        ssh_dir.mkdir(parents=True)
+        outside_keyfile = tmp_path / "outside-authorized-keys"
+        outside_keyfile.write_bytes(b"leave me byte-identical")
+        (ssh_dir / "authorized_keys").symlink_to(outside_keyfile)
+        entry2 = argparse.Namespace(pw_dir=str(home2), pw_uid=os.getuid(), pw_gid=os.getgid())
+        with pytest.raises(SystemExit):
+            ns["_enroll_install_restricted_key"](entry2, entry_args, "web-01", command)
+        assert outside_keyfile.read_bytes() == b"leave me byte-identical"
 
 
 class TestEnrollOrdering:

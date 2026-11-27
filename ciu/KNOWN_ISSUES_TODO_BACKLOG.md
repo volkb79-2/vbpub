@@ -7030,35 +7030,35 @@ test.
 
 **Close when.** A production fix makes the xfail pass, and a malformed-header oracle demonstrates that an undersized `e_phentsize` cannot be accepted as a dependency-free object.
 
-## CIU-218 — `ciu host enroll` cannot install an opt-in forced-command key for the fleet campaign runner
+## CIU-218 — opt-in restricted forced-command host enrollment
 
-**Status:** OPEN (filed 2026-11-13); severity: major for restricted fleet
-campaign access. Related: fleetd FD-009 and the compute-host campaign design,
-§3.7.
+**Status:** RESOLVED (2026-11-27). Related: CIU-93, fleetd FD-009 and the
+compute-host campaign design, §3.7.
 
-**Observed gap.** CIU-93/CIU-P52 provides trusted host enrollment and a
-general-purpose SSH identity. It does not install a key restricted to the
-campaign runner's named-job protocol. fleetd MVP-B-lite correctly reuses the
-existing identity-checked hx transport, but a general-purpose account leaves
-the operator without the later least-privilege host-entry option.
+**Implemented.** `ciu host enroll --forced-command` is opt-in and requires an
+explicit absolute normalized `--agent-path` and `--fleetd-group`; the optional
+`--agent-policy` is also explicit when supplied. The target writes exactly a
+`restrict,command="<agent> forced-command --group <group> [--policy <path>]"`
+entry. The mode refuses `--from`, unsafe paths and invalid group names. Without
+the new flag, enrollment keeps the prior general-purpose behavior.
 
-**Wanted.** Add an explicit opt-in enrollment mode that writes a
-`restrict`/forced-command authorized-key entry for the runner wrapper while
-preserving the current general-purpose enrollment behavior. The forced command
-must accept only the documented list, start, probe/progress, and stop
-operations; reject arbitrary shell commands, extra arguments, and malformed
-input; and retain the existing pinned-host-identity checks. Key rotation and
-removal must identify only the enrolled restricted entry. Host aliases,
-addresses, public/private key material, and provider credentials remain local
-configuration and never enter repository files.
+CIU does not parse SSH remote commands or build a wrapper. fleetd owns the
+request grammar after `agent_entry.py` starts its fixed `forced-command
+--group GROUP` argv. The grammar is tested by
+`fleetd/tests/test_agent_protocol.py::test_validate_request_covers_request_shape_argv_candidate_and_dev_errors`
+and `fleetd/tests/test_agent_verbs.py::test_agent_dispatch_returns_admission_documents_for_submit_status_and_cancel`;
+the stdio transport and group binding are tested by
+`fleetd/tests/test_agent_server.py::test_forced_command_uses_framed_stdin_stdout_and_transport_group`
+and `test_forced_command_refuses_unknown_transport_group_on_wire`.
 
-**Close when.** Parser and authorized-key tests prove the exact allowed
-operation grammar and refusal of shell escape, malformed quoting, unknown
-verbs, and extra arguments. Round-trip tests preserve unrelated authorized-key
-bytes and a general enrollment. A fake hx transport reaches every allowed
-runner operation and no other operation. The registered CIU enrollment gate,
-SPEC, and consumer documentation pass; no live host is needed for the unit
-contract.
+The CIU writer refuses a key blob already present under another authorized-key
+form and names its line. It preserves unrelated bytes, including CRLF, absent
+final newlines and unparseable records; uses no-follow descriptors and atomic
+replacement; and rotates/removes only entries with both the CIU restricted
+marker and validated fixed-command structure. Re-running is idempotent. A
+printed `remove-restricted` command removes those entries while preserving all
+other key records. The existing step-2 pinned host-identity checks remain in
+place. No live host action is part of CIU-218.
 
 ## CIU-219 — the packaged ciu skills have no grammar or coverage oracle
 

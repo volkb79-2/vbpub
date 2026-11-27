@@ -396,6 +396,14 @@ def _host_cli() -> Any:
         value("--from", "add an authorized_keys from=\"PATTERN\" restriction to the printed key "
                         "line (opt-in; OpenSSH matches it against the client's source address)",
               "PATTERN", group="STEP 1", dest="from_pattern"),
+        flag("--forced-command", "opt in to a fleetd-only restricted key (requires explicit "
+                                 "--agent-path and --fleetd-group)", group="STEP 1"),
+        value("--agent-path", "absolute normalized path to the installed fleetd-agent executable",
+              "PATH", group="STEP 1"),
+        value("--fleetd-group", "authenticated fleetd forced-command group", "GROUP",
+              group="STEP 1"),
+        value("--agent-policy", "optional absolute normalized fleetd agent policy path; "
+                                "omitted uses fleetd-agent's policy path", "PATH", group="STEP 1"),
         flag("--docker", "ask the installer to add the deploy user to the docker group",
              group="STEP 1"),
         value("--installer-url", "override the pinned release-asset URL (a mirror or a "
@@ -418,6 +426,7 @@ def _host_cli() -> Any:
             "plus the one command the target's admin runs (nothing is written to the inventory); "
             "with --ssh-host/--fingerprint it verifies the host key, proves the login with "
             "`ciu version` on the target, and only then writes [deploy.hosts.<name>]. "
+            "Opt-in --forced-command installs fleetd-agent's fixed forced-command entry; "
             "CIU_SSH_INSECURE_TOFU is never set by this verb."
         ),
         group=VerbGroup.MODIFICATION.value, mutating=True, include_confirmation=False,
@@ -427,7 +436,25 @@ def _host_cli() -> Any:
             *(Conflicts(("--abort", other),
                         "--abort removes the pending step-1 key pair and takes no other "
                         "enrollment flag")
-              for other in ("--ssh-host", "--fingerprint", "--replace")),
+              for other in ("--ssh-host", "--fingerprint", "--replace",
+                            "--forced-command", "--agent-path", "--fleetd-group",
+                            "--agent-policy")),
+            Requires("--forced-command", ("--agent-path",),
+                     "the restricted key needs explicit agent and group inputs (--agent-path)"),
+            Requires("--forced-command", ("--fleetd-group",),
+                     "the restricted key needs explicit agent and group inputs (--fleetd-group)"),
+            Requires("--agent-path", ("--forced-command",),
+                     "--agent-path applies only to an opt-in restricted key"),
+            Requires("--fleetd-group", ("--forced-command",),
+                     "--fleetd-group applies only to an opt-in restricted key"),
+            Requires("--agent-policy", ("--forced-command",),
+                     "--agent-policy applies only to an opt-in restricted key"),
+            Conflicts(("--forced-command", "--from"),
+                      "the restricted key uses one fixed command option and cannot also use --from"),
+            *(Conflicts(("--ssh-host", other),
+                        "forced-command inputs apply only to step 1, before --ssh-host")
+              for other in ("--forced-command", "--agent-path", "--fleetd-group",
+                            "--agent-policy")),
             Requires("--fingerprint", ("--ssh-host",),
                      "a fingerprint only verifies step 2: there is nothing to keyscan "
                      "without an address"),

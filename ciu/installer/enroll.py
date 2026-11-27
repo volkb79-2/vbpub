@@ -16,10 +16,13 @@
 import argparse
 import glob as _glob
 import grp
+import hashlib
 import os
 import pwd
 import re
+import secrets
 import shutil
+import stat
 import subprocess
 from pathlib import Path
 from typing import List, Optional, Tuple
@@ -40,6 +43,8 @@ _SSH_KEY_TYPE_RE = re.compile(
     r"^(?:ssh-ed25519|ssh-rsa|ecdsa-sha2-[A-Za-z0-9@._-]+|sk-[A-Za-z0-9@._-]+)$"
 )
 _SSH_KEY_B64_RE = re.compile(r"^[A-Za-z0-9+/]+={0,3}$")
+_FLEETD_PATH_RE = re.compile(r"/[A-Za-z0-9._+/-]+\Z")
+_FLEETD_GROUP_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 
 # Printed where the operator must substitute a real value — never guessed.
 _ENROLL_NAME_PLACEHOLDER = "<NAME>"
@@ -200,6 +205,7 @@ def _enroll_check_prerequisites(args: argparse.Namespace) -> Tuple[str, str, str
         )
     ok(f"SSH server present: {sshd}")
 
+    _forced_command_from_args(args)
     parsed = _parse_authorized_key(getattr(args, "authorized_key", None))
     ok(f"Authorized key parsed ({parsed[0]}).")
     return parsed
@@ -292,9 +298,21 @@ def _enroll_install_key(
 
     already_present = False
     other_key_comments: List[str] = []
-    for raw_line in existing.splitlines():
+    for line_number, raw_line in enumerate(existing.splitlines(), 1):
         parsed_line = _ak_split_line(raw_line)
         if parsed_line is None:
+            if not raw_line.lstrip().startswith("#"):
+                tokens = raw_line.split()
+                collision = any(
+                    tokens[index] == ktype and tokens[index + 1] == b64
+                    for index in range(len(tokens) - 1)
+                )
+                if collision:
+                    fatal(
+                        f"{authorized} already contains this key blob on line "
+                        f"{line_number}; refusing a second authorized_keys form.",
+                        EXIT_CONFIG,
+                    )
             continue
         have_options, have_type, have_b64, have_comment = parsed_line
         if (have_type, have_b64) != (ktype, b64):
@@ -306,8 +324,10 @@ def _enroll_install_key(
             other_key_comments.append(have_comment or have_type)
             continue
         if have_options != want_options:
+            line_detail = f"  conflicting line {line_number}\n"
             fatal(
                 f"{authorized} already carries this key under DIFFERENT options.\n"
+                f"{line_detail}"
                 f"  present: {have_options or '(none)'}\n"
                 f"  wanted:  {want_options or '(none)'}\n"
                 "Refusing to append a second entry for the same key material — "
@@ -338,6 +358,373 @@ def _enroll_install_key(
     os.chmod(authorized, 0o600)
     os.chown(authorized, entry.pw_uid, entry.pw_gid)
     return authorized
+
+
+def _agent_path_is_normalized(value: object) -> bool:
+    if not isinstance(value, str) or _FLEETD_PATH_RE.fullmatch(value) is None:
+        return False
+    parts = value.split("/")
+    return (
+        value != "/"
+        and not value.endswith("/")
+        and all(part not in ("", ".", "..") for part in parts[1:])
+    )
+
+
+def _forced_command_from_args(args: argparse.Namespace) -> Optional[str]:
+    """Build only fleetd-agent's fixed argv; CIU never accepts a command string."""
+    enabled = bool(getattr(args, "forced_command", False))
+    agent_path = getattr(args, "agent_path", None)
+    group = getattr(args, "fleetd_group", None)
+    policy = getattr(args, "agent_policy", None)
+    if not enabled:
+        if agent_path is not None or group is not None or policy is not None:
+            fatal("--agent-path, --fleetd-group, and --agent-policy require "
+                  "--forced-command.", EXIT_CONFIG)
+        return None
+    if agent_path is None or group is None:
+        fatal("--forced-command requires explicit --agent-path and --fleetd-group "
+              "values.", EXIT_CONFIG)
+    if getattr(args, "from_pattern", None) is not None:
+        fatal("--forced-command cannot be combined with --from; the restricted "
+              "entry has one fixed authorized_keys command option.", EXIT_CONFIG)
+    if not _agent_path_is_normalized(agent_path):
+        fatal("--agent-path must be an absolute normalized path using only "
+              "letters, digits, '.', '_', '+', '-', and '/'.", EXIT_CONFIG)
+    if not isinstance(group, str) or _FLEETD_GROUP_RE.fullmatch(group) is None:
+        fatal("--fleetd-group must match fleetd's group grammar "
+              "([A-Za-z0-9][A-Za-z0-9._-]{0,127}).", EXIT_CONFIG)
+    if policy is not None and not _agent_path_is_normalized(policy):
+        fatal("--agent-policy must be an absolute normalized path using only "
+              "letters, digits, '.', '_', '+', '-', and '/'.", EXIT_CONFIG)
+    if not getattr(args, "name", None):
+        fatal("--forced-command requires --name so CIU can identify this entry "
+              "for rotation and removal.", EXIT_CONFIG)
+    command = f"{agent_path} forced-command --group {group}"
+    if policy is not None:
+        command += f" --policy {policy}"
+    return command
+
+
+def _restricted_marker(name: str) -> str:
+    digest = hashlib.sha256(name.encode("utf-8")).hexdigest()
+    return f"ciu-restricted-v1:{digest}"
+
+
+def _authorized_key_records(data: bytes) -> List[Tuple[bytes, bytes]]:
+    """Return (whole line, line body) pairs, splitting only on LF bytes."""
+    result: List[Tuple[bytes, bytes]] = []
+    start = 0
+    while start < len(data):
+        end = data.find(b"\n", start)
+        if end < 0:
+            whole = data[start:]
+            body = whole
+            start = len(data)
+        else:
+            whole = data[start:end + 1]
+            body = data[start:end]
+            start = end + 1
+        if body.endswith(b"\r"):
+            body = body[:-1]
+        result.append((whole, body))
+    return result
+
+
+def _parse_authorized_key_record(body: bytes) -> Optional[Tuple[str, str, str, str]]:
+    return _ak_split_line(body.decode("utf-8", errors="replace"))
+
+
+def _managed_restricted_entry(
+    parsed: Optional[Tuple[str, str, str, str]], marker: str,
+) -> bool:
+    """Require both CIU's marker and its exact safe forced-command structure."""
+    if parsed is None:
+        return False
+    options, key_type, key_b64, comment = parsed
+    if not _is_ssh_key_type(key_type) or _SSH_KEY_B64_RE.fullmatch(key_b64) is None:
+        return False
+    prefix = 'restrict,command="'
+    if not options.startswith(prefix) or not options.endswith('"'):
+        return False
+    command = options[len(prefix):-1]
+    words = command.split(" ")
+    if any(not word for word in words):
+        return False
+    if len(words) not in (4, 6) or words[1:3] != ["forced-command", "--group"]:
+        return False
+    if not _agent_path_is_normalized(words[0]):
+        return False
+    if _FLEETD_GROUP_RE.fullmatch(words[3]) is None:
+        return False
+    if len(words) == 6:
+        if words[4] != "--policy" or not _agent_path_is_normalized(words[5]):
+            return False
+    return bool(comment.split()) and comment.split()[-1] == marker
+
+
+def _open_restricted_ssh_dir(entry: "pwd.struct_passwd", *, create: bool):
+    """Open home and .ssh without following a target-controlled final symlink."""
+    if not hasattr(os, "O_NOFOLLOW") or not hasattr(os, "O_DIRECTORY"):
+        fatal("This platform cannot open authorized_keys paths with O_NOFOLLOW.",
+              EXIT_PREREQ)
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+    try:
+        home_fd = os.open(entry.pw_dir, flags)
+    except OSError as exc:
+        fatal(f"Cannot open the deploy user's home without following symlinks: "
+              f"{exc.strerror or exc}.", EXIT_CONFIG)
+    try:
+        if not stat.S_ISDIR(os.fstat(home_fd).st_mode):
+            fatal("The deploy user's home is not a directory.", EXIT_CONFIG)
+        try:
+            ssh_fd = os.open(".ssh", flags, dir_fd=home_fd)
+        except FileNotFoundError:
+            if not create:
+                return home_fd, None
+            try:
+                os.mkdir(".ssh", 0o700, dir_fd=home_fd)
+            except FileExistsError:
+                pass
+            try:
+                ssh_fd = os.open(".ssh", flags, dir_fd=home_fd)
+            except OSError as exc:
+                fatal(f"Cannot open the deploy user's .ssh directory without "
+                      f"following symlinks: {exc.strerror or exc}.", EXIT_CONFIG)
+        except OSError as exc:
+            fatal(f"Cannot open the deploy user's .ssh directory without "
+                  f"following symlinks: {exc.strerror or exc}.", EXIT_CONFIG)
+        if not stat.S_ISDIR(os.fstat(ssh_fd).st_mode):
+            os.close(ssh_fd)
+            fatal("The deploy user's .ssh path is not a directory.", EXIT_CONFIG)
+        if create:
+            try:
+                os.fchown(ssh_fd, entry.pw_uid, entry.pw_gid)
+                os.fchmod(ssh_fd, 0o700)
+            except OSError as exc:
+                os.close(ssh_fd)
+                fatal(f"Cannot set ownership or mode on the deploy user's .ssh "
+                      f"directory: {exc.strerror or exc}.", EXIT_CONFIG)
+        return home_fd, ssh_fd
+    except BaseException:
+        os.close(home_fd)
+        raise
+
+
+def _read_restricted_authorized_keys(ssh_fd: int, path: Path) -> Tuple[Optional[int], bytes]:
+    flags = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0) | os.O_NONBLOCK
+    try:
+        fd = os.open("authorized_keys", flags, dir_fd=ssh_fd)
+    except FileNotFoundError:
+        return None, b""
+    except OSError as exc:
+        fatal(f"Cannot open {path} without following symlinks: "
+              f"{exc.strerror or exc}.", EXIT_CONFIG)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            fatal(f"{path} must be a regular, single-link file.", EXIT_CONFIG)
+        chunks: List[bytes] = []
+        while True:
+            chunk = os.read(fd, 65536)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        return fd, b"".join(chunks)
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def _write_restricted_authorized_keys(
+    ssh_fd: int, entry: "pwd.struct_passwd", data: bytes,
+) -> None:
+    temp_name = None
+    temp_fd = None
+    for _attempt in range(32):
+        candidate = f".authorized_keys.ciu-{secrets.token_hex(12)}"
+        try:
+            temp_fd = os.open(
+                candidate,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW |
+                getattr(os, "O_CLOEXEC", 0),
+                0o600,
+                dir_fd=ssh_fd,
+            )
+            temp_name = candidate
+            break
+        except FileExistsError:
+            continue
+        except OSError as exc:
+            fatal(f"Cannot create an atomic authorized_keys replacement: "
+                  f"{exc.strerror or exc}.", EXIT_FAIL)
+    if temp_fd is None or temp_name is None:
+        fatal("Could not allocate an atomic authorized_keys replacement.", EXIT_FAIL)
+    try:
+        os.fchown(temp_fd, entry.pw_uid, entry.pw_gid)
+        os.fchmod(temp_fd, 0o600)
+        view = memoryview(data)
+        while view:
+            written = os.write(temp_fd, view)
+            if written <= 0:
+                raise OSError("authorized_keys write made no progress")
+            view = view[written:]
+        os.fsync(temp_fd)
+        os.close(temp_fd)
+        temp_fd = None
+        os.replace(
+            temp_name, "authorized_keys", src_dir_fd=ssh_fd, dst_dir_fd=ssh_fd,
+        )
+        os.fsync(ssh_fd)
+    except OSError as exc:
+        fatal(f"Atomic authorized_keys update failed: {exc.strerror or exc}.", EXIT_FAIL)
+    finally:
+        if temp_fd is not None:
+            os.close(temp_fd)
+        if temp_name is not None:
+            try:
+                os.unlink(temp_name, dir_fd=ssh_fd)
+            except FileNotFoundError:
+                pass
+
+
+def _enroll_install_restricted_key(
+    entry: "pwd.struct_passwd",
+    parsed: Tuple[str, str, str],
+    name: str,
+    command: str,
+) -> Path:
+    """Install one CIU-owned `restrict,command` record atomically and no-follow."""
+    key_type, key_b64, comment = parsed
+    marker = _restricted_marker(name)
+    options = f'restrict,command="{command}"'
+    marked_comment = " ".join(part for part in (comment, marker) if part)
+    line = f'{options} {key_type} {key_b64} {marked_comment}'.rstrip()
+    authorized = Path(entry.pw_dir) / ".ssh" / "authorized_keys"
+    home_fd, ssh_fd = _open_restricted_ssh_dir(entry, create=True)
+    assert ssh_fd is not None
+    authorized_fd = None
+    try:
+        authorized_fd, existing = _read_restricted_authorized_keys(ssh_fd, authorized)
+        records = _authorized_key_records(existing)
+        kept: List[bytes] = []
+        prior_managed = 0
+        already_present = False
+        for line_number, (whole, body) in enumerate(records, 1):
+            parsed_line = _parse_authorized_key_record(body)
+            managed = _managed_restricted_entry(parsed_line, marker)
+            if parsed_line is None:
+                tokens = [] if body.lstrip().startswith(b"#") else body.split()
+                collision = any(
+                    tokens[index] == key_type.encode("ascii")
+                    and tokens[index + 1] == key_b64.encode("ascii")
+                    for index in range(len(tokens) - 1)
+                )
+                if collision:
+                    fatal(f"{authorized} already contains this key blob on line "
+                          f"{line_number}; refusing a second authorized_keys form.",
+                          EXIT_CONFIG)
+                kept.append(whole)
+                continue
+
+            have_options, have_type, have_b64, _have_comment = parsed_line
+            same_key = (have_type, have_b64) == (key_type, key_b64)
+            exact_entry = managed and same_key and have_options == options
+            if same_key and not exact_entry and not managed:
+                fatal(f"{authorized} already contains this key blob on line "
+                      f"{line_number} under different options or ownership; "
+                      "refusing a second authorized_keys form.", EXIT_CONFIG)
+            if managed:
+                if exact_entry:
+                    already_present = True
+                    kept.append(whole)
+                else:
+                    prior_managed += 1
+                continue
+            kept.append(whole)
+
+        new_data = b"".join(kept)
+        if already_present:
+            if prior_managed == 0 and new_data == existing:
+                assert authorized_fd is not None
+                try:
+                    os.fchown(authorized_fd, entry.pw_uid, entry.pw_gid)
+                    os.fchmod(authorized_fd, 0o600)
+                except OSError as exc:
+                    fatal(f"Cannot set ownership or mode on {authorized}: "
+                          f"{exc.strerror or exc}.", EXIT_CONFIG)
+                ok(f"Restricted key already present in {authorized} — not duplicated.")
+                return authorized
+        else:
+            if new_data and not new_data.endswith(b"\n"):
+                new_data += b"\n"
+            new_data += line.encode("utf-8") + b"\n"
+
+        _write_restricted_authorized_keys(ssh_fd, entry, new_data)
+        ok(f"Restricted key installed in {authorized}.")
+        return authorized
+    finally:
+        if authorized_fd is not None:
+            os.close(authorized_fd)
+        os.close(ssh_fd)
+        os.close(home_fd)
+
+
+def _enroll_remove_restricted_keys(entry: "pwd.struct_passwd", name: str) -> int:
+    """Remove only lines with CIU's marker and validated fixed-command structure."""
+    marker = _restricted_marker(name)
+    authorized = Path(entry.pw_dir) / ".ssh" / "authorized_keys"
+    home_fd, ssh_fd = _open_restricted_ssh_dir(entry, create=False)
+    if ssh_fd is None:
+        os.close(home_fd)
+        return 0
+    authorized_fd = None
+    try:
+        authorized_fd, existing = _read_restricted_authorized_keys(ssh_fd, authorized)
+        if authorized_fd is None:
+            return 0
+        kept: List[bytes] = []
+        removed = 0
+        for whole, body in _authorized_key_records(existing):
+            if _managed_restricted_entry(_parse_authorized_key_record(body), marker):
+                removed += 1
+            else:
+                kept.append(whole)
+        if removed:
+            _write_restricted_authorized_keys(ssh_fd, entry, b"".join(kept))
+        return removed
+    finally:
+        if authorized_fd is not None:
+            os.close(authorized_fd)
+        os.close(ssh_fd)
+        os.close(home_fd)
+
+
+def _remove_restricted_command(args: argparse.Namespace) -> None:
+    if os.geteuid() != 0:
+        fatal("remove-restricted must run as root (sudo).", EXIT_PREREQ)
+    name = getattr(args, "name", None)
+    user = getattr(args, "user", None) or "ciu"
+    if not name:
+        fatal("remove-restricted requires the original --name.", EXIT_CONFIG)
+    if any((
+        getattr(args, "authorized_key", None), getattr(args, "controller", None),
+        getattr(args, "from_pattern", None), getattr(args, "docker", False),
+        getattr(args, "forced_command", False), getattr(args, "agent_path", None),
+        getattr(args, "fleetd_group", None), getattr(args, "agent_policy", None),
+        getattr(args, "no_install", False), getattr(args, "scope", "system") != "system",
+        getattr(args, "version", None), getattr(args, "variant", None),
+        getattr(args, "manifest_pubkey", None), getattr(args, "config", None),
+    )):
+        fatal("remove-restricted accepts only --name and --user.", EXIT_CONFIG)
+    try:
+        entry = pwd.getpwnam(user)
+    except KeyError:
+        fatal(f"Cannot remove the restricted key: user {user!r} does not exist.",
+              EXIT_PREREQ)
+    removed = _enroll_remove_restricted_keys(entry, name)
+    count_word = "entry" if removed == 1 else "entries"
+    ok(f"Removed {removed} CIU-managed restricted key {count_word} for {name}.")
 
 
 def _host_key_fingerprints() -> List[Tuple[str, str, str]]:
@@ -385,6 +772,10 @@ def do_enroll(args: argparse.Namespace, token: Optional[str]) -> None:
       4. ~USER/.ssh + authorized_keys;
       5. print the fingerprints, addresses and completion command.
     """
+    if getattr(args, "remove_restricted", False):
+        _remove_restricted_command(args)
+        return
+
     scope = getattr(args, "scope", "system")
     user = getattr(args, "user", None) or "ciu"
     controller = getattr(args, "controller", "")
@@ -395,6 +786,7 @@ def do_enroll(args: argparse.Namespace, token: Optional[str]) -> None:
     hr()
 
     # 1. Prerequisites — nothing below this line may run before these pass.
+    restricted_command = _forced_command_from_args(args)
     parsed = _enroll_check_prerequisites(args)
 
     # 2. Install, verbatim: do_install owns the transaction/manifest logic.
@@ -414,7 +806,12 @@ def do_enroll(args: argparse.Namespace, token: Optional[str]) -> None:
     entry = _enroll_ensure_user(user, bool(getattr(args, "docker", False)))
 
     # 4. Authorized key.
-    authorized = _enroll_install_key(entry, parsed, getattr(args, "from_pattern", None))
+    if restricted_command is None:
+        authorized = _enroll_install_key(entry, parsed, getattr(args, "from_pattern", None))
+    else:
+        authorized = _enroll_install_restricted_key(
+            entry, parsed, getattr(args, "name"), restricted_command,
+        )
 
     # 5. Report. Nothing here changes state; it is what the operator confirms.
     root = _root_dir(scope)
@@ -481,13 +878,30 @@ def _register_enroll(subparsers):
                           help="Host name for the printed completion command (default: a placeholder)")
     p_enroll.add_argument("--from", dest="from_pattern", metavar="PATTERN",
                           help='Restrict the key with from="PATTERN" (source-address restriction)')
+    p_enroll.add_argument("--forced-command", action="store_true",
+                          help="Install an opt-in fleetd forced-command key")
+    p_enroll.add_argument("--agent-path", metavar="PATH",
+                          help="Absolute normalized fleetd-agent executable path")
+    p_enroll.add_argument("--fleetd-group", metavar="GROUP",
+                          help="Explicit fleetd forced-command group")
+    p_enroll.add_argument("--agent-policy", metavar="PATH",
+                          help="Optional absolute normalized fleetd policy path")
     p_enroll.add_argument("--docker", action="store_true",
                           help="Add the deploy user to the docker group (refused when absent)")
     p_enroll.add_argument("--no-install", action="store_true",
                           help="Skip the install step (user + key + fingerprints only)")
     p_enroll.add_argument("--scope", choices=["system", "user"], default="system",
                           help="Install scope for the install step (default: system)")
-    return {"enroll": do_enroll}
+    p_remove = subparsers.add_parser(
+        "remove-restricted",
+        help="Remove CIU-managed fleetd restricted enrollment entries",
+    )
+    p_remove.add_argument("--name", metavar="NAME", required=True,
+                          help="Host name used by the original restricted enrollment")
+    p_remove.add_argument("--user", metavar="USER", default="ciu",
+                          help="Deploy user whose restricted entry is removed (default: ciu)")
+    p_remove.set_defaults(remove_restricted=True)
+    return {"enroll": do_enroll, "remove-restricted": do_enroll}
 
 
 _EXTENSIONS.append(_register_enroll)

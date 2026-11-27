@@ -2604,3 +2604,49 @@ image declarations are present in the rendered file. A fully interpolated
 project image reference with no literal repository path or tag separator
 also refuses; render enough of the image name in the CIU template for CIU to
 append the instance tag safely.
+
+## 27. Enroll a fleetd-only SSH key (CIU-218, S14.7e)
+
+Use `ciu host enroll`'s opt-in restricted mode when a fleetd client needs to
+reach the host agent without receiving a general-purpose SSH shell. The mode
+requires the installed agent path and authenticated group explicitly; there
+is no guessed executable path or group:
+
+```console
+$ ciu host enroll <host-name> --forced-command \
+    --agent-path <absolute-agent-path> --fleetd-group <fleetd-group>
+```
+
+`--agent-path` must be an absolute normalized path containing only ASCII
+letters, digits, `.`, `_`, `+`, `-`, and `/`. `--fleetd-group` follows
+fleetd's `[A-Za-z0-9][A-Za-z0-9._-]{0,127}` identifier grammar. Both reject
+quotes, backslashes, whitespace, controls and shell metacharacters. Add
+`--agent-policy <absolute-path>` only when the host agent should use an
+explicit policy file; otherwise the agent applies its own policy default.
+Restricted mode cannot be combined with `--from`.
+
+Step 1 prints the public key, the target-side enrollment command, and a
+target-side `remove-restricted` command. The target entry has exactly this
+shape:
+
+```text
+restrict,command="<agent-path> forced-command --group <fleetd-group> [--policy <policy-path>]" <type> <base64> <comment> <CIU marker>
+```
+
+OpenSSH's `restrict` option disables pty, forwarding and user-rc. CIU installs
+only fleetd's fixed `forced-command --group GROUP` argv, with `--policy PATH`
+when explicitly supplied. CIU does not create a wrapper or parse a command
+from the SSH connection; fleetd validates its request grammar over framed
+stdin/stdout. Its grammar is tested in
+`fleetd/tests/test_agent_protocol.py::test_validate_request_covers_request_shape_argv_candidate_and_dev_errors`
+and `fleetd/tests/test_agent_verbs.py::test_agent_dispatch_returns_admission_documents_for_submit_status_and_cancel`.
+
+The target writer preserves all unrelated `authorized_keys` bytes, including
+CRLF and a missing final newline, and refuses to add one key blob in both
+restricted and unrestricted forms. Re-enrollment for the same host name
+replaces only the prior marked, structurally validated restricted entry;
+rerunning the same command does not duplicate it. Use the printed target-side
+`remove-restricted` command to remove those entries. It leaves a general
+enrollment key and every other line in place. Step 2 still verifies the host
+key fingerprint and proves the key login before writing the controller's
+inventory row.

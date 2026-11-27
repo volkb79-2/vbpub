@@ -130,3 +130,27 @@ The third-party round-4 review (`CIU-V8-THIRD-PARTY-REVIEW-ROUND4-2026-09-03.md`
 **Oracles added** (O7–O12): O7 a controlled wrong-version `ciu` and a PATH-shadowing `ciu` must both fail step 2; O8 a failed step 2 leaves the active key and row byte-identical, and `--abort` removes only the named pending generation; O9 an `authorized_keys` that is a symlink, a hard link or a FIFO, a foreign-owned `.ssh`, a concurrent second enrollment and a pre-existing unrelated key are each refused or preserved exactly; O10 a `--from` value with a quote, CR or LF, a comma-injected option or a negation outside the grammar is refused before anything is written; O11 a tampered `get.py` fails the digest check before `sudo python3` runs; O12 a v8 `--global` row survives deleting the checkout it was enrolled from. **O6 prerequisites:** cmru requires `[project.installer]` in `ciu/cmru.toml` and a tool-install root disjoint from every deployment `bundle_dir` (`install_dir_system`, SPEC-V8 S2.6.6); V8-29's file list names them, the committed `get.py`, and ciu's README (WHAT), `docs/DESIGN-GUIDE.md` (WHY) and `docs/CONSUMERS.md` (HOW) with parseable examples.
 
 **The v7 line.** CIU-93 and cmru KI-24 shipped before round 4. The v7 half of the findings — the key path aliasing S14.3a, the unpinned install branch, the unauthenticated root program, the `authorized_keys` handling and the `known_host` grammar — are defects of shipped code, to be filed in the ciu and cmru backlogs by the controller (ids are allocated there).
+
+## CIU-218 addendum — opt-in fleetd restricted enrollment (2026-11-27)
+
+CIU-218 adds an opt-in `--forced-command` mode to the v7 `ciu host enroll`
+contract. Step 1 requires explicit `--agent-path` and `--fleetd-group` values;
+`--agent-policy` may name an explicit policy file. These values are validated
+against the fleetd group grammar and a strict absolute normalized path
+allow-list. The normal enrollment path is unchanged when the flag is absent.
+
+The target writes only
+`restrict,command="<agent-path> forced-command --group <group> [--policy
+<policy-path>]" <public key> <CIU marker>`. It does not add pty, forwarding or
+user-rc options. CIU installs that fixed argv and does not parse
+`SSH_ORIGINAL_COMMAND` or build a wrapper. fleetd owns and tests the request
+grammar in `fleetd/tests/test_agent_protocol.py::test_validate_request_covers_request_shape_argv_candidate_and_dev_errors`
+and `fleetd/tests/test_agent_verbs.py::test_agent_dispatch_returns_admission_documents_for_submit_status_and_cancel`;
+the forced-command transport and group binding are tested in
+`fleetd/tests/test_agent_server.py::test_forced_command_uses_framed_stdin_stdout_and_transport_group`.
+
+CIU's restricted writer preserves unrelated `authorized_keys` bytes, rejects
+the same key blob in a second form, rotates only marked entries with the
+validated fixed-command structure, and supports idempotent target-side
+`remove-restricted`. Step 2 keeps CIU-93's pinned host-key check and proof
+login.

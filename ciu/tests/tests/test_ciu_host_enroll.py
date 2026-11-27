@@ -269,6 +269,62 @@ class TestStep1:
         assert "--from 10.0.0.0/8" in out
         assert "--docker" in out
 
+    def test_forced_command_mode_passes_only_the_fixed_agent_inputs(self, repo, config):
+        _code, out = _step1(
+            repo, config, forced_command=True,
+            agent_path="/usr/bin/fleetd-agent", fleetd_group="campaigns",
+            agent_policy="/etc/fleetd/agent.toml",
+        )
+        assert "--forced-command --agent-path /usr/bin/fleetd-agent" in out
+        assert "--fleetd-group campaigns --agent-policy /etc/fleetd/agent.toml" in out
+        assert "python3 - remove-restricted --name rs1002 --user ciu" in out
+        assert "forced-command --group" not in out
+
+    @pytest.mark.parametrize("agent_path", [
+        "fleetd-agent", "/usr/bin/../bin/fleetd-agent", "/usr//bin/fleetd-agent",
+        "/usr/bin/fleetd-agent/", "/usr/bin/fleetd agent", "/usr/bin/\"fleetd\"",
+        "/usr/bin/fleetd\\agent", "/usr/bin/fleetd;id", "/usr/bin/$fleetd",
+    ])
+    def test_forced_command_rejects_unsafe_paths_before_key_generation(
+        self, repo, config, agent_path,
+    ):
+        with pytest.raises(EnrollError, match="CIU-218.*absolute normalized path"):
+            _step1(
+                repo, config, forced_command=True, agent_path=agent_path,
+                fleetd_group="campaigns",
+            )
+        assert not host_enroll.key_paths(repo, "rs1002")[0].exists()
+
+    @pytest.mark.parametrize("group", [
+        "", "-bad", "bad group", 'bad"group', "bad;id", "bad\nname", "a" * 129,
+    ])
+    def test_forced_command_rejects_groups_outside_fleetd_grammar(
+        self, repo, config, group,
+    ):
+        with pytest.raises(EnrollError, match="CIU-218.*group grammar"):
+            _step1(
+                repo, config, forced_command=True,
+                agent_path="/usr/bin/fleetd-agent", fleetd_group=group,
+            )
+        assert not host_enroll.key_paths(repo, "rs1002")[0].exists()
+
+    def test_forced_command_requires_explicit_agent_and_group_and_rejects_from(
+        self, repo, config,
+    ):
+        with pytest.raises(EnrollError, match="requires explicit --agent-path"):
+            _step1(repo, config, forced_command=True, agent_path="/usr/bin/fleetd-agent")
+        with pytest.raises(EnrollError, match="cannot be combined with --from"):
+            _step1(
+                repo, config, forced_command=True, from_pattern="10.0.0.0/8",
+                agent_path="/usr/bin/fleetd-agent", fleetd_group="campaigns",
+            )
+        with pytest.raises(EnrollError, match="cannot be combined with --from"):
+            _step1(
+                repo, config, forced_command=True, from_pattern="",
+                agent_path="/usr/bin/fleetd-agent", fleetd_group="campaigns",
+            )
+        assert not host_enroll.key_paths(repo, "rs1002")[0].exists()
+
     def test_installer_url_override_is_used_verbatim(self, repo, config):
         _code, out = _step1(
             repo, config, installer_url_override="https://mirror.example/get.py"

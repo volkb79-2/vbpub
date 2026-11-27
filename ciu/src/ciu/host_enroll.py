@@ -26,6 +26,7 @@ every other transport verb already uses.
 from __future__ import annotations
 
 import os
+import re
 import shlex
 import stat
 import subprocess
@@ -51,6 +52,9 @@ KEYSCAN_TYPES = "ed25519,ecdsa,rsa"
 
 #: Private key file name inside `<repo>/.ciu/secrets/hosts/<name>/` (S14.3a).
 KEY_ENTRY = "ssh_key"
+
+_FLEETD_PATH_RE = re.compile(r"/[A-Za-z0-9._+/-]+\Z")
+_FLEETD_GROUP_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 
 
 class EnrollError(ValueError):
@@ -110,6 +114,59 @@ def resolve_controller(controller: str | None, config: dict) -> str:
     )
 
 
+def _validated_agent_path(value: str | None, label: str) -> str | None:
+    if value is None:
+        return None
+    parts = value.split("/")
+    if (
+        _FLEETD_PATH_RE.fullmatch(value) is None
+        or value == "/"
+        or value.endswith("/")
+        or any(part in ("", ".", "..") for part in parts[1:])
+    ):
+        raise EnrollError(
+            f"[CIU-218] {label} must be an absolute normalized path using only "
+            "letters, digits, '.', '_', '+', '-', and '/'."
+        )
+    return value
+
+
+def _validated_fleetd_command(
+    enabled: bool,
+    agent_path: str | None,
+    group: str | None,
+    policy_path: str | None,
+    from_pattern: str | None,
+) -> tuple[str | None, str | None, str | None]:
+    supplied = (agent_path is not None, group is not None, policy_path is not None)
+    if not enabled:
+        if any(supplied):
+            raise EnrollError(
+                "[CIU-218] --agent-path, --fleetd-group, and --agent-policy "
+                "require --forced-command."
+            )
+        return None, None, None
+    if agent_path is None or group is None:
+        raise EnrollError(
+            "[CIU-218] --forced-command requires explicit --agent-path and "
+            "--fleetd-group values."
+        )
+    if from_pattern is not None:
+        raise EnrollError(
+            "[CIU-218] --forced-command cannot be combined with --from; the "
+            "restricted entry has one fixed authorized_keys command option."
+        )
+    agent_path = _validated_agent_path(agent_path, "--agent-path")
+    if policy_path is not None:
+        policy_path = _validated_agent_path(policy_path, "--agent-policy")
+    if _FLEETD_GROUP_RE.fullmatch(group) is None:
+        raise EnrollError(
+            "[CIU-218] --fleetd-group must match fleetd's group grammar "
+            "([A-Za-z0-9][A-Za-z0-9._-]{0,127})."
+        )
+    return agent_path, group, policy_path
+
+
 def _run(argv: list[str], **kwargs) -> subprocess.CompletedProcess:
     """``subprocess.run`` with captured text output (never shell=True)."""
     return subprocess.run(argv, capture_output=True, text=True, **kwargs)
@@ -145,6 +202,8 @@ def generate_key_pair(repo_root: Path, name: str, comment: str) -> tuple[Path, P
 def _one_liner(
     url: str, public_key: str, controller: str, name: str,
     user: str, from_pattern: str | None, docker: bool,
+    agent_path: str | None = None, fleetd_group: str | None = None,
+    agent_policy: str | None = None,
 ) -> str:
     """The command the TARGET's admin runs (S14.7a / proposal §4).
 
@@ -170,6 +229,11 @@ def _one_liner(
         args += ["--from", from_pattern]
     if docker:
         args.append("--docker")
+    if agent_path is not None and fleetd_group is not None:
+        args += ["--forced-command", "--agent-path", agent_path,
+                 "--fleetd-group", fleetd_group]
+        if agent_policy is not None:
+            args += ["--agent-policy", agent_policy]
     return (
         f"curl -fsSL {url} \\\n"
         f"  | sudo python3 - {shlex.join(args)}"
@@ -189,9 +253,16 @@ def enroll_step1(
     docker: bool = False,
     installer_url_override: str | None = None,
     replace: bool = False,
+    forced_command: bool = False,
+    agent_path: str | None = None,
+    fleetd_group: str | None = None,
+    agent_policy: str | None = None,
     out=print,
 ) -> int:
     """Step 1 (S14.7a): generate the key pair and print; write NO inventory row."""
+    agent_path, fleetd_group, agent_policy = _validated_fleetd_command(
+        forced_command, agent_path, fleetd_group, agent_policy, from_pattern,
+    )
     hosts = load_hosts(repo_root)
     if name in hosts and not replace:
         raise EnrollError(
@@ -241,7 +312,17 @@ def enroll_step1(
     out("")
     out("Step 1 — the target's admin runs ONE command on the bare host:")
     out("")
-    out(_one_liner(url, public_key, controller_name, name, user, from_pattern, docker))
+    out(_one_liner(
+        url, public_key, controller_name, name, user, from_pattern, docker,
+        agent_path, fleetd_group, agent_policy,
+    ))
+    if forced_command:
+        remove_args = ["remove-restricted", "--name", name,
+                       "--user", user]
+        out("")
+        out("Target-side removal command (removes only this CIU-managed "
+            "restricted entry):")
+        out(f"  curl -fsSL {url} | sudo python3 - {shlex.join(remove_args)}")
     out("")
     out(
         "WARNING [CIU-99]: this command passes --no-install. ciu's own release "
