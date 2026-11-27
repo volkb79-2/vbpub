@@ -813,7 +813,8 @@ def test_disk_floor_keeps_full_reservation_while_first_body_is_buffered(tmp_path
 
     worker = threading.Thread(target=upload_first, name="first-buffered-put")
     worker_holder.append(worker)
-    second_client = second_server = None
+    second_client = second_server = second_worker = None
+    second_results = []
     try:
         worker.start()
         assert reserved.wait(THREAD_WATCHDOG_S), "first put did not reserve its full size"
@@ -828,14 +829,23 @@ def test_disk_floor_keeps_full_reservation_while_first_body_is_buffered(tmp_path
         second_client, second_server = socket.socketpair()
         second_client.sendall(b"y")
         second_client.shutdown(socket.SHUT_WR)
-        try:
-            service._put({
-                "name": "candidates", "sha256": hashlib.sha256(b"y").hexdigest(), "bytes": 1,
-            }, identity, second_server)
-        except AdmissionError as exc:
-            second_result = ("error", exc.exit_code, str(exc))
-        else:
-            second_result = ("ok",)
+
+        def upload_second():
+            try:
+                service._put({
+                    "name": "candidates", "sha256": hashlib.sha256(b"y").hexdigest(), "bytes": 1,
+                }, identity, second_server)
+            except AdmissionError as exc:
+                second_results.append(("error", exc.exit_code, str(exc)))
+            else:
+                second_results.append(("ok",))
+
+        # Supervised: a second put that waits for the first must not stop the finally block from sending EOF.
+        second_worker = threading.Thread(target=upload_second, name="second-buffered-put")
+        second_worker.start()
+        second_worker.join(THREAD_WATCHDOG_S)
+        assert not second_worker.is_alive(), "second put did not decide while the first was parked"
+        second_result = second_results[0]
         assert second_result[0:2] == ("error", ExitCode.REFUSAL)
         assert "breach configured disk floor" in second_result[2]
         assert json.loads(record_path.read_text(encoding="utf-8"))["remaining"] == 1
@@ -850,10 +860,13 @@ def test_disk_floor_keeps_full_reservation_while_first_body_is_buffered(tmp_path
         first_client.close()
         if second_client is not None:
             second_client.close()
+        worker.join(THREAD_WATCHDOG_S)
+        if second_worker is not None:
+            second_worker.join(THREAD_WATCHDOG_S)
         if second_server is not None:
             second_server.close()
-        worker.join(THREAD_WATCHDOG_S)
         assert not worker.is_alive(), "first upload worker did not exit"
+        assert second_worker is None or not second_worker.is_alive(), "second upload worker did not exit"
 
     assert first_result[0][0] == "ok"
     assert Path(first_result[0][1]["path"]).read_bytes() == b"x"
@@ -1562,6 +1575,40 @@ def test_put_refuses_live_symlink_reservation_without_following_it(tmp_path):
         assert reservation.name in str(linked.value)
         assert outside.read_bytes() == json.dumps(_upload_reservation_record("live")).encode()
         assert partial.read_bytes() == b"live bytes"
+    finally:
+        agent_verbs.fcntl.flock(owner_fd, agent_verbs.fcntl.LOCK_UN)
+        os.close(owner_fd)
+
+
+def test_put_refuses_live_fifo_reservation_without_waiting_for_a_writer(tmp_path):
+    service, identity, _checkout = _service(tmp_path)
+    _upload_policy(service, store_bytes=100, floors={"checkout": 0})
+    owner = service.paths.incoming_dir / ".upload-owner-live.lock"
+    owner_fd = os.open(owner, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600)
+    agent_verbs.fcntl.flock(owner_fd, agent_verbs.fcntl.LOCK_EX | agent_verbs.fcntl.LOCK_NB)
+    reservation = service.paths.incoming_dir / ".upload-reservation-live.json"
+    os.mkfifo(reservation, 0o600)
+    partial = service.paths.incoming_dir / "upload-part-live"
+    partial.write_bytes(b"live bytes")
+    outcomes = []
+
+    def attempt_put():
+        try:
+            service._put({"bytes": 1, "name": "candidates", "sha256": "a" * 64}, identity, object())
+        except AdmissionError as exc:
+            outcomes.append(exc)
+
+    # Daemon: an open that waits for a FIFO writer must fail this test, not hang the run.
+    worker = threading.Thread(target=attempt_put, name="fifo-reservation-put", daemon=True)
+    try:
+        worker.start()
+        worker.join(THREAD_WATCHDOG_S)
+        assert not worker.is_alive(), "put waited on a FIFO reservation record"
+        assert outcomes[0].exit_code == ExitCode.RUNNER_FAILURE
+        assert "live reservation is invalid" in str(outcomes[0])
+        assert reservation.name in str(outcomes[0])
+        assert partial.read_bytes() == b"live bytes"
+        assert reservation.exists()
     finally:
         agent_verbs.fcntl.flock(owner_fd, agent_verbs.fcntl.LOCK_UN)
         os.close(owner_fd)

@@ -440,7 +440,10 @@ class AgentVerbService:
                         )
                     record_path = self.paths.incoming_dir / record_name
                     try:
-                        record_fd = os.open(record_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+                        # O_NONBLOCK: a FIFO at the record name must reach the type check, not wait for a writer.
+                        record_fd = os.open(
+                            record_path, os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0),
+                        )
                     except OSError as exc:
                         raise self._upload_recovery_refusal(
                             record_name,

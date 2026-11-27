@@ -10,7 +10,7 @@ from fleetd.admission import AdmissionError, ExitCode
 from fleetd.agent_entry import DEFAULT_AGENT_STATE_DIR, _parser, agent_semver
 from fleetd.agent_protocol import read_frame, write_frame
 from fleetd.contracts import ContractError
-from test_agent_verbs import _service
+from test_agent_verbs import THREAD_WATCHDOG_S, _service
 
 
 def test_agent_entry_converts_supported_distribution_versions_to_semver():
@@ -62,17 +62,17 @@ def test_shipped_cli_probe_omits_lease_and_lease_refuses_without_c3b_providers(t
         finally:
             cli_finished.set()
 
-    cli = threading.Thread(target=run_cli)
+    # Daemon plus close-in-finally: a failed assertion must not leave a serving thread that hangs pytest at exit.
+    cli = threading.Thread(target=run_cli, daemon=True)
     cli.start()
-    assert server_ready.wait(3), "CLI server did not start before the failure watchdog"
-
-    # The CLI thread is not a daemon: a failed assertion that left the server open would hang pytest at exit.
     try:
+        assert server_ready.wait(THREAD_WATCHDOG_S), "CLI server did not start before the failure watchdog"
+
         probe_client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         probe_client.connect(str(socket_path))
         write_frame(probe_client, {"verb": "probe"})
         probe_client.shutdown(socket.SHUT_WR)
-        probe = read_frame(probe_client, 3)
+        probe = read_frame(probe_client, THREAD_WATCHDOG_S)
         probe_client.close()
         assert "lease" not in probe["capabilities"]
 
@@ -82,7 +82,7 @@ def test_shipped_cli_probe_omits_lease_and_lease_refuses_without_c3b_providers(t
             "verb": "lease", "lease_id": "controller-cli-lease", "container_name": "rg-test",
             "footprint": "tiny", "planned_cores": 1, "priority": "gate",
         })
-        refusal = read_frame(lease_client, 3)
+        refusal = read_frame(lease_client, THREAD_WATCHDOG_S)
         lease_client.close()
         assert "exit_code" not in refusal and "reason" not in refusal
         assert refusal["error"]["exit_code"] == 2
@@ -91,8 +91,8 @@ def test_shipped_cli_probe_omits_lease_and_lease_refuses_without_c3b_providers(t
         for server in servers:
             server.close()
 
-    assert cli_finished.wait(3), "CLI did not stop before the failure watchdog"
-    cli.join(timeout=3)
+    assert cli_finished.wait(THREAD_WATCHDOG_S), "CLI did not stop before the failure watchdog"
+    cli.join(timeout=THREAD_WATCHDOG_S)
     assert not cli.is_alive(), "CLI worker remained alive after close"
     assert results == [0]
 
