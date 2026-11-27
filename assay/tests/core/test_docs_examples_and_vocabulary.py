@@ -208,8 +208,10 @@ def test_consumers_covers_the_latest_two_verdict_schema_cuts():
 def test_b577_migration_note_names_the_one_time_resume_miss():
     changes = (REPO_ROOT / "CHANGES.md").read_text(encoding="utf-8")
     consumer_text = CONSUMERS.read_text(encoding="utf-8")
-    current_changes = _current_changes_text(changes)
-    for text in (consumer_text, current_changes):
+    # This one-time migration behavior remains part of public history after
+    # later releases; its documentation must not depend on the note staying
+    # under [Unreleased] or in the newest section.
+    for text in (consumer_text, changes):
         assert "run-local assay-injected `PYTHONPATH`" in text
         assert "re-execute once" in text
         assert "including when `PYTHONPATH` was absent before injection" in text
