@@ -317,13 +317,14 @@ import json
 import sys
 
 args = sys.argv[1:]
+operation = next((value for value in args if value in ("call", "get-property")), None)
 paths = {
     "dev-gates.slice": "/org/freedesktop/systemd1/unit/dev_gates_slice",
     "dev-interactive.slice": "/org/freedesktop/systemd1/unit/dev_interactive_slice",
 }
-if args[0] == "call":
+if operation == "call":
     value = paths[args[-1]]
-elif args[0] == "get-property":
+elif operation == "get-property":
     unit = next(unit for unit, path in paths.items() if path == args[-3])
     prop = args[-1]
     values = {
