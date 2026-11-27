@@ -664,6 +664,13 @@ def test_show_plan_lists_the_data_partitions(tmp_path):
     assert "Resolved plan table (GiB):" in rendered and "iobench-raw" not in rendered
 
 
+def test_show_plan_omits_legacy_false_iobench_key(tmp_path):
+    plan = _planner(tmp_path, {"root": "*", "iobench_raw_gb": False}).show_plan()
+
+    assert "iobench_raw_gb" not in plan["partitioning"]
+    assert not any(row["entry"] == "iobench raw" for row in plan["plan_table"])
+
+
 def test_customscript_carries_the_partitioning_object():
     config = Config(partitioning=LVM_PLAN, telegram_bot_token="", telegram_chat_id="")
     bundle = build_customscript_bundle(config)

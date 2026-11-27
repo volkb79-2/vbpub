@@ -844,6 +844,10 @@ class Installer:
         }
 
     def show_plan(self) -> dict[str, object]:
+        preview_partitioning = {
+            key: value for key, value in (self.config.partitioning or {}).items()
+            if key != "iobench_raw_gb"
+        }
         if self._is_btrfs_root():
             spec = self._disk_spec()
             subvolumes = [
@@ -857,7 +861,7 @@ class Installer:
                 "new_root_size_sectors": 0,
                 "root_shrink_check": "not_applicable",
                 "root_policy": "untouched",
-                "partitioning": self.config.partitioning or {},
+                "partitioning": preview_partitioning,
                 "data_partitions": [],
                 "data_subvolumes": subvolumes,
                 "plan_table": [],
@@ -965,7 +969,7 @@ class Installer:
                 else "not required"
             ),
             "root_policy": self._root_policy(),
-            "partitioning": self.config.partitioning or {},
+            "partitioning": preview_partitioning,
             "data_partitions": [
                 {"device": f"{self._partition_base}{number}", "start": start, "sectors": size,
                  "partlabel": data.partlabel}
@@ -2420,8 +2424,10 @@ MaxFileSec=1month
             ]
             if incomplete_swap:
                 raise InstallerError(
-                    "cannot safely retain or replace swap partition(s) with incomplete geometry: "
-                    + ", ".join(map(str, sorted(incomplete_swap)))
+                    self._swap_span_geometry_refusal(
+                        "cannot safely retain or replace swap partition(s) with incomplete geometry: "
+                        + ", ".join(map(str, sorted(incomplete_swap)))
+                    )
                 )
         spec = self._disk_spec()
         policy = self._root_policy()
@@ -2432,8 +2438,10 @@ MaxFileSec=1month
         ]
         if unknown_geometry:
             raise InstallerError(
-                "cannot safely resize root because partition geometry is missing for "
-                + ", ".join(map(str, sorted(unknown_geometry)))
+                self._swap_span_geometry_refusal(
+                    "cannot safely resize root because partition geometry is missing for "
+                    + ", ".join(map(str, sorted(unknown_geometry)))
+                )
             )
         overlapping_root = [
             number for number, entry in entries.items()
@@ -2444,8 +2452,10 @@ MaxFileSec=1month
         ]
         if overlapping_root:
             raise InstallerError(
-                "partition(s) overlap the current root extent "
-                f"({', '.join(map(str, sorted(overlapping_root)))}); refusing disk changes"
+                self._swap_span_geometry_refusal(
+                    "partition(s) overlap the current root extent "
+                    f"({', '.join(map(str, sorted(overlapping_root)))}); refusing disk changes"
+                )
             )
         unknown_after_root = [
             number for number, entry in entries.items()
@@ -2605,6 +2615,12 @@ MaxFileSec=1month
                     safety_facts=root_safety_facts,
                 )
         return partitions, target_root_size
+
+    def _swap_span_geometry_refusal(self, message: str) -> str:
+        """Name malformed live geometry as a swap-span refusal when benchmarking."""
+        if self.config.run_io_benchmark:
+            return f"io_benchmark_swap_span_geometry_mismatch: {message}"
+        return message
 
     def _disk_spec(self) -> layout_policy.DiskSpec:
         """The only supported root/data/swap geometry plan."""
@@ -3558,9 +3574,10 @@ MaxFileSec=1month
     ) -> None:
         """Forward sfdisk write + partx -a + udevadm settle + readback verify.
 
-        Shared by _apply_known_swap_shape() for the final planned pool and
-        swap entries, so there is exactly ONE raw-sfdisk write path. On a readback
-        mismatch it restores ``current_dump`` through _restore_partition_table()
+        Shared by _apply_known_swap_shape() for the planned pool, tail-swap
+        span, and regular swap entries, so there is exactly ONE raw-sfdisk
+        write path. On a readback mismatch it restores ``current_dump`` through
+        _restore_partition_table()
         and raises. Extracted verbatim from _apply_known_swap_shape(); the
         live-bug annotations below belong to that original block.
 

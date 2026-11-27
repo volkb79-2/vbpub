@@ -45,6 +45,7 @@ class SimDisk(HostActions):
         self.findmnt_output = "/dev/vda3 / ext4\n"
         self.swap_output = ""
         self.signatures: dict[str, str] = {}
+        self.partuuid_output = PARTUUID
         self.events: list[str] = []
         self.table_writes: list[dict[int, dict[str, str]]] = []
         self.crash_after_table_write: int | None = None
@@ -114,7 +115,7 @@ class SimDisk(HostActions):
         if name == "swapon" and "--show=NAME,TYPE,SIZE,PRIO" in argv:
             return self.swap_output
         if name == "blkid" and "PARTUUID" in argv:
-            return PARTUUID
+            return self.partuuid_output
         if name == "blkid" and "TYPE" in argv:
             return self.signatures.get(argv[-1], "")
         if name == "wipefs":
@@ -253,6 +254,21 @@ def test_schema_one_ext4_benchmark_refusal_reaches_root_aware_validation(tmp_pat
         invalid._validate_root_config()
 
 
+def test_benchmark_plan_refuses_an_unknown_partition_after_root_without_writing(tmp_path):
+    installer, disk = make(tmp_path)
+    disk.table[100] = {
+        "start": str(ROOT_START + ROOT_SIZE + 2048),
+        "size": "2048",
+        "type": LINUX,
+        "name": "foreign",
+    }
+
+    with pytest.raises(InstallerError, match="io_benchmark_swap_span_state_mismatch"):
+        installer._plan_swap_partitions()
+
+    assert not disk.table_writes
+
+
 def test_benchmark_off_does_not_wipe_or_run_a_span(tmp_path):
     installer, disk = make(tmp_path, run_io_benchmark=False)
     installer._run_io_benchmark()
@@ -368,6 +384,34 @@ def test_benchmark_requires_the_span_at_the_planned_partition_number(tmp_path):
     with pytest.raises(InstallerError, match="io_benchmark_swap_span_(identity|geometry|state)_mismatch"):
         installer._run_io_benchmark()
 
+    assert not disk.table_writes
+
+
+def test_benchmark_refuses_a_span_without_a_partuuid(tmp_path):
+    installer, disk = make(tmp_path)
+    make_span(installer, disk)
+    disk.partuuid_output = ""
+
+    with pytest.raises(InstallerError, match="io_benchmark_swap_span_identity_mismatch.*no PARTUUID"):
+        installer._run_io_benchmark()
+
+    assert not any(Path(action.argv[0]).name == "iobench-install-runner" for action in disk.planned)
+    assert not disk.table_writes
+
+
+def test_benchmark_refuses_a_resolved_device_outside_the_planned_span(tmp_path, monkeypatch):
+    installer, disk = make(tmp_path)
+    make_span(installer, disk)
+    monkeypatch.setattr(
+        installer,
+        "_swap_span_partition",
+        lambda: (99, 1, 2, "/dev/vda99", PARTUUID),
+    )
+
+    with pytest.raises(InstallerError, match="io_benchmark_swap_span_geometry_mismatch"):
+        installer._run_io_benchmark()
+
+    assert not any(Path(action.argv[0]).name == "iobench-install-runner" for action in disk.planned)
     assert not disk.table_writes
 
 
@@ -649,6 +693,29 @@ def test_no_tail_swap_span_is_warned_when_all_swap_is_retained_before_root(tmp_p
     assert not any(Path(action.argv[0]).name == "iobench-install-runner" for action in disk.planned)
 
 
+def test_no_tail_warning_still_completes_missing_data_layout(tmp_path):
+    installer, disk = make(
+        tmp_path,
+        swap_disk_total_gb=1,
+        swap_partition_count=1,
+        partitioning={"data": {"kind": "partitions", "volumes": [
+            {"size": 1, "fs": "ext4", "mount": "/data", "label": "DATA"},
+        ]}},
+    )
+    disk.load_entries({
+        2: {"start": "2048", "size": str(SECTORS_PER_GIB),
+            "type": installer_module.SWAP_TYPE_GUID, "name": ""},
+        3: disk.table[3],
+    })
+
+    installer._prepare_swap_span_benchmark()
+
+    assert step(installer)["status"] == "warned"
+    assert len(disk.table_writes) == 1
+    assert any(entry.get("name") == "DATA" for entry in disk.table.values())
+    assert not any(Path(action.argv[0]).name == "iobench-install-runner" for action in disk.planned)
+
+
 @pytest.mark.parametrize("stray_shape", ["span", "swap"])
 def test_no_tail_plan_refuses_a_stray_tail_partition(tmp_path, stray_shape):
     installer, disk = make(tmp_path, swap_disk_total_gb=1, swap_partition_count=1)
@@ -707,6 +774,21 @@ def test_benchmark_disabled_refuses_a_leftover_temporary_span(tmp_path):
 
     assert not disk.table_writes
     assert any(entry.get("name") == SWAP_SPAN_PARTLABEL for entry in disk.table.values())
+
+
+@pytest.mark.parametrize("allow_swap_span", [False, True])
+def test_plan_geometry_requires_an_explicit_expected_span(tmp_path, allow_swap_span):
+    installer, disk = make(tmp_path)
+    partitions, target_root = installer._plan_swap_partitions()
+    current = {number: dict(entry) for number, entry in disk.table.items()}
+    plan = installer._parse_partition_entries(
+        installer._write_sfdisk_plan(partitions, target_root, tail_swap_span=True)
+    )
+
+    with pytest.raises(InstallerError, match="io_benchmark_swap_span_geometry_mismatch"):
+        installer._validate_plan_geometry(
+            current, plan, target_root, allow_swap_span=allow_swap_span,
+        )
 
 
 def test_mixed_span_and_swap_table_is_refused_without_rewrite(tmp_path):
@@ -770,6 +852,34 @@ def test_incomplete_foreign_geometry_is_refused_before_span_conversion(tmp_path)
         installer._validate_swap_span_table_replacement(
             current, partitions, installer._planned_before_root(), target_root
         )
+
+    assert not disk.table_writes
+
+
+@pytest.mark.parametrize(
+    ("shape", "message"),
+    [
+        ("incomplete-swap", "cannot safely retain or replace swap partition"),
+        ("incomplete-foreign", "cannot safely resize root because partition geometry is missing"),
+        ("root-overlap", "partition(s) overlap the current root extent"),
+    ],
+)
+@pytest.mark.parametrize("run_benchmark", [False, True])
+def test_live_geometry_refusal_is_named_for_benchmark_plans(
+    tmp_path, monkeypatch, shape, message, run_benchmark,
+):
+    installer, disk = make(tmp_path, run_io_benchmark=run_benchmark)
+    root = dict(disk.table[3])
+    if shape == "root-overlap":
+        foreign = {"start": str(ROOT_START + 2048), "size": "2048", "type": LINUX}
+    else:
+        foreign = {"type": installer_module.SWAP_TYPE_GUID if shape == "incomplete-swap" else LINUX}
+    live = {3: root, 100: foreign}
+    monkeypatch.setattr(installer, "_live_partition_entries", lambda *_args: live)
+
+    expected = ("io_benchmark_swap_span_geometry_mismatch: " if run_benchmark else "") + message
+    with pytest.raises(InstallerError, match=re.escape(expected)):
+        installer._plan_swap_partitions()
 
     assert not disk.table_writes
 
