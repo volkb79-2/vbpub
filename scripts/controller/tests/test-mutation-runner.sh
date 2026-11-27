@@ -65,6 +65,7 @@ chmod 700 "$MUTATION_RUNNER_RESULTS" || fail 'could not restore result directory
 (( no_result_rc != 0 )) || fail 'worker without a result passed'
 not_contains "$ROOT/no-result.out" 'KILLED: missing-result'
 contains "$ROOT/no-result.out" 'worker ended without writing a result'
+contains "$ROOT/no-result.out" 'worker exited with status 70'
 
 export CONTROLLER_MUTATION_JOBS=1
 mutation_runner_init "$ROOT/duplicate" || fail 'valid width 1 was refused for duplicate case'
