@@ -55,6 +55,25 @@ from pathlib import Path
 args = sys.argv[1:]
 with Path(os.environ["DOCKER_ARGV_LOG"]).open("a", encoding="utf-8") as stream:
     stream.write(json.dumps(args) + "\n")
+
+def load_probe_state():
+    try:
+        state = json.loads(Path(os.environ["UNIT_PROBE_STATE"]).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {"containers": {}}
+    if not isinstance(state, dict) or not isinstance(state.get("containers"), dict):
+        return {"containers": {}}
+    return state
+
+def save_probe_state(state):
+    Path(os.environ["UNIT_PROBE_STATE"]).write_text(json.dumps(state), encoding="utf-8")
+
+def find_probe(state, target):
+    for probe in state["containers"].values():
+        if target in (probe["id"], probe["name"]):
+            return probe
+    return None
+
 is_unit_probe = bool(args and args[0] == "run" and any(
     "source=/run/dbus/system_bus_socket" in arg for arg in args
 ))
@@ -72,11 +91,15 @@ if args and args[0] == "inspect":
         raise SystemExit(int(os.environ["HOST_INSPECT_EXIT"]))
     with Path(os.environ["CALL_ORDER"]).open("a", encoding="utf-8") as stream:
         stream.write("unit-owner\n")
-    try:
-        probe = json.loads(Path(os.environ["UNIT_PROBE_STATE"]).read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    state = load_probe_state()
+    probe = find_probe(state, target)
+    if probe is None:
+        print(f"Error: No such object: {target}", file=sys.stderr)
         raise SystemExit(1)
-    if target not in (probe["id"], probe["name"]):
+    if probe.get("inspect_ambiguous_once"):
+        probe["inspect_ambiguous_once"] = False
+        save_probe_state(state)
+        print("Error: Docker daemon unavailable", file=sys.stderr)
         raise SystemExit(1)
     print("|".join((probe["id"], "/" + probe["name"], probe["owner"])))
     raise SystemExit(0)
@@ -95,10 +118,9 @@ if args and args[0] == "wait":
     raise SystemExit(int(os.environ.get("CGROUP_TRANSPORT_EXIT", "0")))
 if args and args[0] == "logs":
     output = os.environ["SYSTEMD_OUTPUT"]
-    try:
-        probe = json.loads(Path(os.environ["UNIT_PROBE_STATE"]).read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        probe = {}
+    state = load_probe_state()
+    probe = find_probe(state, args[1]) if len(args) > 1 else None
+    probe = probe or {}
     if probe.get("memory_stat_mount"):
         memory_stat_output = "\nASSAY_MEMORY_STAT_BEGIN\n"
         if os.environ["MEMORY_STAT_READ_ERROR"] == "1":
@@ -116,6 +138,13 @@ if args and args[0] == "logs":
     print(output)
     raise SystemExit(0)
 if args and args[0] == "rm":
+    state = load_probe_state()
+    target = args[-1]
+    for name, probe in list(state["containers"].items()):
+        if target in (probe["id"], probe["name"]):
+            del state["containers"][name]
+            break
+    save_probe_state(state)
     raise SystemExit(0)
 if is_unit_probe:
     with Path(os.environ["CALL_ORDER"]).open("a", encoding="utf-8") as stream:
@@ -129,15 +158,28 @@ if is_unit_probe:
         arg for arg in args
         if arg.startswith("--mount=type=bind,source=/sys/fs/cgroup")
     ]
-    probe = {"id": "f" * 64, "name": name, "owner": owner}
+    state = load_probe_state()
+    container_id = chr(ord("f") - len(state["containers"])) * 64
+    probe = {"id": container_id, "name": name, "owner": owner}
     if len(memory_stat_mounts) == 1:
         probe["memory_stat_mount"] = memory_stat_mounts[0]
+    if mode == "inspect-ambiguous-once" and memory_stat_mounts:
+        probe["inspect_ambiguous_once"] = True
+    if mode == "owner-mismatch":
+        probe["owner"] = "another-container"
     if mode == "collision":
         probe.update({"id": "a" * 64, "owner": "another-container"})
-    Path(os.environ["UNIT_PROBE_STATE"]).write_text(json.dumps(probe), encoding="utf-8")
+    absent_mount_failure = bool(memory_stat_mounts and mode == "mount-failure-absent")
+    if not absent_mount_failure:
+        state["containers"][name] = probe
+        save_probe_state(state)
     if mode in ("collision", "created-failure") or (
-        memory_stat_mounts and os.environ["MEMORY_STAT_MOUNT_FAILURE"] == "1"
-    ):
+        memory_stat_mounts and mode in (
+            "mount-failure-created", "inspect-ambiguous-once", "owner-mismatch"
+        )
+    ) or (memory_stat_mounts and os.environ["MEMORY_STAT_MOUNT_FAILURE"] == "1"):
+        raise SystemExit(125)
+    if absent_mount_failure:
         raise SystemExit(125)
     print(probe["id"])
     raise SystemExit(0)
@@ -249,6 +291,112 @@ raise SystemExit(2)
 
 def _unit_output(unit: str, properties: str) -> str:
     return f"ASSAY_UNIT_BEGIN={unit}\n{properties}\nASSAY_UNIT_END={unit}"
+
+
+def _unit_probe_script(argv_log: Path) -> str:
+    calls = [json.loads(line) for line in argv_log.read_text(encoding="utf-8").splitlines()]
+    unit_run = next(call for call in calls if call[0] == "run")
+    command_index = unit_run.index("-c")
+    assert unit_run[command_index - 1] == "sh"
+    return unit_run[command_index + 1]
+
+
+def _execute_unit_probe_script(
+    tmp_path: Path,
+    script: str,
+    memory_stat_path: Path,
+    *,
+    reader_mode: str = "normal",
+):
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir(exist_ok=True)
+    busctl = fake_bin / "busctl"
+    busctl.write_text(
+        r'''#!/usr/bin/env python3
+import json
+import sys
+
+args = sys.argv[1:]
+paths = {
+    "dev-gates.slice": "/org/freedesktop/systemd1/unit/dev_gates_slice",
+    "dev-interactive.slice": "/org/freedesktop/systemd1/unit/dev_interactive_slice",
+}
+if args[0] == "call":
+    value = paths[args[-1]]
+elif args[0] == "get-property":
+    unit = next(unit for unit, path in paths.items() if path == args[-3])
+    prop = args[-1]
+    values = {
+        "Id": unit,
+        "LoadState": "loaded",
+        "FragmentPath": f"/etc/systemd/system/{unit}",
+        "ControlGroup": "/dev.slice/dev-gates.slice",
+        "MemoryMax": 8589934592,
+        "MemoryHigh": 18446744073709551615,
+        "MemorySwapMax": 8589934592,
+        "MemoryCurrent": 7516192768,
+        "CPUQuotaPerSecUSec": 18446744073709551615,
+        "CPUWeight": 100,
+        "IOWeight": 100,
+    }
+    value = values[prop]
+else:
+    raise SystemExit(2)
+print(json.dumps({"data": value}))
+''',
+        encoding="utf-8",
+    )
+    busctl.chmod(0o755)
+    timeout = fake_bin / "timeout"
+    timeout.write_text(
+        r'''#!/usr/bin/env python3
+import json
+import os
+import sys
+from pathlib import Path
+
+args = sys.argv[1:]
+with Path(os.environ["TIMEOUT_LOG"]).open("a", encoding="utf-8") as stream:
+    stream.write(json.dumps(args) + "\n")
+while args and args[0].startswith("--"):
+    args.pop(0)
+if args and args[0].endswith("s"):
+    args.pop(0)
+if not args:
+    raise SystemExit(2)
+if args[0] == "awk":
+    if os.environ["READER_MODE"] == "timeout":
+        raise SystemExit(124)
+    if os.environ["READER_MODE"] == "fail":
+        raise SystemExit(2)
+os.execvpe(args[0], args, os.environ)
+''',
+        encoding="utf-8",
+    )
+    timeout.chmod(0o755)
+    executable_script = script.replace("/usr/bin/busctl", "busctl").replace(
+        "/tmp/host-memory.stat", str(memory_stat_path)
+    )
+    timeout_log = tmp_path / "timeout.argv"
+    proc = subprocess.run(
+        [
+            "sh",
+            "-c",
+            executable_script,
+            "assay-cgroup-unit-probe",
+            "dev-gates.slice",
+            "dev-interactive.slice",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        env={
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "TIMEOUT_LOG": str(timeout_log),
+            "READER_MODE": reader_mode,
+        },
+    )
+    return proc, timeout_log
 
 
 def test_unset_gates_tier_refuses_before_docker(tmp_path: Path):
@@ -802,6 +950,188 @@ def test_memory_stat_mount_failure_retries_unmounted_and_cleans_owned_probe(
         "io.assay.cgroup-parent.owner" in arg
         for arg in calls[run_indexes[0] + 1]
     )
+    state = json.loads((tmp_path / "unit-probe-state.json").read_text(encoding="utf-8"))
+    assert state["containers"] == {}
+
+
+def test_mount_failure_with_absent_container_retries_without_removal(
+    tmp_path: Path,
+):
+    proc, argv_log = run_probe(
+        tmp_path,
+        "OK",
+        slice_name="dev-gates.slice",
+        cgroup_values={"memory.current": "5368709120"},
+        memory_reserve_bytes=2147483648,
+        unit_probe_run_mode="mount-failure-absent",
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    calls = [json.loads(line) for line in argv_log.read_text(encoding="utf-8").splitlines()]
+    run_indexes = [index for index, call in enumerate(calls) if call[0] == "run"]
+    assert len(run_indexes) == 2
+    first_run, fallback_run = (calls[index] for index in run_indexes)
+    first_name = next(arg.split("=", 1)[1] for arg in first_run if arg.startswith("--name="))
+    assert any(
+        arg.startswith("--mount=type=bind,source=/sys/fs/cgroup")
+        for arg in first_run
+    )
+    assert not any(
+        arg.startswith("--mount=type=bind,source=/sys/fs/cgroup")
+        for arg in fallback_run
+    )
+    assert calls[run_indexes[0] + 1][0:2] == ["inspect", first_name]
+    assert not any(
+        call[0] == "rm" for call in calls[run_indexes[0] + 1:run_indexes[1]]
+    )
+    state = json.loads((tmp_path / "unit-probe-state.json").read_text(encoding="utf-8"))
+    assert state["containers"] == {}
+
+
+def test_ambiguous_mount_failure_inspect_refuses_then_exit_trap_removes_probe(
+    tmp_path: Path,
+):
+    proc, argv_log = run_probe(
+        tmp_path,
+        "OK",
+        slice_name="dev-gates.slice",
+        cgroup_values={"memory.current": "5368709120"},
+        memory_reserve_bytes=2147483648,
+        unit_probe_run_mode="inspect-ambiguous-once",
+    )
+
+    assert proc.returncode != 0
+    calls = [json.loads(line) for line in argv_log.read_text(encoding="utf-8").splitlines()]
+    run_calls = [call for call in calls if call[0] == "run"]
+    assert len(run_calls) == 1
+    probe_name = next(arg.split("=", 1)[1] for arg in run_calls[0] if arg.startswith("--name="))
+    assert probe_name in proc.stderr
+    assert [call for call in calls if call[0] == "rm"] == [
+        ["rm", "--force", "f" * 64]
+    ]
+    state = json.loads((tmp_path / "unit-probe-state.json").read_text(encoding="utf-8"))
+    assert state["containers"] == {}
+
+
+def test_owner_mismatch_after_mount_failure_refuses_without_removal(
+    tmp_path: Path,
+):
+    proc, argv_log = run_probe(
+        tmp_path,
+        "OK",
+        slice_name="dev-gates.slice",
+        memory_reserve_bytes=2147483648,
+        unit_probe_run_mode="owner-mismatch",
+    )
+
+    assert proc.returncode != 0
+    calls = [json.loads(line) for line in argv_log.read_text(encoding="utf-8").splitlines()]
+    run_calls = [call for call in calls if call[0] == "run"]
+    assert len(run_calls) == 1
+    probe_name = next(arg.split("=", 1)[1] for arg in run_calls[0] if arg.startswith("--name="))
+    assert probe_name in proc.stderr
+    assert not any(call[0] == "rm" for call in calls)
+    state = json.loads((tmp_path / "unit-probe-state.json").read_text(encoding="utf-8"))
+    assert list(state["containers"].values())[0]["owner"] == "another-container"
+
+
+def test_generated_probe_script_reads_only_gates_memory_stat_with_a_bound(
+    tmp_path: Path,
+):
+    reserved = tmp_path / "reserved"
+    reserved.mkdir()
+    proc, argv_log = run_probe(
+        reserved,
+        "OK",
+        slice_name="dev-gates.slice",
+        memory_reserve_bytes=2147483648,
+        memory_stat=(
+            "inactive_file 2147483648\n"
+            "slab_reclaimable 0\n"
+            "file_dirty 0\n"
+            "file_writeback 0\n"
+        ),
+    )
+    assert proc.returncode == 0, proc.stderr
+    script = _unit_probe_script(argv_log)
+    stat_file = tmp_path / "memory.stat.fixture"
+    stat_file.write_text(
+        "anon 4096\n"
+        "inactive_file 2147483648\n"
+        "slab_reclaimable 0\n"
+        "file_dirty 0\n"
+        "file_writeback 0\n",
+        encoding="utf-8",
+    )
+
+    valid_dir = tmp_path / "valid-execution"
+    valid_dir.mkdir()
+    valid, timeout_log = _execute_unit_probe_script(valid_dir, script, stat_file)
+    assert valid.returncode == 0, valid.stderr
+    lines = valid.stdout.splitlines()
+    gates_start = lines.index("ASSAY_UNIT_BEGIN=dev-gates.slice")
+    gates_end = lines.index("ASSAY_UNIT_END=dev-gates.slice")
+    interactive_start = lines.index("ASSAY_UNIT_BEGIN=dev-interactive.slice")
+    interactive_end = lines.index("ASSAY_UNIT_END=dev-interactive.slice")
+    gates_frame = lines[gates_start:gates_end + 1]
+    interactive_frame = lines[interactive_start:interactive_end + 1]
+    assert "ASSAY_MEMORY_STAT_BEGIN" in gates_frame
+    assert "ASSAY_MEMORY_STAT_END" in gates_frame
+    assert "ASSAY_MEMORY_STAT_BEGIN" not in interactive_frame
+    begin = gates_frame.index("ASSAY_MEMORY_STAT_BEGIN")
+    end = gates_frame.index("ASSAY_MEMORY_STAT_END")
+    assert gates_frame[begin + 1:end] == [
+        "inactive_file 2147483648",
+        "slab_reclaimable 0",
+        "file_dirty 0",
+        "file_writeback 0",
+    ]
+    reader_timeout_calls = [
+        json.loads(line)
+        for line in timeout_log.read_text(encoding="utf-8").splitlines()
+        if '"awk"' in line
+    ]
+    assert len(reader_timeout_calls) == 1
+    assert reader_timeout_calls[0][:2] == ["--kill-after=1s", "3s"]
+
+    absent_dir = tmp_path / "absent-execution"
+    absent_dir.mkdir()
+    absent_path = tmp_path / "absent-memory.stat"
+    absent, _ = _execute_unit_probe_script(absent_dir, script, absent_path)
+    assert absent.returncode == 0, absent.stderr
+    assert "ASSAY_MEMORY_STAT_BEGIN" not in absent.stdout
+
+    unreadable_dir = tmp_path / "unreadable-execution"
+    unreadable_dir.mkdir()
+    unreadable_path = tmp_path / "unreadable-memory.stat"
+    unreadable_path.mkdir()
+    unreadable, _ = _execute_unit_probe_script(unreadable_dir, script, unreadable_path)
+    assert unreadable.returncode == 0, unreadable.stderr
+    assert "ASSAY_MEMORY_STAT_READ_ERROR" in unreadable.stdout
+
+    failed_reader_dir = tmp_path / "failed-reader-execution"
+    failed_reader_dir.mkdir()
+    failed_reader, _ = _execute_unit_probe_script(
+        failed_reader_dir, script, stat_file, reader_mode="timeout"
+    )
+    assert failed_reader.returncode == 0, failed_reader.stderr
+    assert "ASSAY_MEMORY_STAT_READ_ERROR" in failed_reader.stdout
+
+    unreserved_dir = tmp_path / "unreserved"
+    unreserved_dir.mkdir()
+    _, unreserved_argv = run_probe(
+        unreserved_dir,
+        "OK",
+        slice_name="dev-gates.slice",
+    )
+    unreserved_script = _unit_probe_script(unreserved_argv)
+    unreserved_exec = tmp_path / "unreserved-execution"
+    unreserved_exec.mkdir()
+    unreserved, _ = _execute_unit_probe_script(
+        unreserved_exec, unreserved_script, stat_file
+    )
+    assert unreserved.returncode == 0, unreserved.stderr
+    assert "ASSAY_MEMORY_STAT_BEGIN" not in unreserved.stdout
 
 
 def test_dirty_and_writeback_subtract_reclaimable_memory_down_to_zero(
