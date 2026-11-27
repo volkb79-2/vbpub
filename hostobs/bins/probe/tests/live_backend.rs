@@ -824,15 +824,17 @@ fn every_end_outcome_and_its_code_reach_the_stored_record() {
         let now = STARTED + index * 120_000_000_000;
         backend.begin_turn(now);
         let begin = backend
-            .annotate(ConnId(4), &emitter(), &annotation(AnnotateKind::Begin, &key))
+            .annotate(
+                ConnId(4),
+                &emitter(),
+                &annotation(AnnotateKind::Begin, &key),
+            )
             .expect("begin");
         backend.begin_turn(now + 1_000);
         let mut end = annotation(AnnotateKind::End, &key);
         end.outcome = Some(outcome);
         end.code = Some(format!("c{index}"));
-        let reply = backend
-            .annotate(ConnId(4), &emitter(), &end)
-            .expect("end");
+        let reply = backend.annotate(ConnId(4), &emitter(), &end).expect("end");
         assert_eq!(reply.span, begin.span);
     }
 
@@ -906,11 +908,7 @@ fn a_turn_time_before_startup_refuses_appends_and_forgets_a_closed_connection() 
     let mut backend = annotating_backend(&temp, fixture_annotator());
     backend.begin_turn(STARTED + 1_000);
     backend
-        .annotate(
-            ConnId(4),
-            &emitter(),
-            &annotation(AnnotateKind::Begin, "a"),
-        )
+        .annotate(ConnId(4), &emitter(), &annotation(AnnotateKind::Begin, "a"))
         .expect("begin");
 
     backend.begin_turn(STARTED - 1);
