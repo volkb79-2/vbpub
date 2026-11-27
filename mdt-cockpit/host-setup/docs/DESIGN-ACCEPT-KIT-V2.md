@@ -254,8 +254,10 @@ id exactly, not its descendants, so `user.slice` and `dev-interactive.slice` rea
 that matched the access pattern *before* the ops filters, so it is non-zero whenever anything on the host is hot and proves nothing:
 `sz_ops_filter_passed = 0` while that unit's `memory.current` is above 1 MiB refuses that unit's floor (an unreadable filter is never "no hot pages").
 A seam fixture pins the chain: a cold page of the leaf counts 0, a young page of **another** leaf counts 0, and a young page of the leaf counts its
-folio size. **Preflight.** It requires `stats/sz_ops_filter_passed`, the `young` filter, the `ops_filters/` directory with its `allow` file, and
-`paddr` in `avail_operations` on the r1002 kernel, and refuses with exit 3 naming what is missing; it never falls back to `end − start`. **How many
+folio size. **Capability checks.** Setup requires `stats/sz_ops_filter_passed`, the `young` filter, the `ops_filters/` directory with its `allow` file,
+and an exact `paddr` line in `avail_operations` after creating context 0; the kernel lists one operation per line, and a refusal names every listed
+operation. Read-only preflight requires the exact `CONFIG_DAMON_PADDR=y` line in `/boot/config-$(uname -r)` when that file is readable; if it is absent
+or unreadable, it warns and setup's live `avail_operations` check remains authoritative. The kit never falls back to `end − start`. **How many
 schemes, and their cost.** One scheme per **leaf**, not per unit or slice: a slice has no own hot set. The complete input set is freshly enumerated and
 rewritten at setup, after warm-up and before step 0's settle window, and at every later step boundary. A boundary retry re-enumerates and rewrites the
 whole set before committing it to the running kdamond's `state`; after all attempts fail the boundary is INCONCLUSIVE. Setup retries the same full

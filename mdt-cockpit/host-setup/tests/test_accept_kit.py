@@ -370,6 +370,8 @@ class HotsetTests(unittest.TestCase):
         (self.tmp / "meminfo").write_text("MemTotal: 8388608 kB\n")
         self.dstat = self.tmp / "damon_stat"
         self.dstat.write_text("N\n")
+        self.boot_config = self.tmp / "boot-config"
+        self.boot_config.write_text("CONFIG_DAMON_PADDR=y\n")
         self.iomem = self.tmp / "iomem"
         self.iomem.write_text("00000000-1ffffffff : System RAM\n")
         self.ev = self.tmp / "ev"
@@ -384,7 +386,7 @@ class HotsetTests(unittest.TestCase):
         self.enterContext(mock.patch.dict(os.environ, {"PATH": f"{bindir}:{os.environ['PATH']}",
                                                        "CGPROFILE_CONTROL_SOCKET": str(self.tmp / "cgprofile-control.sock")}))
 
-    def tree(self, *, nr: int = 0, state: str = "off", avail: str = "vaddr paddr", filters: bool = True,
+    def tree(self, *, nr: int = 0, state: str = "off", avail: str = "vaddr\npaddr", filters: bool = True,
              stats: bool = True) -> None:
         """A fake /sys/kernel/mm/damon/admin: the kdamond's staged inputs as the kernel would expose them."""
         for idx in range(nr):
@@ -450,7 +452,7 @@ class HotsetTests(unittest.TestCase):
     def args(self, *extra: str) -> list[str]:
         return ["--evidence", str(self.ev), "--state", str(self.wal), "--units", self.units, "--admin", str(self.admin),
                 "--cgroup", str(self.cg), "--proc", str(self.tmp), "--iomem", str(self.iomem), "--lib", self.lib,
-                "--damon-stat", str(self.dstat), "--retry-delay", "0", *extra]
+                "--damon-stat", str(self.dstat), "--boot-config", str(self.boot_config), "--retry-delay", "0", *extra]
 
     def setup_user_topology(self, user_leaves: list[str] | None) -> F.DamonSysfsModel:
         self.units = "user.slice=user.slice docker.service=system.slice/docker.service"
@@ -469,7 +471,7 @@ class HotsetTests(unittest.TestCase):
     def topology_records(self) -> list[dict]:
         return [json.loads(line) for line in (self.ev / hs.TOPOLOGY_LOG).read_text().splitlines()]
 
-    def sysfs_model(self, *, count: int = 0, state: str = "off", avail: str = "vaddr paddr",
+    def sysfs_model(self, *, count: int = 0, state: str = "off", avail: str = "vaddr\npaddr",
                     stats: bool = True, filters: bool = True) -> F.DamonSysfsModel:
         model = F.DamonSysfsModel(self.admin, cgroup=self.cg, avail=avail, stats=stats, filters=filters)
         model.initialize(count=count, state=state)
@@ -554,18 +556,44 @@ class HotsetTests(unittest.TestCase):
         rc, out = run_hotset("off", *self.args())
         self.assertEqual(rc, 0, out)
         self.assertEqual((self.kd / "0" / "state").read_text().strip(), "off")
-        self.assertEqual(model.read(str(self.kd / "0" / "contexts" / "0" / "avail_operations")), "vaddr paddr")
+        self.assertEqual(model.read(str(self.kd / "0" / "contexts" / "0" / "avail_operations")), "vaddr\npaddr")
         hs.restore_owned_kdamond(str(self.admin), str(self.wal))
         self.assertEqual((self.kd / "nr_kdamonds").read_text().strip(), "0")
         self.assertFalse((self.kd / "0").exists(), "nr_kdamonds=0 removes the kdamond created by the model")
 
     def test_hotset_preflight_is_read_only_for_a_fresh_nr_zero_interface(self) -> None:
         self.sysfs_model()
+        self.assertEqual(self.boot_config.read_text(), "CONFIG_DAMON_PADDR=y\n")
         rc, out = run_hotset("preflight", *self.args())
         self.assertEqual(rc, 0, out)
         self.assertEqual((self.kd / "nr_kdamonds").read_text().strip(), "0")
         self.assertFalse(self.wal.exists())
         self.assertFalse((self.kd / "0").exists())
+
+    def test_hotset_preflight_refuses_config_without_damon_paddr(self) -> None:
+        self.sysfs_model()
+        self.boot_config.write_text("# CONFIG_DAMON_PADDR is not set\n")
+        rc, out = run_hotset("preflight", *self.args())
+        self.assertEqual(rc, 3, out)
+        self.assertIn(str(self.boot_config), out)
+        self.assertIn("exact line CONFIG_DAMON_PADDR=y", out)
+
+    def test_hotset_preflight_warns_and_continues_when_kernel_config_is_absent(self) -> None:
+        self.sysfs_model()
+        self.boot_config.unlink()
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = hs.main(["preflight", *self.args()])
+        self.assertEqual(rc, 0, out.getvalue() + err.getvalue())
+        self.assertIn(f"WARNING kernel config {self.boot_config} is absent", err.getvalue())
+        self.assertIn("setup's avail_operations check remains authoritative", err.getvalue())
+
+    def test_setup_accepts_paddr_after_vaddr_in_avail_operations(self) -> None:
+        model = self.sysfs_model(avail="vaddr\npaddr")
+        avail_path = self.kd / "0" / "contexts" / "0" / "avail_operations"
+        rc, out = run_hotset("setup", *self.args())
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(model.read(str(avail_path)), "vaddr\npaddr")
 
     def test_an_empty_preexisting_off_kdamond_is_taken_and_restored(self) -> None:
         self.sysfs_model(count=1)
@@ -683,10 +711,11 @@ class HotsetTests(unittest.TestCase):
         self.assertEqual((self.kd / "0" / "contexts" / "nr_contexts").read_text().strip(), "1")
 
     def test_a_kernel_without_paddr_refuses(self) -> None:
-        self.sysfs_model(avail="vaddr fvaddr")
+        self.sysfs_model(avail="vaddr\nfvaddr")
         rc, out = run_hotset("setup", *self.args())
         self.assertEqual(rc, 3, out)
         self.assertIn("has no paddr", out)
+        self.assertIn("[vaddr, fvaddr]", out)
 
     def test_a_kernel_without_sz_ops_filter_passed_refuses_never_end_minus_start(self) -> None:
         self.sysfs_model(stats=False)
@@ -1425,7 +1454,8 @@ fi
         p = subprocess.Popen([str(KIT / "accept-run.sh"), "--evidence", str(self.ev), "--warmup", "0", "--steps", "0",
                               "--dwell", "0"], env=dict(self.env, MDT_ACCEPT_INTERVAL="600", MDT_ACCEPT_MAX_TICKS="40"),
                              stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
-        self.addCleanup(p.wait)
+        self.addCleanup(p.wait, F.KIT_RUN_TIMEOUT)
+        self.addCleanup(p.terminate)
         deadline = time.monotonic() + F.KIT_RUN_TIMEOUT
         while p.poll() is None and time.monotonic() < deadline and not (self.ev / "samples.csv").exists():
             time.sleep(0.05)

@@ -1381,7 +1381,8 @@ for that evidence directory. Do not change another kdamond or `nr_kdamonds`.
    [ "$IMAGE_RC" = 0 ] && [ -n "$IMAGE_ID" ] || { echo "tester-unified:local image inspect failed (rc $IMAGE_RC): $IMAGE_ID" >&2; exit 1; }
    ```
 
-   The kit repeats its SSH, cgprofile, DAMON_STAT, DAMON sysfs presence/ownership, and DAMON capability checks read-only immediately before its first sysfs write.
+   The kit repeats its SSH, cgprofile, DAMON_STAT, and DAMON sysfs presence/ownership checks read-only immediately before setup. Preflight checks the
+   running kernel config for `CONFIG_DAMON_PADDR=y` when readable; after creating context 0, setup's `avail_operations` check is authoritative.
 
    **Snapshot before the run.** This block is standalone; run it as root on r1002 after preflight:
 

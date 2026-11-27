@@ -19,7 +19,9 @@ kernel's own periodic refresh would alias the scheme's 8 s apply interval (r2 N5
     accept-hotset.py sample          --step N      (same args)
     accept-hotset.py off|on                        (same args)
 
-`preflight` checks DAMON_STAT, cgprofilectl, sysfs presence/ownership, and paddr ranges without writing sysfs.
+`preflight` checks DAMON_STAT, cgprofilectl, sysfs presence/ownership, the running kernel config's DAMON_PADDR setting,
+and paddr ranges without writing sysfs. If the config file is absent or unreadable, setup's `avail_operations` check
+remains authoritative.
 `setup` checks existing daemon state/counts and refuses (exit 3) when DAMON_STAT is not `N`, when any kdamond is not `off`, when no
 empty off daemon can be taken, when the kernel lacks `paddr`/`stats/sz_ops_filter_passed`/the `ops_filters` chain,
 or when a live cgprofile session multiplexes kdamonds (4.4). It syncs owner/count/index records to the WAL before
@@ -233,11 +235,29 @@ def check_damon_sysfs(admin: str) -> None:
             raise Refusal(f"DAMON sysfs {path} is not readable and writable by uid {euid}; refusing")
 
 
+def check_kernel_config(path: str) -> None:
+    """Check the running kernel's config when it is available; setup checks the live DAMON capability."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            lines = fh.read().splitlines()
+    except FileNotFoundError:
+        print(f"accept-hotset: WARNING kernel config {path} is absent; continuing, setup's avail_operations check remains authoritative",
+              file=sys.stderr)
+        return
+    except (OSError, UnicodeError) as exc:
+        print(f"accept-hotset: WARNING cannot read kernel config {path}: {exc}; continuing, setup's avail_operations check remains authoritative",
+              file=sys.stderr)
+        return
+    if "CONFIG_DAMON_PADDR=y" not in lines:
+        raise Refusal(f"kernel config {path} does not contain the exact line CONFIG_DAMON_PADDR=y")
+
+
 def preflight(args) -> int:
     """Check all hot-set environmental facts without writing DAMON sysfs."""
     status = damon_stat_state(args.damon_stat)
     cgprofile_sessions()
     if not args.fixture:
+        check_kernel_config(args.boot_config)
         check_damon_sysfs(args.admin)
         entries_or_refuse(parse_units(args.units), args.cgroup)
         physical_ranges(args.iomem, mem_total_bytes(args.proc))
@@ -683,8 +703,9 @@ def setup(args) -> int:
         avail = read_lines(os.path.join(nrd, str(idx), "contexts", "0", "avail_operations"))
         if not avail:
             raise Refusal(f"kdamonds/{idx}/contexts/0/avail_operations is unreadable")
-        if "paddr" not in avail[0].split():
-            raise Refusal(f"avail_operations [{avail[0].strip()}] has no paddr: this kernel cannot monitor physical regions")
+        available = [line.strip() for line in avail]
+        if "paddr" not in available:
+            raise Refusal(f"avail_operations [{', '.join(available)}] has no paddr: this kernel cannot monitor physical regions")
         state_path = os.path.join(nrd, str(idx), "state")
         last_error: Exception | None = None
         for attempt in range(1, RETRY_ATTEMPTS + 1):
@@ -1039,6 +1060,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--iomem", default="/proc/iomem")
     ap.add_argument("--lib", default=DEFAULT_LIB)
     ap.add_argument("--damon-stat", default="/sys/module/damon_stat/parameters/enabled")
+    ap.add_argument("--boot-config", default=f"/boot/config-{os.uname().release}",
+                    help="running kernel config path (default: /boot/config-<uname -r>)")
     ap.add_argument("--kdamond", type=int, help="override the index the WAL records")
     ap.add_argument("--step", type=int, default=0)
     ap.add_argument("--retry-delay", type=retry_delay_seconds, default=DEFAULT_RETRY_DELAY,

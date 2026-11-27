@@ -237,7 +237,7 @@ class DamonSysfsModel:
     read/write in the wrong order fails against this fake as it does in sysfs.
     """
 
-    def __init__(self, admin: Path, *, cgroup: Path, avail: str = "vaddr paddr", stats: bool = True,
+    def __init__(self, admin: Path, *, cgroup: Path, avail: str = "vaddr\npaddr", stats: bool = True,
                  filters: bool = True) -> None:
         self.admin = Path(os.path.abspath(admin))
         self.cgroup = cgroup
