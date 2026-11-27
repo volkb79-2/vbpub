@@ -40,6 +40,7 @@ from .executor import (
     _job_id,
     _resolve_system_user,
 )
+from .agent_providers import DockerInspectionError, run_docker_command
 from .hostside import open_beneath
 
 _COMMIT_RE = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
@@ -70,6 +71,9 @@ _RUN_GATE_VERDICT_CODES = {
     "NOT_RUN": 3,
     "BUDGET_EXCEEDED": 4,
 }
+_DOCKER_SELECTOR_ENV = frozenset({
+    "DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_CONFIG", "DOCKER_TLS_VERIFY", "DOCKER_CERT_PATH",
+})
 _HELPER_BOOTSTRAP = (
     "import sys; root = sys.argv.pop(1); sys.path.insert(0, root); "
     "from fleetd.executor_worker import main; raise SystemExit(main())"
@@ -210,18 +214,15 @@ class DockerClient:
         self,
         timeout_s: float,
         *,
-        run: Callable[..., Any] = subprocess.run,
+        run: Callable[..., Any] | None = None,
     ) -> None:
         self.timeout_s = timeout_s
         self._run = run
 
     def command(self, *argv: str) -> CommandResult:
         try:
-            result = self._run(
-                ["docker", *argv], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE, text=False, check=False, timeout=self.timeout_s,
-            )
-        except (OSError, subprocess.TimeoutExpired) as exc:
+            result = run_docker_command(list(argv), self.timeout_s, runner=self._run)
+        except (DockerInspectionError, OSError, subprocess.TimeoutExpired, ValueError) as exc:
             raise AdmissionError(ExitCode.QUEUED_WITHDRAWN, f"Docker query failed: {exc}") from exc
         return CommandResult(result.returncode, result.stdout or b"", result.stderr or b"")
 
@@ -799,6 +800,20 @@ class HostJobWorker:
 
     def _environment(self) -> dict[str, str]:
         assert self.runner_identity is not None
+        for key in _DOCKER_SELECTOR_ENV:
+            if key in self.policy.env_values:
+                raise AdmissionError(
+                    ExitCode.REFUSAL,
+                    f"agent.toml.env_values.{key} cannot select the host Docker daemon or configuration",
+                )
+        extra = self.request.get("env")
+        if isinstance(extra, Mapping):
+            for key in _DOCKER_SELECTOR_ENV:
+                if key in extra:
+                    raise AdmissionError(
+                        ExitCode.REFUSAL,
+                        f"request env {key} cannot select the host Docker daemon or configuration",
+                    )
         path = os.environ.get("PATH", os.defpath)
         env = {
             "PATH": path,
@@ -809,8 +824,8 @@ class HostJobWorker:
             "RUN_GATE_ALLOW_MAIN_CHECKOUT": "1",
             "RUN_GATE_JOB": self.job_id,
             "ASSAY_GATE_HOST_REPO_ROOT": str(self.repo_root),
+            "DOCKER_HOST": "unix:///var/run/docker.sock",
         }
-        extra = self.request.get("env")
         if isinstance(extra, Mapping):
             for key, value in extra.items():
                 if isinstance(key, str) and isinstance(value, str):

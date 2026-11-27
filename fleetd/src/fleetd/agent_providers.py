@@ -36,6 +36,67 @@ class DockerInspectionError(RuntimeError):
     """Docker did not provide one complete, exact container inspection."""
 
 
+def run_docker_command(
+    arguments: list[str] | tuple[str, ...],
+    timeout_s: float,
+    *,
+    runner: Callable[..., Any] | None = None,
+    docker_binary: str = "/usr/bin/docker",
+) -> subprocess.CompletedProcess[bytes]:
+    """Run one bounded Docker query against the fixed local daemon.
+
+    All host-side Docker callers share this construction and environment.  A
+    supplied runner is a test seam; production always uses the bounded
+    process-group collector below.
+    """
+
+    timeout = _positive_timeout(timeout_s)
+    if (
+        not isinstance(docker_binary, str)
+        or not os.path.isabs(docker_binary)
+        or docker_binary.startswith("-")
+    ):
+        raise DockerInspectionError("Docker executable is invalid")
+    if not isinstance(arguments, (list, tuple)) or any(
+        not isinstance(argument, str) or not argument or "\x00" in argument
+        for argument in arguments
+    ):
+        raise DockerInspectionError("Docker arguments are invalid")
+    argv = [docker_binary, "--host", _DOCKER_HOST, *arguments]
+    try:
+        if runner is None:
+            result = _run_bounded(argv, timeout)
+        else:
+            result = runner(
+                argv,
+                check=False,
+                capture_output=True,
+                text=False,
+                timeout=timeout,
+                shell=False,
+                env=dict(_DOCKER_ENV),
+                cwd="/",
+                start_new_session=True,
+            )
+    except Exception as exc:
+        raise DockerInspectionError(f"Docker command failed: {exc}") from exc
+    try:
+        returncode = result.returncode
+        stdout = result.stdout
+        stderr = result.stderr
+    except Exception as exc:
+        raise DockerInspectionError("Docker runner returned an invalid result") from exc
+    if (
+        type(returncode) is not int
+        or not isinstance(stdout, bytes)
+        or not isinstance(stderr, bytes)
+    ):
+        raise DockerInspectionError("Docker runner returned an invalid result")
+    if len(stdout) > MAX_DOCKER_OUTPUT_BYTES or len(stderr) > MAX_DOCKER_OUTPUT_BYTES:
+        raise DockerInspectionError("Docker output exceeded MAX_DOCKER_OUTPUT_BYTES")
+    return subprocess.CompletedProcess(argv, returncode, stdout, stderr)
+
+
 def legacy_job_ids(
     directory: Path,
     *,
@@ -245,28 +306,11 @@ def _inspect_one(
     full_id_only: bool = False,
 ) -> dict[str, object] | None:
     _validate_target(target, full_id_only=full_id_only)
-    if (
-        not isinstance(docker_binary, str)
-        or not os.path.isabs(docker_binary)
-        or docker_binary.startswith("-")
-    ):
-        raise DockerInspectionError("Docker executable is invalid")
-    argv = [docker_binary, "--host", _DOCKER_HOST, "inspect", "--type=container", target]
     try:
-        if runner is None:
-            result = _run_bounded(argv, timeout_s)
-        else:
-            result = runner(
-                argv,
-                check=False,
-                capture_output=True,
-                text=False,
-                timeout=timeout_s,
-                shell=False,
-                env=dict(_DOCKER_ENV),
-                cwd="/",
-                start_new_session=True,
-            )
+        result = run_docker_command(
+            ["inspect", "--type=container", target], timeout_s,
+            runner=runner, docker_binary=docker_binary,
+        )
     except Exception as exc:
         raise DockerInspectionError(f"Docker inspect command failed: {exc}") from exc
     try:
@@ -281,8 +325,6 @@ def _inspect_one(
         or not isinstance(stderr_bytes, bytes)
     ):
         raise DockerInspectionError("Docker inspect runner returned an invalid result")
-    if len(stdout_bytes) > MAX_DOCKER_OUTPUT_BYTES or len(stderr_bytes) > MAX_DOCKER_OUTPUT_BYTES:
-        raise DockerInspectionError("Docker inspect output exceeded MAX_DOCKER_OUTPUT_BYTES")
     try:
         stdout = stdout_bytes.decode("utf-8", errors="strict")
         stderr = stderr_bytes.decode("utf-8", errors="strict")

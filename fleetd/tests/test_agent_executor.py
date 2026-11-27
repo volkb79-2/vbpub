@@ -520,7 +520,8 @@ def test_docker_client_queries_exact_job_label_and_accepts_only_explicit_missing
     docker = DockerClient(3, run=run)
     assert docker.job_containers("controller-run-1") == (container_id,)
     assert calls[0][0] == [
-        "docker", "ps", "-a", "--no-trunc", "--quiet", "--filter", "label=run-gate.job=controller-run-1",
+        "/usr/bin/docker", "--host", "unix:///var/run/docker.sock", "ps", "-a", "--no-trunc",
+        "--quiet", "--filter", "label=run-gate.job=controller-run-1",
     ]
     assert calls[0][1]["timeout"] == 3
 
@@ -554,6 +555,69 @@ def test_docker_client_queries_exact_job_label_and_accepts_only_explicit_missing
             run=lambda argv, **_kwargs: subprocess.CompletedProcess(argv, 1, b"", f"{detail}\n".encode()),
         )
         absent.remove_stopped(container_id)
+
+
+def test_executor_docker_client_uses_fixed_host_closed_environment_and_absolute_binary(monkeypatch):
+    calls = []
+
+    for name, value in {
+        "DOCKER_HOST": "tcp://attacker.example:2375",
+        "DOCKER_CONTEXT": "attacker-context",
+        "DOCKER_CONFIG": "/tmp/attacker-docker-config",
+        "DOCKER_TLS_VERIFY": "1",
+        "DOCKER_CERT_PATH": "/tmp/attacker-certs",
+    }.items():
+        monkeypatch.setenv(name, value)
+
+    def run(argv, **kwargs):
+        calls.append((list(argv), kwargs))
+        return subprocess.CompletedProcess(argv, 0, b"[]", b"")
+
+    DockerClient(2, run=run).command("version")
+
+    argv, kwargs = calls[0]
+    assert argv == ["/usr/bin/docker", "--host", "unix:///var/run/docker.sock", "version"]
+    assert kwargs["env"] == {"PATH": "/usr/bin:/bin", "HOME": "/nonexistent", "LC_ALL": "C"}
+    assert kwargs["cwd"] == "/"
+    assert kwargs["shell"] is False and kwargs["start_new_session"] is True
+    assert kwargs["timeout"] == 2
+    assert kwargs["check"] is False and kwargs["capture_output"] is True and kwargs["text"] is False
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("DOCKER_HOST", "tcp://attacker.example:2375"),
+        ("DOCKER_CONTEXT", "attacker-context"),
+        ("DOCKER_CONFIG", "/tmp/attacker-docker-config"),
+        ("DOCKER_TLS_VERIFY", "1"),
+        ("DOCKER_CERT_PATH", "/tmp/attacker-certs"),
+    ],
+)
+def test_lane_environment_uses_fixed_docker_endpoint_and_rejects_request_selectors(
+    tmp_path, name, value,
+):
+    request = _submit()
+    request["env"] = {}
+    worker, _runner, _job_dir, _checkout = _ready_worker(tmp_path, request=request)
+
+    environment = worker._environment()
+    assert environment["DOCKER_HOST"] == "unix:///var/run/docker.sock"
+    assert not ({"DOCKER_CONTEXT", "DOCKER_CONFIG", "DOCKER_TLS_VERIFY", "DOCKER_CERT_PATH"} & environment.keys())
+
+    worker.request["env"] = {name: value}
+    with pytest.raises(AdmissionError, match=name):
+        worker._environment()
+
+
+def test_lane_environment_refuses_host_allowed_docker_selector_by_name(tmp_path):
+    request = _submit()
+    request["env"] = {}
+    worker, _runner, _job_dir, _checkout = _ready_worker(tmp_path, request=request)
+    worker.policy.env_values["DOCKER_HOST"] = frozenset({"tcp://attacker.example:2375"})
+
+    with pytest.raises(AdmissionError, match="agent.toml.env_values.DOCKER_HOST"):
+        worker._environment()
 
 
 def test_executor_stop_records_cancel_intent_without_signaling_the_lane_group(tmp_path):
