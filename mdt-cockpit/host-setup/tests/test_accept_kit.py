@@ -296,6 +296,49 @@ class EvalTests(unittest.TestCase):
         self.assertIn("FLOOR docker.service=237M source=damon:215.0M x1.10 tested=every step", out)
         self.assertIn("docker.service=237M", re.search(r'DEV_HOST_MEMORY_MIN="([^"]*)"', out).group(1))
 
+    def test_slice_floors_are_info_only_and_never_enter_min_rows(self) -> None:
+        script = (KIT / "accept-run.sh").read_text()
+        match = re.search(r'^UNITS=\$\{MDT_ACCEPT_UNITS:-"([^"]+)"\}$', script, re.MULTILINE)
+        self.assertIsNotNone(match, "the default unit list in accept-run.sh must remain readable")
+        units = [item.partition("=")[0] for item in match.group(1).split()]
+        slice_units = [unit for unit in units if unit.endswith(".slice")]
+        hot = {unit: 4 * M for unit in units}
+        hot.update({"ssh.service": 10 * M, "docker.service": 220 * M, "containerd.service": 90 * M,
+                    "systemd-journald.service": 22 * M, "mdt-psi-guard.service": 5 * M,
+                    "cgprofiled.service": 4 * M})
+        hot["user.slice"] = 10 * M
+        hot["dev-interactive.slice"] = 500 * M
+        d = F.write_run(self.tmp / "slice-floors", steps=(0,), verdicts=("PASS",), hot=hot)
+
+        evaluated = ev.evaluate(d, None)
+        self.assertEqual(set(evaluated["floors"]), set(units))
+        for unit in units:
+            with self.subTest(unit=unit):
+                self.assertTrue(evaluated["floors"][unit]["proved"])
+        interactive_floor = evaluated["floors"]["dev-interactive.slice"]["floor"]
+        self.assertGreater(interactive_floor, ev.cap.DEDICATED_INTERACTIVE_MIN_DEFAULT)
+
+        rc, out = run_eval(str(d))
+        self.assertEqual(rc, 0, out)
+        self.assertNotIn("INCONCLUSIVE proposal", out)
+        self.assertRegex(out, r"K proposed=\d+M")
+        rows = re.search(r'DEV_HOST_MEMORY_MIN="([^"]*)"', out).group(1)
+        self.assertNotIn(".slice", rows)
+        self.assertIsNone(ev.cap.validate_host_memory_min(rows))
+        self.assertIn("docker.service=242M", rows)
+        for unit in slice_units:
+            with self.subTest(slice_info=unit):
+                floor = ev.size(evaluated["floors"][unit]["floor"])
+                self.assertIn(f"INFO floor {unit} measured floor={floor} proved=yes; not a "
+                              "DEV_HOST_MEMORY_MIN row; not applied (installed MemoryMin stays unchanged)", out)
+
+        evaluated["m"] = None  # a separate proposal refusal must retain the slice INFO lines
+        refused = io.StringIO()
+        with contextlib.redirect_stdout(refused):
+            self.assertEqual(ev.print_run(evaluated), "INCONCLUSIVE")
+        for unit in slice_units:
+            self.assertIn(f"INFO floor {unit} ", refused.getvalue())
+
     def test_a_dropped_topology_step_cannot_prove_a_floor_or_pass_as_a_missing_measurement(self) -> None:
         d = F.write_run(self.tmp / "topology-drop", steps=(0, 1), verdicts=("PASS", "PASS"))
         rows = list(csv.DictReader((d / "hotset.csv").open()))

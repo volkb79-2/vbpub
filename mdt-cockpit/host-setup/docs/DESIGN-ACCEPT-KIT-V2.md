@@ -291,8 +291,9 @@ unit keeps its table row and the eval names it. A candidate line includes the st
 and the derived `system.slice` floor is still summed post-raise under the 460M / 10 % bounds. **Proved, or only a candidate.** The squeeze runs with
 the **installed** floors, so a derived floor ≥ the installed row is *proved* when that unit's probes and ssh passed at every step with it in force; a
 derived floor **below** the installed row was never in force and is printed as `FLOOR <unit>=<v> source=damon candidate (installed <x>, untested)` —
-it enters the `host-setup.env` lines only commented out, and it is proved only by a run with it installed (§7 step 6). Losing a floor is safe (the
-host keeps its current, higher one); claiming one this run never exercised is not.
+for non-slice units it enters the `host-setup.env` lines only commented out and is proved only by a run with it installed (§7 step 6); measured
+`.slice` floors are INFO only, never `DEV_HOST_MEMORY_MIN` rows, and are not applied, so the installed slice MemoryMin stays unchanged. Losing a
+floor is safe (the host keeps its current, higher one); claiming one this run never exercised is not.
 
 **4.4 The `mdt-damon-stat` conflict (guide §5.3).** `units/mdt-damon-stat.conf` installs `/etc/tmpfiles.d/mdt-damon-stat.conf` writing `N` to
 `/sys/module/damon_stat/parameters/enabled` at boot (`host-setup.env.example:103`, `DAMON_STAT_DISABLE_DEFAULT="yes"`). At `Y`, `damon_stat` owns the

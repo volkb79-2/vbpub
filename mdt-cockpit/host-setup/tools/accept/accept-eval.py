@@ -452,10 +452,13 @@ def run_verdict(run: dict) -> str:
 
 
 def merged_floors(run: dict) -> dict[str, int]:
-    """5: the installed rows with every PROVED raise applied. A candidate row is genuinely below its installed one
-    (4.3), so it never enters -- F_new can only rise, and a floor this run never exercised never lowers K."""
-    merged = dict(run["installed"])
+    """5: DEV_HOST_MEMORY_MIN rows with every PROVED non-slice raise applied. A candidate row is genuinely below
+    its installed one (4.3), so it never enters -- F_new can only rise, and a floor this run never exercised never
+    lowers K. Slice floors are reported separately and never become rows in this variable."""
+    merged = {unit: value for unit, value in run["installed"].items() if not unit.endswith(".slice")}
     for unit, v in run["floors"].items():
+        if unit.endswith(".slice"):
+            continue
         if v["proved"]:
             merged[unit] = max(merged.get(unit, 0), v["floor"])
     return merged
@@ -472,6 +475,11 @@ def proposal(run: dict) -> tuple[str | None, int | None, int | None, int | None]
         return "no M: the deepest passing step has no U/init_current/W data", None, None, None
     if not man.get("mem_total", "").isdigit():
         return "manifest.env has no mem_total: F_new cannot be derived", None, None, None
+    base_min = (base.get("DEV_HOST_MEMORY_MIN") or "").strip()
+    base_min_error = cap.validate_host_memory_min(base_min)
+    if base_min_error:
+        return (f"install.sh's own derivation would refuse these rows: DEV_HOST_MEMORY_MIN: {base_min_error}",
+                None, None, None)
     rows = dict(base)
     merged = merged_floors(run)
     rows["DEV_HOST_MEMORY_MIN"] = " ".join(f"{u}={size(v)}" for u, v in sorted(merged.items()))
@@ -539,6 +547,12 @@ def print_run(run: dict) -> str:
         state = st.get("verdict", "INCONCLUSIVE")
         k = f"K={size(k0 - n * step_bytes)}" if k0 is not None and state in ("PASS", "FAIL") else ""
         print(f"STEP {n}{' ' + k if k else ''} {state} {st.get('detail', '')}")
+    for unit in sorted(run["floors"]):
+        if unit.endswith(".slice"):
+            v = run["floors"][unit]
+            proved = "yes" if v["proved"] else "no"
+            print(f"INFO floor {unit} measured floor={size(v['floor'])} proved={proved}; not a "
+                  "DEV_HOST_MEMORY_MIN row; not applied (installed MemoryMin stays unchanged)")
     verdict = run_verdict(run)
     if verdict == "FAIL":
         who = f"K0={size(k0)}" if k0 is not None else "K0"

@@ -2074,3 +2074,13 @@ candidate as untested.
 This is accepted because samples must not stage sysfs scheme inputs or issue a commit. A future live acceptance run may therefore leave `user.slice`
 untested if its session topology changes during a step. No host-memory reserve may be lowered from an untested candidate; record the existing installed
 floor in the result and keep it in `host-setup.env`.
+
+## MDT-115 - P-plat-19m acceptance run PSI peaks followed smoke-lane cleanup (2026-11-27)
+
+**Status:** OPEN (recorded result of one run; no fix proposed).
+
+Run `accept-20261127T120405Z-1` on r1002 at head `ca4b64ddb`: step 0 (K=1560M) PASS with all PSI 0.00; step 1 (K=1432M) FAIL, `system.some`/`system.full` 1.46 > 1.00, and the load criterion was INCONCLUSIVE (62 %, needs 80 %).
+
+The one smoke lane ran 12:23:21-12:25:25Z; its judged window was 12:23:45-12:30:47Z. `system.some` peaked 0.54 while the lane lived; the failing peaks 1.03 (12:26:10) and 1.46 (12:30:06) came after its containers and checkout were removed.
+
+Reading: a recorded result of ONE run; after-effects of the lane are not strictly excluded. No fix is proposed here.
