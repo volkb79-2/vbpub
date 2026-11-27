@@ -221,6 +221,7 @@ export function createController(pi, injected = {}, overrides = {}) {
 	let initialized = false;
 	let compactionAttempt = null;
 	let alertRetryTimer = null;
+	let pollingInbox = false;
 	const wakeupTimers = new Map();
 	const monitors = new Map();
 
@@ -285,7 +286,7 @@ export function createController(pi, injected = {}, overrides = {}) {
 	}
 
 	function inject(customType, content) {
-		pi.sendMessage({ customType, content, display: true }, { triggerTurn: true, deliverAs: "followUp" });
+		return pi.sendMessage({ customType, content, display: true }, { triggerTurn: true, deliverAs: "followUp" });
 	}
 
 	function boundedClaimRead(filename) {
@@ -309,11 +310,11 @@ export function createController(pi, injected = {}, overrides = {}) {
 		log("inbox_rejected", { reason });
 	}
 
-	function noticeInboundHeld(state, peer) {
+	async function noticeInboundHeld(state, peer) {
 		const windowId = String(Math.floor(now() / config.loopWindowMs));
 		if (state.inboundNotices[peer] === windowId) return;
 		try {
-			inject("pi-ctl-notice", `Inbound peer messages from ${peer} are held by the rate limit. They remain queued and will be reconsidered after the current rate window. No reply was sent.`);
+			await inject("pi-ctl-notice", `Inbound peer messages from ${peer} are held by the rate limit. They remain queued and will be reconsidered after the current rate window. No reply was sent.`);
 			state.inboundNotices[peer] = windowId;
 			writeGuardState(state);
 			log("inbox_held_notice", { from: peer });
@@ -322,7 +323,7 @@ export function createController(pi, injected = {}, overrides = {}) {
 		}
 	}
 
-	function processClaim(claimPath) {
+	async function processClaim(claimPath) {
 		let stat;
 		try {
 			stat = fs.lstatSync(claimPath);
@@ -367,7 +368,7 @@ export function createController(pi, injected = {}, overrides = {}) {
 		const recent = pruneTimes(Array.isArray(guard.inbound[envelope.from]) ? guard.inbound[envelope.from] : [], time, config.loopWindowMs);
 		if (recent.length >= config.inboundLimit) {
 			guard.inbound[envelope.from] = recent;
-			noticeInboundHeld(guard, envelope.from);
+			await noticeInboundHeld(guard, envelope.from);
 			return false;
 		}
 		const body = Buffer.from(envelope.body, "utf8");
@@ -376,7 +377,7 @@ export function createController(pi, injected = {}, overrides = {}) {
 		const content = `${PEER_MESSAGE_HEADER(envelope.from)}${cappedBody}${truncated ? `\n[Message truncated at ${config.maxMessageBytes} bytes.]` : ""}`;
 		try {
 			// The file has already been renamed into processing/<name> before injection.
-			inject("pi-ctl-inbox", content);
+			await inject("pi-ctl-inbox", content);
 		} catch {
 			log("inbox_inject_error", { from: envelope.from });
 			return false;
@@ -405,26 +406,32 @@ export function createController(pi, injected = {}, overrides = {}) {
 		}
 	}
 
-	function pollInbox() {
+	async function pollInbox() {
 		if (stopped) return { claimed: 0, delivered: 0 };
+		if (pollingInbox) return { claimed: 0, delivered: 0 };
+		pollingInbox = true;
 		let claimed = 0;
 		let delivered = 0;
-		for (const file of regularMessageFiles(dirs.processing)) {
-			if (processClaim(path.join(dirs.processing, file))) delivered++;
-		}
-		for (const file of regularMessageFiles(dirs.ownInbox)) {
-			const source = path.join(dirs.ownInbox, file);
-			const claimPath = path.join(dirs.processing, `${makeId()}.msg`);
-			try {
-				// Claim-before-inject makes the processing directory the durable retry queue.
-				fs.renameSync(source, claimPath);
-				claimed++;
-				if (processClaim(claimPath)) delivered++;
-			} catch (error) {
-				if (error?.code !== "ENOENT") log("inbox_claim_error", { reason: "claim rename failed" });
+		try {
+			for (const file of regularMessageFiles(dirs.processing)) {
+				if (await processClaim(path.join(dirs.processing, file))) delivered++;
 			}
+			for (const file of regularMessageFiles(dirs.ownInbox)) {
+				const source = path.join(dirs.ownInbox, file);
+				const claimPath = path.join(dirs.processing, `${makeId()}.msg`);
+				try {
+					// Claim-before-inject makes the processing directory the durable retry queue.
+					fs.renameSync(source, claimPath);
+					claimed++;
+					if (await processClaim(claimPath)) delivered++;
+				} catch (error) {
+					if (error?.code !== "ENOENT") log("inbox_claim_error", { reason: "claim rename or delivery failed" });
+				}
+			}
+			return { claimed, delivered };
+		} finally {
+			pollingInbox = false;
 		}
-		return { claimed, delivered };
 	}
 
 	function readWakeups() {
@@ -440,7 +447,7 @@ export function createController(pi, injected = {}, overrides = {}) {
 		atomicWrite(fs, path, wakeupFile, `${JSON.stringify(entries)}\n`);
 	}
 
-	function fireWakeup(id) {
+	async function fireWakeup(id) {
 		const entries = readWakeups();
 		const index = entries.findIndex((entry) => entry.id === id);
 		if (index < 0) return false;
@@ -449,7 +456,7 @@ export function createController(pi, injected = {}, overrides = {}) {
 		writeWakeups(entries);
 		wakeupTimers.delete(id);
 		try {
-			inject("pi-ctl-wakeup", `[Wake-up ${entry.id}] ${entry.prompt}`);
+			await inject("pi-ctl-wakeup", `[Wake-up ${entry.id}] ${entry.prompt}`);
 			log("wakeup_fired", { id: entry.id });
 			return true;
 		} catch {
@@ -458,17 +465,19 @@ export function createController(pi, injected = {}, overrides = {}) {
 		}
 	}
 
-	function armWakeups() {
+	async function armWakeups() {
 		for (const handle of wakeupTimers.values()) timers.clearTimeout(handle);
 		wakeupTimers.clear();
 		const entries = readWakeups();
 		for (const entry of entries) {
 			const delay = Math.max(0, entry.dueAt - now());
 			if (delay === 0) {
-				fireWakeup(entry.id);
+				await fireWakeup(entry.id);
 				continue;
 			}
-			const handle = timers.setTimeout(() => fireWakeup(entry.id), delay);
+			const handle = timers.setTimeout(() => {
+				void fireWakeup(entry.id).catch(() => log("wakeup_error", { id: entry.id }));
+			}, delay);
 			wakeupTimers.set(entry.id, handle);
 		}
 	}
@@ -485,7 +494,9 @@ export function createController(pi, injected = {}, overrides = {}) {
 		const entry = { id: `wake-${makeId()}`, prompt, createdAt: time, dueAt: time + delaySeconds * 1000 };
 		entries.push(entry);
 		writeWakeups(entries);
-		const handle = timers.setTimeout(() => fireWakeup(entry.id), entry.dueAt - now());
+		const handle = timers.setTimeout(() => {
+			void fireWakeup(entry.id).catch(() => log("wakeup_error", { id: entry.id }));
+		}, entry.dueAt - now());
 		wakeupTimers.set(entry.id, handle);
 		log("wakeup_scheduled", { id: entry.id, delaySeconds });
 		return entry;
@@ -515,12 +526,12 @@ export function createController(pi, injected = {}, overrides = {}) {
 		atomicWrite(fs, path, monitorFile, `${JSON.stringify(active)}\n`);
 	}
 
-	function recoverMonitors() {
+	async function recoverMonitors() {
 		const previous = readMonitorState();
 		if (previous.length > 0) {
 			const ids = previous.map((monitor) => monitor.id).join(", ");
 			try {
-				inject("pi-ctl-monitor", `Monitors ${ids} were not persisted and died when the previous pi session ended. Re-arm any watcher still needed.`);
+				await inject("pi-ctl-monitor", `Monitors ${ids} were not persisted and died when the previous pi session ended. Re-arm any watcher still needed.`);
 				log("monitor_restart_notice", { count: previous.length });
 				atomicWrite(fs, path, monitorFile, "[]\n");
 			} catch {
@@ -571,12 +582,12 @@ export function createController(pi, injected = {}, overrides = {}) {
 		if (monitor.flushTimer !== null || monitor.finished) return;
 		monitor.flushTimer = timers.setTimeout(() => {
 			monitor.flushTimer = null;
-			flushMonitor(monitor);
+			return flushMonitor(monitor);
 		}, Math.max(0, delay));
 	}
 
-	function finishMonitorIfDrained(monitor) {
-		if (!monitor.processClosed || monitor.pendingLines.length > 0) return;
+	async function finishMonitorIfDrained(monitor, fromFlush = false) {
+		if (!monitor.processClosed || monitor.pendingLines.length > 0 || (monitor.flushing && !fromFlush)) return;
 		if (monitor.finalNotice === null) {
 			monitor.finished = true;
 			monitors.delete(monitor.id);
@@ -585,7 +596,7 @@ export function createController(pi, injected = {}, overrides = {}) {
 		const message = monitor.finalNotice;
 		monitor.finalNotice = null;
 		try {
-			inject("pi-ctl-monitor", message);
+			await inject("pi-ctl-monitor", message);
 			log("monitor_notice", { id: monitor.id, reason: monitor.endReason });
 		} catch {
 			monitor.finalNotice = message;
@@ -597,29 +608,38 @@ export function createController(pi, injected = {}, overrides = {}) {
 		monitors.delete(monitor.id);
 	}
 
-	function flushMonitor(monitor) {
-		if (monitor.finished) return;
-		const time = now();
-		monitor.sentAt = pruneTimes(monitor.sentAt, time, 60_000);
-		if (monitor.pendingLines.length > 0) {
-			if (monitor.sentAt.length >= CONFIG_DEFAULTS.monitorRatePerMinute) {
-				queueMonitorFlush(monitor, monitor.sentAt[0] + 60_000 - time);
+	async function flushMonitor(monitor) {
+		if (monitor.finished || monitor.flushing) return;
+		monitor.flushing = true;
+		try {
+			const time = now();
+			monitor.sentAt = pruneTimes(monitor.sentAt, time, 60_000);
+			if (monitor.pendingLines.length > 0) {
+				if (monitor.sentAt.length >= CONFIG_DEFAULTS.monitorRatePerMinute) {
+					queueMonitorFlush(monitor, monitor.sentAt[0] + 60_000 - time);
+					return;
+				}
+				const lines = monitor.pendingLines.splice(0, CONFIG_DEFAULTS.monitorBatchLines);
+				try {
+					await inject("pi-ctl-monitor", `[Monitor ${monitor.id} output]\n${lines.join("\n")}`);
+					monitor.sentAt.push(now());
+					log("monitor_batch", { id: monitor.id, lines: lines.length });
+				} catch {
+					monitor.pendingLines.unshift(...lines);
+					log("monitor_inject_error", { id: monitor.id });
+				}
+				if (monitor.pendingLines.length > 0) queueMonitorFlush(monitor, CONFIG_DEFAULTS.monitorFlushMs);
+				else await finishMonitorIfDrained(monitor, true);
 				return;
 			}
-			const lines = monitor.pendingLines.splice(0, CONFIG_DEFAULTS.monitorBatchLines);
-			try {
-				inject("pi-ctl-monitor", `[Monitor ${monitor.id} output]\n${lines.join("\n")}`);
-				monitor.sentAt.push(time);
-				log("monitor_batch", { id: monitor.id, lines: lines.length });
-			} catch {
-				monitor.pendingLines.unshift(...lines);
-				log("monitor_inject_error", { id: monitor.id });
+			await finishMonitorIfDrained(monitor, true);
+		} finally {
+			monitor.flushing = false;
+			if (!monitor.finished && monitor.flushTimer === null &&
+				(monitor.pendingLines.length > 0 || monitor.processClosed)) {
+				queueMonitorFlush(monitor, monitor.pendingLines.length > 0 ? CONFIG_DEFAULTS.monitorFlushMs : 0);
 			}
-			if (monitor.pendingLines.length > 0) queueMonitorFlush(monitor, CONFIG_DEFAULTS.monitorFlushMs);
-			else finishMonitorIfDrained(monitor);
-			return;
 		}
-		finishMonitorIfDrained(monitor);
 	}
 
 	function requestMonitorStop(monitor, reason) {
@@ -668,7 +688,7 @@ export function createController(pi, injected = {}, overrides = {}) {
 		}
 		log("monitor_exit", { id: monitor.id, code: code ?? null, signal: signal ?? null, isolationFailure });
 		if (monitor.pendingLines.length > 0) queueMonitorFlush(monitor, 0);
-		else finishMonitorIfDrained(monitor);
+		else void finishMonitorIfDrained(monitor);
 	}
 
 	function verifyWrapper() {
@@ -704,6 +724,7 @@ export function createController(pi, injected = {}, overrides = {}) {
 			pendingLines: [],
 			sentAt: [],
 			flushTimer: null,
+			flushing: false,
 			expiryTimer: null,
 			processClosed: false,
 			finished: false,
@@ -737,7 +758,7 @@ export function createController(pi, injected = {}, overrides = {}) {
 		});
 		monitor.child.on("error", (error) => closeMonitor(monitor, null, null, error));
 		monitor.child.on("close", (code, signal) => closeMonitor(monitor, code, signal));
-		monitor.expiryTimer = timers.setTimeout(() => {
+		monitor.expiryTimer = timers.setTimeout(async () => {
 			monitor.expiryTimer = null;
 			monitor.endReason = "expired";
 			monitor.stopRequested = true;
@@ -750,7 +771,7 @@ export function createController(pi, injected = {}, overrides = {}) {
 			if (!monitor.expiryNoticeSent) {
 				monitor.expiryNoticeSent = true;
 				try {
-					inject("pi-ctl-monitor", `Monitor ${id} expired after ${maxSeconds} seconds. Re-arm if still needed.`);
+					await inject("pi-ctl-monitor", `Monitor ${id} expired after ${maxSeconds} seconds. Re-arm if still needed.`);
 					log("monitor_expired", { id });
 				} catch {
 					monitor.expiryNoticeSent = false;
@@ -925,7 +946,7 @@ export function createController(pi, injected = {}, overrides = {}) {
 		try {
 			ctx.compact({
 				customInstructions: compactionInstructions(ctx),
-				onComplete: () => {
+				onComplete: async () => {
 					if (attempt.settled) return;
 					attempt.settled = true;
 					compactionAttempt = null;
@@ -933,7 +954,7 @@ export function createController(pi, injected = {}, overrides = {}) {
 					if (afterTokens !== null && afterTokens >= config.compactAt) recordCompactionFailure("context remained above the threshold", afterTokens);
 					else recordCompactionSuccess(afterTokens);
 					try {
-						inject("pi-ctl-resume", `[Resume after compaction] Compaction completed. Run scripts/controller/resume-read.sh ${name}, then continue the original goal and the in-flight work.`);
+						await inject("pi-ctl-resume", `[Resume after compaction] Compaction completed. Run scripts/controller/resume-read.sh ${name}, then continue the original goal and the in-flight work.`);
 					} catch {
 						log("compaction_resume_inject_error", {});
 					}
@@ -1092,24 +1113,22 @@ export function createController(pi, injected = {}, overrides = {}) {
 	};
 	pi.registerTool(stopMonitorTool);
 
-	pi.on("session_start", () => {
+	pi.on("session_start", async () => {
 		stopped = false;
 		claimLock();
 		log("start", { name, pid });
 		if (!initialized) {
-			recoverMonitors();
+			await recoverMonitors();
 			initialized = true;
 		}
 		if (readCompactionState().alertPending) attemptCompactionAlert();
-		pollInbox();
-		armWakeups();
+		await pollInbox();
+		await armWakeups();
 		if (pollTimer !== null) timers.clearInterval(pollTimer);
 		pollTimer = timers.setInterval(() => {
-			try {
-				pollInbox();
-			} catch {
+			void pollInbox().catch(() => {
 				log("inbox_poll_error", { reason: "poll failed" });
-			}
+			});
 		}, config.pollMs);
 	});
 	pi.on("turn_end", (_event, ctx) => {

@@ -32,14 +32,14 @@ if ! CONTROLLER_TEST_PARALLEL_OD_STARTS=0 bash "$SCRIPT_DIR/test-wrappers.sh" > 
   exit 1
 fi
 echo 'PASS unmutated wrapper tests before wrapper mutation checks'
-for baseline in test-job-check.sh test-hardening-tools.sh test-gate-slots.sh test-pi-impl.sh test-pi-pidns.sh test-pi-review.sh; do
+for baseline in test-job-check.sh test-hardening-tools.sh test-gate-slots.sh test-pi-impl.sh test-pi-pidns.sh test-pi-review.sh test-pi-ctl.sh; do
   if ! bash "$SCRIPT_DIR/$baseline" > "$ROOT/${baseline%.sh}-unmutated.log" 2>&1; then
     cat "$ROOT/${baseline%.sh}-unmutated.log" >&2
     echo "FAIL: unmutated $baseline must pass before its mutants are judged" >&2
     exit 1
   fi
 done
-echo 'PASS unmutated job-check, hardening, gate-slot, pi-impl, pi-pidns and pi-review tests before their mutation checks'
+echo 'PASS unmutated job-check, hardening, gate-slot, pi-impl, pi-pidns, pi-review and pi-ctl tests before their mutation checks'
 export CONTROLLER_TEST_PARALLEL_OD_STARTS=0
 
 expect_killed mutation-runner-missing-result \
@@ -631,5 +631,10 @@ done
 for profile_mutant in image-regex work-mount; do
   expect_killed "dev-profile-$profile_mutant" \
     env DEV_PROFILE_SCRIPT="$ROOT/mutants/scripts/controller/dev-profile-$profile_mutant" "${TESTER_VENV:?}/bin/python" -m pytest -x -q -p no:cacheprovider "$SCRIPT_DIR/test_dev.py"
+done
+for pi_ctl_mutant in claim-before-inject name-validation agent-end-only wrapper-required; do
+  expect_killed "pi-ctl-$pi_ctl_mutant" \
+    env PI_CTL_CORE_MODULE="$ROOT/mutants/scripts/controller/pi-ctl-$pi_ctl_mutant/core.mjs" \
+      bash "$SCRIPT_DIR/test-pi-ctl.sh"
 done
 mutation_runner_finish || exit $?

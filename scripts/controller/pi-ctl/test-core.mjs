@@ -32,7 +32,7 @@ function fixture(envExtra = {}) {
 		registerTool(tool) {
 			tools.set(tool.name, tool);
 		},
-		sendMessage(message, options) {
+		async sendMessage(message, options) {
 			onSend?.(message, options);
 			if (sendsBeforeThrow > 0) {
 				sendsBeforeThrow--;
@@ -103,8 +103,9 @@ function fixture(envExtra = {}) {
 		fireTimeout(task) {
 			assert.ok(timeoutTasks.has(task));
 			timeoutTasks.delete(task);
-			task.fn();
+			return task.fn();
 		},
+		async flushPromises() { await new Promise((resolve) => setImmediate(resolve)); },
 		findTimeout(ms) { return [...timeoutTasks].find((task) => task.ms === ms); },
 		get timeoutTasks() { return [...timeoutTasks]; },
 		get intervalTasks() { return [...intervalTasks]; },
@@ -142,7 +143,7 @@ test("send_message validates recipient names, rate-limits peers, and never logs 
 	assert.doesNotMatch(log, /private-body-marker/);
 });
 
-test("claims inbox messages before injecting and retains a claim when injection fails", (t) => {
+test("claims inbox messages before injecting and retains a claim when injection fails", async (t) => {
 	const f = fixture();
 	t.after(f.cleanup);
 	const sender = createController({ ...fakeApiNoop() }, {
@@ -155,11 +156,11 @@ test("claims inbox messages before injecting and retains a claim when injection 
 	}, { root: f.root, name: "peer" });
 	sender.writePeerMessage("receiver", "from peer");
 	f.throwOnSend();
-	f.controller.pollInbox();
+	await f.controller.pollInbox();
 	assert.equal(fs.readdirSync(path.join(f.root, "inbox", "receiver")).length, 0);
 	assert.equal(fs.readdirSync(path.join(f.root, "processing", "receiver")).length, 1);
 	// The injected fake records delivery only after the retry has read the claim.
-	f.controller.pollInbox();
+	await f.controller.pollInbox();
 	assert.equal(f.calls.length, 1);
 	assert.match(f.calls[0].message.content, /Peer message from peer/);
 	assert.match(f.calls[0].message.content, /not operator approval/);
@@ -167,7 +168,7 @@ test("claims inbox messages before injecting and retains a claim when injection 
 	assert.equal(fs.readdirSync(path.join(f.root, "processing", "receiver")).length, 0);
 });
 
-test("truncates oversized input with a visible marker and skips symlinks", (t) => {
+test("truncates oversized input with a visible marker and skips symlinks", async (t) => {
 	const f = fixture({ PI_CTL_MAX_MESSAGE_BYTES: "256" });
 	t.after(f.cleanup);
 	const senderPi = fakeApiNoop();
@@ -182,13 +183,13 @@ test("truncates oversized input with a visible marker and skips symlinks", (t) =
 	sender.writePeerMessage("receiver", "x".repeat(600));
 	const inbox = path.join(f.root, "inbox", "receiver");
 	fs.symlinkSync("/etc/passwd", path.join(inbox, "symlink.msg"));
-	f.controller.pollInbox();
+	await f.controller.pollInbox();
 	assert.equal(f.calls.length, 1);
 	assert.match(f.calls[0].message.content, /Message truncated at 256 bytes/);
 	assert.ok(fs.lstatSync(path.join(inbox, "symlink.msg")).isSymbolicLink());
 });
 
-test("holds over-limit peer messages with one notice and delivers after the window", (t) => {
+test("holds over-limit peer messages with one notice and delivers after the window", async (t) => {
 	const f = fixture({ PI_CTL_INBOUND_LIMIT: "1", PI_CTL_LOOP_WINDOW_SECONDS: "10" });
 	t.after(f.cleanup);
 	const sender = createController(fakeApiNoop(), {
@@ -201,13 +202,13 @@ test("holds over-limit peer messages with one notice and delivers after the wind
 	}, { root: f.root, name: "peer" });
 	sender.writePeerMessage("receiver", "first");
 	sender.writePeerMessage("receiver", "second");
-	f.controller.pollInbox();
+	await f.controller.pollInbox();
 	assert.equal(f.calls.filter((call) => call.message.customType === "pi-ctl-inbox").length, 1);
 	assert.equal(f.calls.filter((call) => call.message.customType === "pi-ctl-notice").length, 1);
-	f.controller.pollInbox();
+	await f.controller.pollInbox();
 	assert.equal(f.calls.filter((call) => call.message.customType === "pi-ctl-notice").length, 1);
 	f.setTime(1_800_000_011_000);
-	f.controller.pollInbox();
+	await f.controller.pollInbox();
 	assert.equal(f.calls.filter((call) => call.message.customType === "pi-ctl-inbox").length, 2);
 	assert.equal(fs.readdirSync(path.join(f.root, "processing", "receiver")).length, 0);
 });
@@ -231,7 +232,7 @@ test("wake-ups persist across restart, fire overdue once, and can be listed or c
 	const restartedPi = {
 		on(event, handler) { restartedHandlers.set(event, handler); },
 		registerTool() {},
-		sendMessage(message, options) {
+		async sendMessage(message, options) {
 			assert.equal(JSON.parse(fs.readFileSync(path.join(f.root, "wakeups", "receiver.json"), "utf8")).length, 0,
 				"the persisted wake-up is removed before injection");
 			restartedMessages.push({ message, options });
@@ -247,21 +248,21 @@ test("wake-ups persist across restart, fire overdue once, and can be listed or c
 		makeId: () => "restart-id",
 	}, { root: f.root, name: "receiver", wrapperPath: f.wrapper });
 	assert.ok(restarted);
-	restartedHandlers.get("session_start")();
-	restartedHandlers.get("session_start")();
+	await restartedHandlers.get("session_start")();
+	await restartedHandlers.get("session_start")();
 	assert.equal(restartedMessages.filter(({ message }) => message.customType === "pi-ctl-wakeup").length, 1);
 	assert.match(restartedMessages[0].message.content, /original prompt/);
 });
 
-test("wake-up injection failure cannot make an overdue wake-up fire twice", (t) => {
+test("wake-up injection failure cannot make an overdue wake-up fire twice", async (t) => {
 	const f = fixture();
 	t.after(f.cleanup);
 	const wakeup = f.controller.scheduleWakeup(10, "wake once");
 	f.setTime(wakeup.dueAt + 1);
 	f.throwOnSend();
-	f.controller.armWakeups();
+	await f.controller.armWakeups();
 	assert.equal(JSON.parse(fs.readFileSync(path.join(f.root, "wakeups", "receiver.json"), "utf8")).length, 0);
-	f.controller.armWakeups();
+	await f.controller.armWakeups();
 	assert.equal(f.calls.length, 0);
 });
 
@@ -308,13 +309,14 @@ test("monitor batches capped lines, stops only its own child, and reports exit o
 	children[0].stdout.emit("data", Buffer.from("one\ntwo\n"));
 	const flush = f.findTimeout(1000);
 	assert.ok(flush);
-	f.fireTimeout(flush);
+	await f.fireTimeout(flush);
 	assert.equal(f.calls.length, 1);
 	assert.match(f.calls[0].message.content, /one\ntwo/);
 	const stopped = await f.tools.get("stop_monitor").execute("m2", { id });
 	assert.match(stopped.content[0].text, /stopping/);
 	assert.deepEqual(children[0].signals, ["SIGTERM"]);
 	children[0].emit("close", null, "SIGTERM");
+	await f.flushPromises();
 	assert.match(f.calls.at(-1).message.content, /stopped.*Re-arm if still needed/);
 
 	const second = f.makeChild();
@@ -322,15 +324,16 @@ test("monitor batches capped lines, stops only its own child, and reports exit o
 	await f.tools.get("start_monitor").execute("m3", { command: "watcher command", max_seconds: 1 });
 	const expiry = f.findTimeout(1000);
 	assert.ok(expiry);
-	f.fireTimeout(expiry);
+	await f.fireTimeout(expiry);
 	assert.deepEqual(second.signals, ["SIGTERM"]);
 	second.emit("close", null, "SIGTERM");
+	await f.flushPromises();
 	const notices = f.calls.filter(({ message }) => message.customType === "pi-ctl-monitor" && /expired/.test(message.content));
 	assert.equal(notices.length, 1);
 	assert.match(notices[0].message.content, /Re-arm if still needed/);
 });
 
-test("self-compaction runs only at agent_end and carries the goal, in-flight ids and role rules", (t) => {
+test("self-compaction runs only at agent_end and carries the goal, in-flight ids and role rules", async (t) => {
 	const f = fixture({ PI_CTL_COMPACT_AT: "1000" });
 	t.after(f.cleanup);
 	let tokens = 2000;
@@ -353,7 +356,7 @@ test("self-compaction runs only at agent_end and carries the goal, in-flight ids
 	assert.match(compactOptions.customInstructions, /T4 queue and report to main/);
 	assert.match(compactOptions.customInstructions, new RegExp(f.prime.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
 	tokens = 500;
-	compactOptions.onComplete({});
+	await compactOptions.onComplete({});
 	assert.equal(f.calls.length, 1);
 	assert.match(f.calls[0].message.content, /scripts\/controller\/resume-read\.sh receiver/);
 	assert.match(f.calls[0].message.content, /continue the original goal/);
@@ -407,6 +410,6 @@ function fakeApiNoop() {
 	return {
 		on() {},
 		registerTool() {},
-		sendMessage() {},
+		async sendMessage() {},
 	};
 }

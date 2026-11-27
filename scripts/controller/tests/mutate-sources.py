@@ -58,6 +58,20 @@ def mutant(source: str, name: str, before: str, after: str, destination: Path = 
     return target
 
 
+def pi_ctl_mutant(name: str, before: str, after: str) -> Path:
+    source = repo / "scripts/controller/pi-ctl/core.mjs"
+    original = source.read_text(encoding="utf-8")
+    count = original.count(before)
+    if count != 1:
+        raise SystemExit(f"{source}: expected one mutation target, found {count}: {before!r}")
+    variant = controller / f"pi-ctl-{name}"
+    variant.mkdir(parents=True)
+    target = variant / "core.mjs"
+    target.write_text(original.replace(before, after, 1), encoding="utf-8")
+    target.chmod(0o644)
+    return target
+
+
 def mutation_runner_mutant(name: str, before: str, after: str) -> Path:
     return mutant("scripts/controller/tests/mutation-runner.sh", name, before, after)
 
@@ -1912,3 +1926,13 @@ for name, before, after in (
 # the profile resolver is the host-injection gate (tests/test_dev.py reads DEV_PROFILE_SCRIPT)
 mutant("scripts/controller/dev_profile.py", "dev-profile-image-regex", 'IMAGE = re.compile(r"^[a-z0-9][a-z0-9._/:@-]*$")', 'IMAGE = re.compile(r"(?s).*")')
 mutant("scripts/controller/dev_profile.py", "dev-profile-work-mount", 'if mount.startswith("{work}:") and dest != "/work":', 'if False:')
+
+# pi controller harness: behavioral mutants for the four safety boundaries.
+pi_ctl_mutant(
+    "claim-before-inject",
+    "\t\t\t\t\tfs.renameSync(source, claimPath);\n\t\t\t\t\tclaimed++;\n\t\t\t\t\tif (await processClaim(claimPath)) delivered++;",
+    "\t\t\t\t\tclaimed++;\n\t\t\t\t\tif (await processClaim(source)) delivered++;",
+)
+pi_ctl_mutant("name-validation", '\t\trequireName(to, "to");', "\t\t// mutant: recipient name validation omitted")
+pi_ctl_mutant('agent-end-only', '\tpi.on("agent_end", (_event, ctx) => triggerSelfCompaction(ctx));', '\tpi.on("turn_end", (_event, ctx) => triggerSelfCompaction(ctx));')
+pi_ctl_mutant("wrapper-required", "\t\tverifyWrapper();", "\t\t// mutant: PID namespace wrapper is not required")
