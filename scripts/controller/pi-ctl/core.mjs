@@ -14,6 +14,17 @@ export const CONFIG_DEFAULTS = Object.freeze({
 	inboundLimit: 10,
 	loopWindowMs: 60 * 60 * 1000,
 	eventLimit: 5000,
+	wakeupMinSeconds: 10,
+	wakeupMaxSeconds: 24 * 60 * 60,
+	wakeupMaxCount: 32,
+	monitorMaxCount: 4,
+	monitorMaxSeconds: 60 * 60,
+	monitorMaxCommandChars: 4096,
+	monitorMaxLineBytes: 2048,
+	monitorBatchLines: 10,
+	monitorRatePerMinute: 10,
+	monitorMaxQueuedLines: 1000,
+	monitorFlushMs: 1000,
 });
 
 const PEER_MESSAGE_HEADER = (sender) =>
@@ -184,16 +195,24 @@ export function createController(pi, injected = {}, overrides = {}) {
 		locks: path.join(root, "locks"),
 		guards: path.join(root, "guards"),
 		events: path.join(root, "events"),
+		wakeups: path.join(root, "wakeups"),
+		monitors: path.join(root, "monitors"),
 	};
-	for (const directory of [dirs.root, dirs.inbox, dirs.ownInbox, dirs.processing, dirs.rejected, dirs.locks, dirs.guards, dirs.events]) {
+	for (const directory of [dirs.root, dirs.inbox, dirs.ownInbox, dirs.processing, dirs.rejected, dirs.locks, dirs.guards, dirs.events, dirs.wakeups, dirs.monitors]) {
 		secureDirectory(fs, path, directory);
 	}
 	const eventFile = path.join(dirs.events, `${name}.jsonl`);
 	const guardFile = path.join(dirs.guards, `${name}.json`);
 	const lockFile = path.join(dirs.locks, `${name}.lock`);
+	const wakeupFile = path.join(dirs.wakeups, `${name}.json`);
+	const monitorFile = path.join(dirs.monitors, `${name}.json`);
+	const wrapperPath = overrides.wrapperPath ?? injected.wrapperPath ?? env.PI_CTL_PIDNS_WRAPPER ?? null;
 	let pollTimer = null;
 	let stopped = false;
 	let lockRecord = null;
+	let initialized = false;
+	const wakeupTimers = new Map();
+	const monitors = new Map();
 
 	function log(event, fields = {}) {
 		const safe = { time: new Date(now()).toISOString(), event, ...fields };
@@ -301,7 +320,14 @@ export function createController(pi, injected = {}, overrides = {}) {
 			if (error?.code !== "ENOENT") log("inbox_claim_error", { reason: "claim stat failed" });
 			return false;
 		}
-		if (!stat.isFile() || stat.isSymbolicLink()) return false;
+		if (!stat.isFile() || stat.isSymbolicLink()) {
+			try {
+				fs.unlinkSync(claimPath);
+			} catch {
+				// A vanished or non-removable unsafe claim remains unprocessed.
+			}
+			return false;
+		}
 		let read;
 		try {
 			read = boundedClaimRead(claimPath);
@@ -391,6 +417,353 @@ export function createController(pi, injected = {}, overrides = {}) {
 		return { claimed, delivered };
 	}
 
+	function readWakeups() {
+		const value = readJsonFile(fs, wakeupFile, []);
+		if (!Array.isArray(value) || value.some((entry) => !entry || typeof entry.id !== "string" ||
+			typeof entry.prompt !== "string" || !Number.isSafeInteger(entry.dueAt))) {
+			throw new Error("invalid wake-up state");
+		}
+		return value;
+	}
+
+	function writeWakeups(entries) {
+		atomicWrite(fs, path, wakeupFile, `${JSON.stringify(entries)}\n`);
+	}
+
+	function fireWakeup(id) {
+		const entries = readWakeups();
+		const index = entries.findIndex((entry) => entry.id === id);
+		if (index < 0) return false;
+		const [entry] = entries.splice(index, 1);
+		// Persist removal before injection so a restart cannot fire the same wake-up twice.
+		writeWakeups(entries);
+		wakeupTimers.delete(id);
+		try {
+			inject("pi-ctl-wakeup", `[Wake-up ${entry.id}] ${entry.prompt}`);
+			log("wakeup_fired", { id: entry.id });
+			return true;
+		} catch {
+			log("wakeup_inject_error", { id: entry.id });
+			return false;
+		}
+	}
+
+	function armWakeups() {
+		for (const handle of wakeupTimers.values()) timers.clearTimeout(handle);
+		wakeupTimers.clear();
+		const entries = readWakeups();
+		for (const entry of entries) {
+			const delay = Math.max(0, entry.dueAt - now());
+			if (delay === 0) {
+				fireWakeup(entry.id);
+				continue;
+			}
+			const handle = timers.setTimeout(() => fireWakeup(entry.id), delay);
+			wakeupTimers.set(entry.id, handle);
+		}
+	}
+
+	function scheduleWakeup(delaySeconds, prompt) {
+		if (!Number.isSafeInteger(delaySeconds) || delaySeconds < CONFIG_DEFAULTS.wakeupMinSeconds || delaySeconds > CONFIG_DEFAULTS.wakeupMaxSeconds) {
+			throw new Error(`delay_seconds must be an integer from ${CONFIG_DEFAULTS.wakeupMinSeconds} to ${CONFIG_DEFAULTS.wakeupMaxSeconds}`);
+		}
+		if (typeof prompt !== "string" || prompt.trim().length === 0) throw new Error("prompt must be a non-empty string");
+		if (Buffer.byteLength(prompt, "utf8") > config.maxSendBytes) throw new Error(`prompt exceeds ${config.maxSendBytes} bytes`);
+		const entries = readWakeups();
+		if (entries.length >= CONFIG_DEFAULTS.wakeupMaxCount) throw new Error(`at most ${CONFIG_DEFAULTS.wakeupMaxCount} wake-ups may be pending`);
+		const time = now();
+		const entry = { id: `wake-${makeId()}`, prompt, createdAt: time, dueAt: time + delaySeconds * 1000 };
+		entries.push(entry);
+		writeWakeups(entries);
+		const handle = timers.setTimeout(() => fireWakeup(entry.id), entry.dueAt - now());
+		wakeupTimers.set(entry.id, handle);
+		log("wakeup_scheduled", { id: entry.id, delaySeconds });
+		return entry;
+	}
+
+	function cancelWakeup(id) {
+		if (typeof id !== "string" || !/^wake-[A-Za-z0-9._-]{1,80}$/.test(id)) throw new Error("id is not a wake-up identifier");
+		const entries = readWakeups();
+		const filtered = entries.filter((entry) => entry.id !== id);
+		if (filtered.length === entries.length) return false;
+		writeWakeups(filtered);
+		const handle = wakeupTimers.get(id);
+		if (handle !== undefined) timers.clearTimeout(handle);
+		wakeupTimers.delete(id);
+		log("wakeup_cancelled", { id });
+		return true;
+	}
+
+	function readMonitorState() {
+		const state = readJsonFile(fs, monitorFile, []);
+		if (!Array.isArray(state) || state.some((entry) => typeof entry?.id !== "string")) throw new Error("invalid monitor state");
+		return state;
+	}
+
+	function writeMonitorState() {
+		const active = [...monitors.values()].filter((monitor) => !monitor.processClosed).map(({ id, startedAt, expiresAt }) => ({ id, startedAt, expiresAt }));
+		atomicWrite(fs, path, monitorFile, `${JSON.stringify(active)}\n`);
+	}
+
+	function recoverMonitors() {
+		const previous = readMonitorState();
+		if (previous.length > 0) {
+			const ids = previous.map((monitor) => monitor.id).join(", ");
+			try {
+				inject("pi-ctl-monitor", `Monitors ${ids} were not persisted and died when the previous pi session ended. Re-arm any watcher still needed.`);
+				log("monitor_restart_notice", { count: previous.length });
+				atomicWrite(fs, path, monitorFile, "[]\n");
+			} catch {
+				log("monitor_restart_notice_error", { count: previous.length });
+			}
+			return;
+		}
+		atomicWrite(fs, path, monitorFile, "[]\n");
+	}
+
+	function monitorEnv() {
+		const childEnv = { ...env };
+		delete childEnv.OPENDESIGN_API_KEY_VOLKER;
+		delete childEnv.OPENDESIGN_API_KEY_GITHUB2;
+		return childEnv;
+	}
+
+	function appendMonitorLine(monitor, line) {
+		const original = Buffer.from(line, "utf8");
+		const capped = original.subarray(0, CONFIG_DEFAULTS.monitorMaxLineBytes).toString("utf8");
+		monitor.pendingLines.push(original.length > CONFIG_DEFAULTS.monitorMaxLineBytes ? `${capped} [line truncated]` : capped);
+		if (monitor.pendingLines.length > CONFIG_DEFAULTS.monitorMaxQueuedLines) {
+			monitor.pendingLines.length = CONFIG_DEFAULTS.monitorMaxQueuedLines;
+			if (!monitor.queueLimitNotice) {
+				monitor.queueLimitNotice = true;
+				requestMonitorStop(monitor, "output queue limit reached; remaining output was withheld");
+			}
+		}
+		queueMonitorFlush(monitor, CONFIG_DEFAULTS.monitorFlushMs);
+	}
+
+	function consumeMonitorChunk(monitor, chunk) {
+		monitor.stdoutBuffer += Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk);
+		let newline;
+		while ((newline = monitor.stdoutBuffer.indexOf("\n")) >= 0) {
+			let line = monitor.stdoutBuffer.slice(0, newline);
+			monitor.stdoutBuffer = monitor.stdoutBuffer.slice(newline + 1);
+			if (line.endsWith("\r")) line = line.slice(0, -1);
+			appendMonitorLine(monitor, line);
+		}
+		if (Buffer.byteLength(monitor.stdoutBuffer, "utf8") > CONFIG_DEFAULTS.monitorMaxLineBytes) {
+			appendMonitorLine(monitor, monitor.stdoutBuffer);
+			monitor.stdoutBuffer = "";
+		}
+	}
+
+	function queueMonitorFlush(monitor, delay) {
+		if (monitor.flushTimer !== null || monitor.finished) return;
+		monitor.flushTimer = timers.setTimeout(() => {
+			monitor.flushTimer = null;
+			flushMonitor(monitor);
+		}, Math.max(0, delay));
+	}
+
+	function finishMonitorIfDrained(monitor) {
+		if (!monitor.processClosed || monitor.pendingLines.length > 0) return;
+		if (monitor.finalNotice === null) {
+			monitor.finished = true;
+			monitors.delete(monitor.id);
+			return;
+		}
+		const message = monitor.finalNotice;
+		monitor.finalNotice = null;
+		try {
+			inject("pi-ctl-monitor", message);
+			log("monitor_notice", { id: monitor.id, reason: monitor.endReason });
+		} catch {
+			monitor.finalNotice = message;
+			log("monitor_notice_error", { id: monitor.id });
+			queueMonitorFlush(monitor, CONFIG_DEFAULTS.monitorFlushMs);
+			return;
+		}
+		monitor.finished = true;
+		monitors.delete(monitor.id);
+	}
+
+	function flushMonitor(monitor) {
+		if (monitor.finished) return;
+		const time = now();
+		monitor.sentAt = pruneTimes(monitor.sentAt, time, 60_000);
+		if (monitor.pendingLines.length > 0) {
+			if (monitor.sentAt.length >= CONFIG_DEFAULTS.monitorRatePerMinute) {
+				queueMonitorFlush(monitor, monitor.sentAt[0] + 60_000 - time);
+				return;
+			}
+			const lines = monitor.pendingLines.splice(0, CONFIG_DEFAULTS.monitorBatchLines);
+			try {
+				inject("pi-ctl-monitor", `[Monitor ${monitor.id} output]\n${lines.join("\n")}`);
+				monitor.sentAt.push(time);
+				log("monitor_batch", { id: monitor.id, lines: lines.length });
+			} catch {
+				monitor.pendingLines.unshift(...lines);
+				log("monitor_inject_error", { id: monitor.id });
+			}
+			if (monitor.pendingLines.length > 0) queueMonitorFlush(monitor, CONFIG_DEFAULTS.monitorFlushMs);
+			else finishMonitorIfDrained(monitor);
+			return;
+		}
+		finishMonitorIfDrained(monitor);
+	}
+
+	function requestMonitorStop(monitor, reason) {
+		if (monitor.stopRequested || monitor.processClosed) return;
+		monitor.stopRequested = true;
+		monitor.endReason = reason;
+		if (monitor.expiryTimer !== null) timers.clearTimeout(monitor.expiryTimer);
+		monitor.expiryTimer = null;
+		try {
+			// The ChildProcess object is created and owned by this extension; no pid or process group is looked up.
+			monitor.child.kill("SIGTERM");
+		} catch {
+			log("monitor_stop_error", { id: monitor.id });
+		}
+	}
+
+	function closeMonitor(monitor, code, signal, error = null) {
+		if (monitor.processClosed) return;
+		monitor.processClosed = true;
+		if (monitor.expiryTimer !== null) timers.clearTimeout(monitor.expiryTimer);
+		monitor.expiryTimer = null;
+		if (monitor.flushTimer !== null) timers.clearTimeout(monitor.flushTimer);
+		monitor.flushTimer = null;
+		if (monitor.stdoutBuffer.length > 0) {
+			appendMonitorLine(monitor, monitor.stdoutBuffer);
+			monitor.stdoutBuffer = "";
+		}
+		if (monitor.stopRequested) {
+			monitor.endReason = monitor.endReason ?? "stopped";
+		} else if (error) {
+			monitor.endReason = "spawn error";
+		} else {
+			monitor.endReason = `exited (code ${code ?? "unknown"}${signal ? `, signal ${signal}` : ""})`;
+		}
+		const isolationFailure = code === 125 && /pi-pidns-bash: .*command was not run \(exit 125\)/.test(monitor.stderr);
+		if (isolationFailure) {
+			monitor.pendingLines.length = 0;
+			monitor.endReason = "could not establish the private PID namespace; command was not run";
+			log("monitor_isolation_refused", { id: monitor.id });
+		}
+		monitor.finalNotice = monitor.expiryNoticeSent ? null : `Monitor ${monitor.id} ${monitor.endReason}. Re-arm if still needed.`;
+		try {
+			writeMonitorState();
+		} catch {
+			log("monitor_state_error", { id: monitor.id });
+		}
+		log("monitor_exit", { id: monitor.id, code: code ?? null, signal: signal ?? null, isolationFailure });
+		if (monitor.pendingLines.length > 0) queueMonitorFlush(monitor, 0);
+		else finishMonitorIfDrained(monitor);
+	}
+
+	function verifyWrapper() {
+		if (typeof wrapperPath !== "string" || !path.isAbsolute(wrapperPath)) throw new Error("PI_CTL_PIDNS_WRAPPER must name the absolute pi-pidns-bash wrapper");
+		let stat;
+		try {
+			stat = fs.lstatSync(wrapperPath);
+		} catch {
+			throw new Error("pi-pidns-bash wrapper is missing; monitor refused");
+		}
+		if (!stat.isFile() || stat.isSymbolicLink() || (stat.mode & 0o111) === 0) throw new Error("pi-pidns-bash wrapper is not an executable regular file; monitor refused");
+	}
+
+	function startMonitor(command, maxSeconds) {
+		if (typeof command !== "string" || command.trim().length === 0 || command.length > CONFIG_DEFAULTS.monitorMaxCommandChars) {
+			throw new Error(`command must be 1 to ${CONFIG_DEFAULTS.monitorMaxCommandChars} characters`);
+		}
+		if (!Number.isSafeInteger(maxSeconds) || maxSeconds < 1 || maxSeconds > CONFIG_DEFAULTS.monitorMaxSeconds) {
+			throw new Error(`max_seconds must be an integer from 1 to ${CONFIG_DEFAULTS.monitorMaxSeconds}`);
+		}
+		if (monitors.size >= CONFIG_DEFAULTS.monitorMaxCount) throw new Error(`at most ${CONFIG_DEFAULTS.monitorMaxCount} monitors may run`);
+		verifyWrapper();
+		if (typeof spawn !== "function") throw new Error("child process API is unavailable");
+		const startedAt = now();
+		const id = `monitor-${makeId()}`;
+		const monitor = {
+			id,
+			startedAt,
+			expiresAt: startedAt + maxSeconds * 1000,
+			child: null,
+			stdoutBuffer: "",
+			stderr: "",
+			pendingLines: [],
+			sentAt: [],
+			flushTimer: null,
+			expiryTimer: null,
+			processClosed: false,
+			finished: false,
+			stopRequested: false,
+			queueLimitNotice: false,
+			finalNotice: null,
+			endReason: null,
+		};
+		monitors.set(id, monitor);
+		try {
+			writeMonitorState();
+			monitor.child = spawn(wrapperPath, ["-c", command], {
+				cwd,
+				env: monitorEnv(),
+				stdio: ["ignore", "pipe", "pipe"],
+			});
+		} catch (error) {
+			monitors.delete(id);
+			writeMonitorState();
+			throw new Error(`monitor could not start: ${error.message}`);
+		}
+		if (!monitor.child?.stdout?.on || !monitor.child?.stderr?.on || !monitor.child?.on || typeof monitor.child.kill !== "function") {
+			monitors.delete(id);
+			writeMonitorState();
+			throw new Error("monitor process adapter did not return a controllable child with output streams");
+		}
+		monitor.child.stdout.on("data", (chunk) => consumeMonitorChunk(monitor, chunk));
+		monitor.child.stderr.on("data", (chunk) => {
+			const text = Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk);
+			monitor.stderr = `${monitor.stderr}${text}`.slice(-8192);
+		});
+		monitor.child.on("error", (error) => closeMonitor(monitor, null, null, error));
+		monitor.child.on("close", (code, signal) => closeMonitor(monitor, code, signal));
+		monitor.expiryTimer = timers.setTimeout(() => {
+			monitor.expiryTimer = null;
+			monitor.endReason = "expired";
+			monitor.stopRequested = true;
+			monitor.expired = true;
+			try {
+				monitor.child.kill("SIGTERM");
+			} catch {
+				log("monitor_expiry_stop_error", { id });
+			}
+			if (!monitor.expiryNoticeSent) {
+				monitor.expiryNoticeSent = true;
+				try {
+					inject("pi-ctl-monitor", `Monitor ${id} expired after ${maxSeconds} seconds. Re-arm if still needed.`);
+					log("monitor_expired", { id });
+				} catch {
+					monitor.expiryNoticeSent = false;
+					log("monitor_expiry_notice_error", { id });
+				}
+			}
+		}, maxSeconds * 1000);
+		log("monitor_start", { id, maxSeconds });
+		return { id, expiresAt: monitor.expiresAt };
+	}
+
+	function stopMonitor(id) {
+		const monitor = monitors.get(id);
+		if (!monitor || monitor.processClosed || monitor.stopRequested) return false;
+		requestMonitorStop(monitor, "stopped");
+		log("monitor_stop", { id });
+		return true;
+	}
+
+	function listMonitors() {
+		return [...monitors.values()].filter((monitor) => !monitor.processClosed).map(({ id, expiresAt, stopRequested }) => ({ id, expiresAt, stopping: stopRequested }));
+	}
+
 	function ownProcStartTicks() {
 		return parseProcStartTicks(fs, pid) ?? "unknown";
 	}
@@ -448,12 +821,106 @@ export function createController(pi, injected = {}, overrides = {}) {
 		},
 	};
 	pi.registerTool(sendTool);
+	const scheduleWakeupTool = {
+		name: "schedule_wakeup",
+		label: "Schedule wake-up",
+		description: `Schedule one prompt for this session in ${CONFIG_DEFAULTS.wakeupMinSeconds} seconds to 24 hours. Wake-ups persist across restarts and fire once.`,
+		parameters: objectSchema({
+			delay_seconds: { type: "integer", minimum: CONFIG_DEFAULTS.wakeupMinSeconds, maximum: CONFIG_DEFAULTS.wakeupMaxSeconds, description: "Seconds from now, between 10 and 86400." },
+			prompt: { type: "string", minLength: 1, description: "Prompt delivered as one follow-up turn." },
+		}, ["delay_seconds", "prompt"]),
+		async execute(_id, params) {
+			try {
+				const entry = scheduleWakeup(params?.delay_seconds, params?.prompt);
+				return textResult(`Wake-up ${entry.id} scheduled for ${new Date(entry.dueAt).toISOString()}.`);
+			} catch (error) {
+				return textResult(`Wake-up refused: ${error.message}`);
+			}
+		},
+	};
+	pi.registerTool(scheduleWakeupTool);
+	const listWakeupsTool = {
+		name: "list_wakeups",
+		label: "List wake-ups",
+		description: "List this session's persisted pending wake-ups by identifier and due time.",
+		parameters: objectSchema({}, []),
+		async execute() {
+			try {
+				const entries = readWakeups().map(({ id, dueAt, prompt }) => ({ id, dueAt: new Date(dueAt).toISOString(), preview: prompt.slice(0, 160) }));
+				return textResult(entries.length ? JSON.stringify(entries) : "No pending wake-ups.");
+			} catch (error) {
+				return textResult(`Could not list wake-ups: ${error.message}`);
+			}
+		},
+	};
+	pi.registerTool(listWakeupsTool);
+	const cancelWakeupTool = {
+		name: "cancel_wakeup",
+		label: "Cancel wake-up",
+		description: "Cancel one pending wake-up by its identifier.",
+		parameters: objectSchema({ id: { type: "string", minLength: 1, description: "The wake-up identifier from schedule_wakeup or list_wakeups." } }, ["id"]),
+		async execute(_id, params) {
+			try {
+				return textResult(cancelWakeup(params?.id) ? `Wake-up ${params.id} cancelled.` : `No pending wake-up named ${params?.id}.`);
+			} catch (error) {
+				return textResult(`Wake-up cancellation refused: ${error.message}`);
+			}
+		},
+	};
+	pi.registerTool(cancelWakeupTool);
+	const startMonitorTool = {
+		name: "start_monitor",
+		label: "Start bounded monitor",
+		description: `Run one watcher command through pi-pidns-bash for at most ${CONFIG_DEFAULTS.monitorMaxSeconds} seconds. Output is line-capped, batched and rate-limited.`,
+		parameters: objectSchema({
+			command: { type: "string", minLength: 1, maxLength: CONFIG_DEFAULTS.monitorMaxCommandChars, description: "Watcher command passed to the guarded Bash wrapper." },
+			max_seconds: { type: "integer", minimum: 1, maximum: CONFIG_DEFAULTS.monitorMaxSeconds, description: "Maximum monitor lifetime in seconds." },
+		}, ["command", "max_seconds"]),
+		async execute(_id, params) {
+			try {
+				const monitor = startMonitor(params?.command, params?.max_seconds);
+				return textResult(`Monitor ${monitor.id} started; it expires at ${new Date(monitor.expiresAt).toISOString()}.`);
+			} catch (error) {
+				return textResult(`Monitor refused: ${error.message}`);
+			}
+		},
+	};
+	pi.registerTool(startMonitorTool);
+	const listMonitorsTool = {
+		name: "list_monitors",
+		label: "List monitors",
+		description: "List monitors currently owned by this pi session.",
+		parameters: objectSchema({}, []),
+		async execute() {
+			return textResult(JSON.stringify(listMonitors()));
+		},
+	};
+	pi.registerTool(listMonitorsTool);
+	const stopMonitorTool = {
+		name: "stop_monitor",
+		label: "Stop monitor",
+		description: "Stop one monitor started by this extension using its own child-process handle.",
+		parameters: objectSchema({ id: { type: "string", minLength: 1, description: "Monitor identifier from start_monitor or list_monitors." } }, ["id"]),
+		async execute(_id, params) {
+			try {
+				return textResult(stopMonitor(params?.id) ? `Monitor ${params.id} is stopping.` : `No active monitor named ${params?.id}.`);
+			} catch (error) {
+				return textResult(`Monitor stop refused: ${error.message}`);
+			}
+		},
+	};
+	pi.registerTool(stopMonitorTool);
 
 	pi.on("session_start", () => {
 		stopped = false;
 		claimLock();
 		log("start", { name, pid });
+		if (!initialized) {
+			recoverMonitors();
+			initialized = true;
+		}
 		pollInbox();
+		armWakeups();
 		if (pollTimer !== null) timers.clearInterval(pollTimer);
 		pollTimer = timers.setInterval(() => {
 			try {
@@ -471,6 +938,9 @@ export function createController(pi, injected = {}, overrides = {}) {
 		stopped = true;
 		if (pollTimer !== null) timers.clearInterval(pollTimer);
 		pollTimer = null;
+		for (const handle of wakeupTimers.values()) timers.clearTimeout(handle);
+		wakeupTimers.clear();
+		for (const monitor of monitors.values()) requestMonitorStop(monitor, "session shutdown");
 		releaseLock();
 		log("shutdown", { name });
 	});
@@ -482,6 +952,20 @@ export function createController(pi, injected = {}, overrides = {}) {
 		config,
 		pollInbox,
 		writePeerMessage,
-		tools: { send_message: sendTool },
+		tools: {
+			send_message: sendTool,
+			schedule_wakeup: scheduleWakeupTool,
+			list_wakeups: listWakeupsTool,
+			cancel_wakeup: cancelWakeupTool,
+			start_monitor: startMonitorTool,
+			list_monitors: listMonitorsTool,
+			stop_monitor: stopMonitorTool,
+		},
+		armWakeups,
+		scheduleWakeup,
+		cancelWakeup,
+		listMonitors,
+		startMonitor,
+		stopMonitor,
 	};
 }
