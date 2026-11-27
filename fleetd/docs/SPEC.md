@@ -117,10 +117,13 @@ while the leader is unreaped, then attempts the bounded reap even if signaling
 raises. `ProcessLookupError` means the group is already empty; another signal
 or reap failure returns `ERROR`. The pidfd, selector, stdout pipe, and stderr
 pipe are each closed independently; a close failure is reported as `ERROR`
-after the remaining closes are attempted. A non-`Exception` interruption
-already in flight is re-raised after cleanup and is not replaced by cleanup or
-close errors. A success requires both pipes at EOF, exit observed before the
-deadline, and an exit status obtained by that reap.
+after the remaining closes are attempted. Any non-`Exception` interruption
+from the body or cleanup is re-raised without wrapping; if several occur, the
+first in occurrence order takes precedence over ordinary failures from the
+body, signal, deadline calculation, reap, post-reap check, or closes. When no
+interruption occurs, ordinary errors keep the existing precedence. A success
+requires both pipes at EOF, exit observed before the deadline, and an exit
+status obtained by that reap.
 
 Every `host-facts/2` policy object carries `aging_s`,
 `legacy_charge_bytes`, and `legacy_planned_cores`. An unconfigured key is

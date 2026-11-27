@@ -307,6 +307,49 @@ def _inspect_one(
     return payload
 
 
+def _raise_bounded_failure(failure_records: list[tuple[str, BaseException]]) -> None:
+    """Raise the first interruption, else preserve ordinary-error precedence."""
+
+    for _site, failure in failure_records:
+        if not isinstance(failure, Exception):
+            raise failure
+
+    site_order = (
+        "group_signal",
+        "cleanup_clock",
+        "reap",
+        "cleanup",
+        "post_reap",
+        "body",
+        "close",
+    )
+    selected: tuple[str, BaseException] | None = None
+    for wanted_site in site_order:
+        for site, failure in failure_records:
+            if site == wanted_site:
+                selected = (site, failure)
+                break
+        if selected is not None:
+            break
+    if selected is None:
+        return
+
+    site, failure = selected
+    if isinstance(failure, DockerInspectionError):
+        raise failure
+    if site == "group_signal":
+        raise DockerInspectionError("could not kill Docker inspect process group") from failure
+    if site == "cleanup_clock":
+        raise DockerInspectionError("could not bound Docker inspect child reaping") from failure
+    if site == "reap":
+        if isinstance(failure, subprocess.TimeoutExpired):
+            raise DockerInspectionError("Docker inspect exceeded query_timeout_s while reaping child") from failure
+        raise DockerInspectionError("Docker inspect child reaping failed") from failure
+    if site == "body":
+        raise DockerInspectionError(f"Docker inspect process failed: {failure}") from failure
+    raise DockerInspectionError(f"Docker inspect cleanup failed: {failure}") from failure
+
+
 def _run_bounded(
     argv: list[str],
     timeout_s: float,
@@ -324,7 +367,9 @@ def _run_bounded(
     selector wait observes exit without reaping the group leader, keeping its
     PID pinned until SIGKILL has been attempted for every result path. Cleanup
     runs in ``finally`` after process creation, including interruption paths;
-    each descriptor close is attempted independently.
+    each descriptor close is attempted independently. The ordered failure
+    record gives the first interruption precedence across the body and cleanup
+    while retaining the normal ordinary-error order when none occurred.
     """
 
     spawn = subprocess.Popen if popen_factory is None else popen_factory
@@ -344,10 +389,7 @@ def _run_bounded(
     termination_attempted = False
     returncode: int | None = None
     success_observed = False
-    primary_error: BaseException | None = None
-    primary_traceback = None
-    cleanup_errors: list[BaseException] = []
-    close_errors: list[BaseException] = []
+    failure_records: list[tuple[str, BaseException]] = []
 
     try:
         process = spawn(
@@ -413,25 +455,27 @@ def _run_bounded(
             raise DockerInspectionError("Docker inspect exceeded query_timeout_s while observing child exit")
         success_observed = True
     except BaseException as exc:
-        primary_error = exc
-        primary_traceback = exc.__traceback__
+        failure_records.append(("body", exc))
     finally:
         if process is not None and not termination_attempted:
             # Mark before entering the helper: a helper failure must not cause
             # a second group signal from another cleanup path.
             termination_attempted = True
             try:
-                returncode = _kill_process_group_and_reap(process, deadline, clock, group_kill)
+                returncode = _kill_process_group_and_reap(
+                    process, deadline, clock, group_kill, failure_records=failure_records,
+                )
             except BaseException as exc:
-                cleanup_errors.append(exc)
+                failure_records.append(("cleanup", exc))
             if success_observed:
                 try:
                     if clock() >= deadline:
-                        cleanup_errors.append(
-                            DockerInspectionError("Docker inspect exceeded query_timeout_s while reaping")
-                        )
+                        failure_records.append((
+                            "post_reap",
+                            DockerInspectionError("Docker inspect exceeded query_timeout_s while reaping"),
+                        ))
                 except BaseException as exc:
-                    cleanup_errors.append(exc)
+                    failure_records.append(("post_reap", exc))
 
         close_steps: list[Callable[[], object]] = []
         if pidfd is not None:
@@ -451,31 +495,13 @@ def _run_bounded(
             try:
                 close()
             except BaseException as exc:
-                close_errors.append(exc)
+                failure_records.append(("close", exc))
 
-    if primary_error is not None:
-        if not isinstance(primary_error, Exception):
-            raise primary_error.with_traceback(primary_traceback)
-    if cleanup_errors:
-        first_error = cleanup_errors[0]
-        if not isinstance(first_error, Exception):
-            raise first_error
-        if isinstance(first_error, DockerInspectionError):
-            raise first_error
-        raise DockerInspectionError(f"Docker inspect cleanup failed: {first_error}") from first_error
-    if primary_error is not None:
-        if isinstance(primary_error, DockerInspectionError):
-            raise primary_error.with_traceback(primary_traceback)
-        raise DockerInspectionError(f"Docker inspect process failed: {primary_error}") from primary_error
-    if close_errors:
-        first_error = close_errors[0]
-        if not isinstance(first_error, Exception):
-            raise first_error
-        if isinstance(first_error, DockerInspectionError):
-            raise first_error
-        raise DockerInspectionError(f"Docker inspect cleanup failed: {first_error}") from first_error
+    _raise_bounded_failure(failure_records)
     if returncode is None:
-        raise DockerInspectionError("Docker inspect process did not complete cleanup")
+        _raise_bounded_failure([
+            ("cleanup", DockerInspectionError("Docker inspect process did not complete cleanup")),
+        ])
     return subprocess.CompletedProcess(argv, returncode, bytes(stdout), bytes(stderr))
 
 
@@ -484,54 +510,39 @@ def _kill_process_group_and_reap(
     deadline: float,
     clock: Callable[[], float],
     kill_group: Callable[[int, int], None],
-) -> int:
+    *,
+    failure_records: list[tuple[str, BaseException]] | None = None,
+) -> int | None:
     """Signal the private group before making a deadline-bounded reap attempt."""
 
-    kill_error: BaseException | None = None
+    records = [] if failure_records is None else failure_records
+    record_start = len(records)
     try:
         kill_group(process.pid, signal.SIGKILL)
     except ProcessLookupError:
         pass
     except BaseException as exc:
-        kill_error = exc
+        records.append(("group_signal", exc))
 
-    budget_error: BaseException | None = None
     try:
         remaining = max(0.0, deadline - clock())
     except BaseException as exc:
-        budget_error = exc
+        records.append(("cleanup_clock", exc))
         remaining = 0.0
-    reap_error: BaseException | None = None
     returncode: int | None = None
+    reap_failed = False
     try:
         returncode = process.wait(timeout=remaining)
     except BaseException as exc:
-        reap_error = exc
+        reap_failed = True
+        records.append(("reap", exc))
+    if returncode is None and not reap_failed:
+        records.append(("reap", DockerInspectionError("Docker inspect child reaping returned no status")))
 
-    if kill_error is not None:
-        first_error = kill_error
-    elif budget_error is not None:
-        first_error = budget_error
-    else:
-        first_error = reap_error
-    if first_error is kill_error and kill_error is not None and not isinstance(kill_error, Exception):
-        raise kill_error
-    if first_error is budget_error and budget_error is not None and not isinstance(budget_error, Exception):
-        raise budget_error
-    if first_error is reap_error and reap_error is not None and not isinstance(reap_error, Exception):
-        raise reap_error
-    if first_error is reap_error and isinstance(reap_error, subprocess.TimeoutExpired):
-        raise DockerInspectionError("Docker inspect exceeded query_timeout_s while reaping child") from first_error
-    if first_error is not None:
-        if isinstance(first_error, DockerInspectionError):
-            raise first_error
-        if first_error is kill_error:
-            raise DockerInspectionError("could not kill Docker inspect process group") from first_error
-        if first_error is budget_error:
-            raise DockerInspectionError("could not bound Docker inspect child reaping") from first_error
-        raise DockerInspectionError("Docker inspect child reaping failed") from first_error
-    if returncode is None:
-        raise DockerInspectionError("Docker inspect child reaping returned no status")
+    if len(records) > record_start:
+        if failure_records is None:
+            _raise_bounded_failure(records[record_start:])
+        return None
     return returncode
 
 
