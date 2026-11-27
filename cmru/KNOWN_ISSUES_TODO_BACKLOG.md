@@ -4480,5 +4480,17 @@ The lanes under items 2 and 3 must stay byte-identical, because the whole-source
   only, while other members exit and their parent reaps them asynchronously.
 - **Resolution.** The test uses bounded polling until the shell and holder are
   gone and `os.killpg(shell, 0)` raises `ProcessLookupError`, and still asserts
-  both facts. It therefore fails if the group is never killed. The SPEC states
-  this contract; CMRU and `libraries/cli-extended` product code are unchanged.
+  both facts. It therefore fails if the group is never killed. In this harness
+  pytest is a child subreaper, so the orphaned holder's "parent" is pytest: the
+  poll reaps that one pid without blocking, and asserts before polling that the
+  leader is already reaped. The SPEC states this contract; CMRU and
+  `libraries/cli-extended` product code are unchanged.
+
+## KI-221 - the cmru r2 lane has no `--only` selector (it accepts `--shard K/N` only)
+
+**Status:** OPEN; severity: low.
+
+## KI-222 - `cmru/src/cmru/process_run.py` docstring says a timeout "reaps the child's process group"
+
+**Status:** OPEN; severity: low. It overstates the KI-220 contract (the group is signalled, the leader reaped);
+`cli_extended.procio` has the same wording.
