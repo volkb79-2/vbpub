@@ -594,7 +594,7 @@ store; keep the checkout, containers and charge, report `stopping`, and retry th
 injected waiter. If guard presence is true and the `deregister` callable is unavailable,
 refuse that cancel path by name and retain the charge. Persistent `exec` cancellation or
 an end without the Run-Gate verdict proof cannot prove the in-runner process stopped and
-also remains `stopping` (FD-065).
+also remains `stopping` (FD-068).
 
 ### 4.4 Bind the verdict to the commit
 
@@ -606,10 +606,10 @@ running. Persist each observation and bind from it; a container already gone at 
 ERROR. Require matching `run-gate.*` job, repo, project, lane and commit labels for a
 Run-Gate-started container lane; for `mode = "exec"`, the captured persistent runner name
 selects the identity check and labels are not required. The checkout-mount check applies in
-both modes. A short-lane removal race remains FD-064 and must be closed before executor
+both modes. A short-lane removal race remains FD-067 and must be closed before executor
 enablement; do not relax identity checks. Verify exec mount compatibility against a real
-persistent runner before enablement (FD-067). A host-mode lane runs as the event file's owner
-and can rewrite it; this limit is FD-066. The host writes `result.json` from observed facts only.
+persistent runner before enablement (FD-070). A host-mode lane runs as the event file's owner
+and can rewrite it; this limit is FD-069. The host writes `result.json` from observed facts only.
 A missing or mismatched fact is transport/refusal, never PASS. Rejected: binding to the client's
 `--commit` echo (`scripts/controller/remote-gate.sh:283-285`).
 
@@ -755,17 +755,17 @@ closed-shape `lane-verdict` event agrees with the exact-lane anchored summary
 and Run-Gate process status, and every reported container id is inspected as a
 full id with the job checkout mount (plus matching Run-Gate labels where
 required). The worker observes and persists `lane-started` facts before
-Run-Gate can remove its container; a short-lane race remains FD-064 and blocks
+Run-Gate can remove its container; a short-lane race remains FD-067 and blocks
 enablement. Cancellation on a guard-absent host records that fact before the
 worker sends TERM and waits; with guard present but no merged `deregister`
 callable, cancellation stays in `stopping` with a named refusal. Persistent
-exec cancel and unproved exec end retain the charge (FD-065). Bundle size and
+exec cancel and unproved exec end retain the charge (FD-068). Bundle size and
 sha256 are checked before checkout, then the host checks out the requested sha
 and records `rev-parse HEAD` in its own log. Event binding, archive checks,
 bundle verification, stop-signal dispatch, terminal-record ordering and
 container waiting have injected-interface unit coverage. Live systemd/Docker/
 cancellation acceptance and the exec-mount probe remain host work; the
-host-mode event-file same-uid limitation is FD-066.
+host-mode event-file same-uid limitation is FD-069.
 
 **Rollback.** Each client owns one `legacy|agent` flag. The agent keeps legacy jobs charged during overlap. Downgrade within a major is safe because executors run in separate scopes; major mismatches refuse and minor additions are capability-advertised. Flag and legacy-path removal is separate.
 

@@ -26,6 +26,10 @@ PRIORITIES = ("merge-gate", "dev", "gate", "campaign")
 MAX_JOB_ID_LENGTH = 128
 JOB_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\Z")
 GROUP_RE = JOB_ID_RE
+AMBIGUOUS_CONTAINER_NAME_REASON = (
+    "container_name must not be 12-63 lowercase hexadecimal characters"
+)
+_AMBIGUOUS_CONTAINER_NAME_RE = re.compile(r"[0-9a-f]{12,63}\Z")
 PSI_MEMORY_FULL_REFUSE_AVG10_PCT = 3.0
 QUEUE_RECHECK_S = 0.25
 TERMINAL_RESULT_FIELDS = (
@@ -33,6 +37,12 @@ TERMINAL_RESULT_FIELDS = (
 )
 _TERMINAL_VERDICTS = {"PASS", "FAIL", "ERROR", "NOT_RUN", "BUDGET_EXCEEDED", "CANCELLED"}
 _TERMINAL_EXIT_CODES = {0, 1, 2, 3, 4, 70, 71, 72, 75, 76, 77, 78, 79, 143}
+
+
+def is_ambiguous_container_name(value: object) -> bool:
+    """Return whether a name could be resolved by Docker as an ID prefix."""
+
+    return isinstance(value, str) and _AMBIGUOUS_CONTAINER_NAME_RE.fullmatch(value) is not None
 
 
 class ExitCode:
@@ -1490,6 +1500,8 @@ class AdmissionBook:
         is_lease = isinstance(request, LeaseRequest)
         if is_lease:
             _validate_name(request.container_name, "container_name")
+            if is_ambiguous_container_name(request.container_name):
+                raise AdmissionError(ExitCode.REFUSAL, AMBIGUOUS_CONTAINER_NAME_REASON)
             if inspector is None:
                 raise AdmissionError(ExitCode.REFUSAL, "lease admission requires an injected object inspector")
         digest = request.digest()

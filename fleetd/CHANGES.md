@@ -6,10 +6,10 @@ All notable changes to this project are recorded here.
 
 ### Added
 - Add the standard-library host lane executor and worker, one transient systemd scope per confirmed job, runner-user checkout operations, bundle verification, seed/collect archives, Run-Gate verdict binding and host-written `result.json`.
-- Persist FD-061 executor result fields before releasing the admission charge; terminal status reads them after restart. Store collection detail is preserved in the result (FD-068).
+- Persist FD-061 executor result fields before releasing the admission charge; terminal status reads them after restart. Store collection detail is preserved in the result (FD-071).
 
 ### Changed
-- Wire `fleetd-agent` to the executor. Lane submission still refuses while the C3b-2 legacy-job provider is unwired; C3b-1 does not install or enable host services. The worker records and inspects lane-started containers as events arrive, and confirms its scope and exact-label containers before collection or release. Cancellation refuses with a named deferral when guard presence is true or unknown and no merged `deregister` callable is available. FD-064, FD-065, FD-066 and FD-067 remain enablement limits; live systemd and persistent-runner probes are still required.
+- Wire `fleetd-agent` to the executor. The merged C3b-2a legacy-job and Docker providers supply admission inspection; C3b-1 does not install or enable host services. The worker records and inspects lane-started containers as events arrive, and confirms its scope and exact-label containers before collection or release. Cancellation refuses with a named deferral when guard presence is true or unknown and no merged `deregister` callable is available. FD-067 through FD-070 remain enablement limits; live systemd and persistent-runner probes are still required.
 
 <!-- cmru: release history -->
 
@@ -90,6 +90,8 @@ All notable changes to this project are recorded here.
 
 <!-- cmru: pending release notes begin -->
 ### Added
+- Add descriptor-safe, two-pass legacy-job listing with stable name-derived IDs and an entry ceiling; add exact Docker object and full-ID container identity inspectors with fixed argv/environment, capped output, and bounded output collection and reaping after synchronous process creation; wire them into `fleetd-agent` and require `agent.toml.legacy_jobs_dir`. The executor remains separate work. Process creation cannot be cancelled; see FD-066.
+- Before C3b-2a wired these providers, `fleetd-agent` supplied no legacy-job or Docker inspector providers, so submit and lease refused on every host. No recovery or state-migration path was needed for those refused operations; this package does not add one.
 - Add the standard-library host-agent protocol, closed policy validation, bounded framing, socket and forced-command server, local version-checking client, and `fleetd-agent` entry point. C3a does not ship the C3b executor or the C3c service installation.
 - Wire `probe`, `facts`, `have`, `put`, `fetch`, `progress`, `submit`, `status`, `cancel`, and controller-local `lease` to host-owned state and the C2 admission book. Without an injected executor, submit refuses before admission or a durable `request.json` write.
 - Bound capacity, legacy-list and object-inspector callbacks made under `queue.lock` with required `agent.toml.query_timeout_s`; apply the same timeout to every callback, mapping timeouts to 75 or `ERROR`.
@@ -106,7 +108,7 @@ All notable changes to this project are recorded here.
 - Convert JSON parser depth and integer-digit failures to protocol errors, type-check closed enum fields, and keep their exit codes on the wire.
 - Open lane declarations and progress streams through trusted directory descriptors without following any path component; cap progress ranges and client response bodies at 8 MiB.
 - Return terminal status only from its durable completion record and refuse cancel of completed jobs. C3b owns executor-backed terminal details (FD-061).
-- Advertise `lease` only when object, legacy-job and container-identity inspectors are configured; C3b wires those providers, so the shipped C3a CLI does not advertise it.
+- Advertise `lease` only when object, legacy-job and container-identity inspectors are configured; C3b-2a wires those providers from `agent.toml.legacy_jobs_dir`, so the shipped C3a CLI does not advertise it.
 - Keep each upload's full declared size reserved through durable commit or partial removal; bytes buffered or written do not lower the upload filesystem disk-floor charge. Publish reservation records atomically under a stable owner lock and reclaim torn records only after confirming the owner is absent. Leave retention and garbage collection to C3b (FD-062).
 - Bound Assay progress candidate counting to the opened file's 8 MiB snapshot; larger files return `done: null` with a reason, and incremental counting remains FD-063.
 

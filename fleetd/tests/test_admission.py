@@ -283,6 +283,57 @@ def _lease_request(*, lease_id="ops-lease-1", container_name="rg-lane-1", footpr
     )
 
 
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [("a" * 12, True), ("f" * 63, True), ("a" * 11, False), ("a" * 64, False),
+     ("A" * 12, False), (None, False)],
+)
+def test_ambiguous_container_name_predicate(value, expected):
+    assert admission_module.is_ambiguous_container_name(value) is expected
+
+
+@pytest.mark.parametrize("length", [12, 63])
+def test_admission_refuses_ambiguous_hex_container_names(tmp_path, length):
+    book = _book(tmp_path / "state")
+    inspector_calls = []
+    with pytest.raises(
+        AdmissionError,
+        match=admission_module.AMBIGUOUS_CONTAINER_NAME_REASON,
+    ) as refused:
+        book.reserve_lease(
+            _lease_request(container_name="a" * length),
+            authenticated_group="ops",
+            capacity_provider=lambda: _capacity(),
+            legacy_jobs_provider=lambda: (),
+            inspector=lambda name: inspector_calls.append(name),
+            wait_s=0,
+        )
+    assert refused.value.exit_code == ExitCode.REFUSAL
+    assert inspector_calls == []
+    assert book.status("ops-lease-1", "ops") is None
+
+
+def test_existing_lease_state_with_ambiguous_hex_name_still_loads(tmp_path):
+    path = tmp_path / "ops-existing.json"
+    path.write_text(json.dumps({
+        "lease_id": "ops-existing",
+        "group": "ops",
+        "digest": "a" * 64,
+        "container_name": "b" * 12,
+        "priority": "gate",
+        "footprint": "small",
+        "state": "pending",
+        "released": False,
+        "container_id": None,
+        "charged_bytes": 1,
+        "current_warm_bytes": 0,
+        "planned_cores": 1,
+        "created_at": 1,
+    }), encoding="utf-8")
+    loaded = admission_module._read_lease_record(path, expected_id="ops-existing")
+    assert loaded["container_name"] == "b" * 12
+
+
 def _admit(book, capacity, *, job_id="ops-run-1", digest="a" * 64, group="ops", priority="gate",
            footprint="small", cores=1, legacy_jobs=(), provider=None):
     capacity_provider = provider if provider is not None else lambda: capacity

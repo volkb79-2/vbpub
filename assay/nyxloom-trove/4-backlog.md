@@ -15997,24 +15997,24 @@ The single error is at `descendants[0]`, so the only difference between an accep
 
 ## B577 — A resume that rejects every record does not say why
 
-**Status: OPEN (filed 2026-11-24 from a rollback (T6) report); severity: medium (operational).**
+**Status: FIXED 2026-11-27 in test commits `0600b4c85`, `79136e9ff`, and `aee37b238`; implementation commits `754d2761a`, `66e3ccb6e`, and `45bff0aa6`, with the record-isolation follow-up in `ebd069b5f`; severity was medium (operational).**
 
 **Symptom.** A seeded remote-gate resume (scripts/debian-install-v2, lane r2, head 2ea1912ca, r1002, run-gate 25.7.0, image dcaf4222) rejected every prior record.
 - Chunk 1, rgw-r2-20261124T155402-r1002, collected 14 killed records.
 - Chunk 2, rgw-r2-20261124T162538-r1002, was seeded with them (STORE-SEEDED). Its `resume` event read `rejected_total: 14, resumed_total: 0`, it re-ran candidates 0-13, and it hit the budget again at candidate 13.
 - The stores are kept at `.controller-state/rollback/gates/icm1a-r2-store-c{1,2}`.
 
-**Cause (re-verified in assay source).** `judge_sha256` fingerprints the effective value of every present `env_passthrough` name (`src/assay/mutation.py:1603-1610`). When native liveness is injected, assay prepends a per-run temporary plugin directory to the candidate's `PYTHONPATH` (`src/assay/liveness.py:630-636`); cold-witness execution also prepends its receipt-plugin directory (`src/assay/mutation_witness.py:1165-1168`). The injected path changes between runs, so any `PYTHONPATH` included in `env_passthrough` changes the judge identity even when the consumer's own path spelling is relative.
+**Cause (the pre-fix behavior).** `judge_sha256` fingerprinted the effective value of every present `env_passthrough` name (`src/assay/mutation.py:1603-1610`). Native liveness prepended a per-run temporary plugin directory to the candidate's `PYTHONPATH` (`src/assay/liveness.py:630-636`); cold-witness execution also prepended its receipt-plugin directory (`src/assay/mutation_witness.py:1165-1168`). The injected path changed between runs, so any `PYTHONPATH` included in `env_passthrough` changed the judge identity even when the consumer's own path spelling was relative.
 
 **Correction to the earlier advice.** The relative-path workaround recorded here does not work: it cannot remove assay's per-run injected entries from the effective value that is fingerprinted. The consumer's declared path is not the changing component; assay's injection is.
 
-**Decided design and workaround.** Fingerprint the pre-injection `PYTHONPATH` value and exclude assay's own injected entries. Do not ask lane authors to encode a workaround in their ambient path. Until that code change lands, the supported workaround is a declared `env` `PYTHONPATH`, which is not hashed as a passthrough value. Assay's own R2 lanes pass through `PATH` only and are unaffected.
+**Decided design.** Fingerprint the pre-injection `PYTHONPATH` value only when the current effective value exactly matches it with every recorded assay insertion applied; otherwise fingerprint the current effective value. The child still receives the injected paths. A consumer's own passthrough value remains part of the identity. The storage limit is: “Only `PATH` and `PYTHONPATH` receive per-name passthrough value digests.” All other present passthrough variables share one aggregate digest over their names and values, with their names retained for diagnostics. Assay's own R2 lanes pass through `PATH` only and are unaffected.
 
 **Gap (the assay part).** Nothing tells the operator why. `resume` counts `rejected_total`, but neither the event nor the log names which judge component moved. Diagnosing this took a manual record diff and reading the judge docstring.
 
 **Wanted.**
-1. When a resume rejects records for a judge mismatch, report the judge-identity components that differ between the stored records and this run: tree, argv, declared env, passthrough names and values (by name only, value fingerprints never printed), cwd/prefix, link paths, tool version and fingerprints. For this, the judge's component digests must be stored in the store (for example, beside the store manifest), not only their combined hash.
-2. In CONSUMERS, the `env_passthrough` section: explain that an assay-injected `PYTHONPATH` entry changes the fingerprint even when the consumer's own value is relative. Document the declared `env` workaround while the code fix is pending and the pre-injection fingerprint design; do not recommend a relative path.
+1. When a resume rejects records for a judge mismatch, report the judge-identity components that differ between the stored records and this run: tree, argv, declared env, passthrough names and values (by name only, value fingerprints never printed), cwd/prefix, link paths, tool version and fingerprints. For this, the judge's component digests must be stored in the store (for example, beside the store manifest), not only their combined hash. Store per-name passthrough value digests only for `PATH` and `PYTHONPATH`; aggregate all other present passthrough values together and retain their names. If that aggregate changes, say “one or more of” the shared names unless the aggregate has exactly one name on both sides. Name additions and removals exactly.
+2. In CONSUMERS, explain that the pre-injection `PYTHONPATH` value is used only when recorded assay insertions reproduce the current effective value, assay-injected plugin paths remain in the child environment, and the consumer's own passthrough value still changes identity. Do not recommend a relative-path workaround.
 
 **Close when.** A test proves that a mismatch caused by a single passthrough value names that variable in the resume event and on stderr, and the CONSUMERS paragraph is in place. Source: vbpub-rollback's message to vbpub-assay at ~16:58Z; record diff by vbpub-assay.
 
@@ -16023,8 +16023,11 @@ The single error is at `descendants[0]`, so the only difference between an accep
 - It took 2h26m against 2h53m for the cold run, and it re-judged most candidates.
 - Result: 194 candidates, 145 killed, the same 47 survived, and 2 `budget_exceeded` (the installer at 750/751; both were killed in the cold run).
 - Suspect: another input that changes per checkout or per run is still folded into `judge_sha256`. It is not yet identified; the stored records of the two runs have not been diffed.
+- That historical suspicion is not a finding. A later mismatch can name its changed components only when the stored judge has component metadata; older stores report that the component digests are unavailable.
 - This makes Wanted item 1 (name the judge component that moved) the way to find it, rather than another manual record diff.
 - Source: the main controller's message to vbpub-assay, ~01:35Z 2026-11-25.
+
+**Implementation note (2026-11-27).** Judge components use sidecar schema `/2` at `.diagnostics/judge-components/<judge>.json` inside the state-store root, outside candidate records and judge generations. It travels with collected and seeded stores; a merged target store writes the current judge's sidecar after record and deadline work, and only after a successful current-judge record commit or a validated resumed record. A mismatch reports changed component names in the `resume` event and stderr. “Only `PATH` and `PYTHONPATH` receive per-name passthrough value digests.” Other passthrough values share one aggregate digest; its diagnostic names candidates as “one or more of,” while names that appear or disappear are exact. Sidecar names and diagnostic sizes are bounded and validated; malformed or oversized metadata is unavailable. A `/1` sidecar at the legacy `judges/<judge>/judge-components.json` path is not read; only this unmerged branch ever wrote `/1` (B602). The first resume after the pre-injection identity change re-executes old records whose judge included run-local assay-injected `PYTHONPATH` entries, including when `PYTHONPATH` was absent before injection and was not passed through. Older stores without usable sidecars report component digests unavailable but do not change record acceptance. A valid-format sidecar can still misname which component changed; that affects the diagnostic only, not resume acceptance (B603).
 
 ## B578 — A kill with rc!=0 and no failing test named is still counted as killed
 
@@ -16359,13 +16362,141 @@ characterization and exclusion-pin refresh `c56273ab5`, L6/L7/nit/docs
 
 ## B599 — B105 RAM admission counts reclaimable file cache as used
 
-**Status: OPEN, filed 2026-11-27 (fix after 12.4.0); severity: medium.**
+**Status: FIXED by b427d48d9; round-1 review HOLD closed by c93755545; red
+proof f94090150 and a6b9f193a at baseline 268725a06; Docker's real
+absent-object answer handled by efa9aae16, red proof 2ee5aa9a4; exact exit-1
+single-statement rule in 6104416d6, red proof c4dc20c85; byte-exact capture
+(round-2 HOLD finding left open by round 3: extra newlines and NUL bytes were
+dropped) in aa2a1ab85, red proof a822202f4; Docker's stderr now goes to a file
+with no pipeline between Docker and its exit status (follow-up review HOLD), in
+353b1fce6, red proof 9822c7ead; severity: medium. The unchecked removal of that
+capture file is filed as B608.**
 
-`assay/tools/cgroup-parent.sh` computes the gates slice headroom as
-`memory.max - memory.current`. `memory.current` includes reclaimable file
-cache and reclaimable slab, so an idle-cached slice refuses a self-qualification
-run although the kernel could reclaim the memory. Observed on v1001 at
-2026-11-27T07:31Z: 2066 MB reported against the 2147 MB requirement, with
-about 3.3 GB of the slice usage in file cache and memory PSI full avg60 0.06
+Implementation: `assay/tools/cgroup-parent.sh:125` (verified probe identity and
+definite-absence classification), `:205` (ambiguous failure retains ownership),
+`:229` (bounded memory.stat reader), `:502` (validated reclaimable calculation),
+and `:568` (bounded admission). Behavioral tests:
+`assay/gate/tests/test_cgroup_parent.py:829` (admission), `:849` (single-file
+mount), `:889` (invalid stat fallback), `:929` (mount fallback), `:996`
+(definite absence), `:1044` (other inspect failures), `:1078` (inexact absence
+keeps a created probe), `:1105` (failing text tool), `:1135` (stderr warning),
+`:1149` (ambiguous inspect and EXIT cleanup), `:1174` (owner mismatch), `:1196`
+(execute generated probe script), `:1295` (dirty and writeback), `:1319`
+(clamp), and `:1340` (continued refusal). Documentation and
+changelog: `assay/docs/DESIGN-GUIDE.md:3119` and `assay/CHANGES.md:7`.
+
+Before the fix, `assay/tools/cgroup-parent.sh` computed the gates slice
+headroom as `memory.max - memory.current`. `memory.current` includes
+reclaimable file cache and reclaimable slab, so an idle-cached slice refused a
+self-qualification run although the kernel could reclaim the memory. Observed
+on v1001 at 2026-11-27T07:31Z: 2066 MB reported against the 2147 MB
+requirement, with about 3.3 GB of the slice usage in file cache and memory PSI
+full avg60 0.06
 (`rgw-self-qualification-provisional-20261127T073114-v1001`, refused before
 the lane started). The matching run-gate admission defect is RG-332.
+
+## B600 — P4 advisory-budget comments overstate when the budget binds
+
+**Status: OPEN, filed 2026-11-27 (P-assay-4f round-4 review, low); severity:
+low.**
+
+The comments at `assay/src/assay/runner.py:6121` and
+`assay/src/assay/mutation.py:2307` say the candidate budget binds if CPU
+*becomes* unreadable. `assay/src/assay/liveness.py` sets `cpu_readable` after
+the first successful sample and never clears it, so the budget binds on this
+ground only when candidate CPU was never readable. If CPU reads start failing
+later while the event stream stays intact, the budget stays advisory, and
+continuing completed events can keep resetting the no-progress wall stop. The
+stream-break exception in both comments is accurate.
+
+**Close when.** Both comments say "was never readable", or the runtime policy
+changes to bind on a later loss and a test pins that behaviour.
+
+## B601 — the `tooling-tests` lane runs only part of `gate/tests`
+
+**Status: OPEN, filed 2026-11-27 (found while gating B599); severity:
+medium.**
+
+The `tooling-tests` lane in `assay/run-gate.toml` names its test files one by
+one. From `gate/tests` it lists `test_b105_report_check.py`,
+`test_distribution_gate.py`, `test_release_gate.py`,
+`test_self_qualification_container.py` and `test_self_lane.py`. Other files
+there, `test_cgroup_parent.py` among them, are collected only by the
+`tester-unified` lane (`pytest tests gate/tests` in `assay/assay.toml`). A
+`tooling-tests` PASS therefore says nothing about a change to
+`assay/tools/cgroup-parent.sh`: the B599 PASS
+`rgw-tooling-tests-20261127T141630-v1001` did not run its new tests.
+
+**Close when.** The lane collects every `gate/tests` file it can run, with each
+exclusion named and explained, or a check fails when a `gate/tests` file is in
+neither the lane's list nor that exclusion list.
+
+## B602 — A `/1` judge-component sidecar at the legacy path is not read
+
+**Status: OPEN, filed 2026-11-27 (Assay B577 review, finding 1); severity:
+low (diagnostic only).**
+
+`read_judge_components` falls back to
+`judges/<judge>/judge-components.json` when the current
+`.diagnostics/judge-components/<judge>.json` file is absent, but validates only
+schema `/2`. A `/1` sidecar at the legacy path is therefore unavailable and
+the resume diagnostic reports component digests unavailable. Only this
+unmerged branch ever wrote `/1`; no released store was produced with it.
+
+**Close when.** The reader accepts valid `/1` metadata at the legacy path, or
+the fallback is removed and the documentation consistently describes the
+metadata as unavailable.
+
+## B603 — A valid-format judge-component sidecar can misname the mismatch cause
+
+**Status: OPEN, filed 2026-11-27 (Assay B577 review, finding 4); severity:
+low (diagnostic only).**
+
+A sidecar can pass its schema and digest-shape checks while carrying a
+component digest that does not describe the judge named by its file. Comparing
+that metadata can report the wrong changed component. This cannot change
+record acceptance or a mutation result; it only weakens the explanation shown
+for a judge mismatch.
+
+**Close when.** A valid-format sidecar with an incorrect component digest is
+rejected as unavailable or its contents are bound to the recorded judge, with
+a test proving the diagnostic cannot name a false cause.
+
+## B608 — a failed removal of the probe's capture file is ignored
+
+**Status: OPEN, filed 2026-11-27 (final B599 review, accepted as a follow-up);
+severity: low.**
+
+`inspect_owned_unit_probe` (`assay/tools/cgroup-parent.sh:155`) runs
+`rm -f -- "$stderr_file"` without checking its status. The function is called
+from `if` and `||` contexts, where `errexit` does not apply. If the removal
+fails, an exact absent-object answer still returns 1,
+`discard_failed_unit_probe` clears the probe identity, the unmounted retry
+runs, and the file stays behind.
+
+**Close when.** A failed removal returns 3 (`rm -f -- "$stderr_file" || return
+3`), so there is no unmounted retry and the identity stays for the EXIT trap,
+and a `tester-unified` case that makes only this removal fail proves it.
+
+## B609 — two runs of one shard under one judge disagree on a mutant's outcome
+
+**Status: OPEN, filed 2026-11-27 (cmru R2 backfill, B562); severity: medium,
+because a stored verdict depends on which run produced it.**
+
+Shard 1 of 64 of `cmru-first-release-r2` at commit
+`5e02d731b72f43095d7bb8ec7b9be205efd2e71a` ran twice, both complete (75 of 75
+records) under judge `c6e270f2…`. One candidate differs:
+`20fc27434d6ff74b6ba6cbd9f2cd73c1882f075b51e4fac9037c93e65bd03568`,
+`cmru/src/cmru/bundle.py:165`, `python:bool-const-flip` (`True->False`).
+
+- `rgw-assay-first-release-r2-20261124T125223-v1001`: `survived`.
+- `rgw-assay-first-release-r2-20261124T152154-r1002`: `killed`, with
+  `first_failing_test` null.
+
+Stores: `cmru/.assay/r2-staging/<run>/assay-store.tgz` (untracked controller
+data). The cause is not established. A `killed` record that names no failing
+test (see B578) may be a failure unrelated to the mutant.
+
+**Close when.** The kill's cause is established from the run's evidence or a
+reproduction, and either the test or classification defect is fixed, or the
+limit is documented for consumers of resumed and merged stores.

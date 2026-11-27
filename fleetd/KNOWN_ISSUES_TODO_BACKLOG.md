@@ -66,12 +66,15 @@
 | FD-061 | Persist executor result details for terminal status | P2 | FIXED IN THIS BRANCH (C3b-1) | 2026-11-27 |
 | FD-062 | Retain and garbage-collect host upload objects | P2 | OPEN (C3b-2 follow-up) | 2026-11-27 |
 | FD-063 | Incrementally count large Assay progress files | P2 | OPEN | 2026-11-27 |
-| FD-064 | Close the short-lane event-observation race before enabling the executor | P1 | OPEN; BLOCKER BEFORE ENABLEMENT | 2026-11-27 |
-| FD-065 | Prove persistent exec-lane work stopped before cancellation releases its charge | P1 | OPEN; cancellation remains stopping | 2026-11-27 |
-| FD-066 | Protect host-owned Run-Gate events from a same-uid host lane | P1 | OPEN; transport limit | 2026-11-27 |
-| FD-067 | Verify exec checkout mount against a real persistent runner before enablement | P1 | OPEN; LIVE PROBE REQUIRED | 2026-11-27 |
-| FD-068 | Preserve store collection failure detail in the host result | P2 | FIXED IN THIS BRANCH (C3b-1) | 2026-11-27 |
-| FD-069 | Bind Run-Gate repo/project labels to the request | P2 | FIXED IN THIS BRANCH (C3b-1) | 2026-11-27 |
+| FD-064 | A legacy job directory without EXIT after host reboot remains charged | P2 | OPEN | 2026-11-27 |
+| FD-065 | Legacy-job listing is point-in-time and completed directories consume the entry ceiling | P2 | OPEN | 2026-11-27 |
+| FD-066 | Synchronous Docker process creation cannot be cancelled by the query deadline | P2 | OPEN | 2026-11-27 |
+| FD-067 | Close the short-lane event-observation race before enabling the executor | P1 | OPEN; BLOCKER BEFORE ENABLEMENT | 2026-11-27 |
+| FD-068 | Prove persistent exec-lane work stopped before cancellation releases its charge | P1 | OPEN; cancellation remains stopping | 2026-11-27 |
+| FD-069 | Protect host-owned Run-Gate events from a same-uid host lane | P1 | OPEN; transport limit | 2026-11-27 |
+| FD-070 | Verify exec checkout mount against a real persistent runner before enablement | P1 | OPEN; LIVE PROBE REQUIRED | 2026-11-27 |
+| FD-071 | Preserve store collection failure detail in the host result | P2 | FIXED IN THIS BRANCH (C3b-1) | 2026-11-27 |
+| FD-072 | Bind Run-Gate repo/project labels to the request | P2 | FIXED IN THIS BRANCH (C3b-1) | 2026-11-27 |
 
 ## FD-001 Lite campaign lifecycle
 
@@ -1206,7 +1209,50 @@ retention policy is defined here.
 
 Source: P-fd-05 C3a fix round 2 controller ruling (2026-11-27).
 
-## FD-064 Close the short-lane event-observation race before enabling the executor
+## FD-064 Legacy job directories without EXIT remain charged after host reboot
+
+**State:** OPEN. **Priority:** P2. **Filed:** 2026-11-27.
+
+The admission provider charges every entry in `legacy_jobs_dir` without a
+regular `EXIT` marker. If a host reboots while a legacy `run-job` command is
+running, the command may never write that marker, so the directory continues
+to consume its legacy RAM and planned-core charge after reboot. This package
+does not infer completion or remove the directory; someone must remove the
+stale directory for its charge to clear. Restart recovery and cleanup are
+separate work.
+
+Source: P-fd-05 C3b-2a controller ruling (2026-11-27).
+
+## FD-065 Legacy-job scan observation and directory retention
+
+**State:** OPEN. **Priority:** P2. **Filed:** 2026-11-27.
+
+The admission scan lists the pinned `legacy_jobs_dir` twice and checks that the
+configured path still names that directory. It does not coordinate with
+`scripts/netcup/runner/run-job`, which does not take `queue.lock`: a job created
+after the final listing is not seen until the next admission observation. The
+jobs-directory owner is trusted to manage its own `EXIT` markers. Completed
+job directories remain in the namespace and count toward
+`MAX_LEGACY_JOB_ENTRIES` (65,536); an operator must prune them before the
+ceiling or admission refuses with 75. No cleanup or writer protocol is part of
+this package.
+
+Source: P-fd-05 C3b-2a controller ruling F2/F5 (2026-11-27).
+
+## FD-066 Docker process creation is synchronous and uncancellable
+
+**State:** OPEN. **Priority:** P2. **Filed:** 2026-11-27.
+
+`subprocess.Popen` creation is synchronous. While it is blocked, the caller
+cannot cancel it, and the admission thread may remain occupied after its
+`query_timeout_s` outer wait has refused. If creation later returns, the
+provider immediately signals the new process group and makes a bounded reap
+attempt. The deadline still bounds output collection, reaping and the answer
+from the outer admission call; it cannot bound process creation itself.
+
+Source: P-fd-05 C3b-2a fix round 2 controller ruling R2-2 (2026-11-27).
+
+## FD-067 Close the short-lane event-observation race before enabling the executor
 
 **State:** OPEN; BLOCKER BEFORE ENABLEMENT. **Priority:** P1. **Filed:** 2026-11-27.
 
@@ -1219,7 +1265,7 @@ relax the identity or checkout-mount checks.
 
 Source: P-fd-05 C3b-1 fix round 1 controller ruling for H3 (2026-11-27).
 
-## FD-065 Persistent exec cancellation cannot prove the in-runner process stopped
+## FD-068 Persistent exec cancellation cannot prove the in-runner process stopped
 
 **State:** OPEN; cancellation remains `stopping`. **Priority:** P1. **Filed:** 2026-11-27.
 
@@ -1231,7 +1277,7 @@ allowing either path to finalize.
 
 Source: P-fd-05 C3b-1 fix round 1 controller ruling for H4 (2026-11-27).
 
-## FD-066 Same-uid host lanes can modify the host-owned Run-Gate event file
+## FD-069 Same-uid host lanes can modify the host-owned Run-Gate event file
 
 **State:** OPEN; transport limit. **Priority:** P1. **Filed:** 2026-11-27.
 
@@ -1243,7 +1289,7 @@ mechanism that preserves the Run-Gate event contract.
 
 Source: P-fd-05 C3b-1 fix round 1 controller ruling for M6 (2026-11-27).
 
-## FD-067 Verify exec checkout mount against a persistent runner
+## FD-070 Verify exec checkout mount against a persistent runner
 
 **State:** OPEN; live probe required. **Priority:** P1. **Filed:** 2026-11-27.
 
@@ -1255,7 +1301,7 @@ weaken the mount check.
 
 Source: P-fd-05 C3b-1 fix round 1 controller ruling for M7 (2026-11-27).
 
-## FD-068 Preserve store collection failure detail in the host result
+## FD-071 Preserve store collection failure detail in the host result
 
 **State:** FIXED IN THIS BRANCH (C3b-1). **Priority:** P2. **Filed:** 2026-11-27.
 
@@ -1266,7 +1312,7 @@ recorded alongside the final lane verdict.
 
 Source: P-fd-05 C3b-1 fix round 1 controller ruling for L5 (2026-11-27).
 
-## FD-069 Bind Run-Gate repository and project labels to the request
+## FD-072 Bind Run-Gate repository and project labels to the request
 
 **State:** FIXED IN THIS BRANCH (C3b-1). **Priority:** P2. **Filed:** 2026-11-27.
 

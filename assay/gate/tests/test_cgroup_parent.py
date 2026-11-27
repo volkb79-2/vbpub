@@ -30,14 +30,29 @@ def run_probe(
     cgroup_values: dict[str, str | None] | None = None,
     cgroup_transport_exit: int | None = None,
     memory_reserve_bytes: int | None = None,
+    memory_stat: str | None = None,
+    memory_stat_read_error: bool = False,
+    memory_stat_mount_failure: bool = False,
     probe_parent: str | None = "dev-interactive.slice",
     container_parent: str = "dev-interactive.slice",
     remote_mnt_namespace: str | None = None,
     remote_pid_namespace: str | None = None,
     unit_probe_run_mode: str = "owned",
+    absent_inspect_stderr: str = "error: no such object: {target}",
+    inspect_stderr_warning: str = "",
+    inspect_failures: list[list[object]] | None = None,
+    failing_nul_translator: bool = False,
 ):
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir(exist_ok=True)
+    if failing_nul_translator:
+        # Forwards its input like the real tool, then fails, for one call shape.
+        translator = fake_bin / "tr"
+        translator.write_text(
+            '#!/bin/sh\n/usr/bin/tr "$@" || exit\n[ "$2" != "?" ]\n',
+            encoding="utf-8",
+        )
+        translator.chmod(0o755)
     argv_log = tmp_path / "docker.argv"
     call_order = tmp_path / "call-order"
     docker = fake_bin / "docker"
@@ -52,6 +67,25 @@ from pathlib import Path
 args = sys.argv[1:]
 with Path(os.environ["DOCKER_ARGV_LOG"]).open("a", encoding="utf-8") as stream:
     stream.write(json.dumps(args) + "\n")
+
+def load_probe_state():
+    try:
+        state = json.loads(Path(os.environ["UNIT_PROBE_STATE"]).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {"containers": {}}
+    if not isinstance(state, dict) or not isinstance(state.get("containers"), dict):
+        return {"containers": {}}
+    return state
+
+def save_probe_state(state):
+    Path(os.environ["UNIT_PROBE_STATE"]).write_text(json.dumps(state), encoding="utf-8")
+
+def find_probe(state, target):
+    for probe in state["containers"].values():
+        if target in (probe["id"], probe["name"]):
+            return probe
+    return None
+
 is_unit_probe = bool(args and args[0] == "run" and any(
     "source=/run/dbus/system_bus_socket" in arg for arg in args
 ))
@@ -69,12 +103,30 @@ if args and args[0] == "inspect":
         raise SystemExit(int(os.environ["HOST_INSPECT_EXIT"]))
     with Path(os.environ["CALL_ORDER"]).open("a", encoding="utf-8") as stream:
         stream.write("unit-owner\n")
-    try:
-        probe = json.loads(Path(os.environ["UNIT_PROBE_STATE"]).read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    state = load_probe_state()
+    probe = find_probe(state, target)
+    if probe is None:
+        # Docker 29.9.3 with --format: an empty stdout line, then the stderr text.
+        print("", flush=True)
+        print(
+            os.environ["ABSENT_INSPECT_STDERR"].replace("{target}", target),
+            file=sys.stderr,
+        )
         raise SystemExit(1)
-    if target not in (probe["id"], probe["name"]):
+    if probe.get("inspect_failures"):
+        # One scripted [status, stderr] per call, then the probe answers again.
+        status, text = probe["inspect_failures"].pop(0)
+        save_probe_state(state)
+        print("", flush=True)
+        print(text.replace("{target}", probe["name"]), file=sys.stderr)
+        raise SystemExit(status)
+    if probe.get("inspect_ambiguous_once"):
+        probe["inspect_ambiguous_once"] = False
+        save_probe_state(state)
+        print("Error: Docker daemon unavailable", file=sys.stderr)
         raise SystemExit(1)
+    if os.environ["INSPECT_STDERR_WARNING"]:
+        print(os.environ["INSPECT_STDERR_WARNING"], file=sys.stderr)
     print("|".join((probe["id"], "/" + probe["name"], probe["owner"])))
     raise SystemExit(0)
 if args and args[0] == "exec":
@@ -91,9 +143,34 @@ if args and args[0] == "wait":
     print(os.environ["SYSTEMCTL_EXIT"])
     raise SystemExit(int(os.environ.get("CGROUP_TRANSPORT_EXIT", "0")))
 if args and args[0] == "logs":
-    print(os.environ["SYSTEMD_OUTPUT"])
+    output = os.environ["SYSTEMD_OUTPUT"]
+    state = load_probe_state()
+    probe = find_probe(state, args[1]) if len(args) > 1 else None
+    probe = probe or {}
+    if probe.get("memory_stat_mount"):
+        memory_stat_output = "\nASSAY_MEMORY_STAT_BEGIN\n"
+        if os.environ["MEMORY_STAT_READ_ERROR"] == "1":
+            memory_stat_output += "ASSAY_MEMORY_STAT_READ_ERROR\n"
+        else:
+            memory_stat_output += os.environ["MEMORY_STAT_DATA"]
+            if not memory_stat_output.endswith("\n"):
+                memory_stat_output += "\n"
+        memory_stat_output += "ASSAY_MEMORY_STAT_END\n"
+        output = output.replace(
+            "ASSAY_UNIT_END=dev-gates.slice\n",
+            memory_stat_output + "ASSAY_UNIT_END=dev-gates.slice\n",
+            1,
+        )
+    print(output)
     raise SystemExit(0)
 if args and args[0] == "rm":
+    state = load_probe_state()
+    target = args[-1]
+    for name, probe in list(state["containers"].items()):
+        if target in (probe["id"], probe["name"]):
+            del state["containers"][name]
+            break
+    save_probe_state(state)
     raise SystemExit(0)
 if is_unit_probe:
     with Path(os.environ["CALL_ORDER"]).open("a", encoding="utf-8") as stream:
@@ -103,11 +180,33 @@ if is_unit_probe:
     name = name_arg.split("=", 1)[1]
     owner = label_arg.split("=", 2)[2]
     mode = os.environ["UNIT_PROBE_RUN_MODE"]
-    probe = {"id": "f" * 64, "name": name, "owner": owner}
+    memory_stat_mounts = [
+        arg for arg in args
+        if arg.startswith("--mount=type=bind,source=/sys/fs/cgroup")
+    ]
+    state = load_probe_state()
+    container_id = chr(ord("f") - len(state["containers"])) * 64
+    probe = {"id": container_id, "name": name, "owner": owner}
+    if len(memory_stat_mounts) == 1:
+        probe["memory_stat_mount"] = memory_stat_mounts[0]
+        probe["inspect_failures"] = json.loads(os.environ["INSPECT_FAILURES"])
+    if mode == "inspect-ambiguous-once" and memory_stat_mounts:
+        probe["inspect_ambiguous_once"] = True
+    if mode == "owner-mismatch":
+        probe["owner"] = "another-container"
     if mode == "collision":
         probe.update({"id": "a" * 64, "owner": "another-container"})
-    Path(os.environ["UNIT_PROBE_STATE"]).write_text(json.dumps(probe), encoding="utf-8")
-    if mode in ("collision", "created-failure"):
+    absent_mount_failure = bool(memory_stat_mounts and mode == "mount-failure-absent")
+    if not absent_mount_failure:
+        state["containers"][name] = probe
+        save_probe_state(state)
+    if mode in ("collision", "created-failure") or (
+        memory_stat_mounts and mode in (
+            "mount-failure-created", "inspect-ambiguous-once", "owner-mismatch"
+        )
+    ) or (memory_stat_mounts and os.environ["MEMORY_STAT_MOUNT_FAILURE"] == "1"):
+        raise SystemExit(125)
+    if absent_mount_failure:
         raise SystemExit(125)
     print(probe["id"])
     raise SystemExit(0)
@@ -132,6 +231,7 @@ raise SystemExit(2)
             "MemorySwapMax": "18446744073709551615",
         })
     legacy_names = {
+        "ControlGroup": "ControlGroup",
         "memory.max": "MemoryMax",
         "memory.high": "MemoryHigh",
         "memory.swap.max": "MemorySwapMax",
@@ -171,6 +271,12 @@ raise SystemExit(2)
         "CALL_ORDER": str(call_order),
         "UNIT_PROBE_STATE": str(tmp_path / "unit-probe-state.json"),
         "UNIT_PROBE_RUN_MODE": unit_probe_run_mode,
+        "ABSENT_INSPECT_STDERR": absent_inspect_stderr,
+        "INSPECT_STDERR_WARNING": inspect_stderr_warning,
+        "INSPECT_FAILURES": json.dumps(inspect_failures or []),
+        "MEMORY_STAT_DATA": memory_stat or "",
+        "MEMORY_STAT_READ_ERROR": "1" if memory_stat_read_error else "0",
+        "MEMORY_STAT_MOUNT_FAILURE": "1" if memory_stat_mount_failure else "0",
         "HOSTNAME": "assay-probe-test",
         "HOST_CONFIGURED_HOSTNAME": KERNEL_HOSTNAME,
         "HOST_CGROUP_PARENT": container_parent,
@@ -217,6 +323,113 @@ def _unit_output(unit: str, properties: str) -> str:
     return f"ASSAY_UNIT_BEGIN={unit}\n{properties}\nASSAY_UNIT_END={unit}"
 
 
+def _unit_probe_script(argv_log: Path) -> str:
+    calls = [json.loads(line) for line in argv_log.read_text(encoding="utf-8").splitlines()]
+    unit_run = next(call for call in calls if call[0] == "run")
+    command_index = unit_run.index("-c")
+    assert unit_run[command_index - 1] == "sh"
+    return unit_run[command_index + 1]
+
+
+def _execute_unit_probe_script(
+    tmp_path: Path,
+    script: str,
+    memory_stat_path: Path,
+    *,
+    reader_mode: str = "normal",
+):
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir(exist_ok=True)
+    busctl = fake_bin / "busctl"
+    busctl.write_text(
+        r'''#!/usr/bin/python3
+import json
+import sys
+
+args = sys.argv[1:]
+operation = next((value for value in args if value in ("call", "get-property")), None)
+paths = {
+    "dev-gates.slice": "/org/freedesktop/systemd1/unit/dev_gates_slice",
+    "dev-interactive.slice": "/org/freedesktop/systemd1/unit/dev_interactive_slice",
+}
+if operation == "call":
+    value = paths[args[-1]]
+elif operation == "get-property":
+    unit = next(unit for unit, path in paths.items() if path == args[-3])
+    prop = args[-1]
+    values = {
+        "Id": unit,
+        "LoadState": "loaded",
+        "FragmentPath": f"/etc/systemd/system/{unit}",
+        "ControlGroup": "/dev.slice/dev-gates.slice",
+        "MemoryMax": 8589934592,
+        "MemoryHigh": 18446744073709551615,
+        "MemorySwapMax": 8589934592,
+        "MemoryCurrent": 7516192768,
+        "CPUQuotaPerSecUSec": 18446744073709551615,
+        "CPUWeight": 100,
+        "IOWeight": 100,
+    }
+    value = values[prop]
+else:
+    raise SystemExit(2)
+print(json.dumps({"data": value}))
+''',
+        encoding="utf-8",
+    )
+    busctl.chmod(0o755)
+    timeout = fake_bin / "timeout"
+    timeout.write_text(
+        r'''#!/usr/bin/python3
+import json
+import os
+import sys
+from pathlib import Path
+
+args = sys.argv[1:]
+with Path(os.environ["TIMEOUT_LOG"]).open("a", encoding="utf-8") as stream:
+    stream.write(json.dumps(args) + "\n")
+while args and args[0].startswith("--"):
+    args.pop(0)
+if args and args[0].endswith("s"):
+    args.pop(0)
+if not args:
+    raise SystemExit(2)
+if args[0] == "awk":
+    if os.environ["READER_MODE"] == "timeout":
+        raise SystemExit(124)
+    if os.environ["READER_MODE"] == "fail":
+        raise SystemExit(2)
+os.execvpe(args[0], args, os.environ)
+''',
+        encoding="utf-8",
+    )
+    timeout.chmod(0o755)
+    executable_script = script.replace("/usr/bin/busctl", "busctl").replace(
+        "/tmp/host-memory.stat", str(memory_stat_path)
+    )
+    timeout_log = tmp_path / "timeout.argv"
+    proc = subprocess.run(
+        [
+            "/bin/sh",
+            "-c",
+            executable_script,
+            "assay-cgroup-unit-probe",
+            "dev-gates.slice",
+            "dev-interactive.slice",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        env={
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "TIMEOUT_LOG": str(timeout_log),
+            "READER_MODE": reader_mode,
+        },
+    )
+    return proc, timeout_log
+
+
 def test_unset_gates_tier_refuses_before_docker(tmp_path: Path):
     proc, argv_log = run_probe(tmp_path, "OK", slice_name=None)
 
@@ -252,6 +465,7 @@ def test_verified_configured_slice_is_the_only_stdout_value(tmp_path: Path):
     assert "--cgroupns=private" in unit_call
     assert "--cgroupns=host" not in unit_call
     assert "source=/sys/fs/cgroup" not in " ".join(unit_call)
+    assert "host-memory.stat" not in " ".join(unit_call)
     assert owner_check_call[0:2] == ["inspect", "f" * 64]
     assert remove_check_call[0:2] == ["inspect", "f" * 64]
     assert wait_call == ["wait", "f" * 64]
@@ -610,6 +824,585 @@ def test_b105_requires_finite_point_in_time_ram_headroom(tmp_path: Path):
     assert proc.returncode == 0, proc.stderr
     assert "RAM admission OK" in proc.stderr
     assert proc.stdout == "dev-gates.slice\n"
+
+
+def test_b105_admits_when_reclaimable_cache_makes_reservation_fit(tmp_path: Path):
+    proc, _argv_log = run_probe(
+        tmp_path,
+        "OK",
+        slice_name="dev-gates.slice",
+        cgroup_values={"memory.current": "7516192768"},
+        memory_reserve_bytes=2147483648,
+        memory_stat=(
+            "inactive_file 2147483648\n"
+            "slab_reclaimable 0\n"
+            "file_dirty 0\n"
+            "file_writeback 0\n"
+        ),
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert "raw_headroom=1073741824" in proc.stderr
+    assert "adjusted_headroom=3221225472" in proc.stderr
+
+
+def test_b105_reclaimable_mount_is_one_read_only_file(tmp_path: Path):
+    proc, argv_log = run_probe(
+        tmp_path,
+        "OK",
+        slice_name="dev-gates.slice",
+        cgroup_values={"memory.current": "7516192768"},
+        memory_reserve_bytes=2147483648,
+        memory_stat=(
+            "inactive_file 2147483648\n"
+            "slab_reclaimable 0\n"
+            "file_dirty 0\n"
+            "file_writeback 0\n"
+        ),
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    calls = [json.loads(line) for line in argv_log.read_text(encoding="utf-8").splitlines()]
+    unit_run = next(call for call in calls if call[0] == "run")
+    memory_mounts = [
+        arg for arg in unit_run
+        if arg.startswith("--mount=type=bind,source=/sys/fs/cgroup")
+    ]
+    assert memory_mounts == [
+        "--mount=type=bind,source=/sys/fs/cgroup/dev.slice/dev-gates.slice/memory.stat,"
+        "target=/tmp/host-memory.stat,readonly"
+    ]
+    assert "--cgroupns=private" in unit_run
+    assert "--cgroupns=host" not in unit_run
+
+
+@pytest.mark.parametrize(
+    "memory_stat",
+    [
+        "inactive_file 1073741824\nslab_reclaimable 0\nfile_dirty 0\n",
+        "inactive_file 1073741824\ninactive_file 1\nslab_reclaimable 0\nfile_dirty 0\nfile_writeback 0\n",
+        "inactive_file 1073741824\nslab_reclaimable 0\nfile_dirty many\nfile_writeback 0\n",
+        "inactive_file 1000000000000000000\nslab_reclaimable 0\nfile_dirty 0\nfile_writeback 0\n",
+    ],
+    ids=["missing-key", "duplicate-key", "non-numeric", "out-of-range"],
+)
+def test_invalid_memory_stat_uses_raw_headroom(
+    tmp_path: Path, memory_stat: str
+):
+    proc, _argv_log = run_probe(
+        tmp_path,
+        "OK",
+        slice_name="dev-gates.slice",
+        cgroup_values={"memory.current": "5368709120"},
+        memory_reserve_bytes=2147483648,
+        memory_stat=memory_stat,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert "raw_headroom=3221225472" in proc.stderr
+    assert "adjusted_headroom=3221225472" in proc.stderr
+    assert "basis=raw" in proc.stderr
+
+
+def test_unreadable_memory_stat_uses_raw_headroom(tmp_path: Path):
+    proc, _argv_log = run_probe(
+        tmp_path,
+        "OK",
+        slice_name="dev-gates.slice",
+        cgroup_values={"memory.current": "5368709120"},
+        memory_reserve_bytes=2147483648,
+        memory_stat=(
+            "inactive_file 2147483648\n"
+            "slab_reclaimable 0\n"
+            "file_dirty 0\n"
+            "file_writeback 0\n"
+        ),
+        memory_stat_read_error=True,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert "raw_headroom=3221225472" in proc.stderr
+    assert "adjusted_headroom=3221225472" in proc.stderr
+    assert "basis=raw" in proc.stderr
+
+
+def test_memory_stat_mount_failure_retries_unmounted_and_cleans_owned_probe(
+    tmp_path: Path,
+):
+    proc, argv_log = run_probe(
+        tmp_path,
+        "OK",
+        slice_name="dev-gates.slice",
+        cgroup_values={"memory.current": "5368709120"},
+        memory_reserve_bytes=2147483648,
+        memory_stat=(
+            "inactive_file 2147483648\n"
+            "slab_reclaimable 0\n"
+            "file_dirty 0\n"
+            "file_writeback 0\n"
+        ),
+        memory_stat_mount_failure=True,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert "retrying the unmounted systemd probe" in proc.stderr
+    assert "raw_headroom=3221225472" in proc.stderr
+    assert "adjusted_headroom=3221225472" in proc.stderr
+    assert "basis=raw" in proc.stderr
+    calls = [json.loads(line) for line in argv_log.read_text(encoding="utf-8").splitlines()]
+    run_indexes = [index for index, call in enumerate(calls) if call[0] == "run"]
+    assert len(run_indexes) == 2
+    first_run, fallback_run = (calls[index] for index in run_indexes)
+    first_name = next(arg.split("=", 1)[1] for arg in first_run if arg.startswith("--name="))
+    fallback_name = next(arg.split("=", 1)[1] for arg in fallback_run if arg.startswith("--name="))
+    first_owner = next(
+        arg.split("=", 1)[1]
+        for arg in first_run
+        if arg.startswith("--label=io.assay.cgroup-parent.owner=")
+    )
+    fallback_owner = next(
+        arg.split("=", 1)[1]
+        for arg in fallback_run
+        if arg.startswith("--label=io.assay.cgroup-parent.owner=")
+    )
+    assert first_name != fallback_name
+    assert first_owner != fallback_owner
+    assert any(
+        arg.startswith("--mount=type=bind,source=/sys/fs/cgroup")
+        for arg in first_run
+    )
+    assert not any(
+        arg.startswith("--mount=type=bind,source=/sys/fs/cgroup")
+        for arg in fallback_run
+    )
+    assert calls[run_indexes[0] + 1][0:2] == ["inspect", first_name]
+    assert calls[run_indexes[0] + 2] == ["rm", "--force", "f" * 64]
+    assert any(
+        "io.assay.cgroup-parent.owner" in arg
+        for arg in calls[run_indexes[0] + 1]
+    )
+    state = json.loads((tmp_path / "unit-probe-state.json").read_text(encoding="utf-8"))
+    assert state["containers"] == {}
+
+
+@pytest.mark.parametrize(
+    "absent_inspect_stderr",
+    [
+        "error: no such object: {target}",
+        "Error: No such object: {target}",
+        "no such object: {target}",
+    ],
+)
+def test_mount_failure_with_absent_container_retries_without_removal(
+    tmp_path: Path,
+    absent_inspect_stderr: str,
+):
+    proc, argv_log = run_probe(
+        tmp_path,
+        "OK",
+        slice_name="dev-gates.slice",
+        cgroup_values={"memory.current": "5368709120"},
+        memory_reserve_bytes=2147483648,
+        unit_probe_run_mode="mount-failure-absent",
+        absent_inspect_stderr=absent_inspect_stderr,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    calls = [json.loads(line) for line in argv_log.read_text(encoding="utf-8").splitlines()]
+    run_indexes = [index for index, call in enumerate(calls) if call[0] == "run"]
+    assert len(run_indexes) == 2
+    first_run, fallback_run = (calls[index] for index in run_indexes)
+    first_name = next(arg.split("=", 1)[1] for arg in first_run if arg.startswith("--name="))
+    assert any(
+        arg.startswith("--mount=type=bind,source=/sys/fs/cgroup")
+        for arg in first_run
+    )
+    assert not any(
+        arg.startswith("--mount=type=bind,source=/sys/fs/cgroup")
+        for arg in fallback_run
+    )
+    assert calls[run_indexes[0] + 1][0:2] == ["inspect", first_name]
+    assert not any(
+        call[0] == "rm" for call in calls[run_indexes[0] + 1:run_indexes[1]]
+    )
+    state = json.loads((tmp_path / "unit-probe-state.json").read_text(encoding="utf-8"))
+    assert state["containers"] == {}
+
+
+@pytest.mark.parametrize(
+    "inspect_stderr",
+    [
+        "error: no such object: {target}-other",
+        "error: no such object: {target} (daemon unreachable)",
+        "Error response from daemon: no such object: {target}",
+        "WARNING: unrelated CLI notice\nerror: no such object: {target}",
+        "error: no such object: {target}\nCannot connect to the Docker daemon",
+        "Cannot connect to the Docker daemon",
+        "",
+    ],
+)
+def test_other_inspect_failure_after_mount_failure_refuses_without_fallback(
+    tmp_path: Path,
+    inspect_stderr: str,
+):
+    proc, argv_log = run_probe(
+        tmp_path,
+        "OK",
+        slice_name="dev-gates.slice",
+        cgroup_values={"memory.current": "5368709120"},
+        memory_reserve_bytes=2147483648,
+        unit_probe_run_mode="mount-failure-absent",
+        absent_inspect_stderr=inspect_stderr,
+    )
+
+    assert proc.returncode != 0
+    assert proc.stdout == ""
+    assert "refusing fallback" in proc.stderr
+    calls = [json.loads(line) for line in argv_log.read_text(encoding="utf-8").splitlines()]
+    assert len([call for call in calls if call[0] == "run"]) == 1
+    assert not any(call[0] == "rm" for call in calls)
+
+
+@pytest.mark.parametrize(
+    "inspect_failures",
+    [
+        [[1, ""], [1, "WARNING: unrelated CLI notice\nerror: no such object: {target}"]],
+        [[1, ""], [124, "error: no such object: {target}"]],
+        [[124, "error: no such object: {target}"]],
+        # The fake adds one newline, so this is an extra blank line.
+        [[1, ""], [1, "error: no such object: {target}\n"]],
+        # bash drops NUL bytes from a command substitution.
+        [[1, ""], [1, "error: no such object: {target}\0"]],
+    ],
+)
+def test_inexact_absence_keeps_a_created_probe_for_exit_cleanup(
+    tmp_path: Path,
+    inspect_failures: list[list[object]],
+):
+    proc, argv_log = run_probe(
+        tmp_path,
+        "OK",
+        slice_name="dev-gates.slice",
+        cgroup_values={"memory.current": "5368709120"},
+        memory_reserve_bytes=2147483648,
+        unit_probe_run_mode="mount-failure-created",
+        inspect_failures=inspect_failures,
+    )
+
+    assert proc.returncode != 0
+    assert proc.stdout == ""
+    assert "refusing fallback" in proc.stderr
+    calls = [json.loads(line) for line in argv_log.read_text(encoding="utf-8").splitlines()]
+    assert len([call for call in calls if call[0] == "run"]) == 1
+    assert [call for call in calls if call[0] == "rm"] == [
+        ["rm", "--force", "f" * 64]
+    ]
+    state = json.loads((tmp_path / "unit-probe-state.json").read_text(encoding="utf-8"))
+    assert state["containers"] == {}
+
+
+@pytest.mark.parametrize("docker_status", [0, 2])
+def test_failing_text_tool_cannot_turn_docker_status_into_absence(
+    tmp_path: Path,
+    docker_status: int,
+):
+    proc, argv_log = run_probe(
+        tmp_path,
+        "OK",
+        slice_name="dev-gates.slice",
+        cgroup_values={"memory.current": "5368709120"},
+        memory_reserve_bytes=2147483648,
+        unit_probe_run_mode="mount-failure-created",
+        inspect_failures=[
+            [1, ""],
+            [docker_status, "error: no such object: {target}"],
+        ],
+        failing_nul_translator=True,
+    )
+
+    assert proc.returncode != 0
+    assert proc.stdout == ""
+    assert "refusing fallback" in proc.stderr
+    calls = [json.loads(line) for line in argv_log.read_text(encoding="utf-8").splitlines()]
+    assert len([call for call in calls if call[0] == "run"]) == 1
+    assert [call for call in calls if call[0] == "rm"] == [
+        ["rm", "--force", "f" * 64]
+    ]
+    state = json.loads((tmp_path / "unit-probe-state.json").read_text(encoding="utf-8"))
+    assert state["containers"] == {}
+
+
+def test_docker_warning_on_stderr_does_not_break_probe_verification(tmp_path: Path):
+    proc, _ = run_probe(
+        tmp_path,
+        "OK",
+        slice_name="dev-gates.slice",
+        cgroup_values={"memory.current": "5368709120"},
+        memory_reserve_bytes=2147483648,
+        inspect_stderr_warning="WARNING: unrelated CLI notice",
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout == "dev-gates.slice\n"
+
+
+def test_ambiguous_mount_failure_inspect_refuses_then_exit_trap_removes_probe(
+    tmp_path: Path,
+):
+    proc, argv_log = run_probe(
+        tmp_path,
+        "OK",
+        slice_name="dev-gates.slice",
+        cgroup_values={"memory.current": "5368709120"},
+        memory_reserve_bytes=2147483648,
+        unit_probe_run_mode="inspect-ambiguous-once",
+    )
+
+    assert proc.returncode != 0
+    calls = [json.loads(line) for line in argv_log.read_text(encoding="utf-8").splitlines()]
+    run_calls = [call for call in calls if call[0] == "run"]
+    assert len(run_calls) == 1
+    probe_name = next(arg.split("=", 1)[1] for arg in run_calls[0] if arg.startswith("--name="))
+    assert probe_name in proc.stderr
+    assert [call for call in calls if call[0] == "rm"] == [
+        ["rm", "--force", "f" * 64]
+    ]
+    state = json.loads((tmp_path / "unit-probe-state.json").read_text(encoding="utf-8"))
+    assert state["containers"] == {}
+
+
+def test_owner_mismatch_after_mount_failure_refuses_without_removal(
+    tmp_path: Path,
+):
+    proc, argv_log = run_probe(
+        tmp_path,
+        "OK",
+        slice_name="dev-gates.slice",
+        memory_reserve_bytes=2147483648,
+        unit_probe_run_mode="owner-mismatch",
+    )
+
+    assert proc.returncode != 0
+    calls = [json.loads(line) for line in argv_log.read_text(encoding="utf-8").splitlines()]
+    run_calls = [call for call in calls if call[0] == "run"]
+    assert len(run_calls) == 1
+    probe_name = next(arg.split("=", 1)[1] for arg in run_calls[0] if arg.startswith("--name="))
+    assert probe_name in proc.stderr
+    assert not any(call[0] == "rm" for call in calls)
+    state = json.loads((tmp_path / "unit-probe-state.json").read_text(encoding="utf-8"))
+    assert list(state["containers"].values())[0]["owner"] == "another-container"
+
+
+def test_generated_probe_script_reads_only_gates_memory_stat_with_a_bound(
+    tmp_path: Path,
+):
+    reserved = tmp_path / "reserved"
+    reserved.mkdir()
+    proc, argv_log = run_probe(
+        reserved,
+        "OK",
+        slice_name="dev-gates.slice",
+        memory_reserve_bytes=2147483648,
+        memory_stat=(
+            "inactive_file 2147483648\n"
+            "slab_reclaimable 0\n"
+            "file_dirty 0\n"
+            "file_writeback 0\n"
+        ),
+    )
+    assert proc.returncode == 0, proc.stderr
+    script = _unit_probe_script(argv_log)
+    stat_file = tmp_path / "memory.stat.fixture"
+    stat_file.write_text(
+        "anon 4096\n"
+        "inactive_file 2147483648\n"
+        "slab_reclaimable 0\n"
+        "file_dirty 0\n"
+        "file_writeback 0\n",
+        encoding="utf-8",
+    )
+
+    valid_dir = tmp_path / "valid-execution"
+    valid_dir.mkdir()
+    valid, timeout_log = _execute_unit_probe_script(valid_dir, script, stat_file)
+    assert valid.returncode == 0, valid.stderr
+    lines = valid.stdout.splitlines()
+    gates_start = lines.index("ASSAY_UNIT_BEGIN=dev-gates.slice")
+    gates_end = lines.index("ASSAY_UNIT_END=dev-gates.slice")
+    interactive_start = lines.index("ASSAY_UNIT_BEGIN=dev-interactive.slice")
+    interactive_end = lines.index("ASSAY_UNIT_END=dev-interactive.slice")
+    gates_frame = lines[gates_start:gates_end + 1]
+    interactive_frame = lines[interactive_start:interactive_end + 1]
+    assert "ASSAY_MEMORY_STAT_BEGIN" in gates_frame
+    assert "ASSAY_MEMORY_STAT_END" in gates_frame
+    assert "ASSAY_MEMORY_STAT_BEGIN" not in interactive_frame
+    begin = gates_frame.index("ASSAY_MEMORY_STAT_BEGIN")
+    end = gates_frame.index("ASSAY_MEMORY_STAT_END")
+    assert gates_frame[begin + 1:end] == [
+        "inactive_file 2147483648",
+        "slab_reclaimable 0",
+        "file_dirty 0",
+        "file_writeback 0",
+    ]
+    reader_timeout_calls = [
+        json.loads(line)
+        for line in timeout_log.read_text(encoding="utf-8").splitlines()
+        if '"awk"' in line
+    ]
+    assert len(reader_timeout_calls) == 1
+    assert reader_timeout_calls[0][:2] == ["--kill-after=1s", "3s"]
+
+    absent_dir = tmp_path / "absent-execution"
+    absent_dir.mkdir()
+    absent_path = tmp_path / "absent-memory.stat"
+    absent, _ = _execute_unit_probe_script(absent_dir, script, absent_path)
+    assert absent.returncode == 0, absent.stderr
+    assert "ASSAY_MEMORY_STAT_BEGIN" not in absent.stdout
+
+    unreadable_dir = tmp_path / "unreadable-execution"
+    unreadable_dir.mkdir()
+    unreadable_path = tmp_path / "unreadable-memory.stat"
+    unreadable_path.mkdir()
+    unreadable, _ = _execute_unit_probe_script(unreadable_dir, script, unreadable_path)
+    assert unreadable.returncode == 0, unreadable.stderr
+    assert "ASSAY_MEMORY_STAT_READ_ERROR" in unreadable.stdout
+
+    failed_reader_dir = tmp_path / "failed-reader-execution"
+    failed_reader_dir.mkdir()
+    failed_reader, _ = _execute_unit_probe_script(
+        failed_reader_dir, script, stat_file, reader_mode="timeout"
+    )
+    assert failed_reader.returncode == 0, failed_reader.stderr
+    assert "ASSAY_MEMORY_STAT_READ_ERROR" in failed_reader.stdout
+
+    unreserved_dir = tmp_path / "unreserved"
+    unreserved_dir.mkdir()
+    _, unreserved_argv = run_probe(
+        unreserved_dir,
+        "OK",
+        slice_name="dev-gates.slice",
+    )
+    unreserved_script = _unit_probe_script(unreserved_argv)
+    unreserved_exec = tmp_path / "unreserved-execution"
+    unreserved_exec.mkdir()
+    unreserved, _ = _execute_unit_probe_script(
+        unreserved_exec, unreserved_script, stat_file
+    )
+    assert unreserved.returncode == 0, unreserved.stderr
+    assert "ASSAY_MEMORY_STAT_BEGIN" not in unreserved.stdout
+
+
+def test_dirty_and_writeback_subtract_reclaimable_memory_down_to_zero(
+    tmp_path: Path,
+):
+    proc, _argv_log = run_probe(
+        tmp_path,
+        "OK",
+        slice_name="dev-gates.slice",
+        cgroup_values={"memory.current": "7516192768"},
+        memory_reserve_bytes=2147483648,
+        memory_stat=(
+            "inactive_file 1073741824\n"
+            "slab_reclaimable 1073741824\n"
+            "file_dirty 1073741824\n"
+            "file_writeback 1073741824\n"
+        ),
+    )
+
+    assert proc.returncode != 0
+    assert "has 1073741824 bytes of RAM headroom" in proc.stderr
+    assert "raw_headroom=1073741824" in proc.stderr
+    assert "adjusted_headroom=1073741824" in proc.stderr
+    assert "basis=memory.stat-adjusted" in proc.stderr
+
+
+def test_adjusted_headroom_is_clamped_at_memory_max(tmp_path: Path):
+    proc, _argv_log = run_probe(
+        tmp_path,
+        "OK",
+        slice_name="dev-gates.slice",
+        cgroup_values={"memory.current": "1073741824"},
+        memory_reserve_bytes=8053063680,
+        memory_stat=(
+            "inactive_file 2147483648\n"
+            "slab_reclaimable 2147483648\n"
+            "file_dirty 0\n"
+            "file_writeback 0\n"
+        ),
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert "raw_headroom=7516192768" in proc.stderr
+    assert "adjusted_headroom=8589934592" in proc.stderr
+    assert "basis=memory.stat-adjusted" in proc.stderr
+
+
+def test_reservation_refuses_when_adjusted_headroom_is_still_short(tmp_path: Path):
+    proc, _argv_log = run_probe(
+        tmp_path,
+        "OK",
+        slice_name="dev-gates.slice",
+        cgroup_values={"memory.current": "7516192768"},
+        memory_reserve_bytes=2147483648,
+        memory_stat=(
+            "inactive_file 536870912\n"
+            "slab_reclaimable 0\n"
+            "file_dirty 0\n"
+            "file_writeback 0\n"
+        ),
+    )
+
+    assert proc.returncode != 0
+    assert "has 1610612736 bytes of RAM headroom" in proc.stderr
+    assert "raw_headroom=1073741824" in proc.stderr
+    assert "adjusted_headroom=1610612736" in proc.stderr
+    assert "basis=memory.stat-adjusted" in proc.stderr
+
+
+def test_memory_stat_is_not_used_when_control_group_does_not_match_rel(
+    tmp_path: Path,
+):
+    proc, _argv_log = run_probe(
+        tmp_path,
+        "OK",
+        slice_name="dev-gates.slice",
+        cgroup_values={
+            "ControlGroup": "/dev.slice/dev-other.slice",
+            "memory.current": "7516192768",
+        },
+        memory_reserve_bytes=2147483648,
+        memory_stat=(
+            "inactive_file 2147483648\n"
+            "slab_reclaimable 0\n"
+            "file_dirty 0\n"
+            "file_writeback 0\n"
+        ),
+    )
+
+    assert proc.returncode != 0
+    assert "unexpected ControlGroup" in proc.stderr
+    assert "RAM admission OK" not in proc.stderr
+
+
+def test_memory_current_above_max_still_refuses_with_reclaimable_cache(
+    tmp_path: Path,
+):
+    proc, _argv_log = run_probe(
+        tmp_path,
+        "OK",
+        slice_name="dev-gates.slice",
+        cgroup_values={"memory.current": "9663676416"},
+        memory_reserve_bytes=2147483648,
+        memory_stat=(
+            "inactive_file 2147483648\n"
+            "slab_reclaimable 0\n"
+            "file_dirty 0\n"
+            "file_writeback 0\n"
+        ),
+    )
+
+    assert proc.returncode != 0
+    assert "reports memory.current above memory.max" in proc.stderr
 
 
 def test_b105_refuses_insufficient_or_unknown_ram_headroom(tmp_path: Path):

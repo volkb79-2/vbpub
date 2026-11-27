@@ -34,6 +34,7 @@ class AgentIdentity:
 class AgentPolicy:
     idle_connection_s: float
     query_timeout_s: float
+    legacy_jobs_dir: Path
     lease_reconcile_interval_s: float
     lease_bind_timeout_s: float
     max_connections: int
@@ -214,12 +215,13 @@ def load_agent_policy(path: Path = DEFAULT_AGENT_POLICY_PATH) -> AgentPolicy:
         parsed, "agent.toml",
         {"schema_version", "idle_connection_s", "query_timeout_s", "identities", "repo_roots", "requested_by_clients",
          "extra_argv", "dev_argv", "env_values", "lease_reconcile_interval_s", "lease_bind_timeout_s",
-         "max_connections", "runner_user"},
+         "max_connections", "legacy_jobs_dir", "runner_user"},
     )
     if type(root["schema_version"]) is not int or root["schema_version"] != 1:
         raise ContractError("agent.toml.schema_version: expected integer 1")
     idle_connection_s = _positive_number(root["idle_connection_s"], "agent.toml.idle_connection_s")
     query_timeout_s = _positive_number(root["query_timeout_s"], "agent.toml.query_timeout_s")
+    legacy_jobs_dir = _absolute_path(root["legacy_jobs_dir"], "agent.toml.legacy_jobs_dir")
     lease_reconcile_interval_s = _positive_number(
         root["lease_reconcile_interval_s"], "agent.toml.lease_reconcile_interval_s",
     )
@@ -252,7 +254,7 @@ def load_agent_policy(path: Path = DEFAULT_AGENT_POLICY_PATH) -> AgentPolicy:
         env_values[name] = _string_set(values, f"agent.toml.env_values.{name}")
 
     return AgentPolicy(
-        idle_connection_s, query_timeout_s, lease_reconcile_interval_s, lease_bind_timeout_s,
+        idle_connection_s, query_timeout_s, legacy_jobs_dir, lease_reconcile_interval_s, lease_bind_timeout_s,
         max_connections, runner_user, identities, repo_roots, requested_by_clients,
         extra_argv, dev_argv, env_values,
     )

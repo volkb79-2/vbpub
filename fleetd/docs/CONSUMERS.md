@@ -77,41 +77,99 @@ wrapper, which must sit beside a repository checkout. A facts-only host needs
 neither the wrapper nor a checkout (FD-023 tracks the installed-wheel path for
 the wrapper).
 
-### Host agent package C3a and executor C3b-1
+### Host agent packages C3a, C3b-1 and C3b-2a
 
 `fleetd-agent serve --socket-path /run/fleetd-agent/agent.sock` binds a local
 Unix socket, while `fleetd-agent serve --listen-fd 3` accepts an inherited
 listening descriptor. The direct path form requires an existing real runtime
 directory and never creates or removes that directory. `fleetd-agent
 forced-command --group GROUP` serves one framed request on the ssh forced
-command's stdin/stdout. C3a supplies the protocol, admission wiring and CLI.
+command's stdin/stdout. Package C3a supplies the protocol, admission wiring and
+CLI.
 C3b-1 adds the standard-library host executor and worker. After scope start is
 confirmed, the worker owns the admission flock in one transient systemd scope
 per job. The root supervisor runs checkout, seed unpack, lane, collection and
 other repository-content operations as the required non-root `runner_user`.
-C3b-1 does not install or enable host services; the systemd units, socket group
-and mounts belong to C3c. Restart/reboot recovery, the legacy-job and Docker
-inspector providers, and upload garbage collection remain C3b-2.
+C3b-2a adds the legacy-job and Docker inspection providers. C3b-1 does not
+install or enable host services; the systemd units, socket group and mounts
+belong to C3c. Executor/reboot recovery and upload garbage collection remain
+follow-up work.
 
 `/etc/fleetd/agent.toml` is a closed host-owned config. It requires
 `schema_version`, `idle_connection_s`, `query_timeout_s`, `runner_user`,
+`legacy_jobs_dir`,
 `lease_reconcile_interval_s`, `lease_bind_timeout_s`, `max_connections`, `identities`,
 `repo_roots`, `requested_by_clients`, `extra_argv`, `dev_argv`, and
 `env_values`; none has a consumer-invented fallback. All four time values are
 positive. `runner_user` is required and must resolve to a known non-root host
 account; a missing key, unknown name or uid 0 refuses execution. The root
 supervisor stays root and drops privileges for every step that touches checkout
-content. `lease_reconcile_interval_s` sets the exact-lease reconciliation
+content. `legacy_jobs_dir` is an absolute, fully-resolved path with no
+default. It must point to the legacy runner user's real `$HOME/jobs`
+directory, and the resolved directory must be checked before enabling the
+agent. The provider opens every path component from `/` with descriptor-
+relative `O_DIRECTORY | O_NOFOLLOW`; any symlink or non-directory component
+refuses admission. It charges every entry without a regular `EXIT` marker,
+including symlinks, non-directories, unreadable entries and odd names. IDs are
+derived from each name, so inserting or removing other entries does not change
+them. It lists the pinned directory twice, retains entries judged live in the
+first pass, judges second-pass-only names by the same marker rule, then requires
+the configured path to reopen to the same device and inode. These listings
+are a point-in-time observation: `run-job` does not take `queue.lock`, a job
+created after the final listing is not seen, and the jobs-directory owner is
+trusted to write its own `EXIT` markers. Listing errors, a changed root, or
+more than 65,536 entries refuse admission with 75. Completed directories
+accumulate and must be pruned before the limit. A host reboot can leave a job
+without `EXIT` charged until someone removes its directory (FD-064).
+`lease_reconcile_interval_s` sets the exact-lease reconciliation
 period; there is no default. `lease_bind_timeout_s` is also positive with no
 default; it bounds the whole bind frame from grant on the monotonic clock, so
 trickling bytes cannot extend it. It has no effect after bind. `max_connections`
 is a positive integer with no default and bounds ordinary local connections.
-`query_timeout_s` bounds each capacity,
-legacy-job-list and object-inspector callback made while the admission queue lock is held. The peer
+`query_timeout_s` bounds capacity, legacy-job-list, object-inspector and
+container-identity inspector calls. A lease name consisting of 12 through 63
+lowercase hexadecimal characters is refused at request validation and
+admission with `container_name must not be 12-63 lowercase hexadecimal
+characters`; existing lease-state loading remains compatible. Production
+Docker execution uses exactly
+`/usr/bin/docker --host unix:///var/run/docker.sock inspect --type=container
+<target>`, cwd `/`, and environment `PATH=/usr/bin:/bin`, `HOME=/nonexistent`,
+`LC_ALL=C`; it is argv, never a shell or environment-selected Docker context.
+Names must be exact, full IDs are 64 lowercase hex characters, and lowercase
+hex targets of length 12 through 63 return `ERROR`. Each output stream is
+drained up to 4 MiB with strict UTF-8 decoding. The outer bounded admission
+call uses `query_timeout_s` to bound its answer. The provider's monotonic
+deadline starts before process creation and bounds output collection and
+direct-child reaping after creation returns. Process creation itself cannot be
+cancelled; it can finish after the outer call refuses, in which case the
+provider immediately attempts to signal the child process group with
+`SIGKILL` and makes a bounded reap attempt before returning `ERROR` (FD-066).
+On the normal result path, after both pipes reach EOF, the provider waits for
+the leader's pidfd to become readable without reaping it. Cleanup runs in
+`finally`: every child-created outcome, including `Exception` and
+`BaseException` paths before EOF, attempts `SIGKILL` on the process group while
+the leader is unreaped, then attempts the bounded reap even if signaling
+raises. `ProcessLookupError` means the group is already empty; another signal
+or reap failure returns `ERROR`. The pidfd, selector, stdout pipe, and stderr
+pipe are each closed independently; a close failure is reported as `ERROR`
+after the remaining closes are attempted. Any non-`Exception` interruption
+from the body or cleanup is re-raised without wrapping; if several occur, the
+first in occurrence order takes precedence over ordinary failures from the
+body, signal, deadline calculation, reap, post-reap check, or closes. When no
+interruption occurs, ordinary errors keep the existing precedence. A success
+requires both pipes at EOF, exit observed before the deadline, and status from
+the reap. Expiry or an output-cap breach also uses this cleanup path. The peer
 table maps exact UID/primary-GID pairs to a principal and group;
 forced-command entries map their trusted group argument to the same identity
 shape. Request fields cannot choose either value. Loading the policy refuses
 overlapping authenticated group prefixes.
+
+Deploy the required key and provider binary together. Resolve and check the
+legacy runner user's real `$HOME/jobs` directory before enabling the agent;
+the configured `legacy_jobs_dir` must be that fully resolved absolute path.
+Stop the agent, install the new binary, add the `legacy_jobs_dir` key, then
+start the agent. For rollback, stop the agent, remove that key, reinstall the
+old binary, then start it.
 
 The agent sends and receives four-byte big-endian length-prefixed UTF-8 JSON
 objects capped at 64 KiB. Each ordinary connection carries one request; the
@@ -131,9 +189,9 @@ top-level `exit_code` or `reason`; success omits `error`. The client looks only
 for `error`, so a status `exit_code` is returned as job data. A malformed
 `error` maps to exit 70. See the [response schema](agent-response.schema.json).
 A probe includes `lease` only when exact-object inspection, the legacy-job
-list, and container-identity inspection are configured. Those providers are
-not wired in C3b-1 and remain C3b-2 work. The real `submit` path also refuses
-before admission while the legacy-job provider is absent; tests inject it.
+list, and container-identity inspection are configured. C3b-2a wires these
+providers from `legacy_jobs_dir` and `query_timeout_s`; the shipped C3a CLI has
+none and refuses lease with exit 2.
 A configured inspector reconciles pending and bound leases at startup and at
 the configured interval. Pre-bind disconnect tombstones before checking the
 exact name; bound leases are checked by immutable ID. Only a confirmed absence
@@ -141,8 +199,10 @@ releases a charge. The granted-but-never-bound live-connection case has no
 deadline in §4.5; its held flock prevents pending reconciliation, so it remains
 charged until disconnect and exact-name reconciliation confirms absence.
 A missing or refusing local socket returns 3 with no fallback transport.
-C3b-1 wires the executor, but a real submit still refuses with the named
-missing legacy-job provider reason before admission; that provider is C3b-2.
+C3b-1 wires the executor, while C3b-2a wires the legacy-job and Docker
+providers. C3b-1 does not install or enable host services. Executor submissions
+remain behind the FD-067 short-lane event-observation blocker; see the executor
+section below.
 
 Lane declarations and progress files are opened from trusted directory
 descriptors with no-follow traversal of every component. Progress replies cap
@@ -160,19 +220,19 @@ request sha, host checkout line, Run-Gate event, exact-lane summary, process
 status, and inspected container identity and checkout mount.
 The worker observes and persists each `lane-started` container while Run-Gate is
 running. A container gone at observation is an error; the short-lane race is
-FD-064 and must be closed before enabling submissions. The worker confirms that
+FD-067 and must be closed before enabling submissions. The worker confirms that
 its scope contains only itself and that Docker has no running container with
 this exact job label before it collects or releases the charge. The strict
 persistent exec checkout-mount requirement still needs a real runner probe
-(FD-067).
+(FD-070).
 
 Cancel records intent only. The worker deregisters/thaws through the merged
 thrashguard interface, sends TERM and waits for the lane process itself. When
 guard presence is true but no callable `deregister` is injected, it keeps the
 job in `stopping` with its charge and checkout. Exec-mode cancellation or an
 end without the Run-Gate verdict proof cannot establish that the in-runner
-process stopped, so it also remains charged and stopping (FD-065). A host-mode
-lane shares the runner uid that owns the event file and can modify it (FD-066).
+process stopped, so it also remains charged and stopping (FD-068). A host-mode
+lane shares the runner uid that owns the event file and can modify it (FD-069).
 
 ### Agent skills
 

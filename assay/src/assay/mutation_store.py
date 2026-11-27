@@ -582,6 +582,17 @@ JUDGE_GENERATIONS_DIR = "judges"
 #: store; not a `<id>.json` name, so no record reader ever mistakes it.
 SHARD_MANIFEST_NAME = "shard.manifest"
 SHARD_MANIFEST_SCHEMA = "assay-shard-store/1"
+# Diagnostic component digests live outside the record-generation namespace.
+# They remain inside the state root so whole-store collection and seeding carry
+# them along, while record scans under the root and `judges/` never see them.
+JUDGE_COMPONENTS_DIR = ".diagnostics"
+JUDGE_COMPONENTS_SUBDIR = "judge-components"
+JUDGE_COMPONENTS_NAME = "judge-components.json"
+JUDGE_COMPONENTS_SCHEMA = "assay-judge-components/2"
+_JUDGE_COMPONENTS_LIMIT = 256 * 1024
+_JUDGE_COMPONENTS_MAX_PASSTHROUGH_NAMES = 128
+_JUDGE_COMPONENTS_MAX_ENV_NAME_LENGTH = 128
+_ENVIRONMENT_VARIABLE_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
 _SHARD_MANIFEST_KEYS = frozenset(
     {"schema", "shard_index", "shard_count", "judge_sha256", "plan_sha256", "candidate_total"}
 )
@@ -824,6 +835,7 @@ class CombineResult:
     locus_unavailable_total: int
     rejudged_candidate_ids: frozenset[str]
     hints: tuple[Hint, ...]
+    rejected_judges: frozenset[str]
 
 
 def _provenance_record(
@@ -1077,6 +1089,233 @@ def _open_generation_dir(
     finally:
         for descriptor in opened:
             os.close(descriptor)
+
+
+def _open_judge_components_dir(root_fd: int, *, create: bool) -> int | None:
+    """Open ``.diagnostics/judge-components`` below *root_fd* safely."""
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW
+    current = root_fd
+    opened: list[int] = []
+    try:
+        for name in (JUDGE_COMPONENTS_DIR, JUDGE_COMPONENTS_SUBDIR):
+            if create:
+                try:
+                    os.mkdir(name, 0o700, dir_fd=current)
+                except FileExistsError:
+                    pass
+                else:
+                    # This directory is diagnostic only. Sync its parent for
+                    # store-copy durability, independently of candidate
+                    # record ordering and only after the campaign work ends.
+                    _durable.fsync(current)
+            try:
+                current = os.open(name, flags, dir_fd=current)
+            except FileNotFoundError:
+                return None
+            opened.append(current)
+        result = opened.pop()
+        return result
+    finally:
+        for descriptor in opened:
+            os.close(descriptor)
+
+
+def write_judge_components(
+    state_root: Path | str,
+    *,
+    judge: str,
+    components: Mapping[str, Any],
+    state_root_fd: int | None = None,
+) -> None:
+    """Persist B577's diagnostic digests inside the store, outside records.
+
+    Component metadata is diagnostic only. It contains digests and names,
+    never environment values; older stores without it remain valid. Its
+    ``.diagnostics/judge-components/<judge>.json`` location travels with a
+    collected or seeded store without entering the durable record namespace.
+    """
+    if _CANDIDATE_ID_RE.fullmatch(judge) is None:
+        raise ValueError(f"judge identity must be a SHA-256 digest, got {judge!r}")
+    if state_root_fd is None:
+        Path(state_root).mkdir(parents=True, exist_ok=True)
+    document = {
+        "schema": JUDGE_COMPONENTS_SCHEMA,
+        "judge_sha256": judge,
+        "components": dict(components),
+    }
+    encoded = json.dumps(document, sort_keys=True, separators=(",", ":")).encode(
+        "utf-8"
+    )
+    if len(encoded) > _JUDGE_COMPONENTS_LIMIT:
+        raise ValueError("judge component metadata exceeds its size limit")
+    root_fd = _open_state_dir_fd(state_root, state_root_fd)
+    try:
+        components_fd = _open_judge_components_dir(root_fd, create=True)
+        assert components_fd is not None
+        try:
+            temporary = (
+                f".{judge}-{os.getpid()}-{os.urandom(8).hex()}.tmp"
+            )
+            descriptor = os.open(
+                temporary,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | os.O_NOFOLLOW,
+                0o600,
+                dir_fd=components_fd,
+            )
+            try:
+                stream = os.fdopen(descriptor, "wb")
+                descriptor = -1
+                with stream:
+                    stream.write(encoded)
+                    stream.flush()
+                    _durable.fsync(stream.fileno())
+            except BaseException:
+                if descriptor >= 0:
+                    os.close(descriptor)
+                try:
+                    os.unlink(temporary, dir_fd=components_fd)
+                except FileNotFoundError:
+                    pass
+                raise
+            try:
+                os.replace(
+                    temporary,
+                    f"{judge}.json",
+                    src_dir_fd=components_fd,
+                    dst_dir_fd=components_fd,
+                )
+            except BaseException:
+                try:
+                    os.unlink(temporary, dir_fd=components_fd)
+                except FileNotFoundError:
+                    pass
+                raise
+            _durable.fsync(components_fd)
+        finally:
+            os.close(components_fd)
+    finally:
+        os.close(root_fd)
+
+
+def read_judge_components(
+    state_root: Path | str,
+    *,
+    judge: str,
+    state_root_fd: int | None = None,
+) -> Mapping[str, Any] | None:
+    """Read B577 component digests, returning ``None`` when unavailable.
+
+    The optional file never controls resume acceptance. Missing, legacy, or
+    malformed metadata therefore degrades only the diagnostic.
+    """
+    if _CANDIDATE_ID_RE.fullmatch(judge) is None:
+        return None
+    try:
+        root_fd = _open_state_dir_fd(state_root, state_root_fd)
+    except OSError:
+        return None
+    try:
+        components_fd = _open_judge_components_dir(root_fd, create=False)
+        if components_fd is not None:
+            try:
+                descriptor = os.open(
+                    f"{judge}.json",
+                    os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW,
+                    dir_fd=components_fd,
+                )
+            except FileNotFoundError:
+                descriptor = -1
+            finally:
+                os.close(components_fd)
+        else:
+            descriptor = -1
+        if descriptor < 0:
+            # Read stores written before B577's sidecar was moved out of the
+            # generation namespace. New writes never use this legacy path.
+            generation_fd = _open_generation_dir(root_fd, judge, create=False)
+            if generation_fd is None:
+                return None
+            try:
+                descriptor = os.open(
+                    JUDGE_COMPONENTS_NAME,
+                    os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW,
+                    dir_fd=generation_fd,
+                )
+            finally:
+                os.close(generation_fd)
+        try:
+            info = os.fstat(descriptor)
+            if not stat.S_ISREG(info.st_mode) or info.st_size > _JUDGE_COMPONENTS_LIMIT:
+                return None
+            with os.fdopen(descriptor, "rb") as stream:
+                descriptor = -1
+                raw = stream.read(_JUDGE_COMPONENTS_LIMIT + 1)
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+    except OSError:
+        return None
+    finally:
+        os.close(root_fd)
+    if len(raw) > _JUDGE_COMPONENTS_LIMIT:
+        return None
+    try:
+        document = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError, RecursionError):
+        return None
+    if (
+        not isinstance(document, dict)
+        or set(document) != {"schema", "judge_sha256", "components"}
+        or document.get("schema") != JUDGE_COMPONENTS_SCHEMA
+        or document.get("judge_sha256") != judge
+        or not isinstance(document.get("components"), dict)
+    ):
+        return None
+    components = document["components"]
+    digest_fields = {
+        "tree",
+        "argv",
+        "declared_env",
+        "environment_names",
+        "passthrough_names_sha256",
+        "passthrough_other_values_sha256",
+        "cwd",
+        "project_prefix",
+        "link_paths",
+        "tool_version",
+        "tool_fingerprints",
+        "cold_witness_kills",
+        "candidate_fail_fast",
+    }
+    if set(components) != digest_fields | {"passthrough_names", "passthrough_values"}:
+        return None
+    if any(
+        not isinstance(components.get(name), str)
+        or _CANDIDATE_ID_RE.fullmatch(components[name]) is None
+        for name in digest_fields
+    ):
+        return None
+    names = components.get("passthrough_names")
+    values = components.get("passthrough_values")
+    if (
+        not isinstance(names, list)
+        or len(names) > _JUDGE_COMPONENTS_MAX_PASSTHROUGH_NAMES
+        or any(
+            not isinstance(name, str)
+            or len(name) > _JUDGE_COMPONENTS_MAX_ENV_NAME_LENGTH
+            or _ENVIRONMENT_VARIABLE_NAME_RE.fullmatch(name) is None
+            for name in names
+        )
+        or names != sorted(set(names))
+        or not isinstance(values, dict)
+        or set(values) != set(names) & {"PATH", "PYTHONPATH"}
+        or any(
+            not isinstance(value, str) or _CANDIDATE_ID_RE.fullmatch(value) is None
+            for value in values.values()
+        )
+    ):
+        return None
+    return components
 
 
 def _read_generation_record_bytes(
@@ -2081,6 +2320,7 @@ def _load_validated_state_record(
     raw_override: Any = _READ_FROM_STORE,
     accept_any_judge: bool = False,
     locus_status: list[bool] | None = None,
+    rejected_judges: set[str] | None = None,
 ) -> Mapping[str, Any] | str | None:
     """Return the persisted verdict for *job*, or why it cannot be used.
 
@@ -2489,6 +2729,8 @@ def _load_validated_state_record(
         return _RECORD_REJECTED
     if not accept_any_judge:
         if effective != judge:
+            if rejected_judges is not None:
+                rejected_judges.add(effective)
             return _RECORD_REJECTED
         if (
             campaign_deadline_sha256 is not None
@@ -2926,6 +3168,7 @@ class _OwnStoreResult:
     promoted_total: int
     locus_unavailable_total: int
     rejudged_candidate_ids: frozenset[str]
+    rejected_judges: frozenset[str]
 
 
 @record
@@ -4263,6 +4506,7 @@ def _resume_own_store(request: CombineRequest) -> _OwnStoreResult:
     """Apply D5's verbatim own-store resume to this run's selected jobs."""
     records: list[Mapping[str, Any]] = []
     rejudged_candidate_ids: set[str] = set()
+    rejected_judges: set[str] = set()
     rejected_total = 0
     rejudged_total = 0
     resource_rejudged_total = 0
@@ -4277,6 +4521,7 @@ def _resume_own_store(request: CombineRequest) -> _OwnStoreResult:
             promoted_total=0,
             locus_unavailable_total=0,
             rejudged_candidate_ids=frozenset(),
+            rejected_judges=frozenset(),
         )
     assert isinstance(request.state_root, Path)
     assert request.judge is not None
@@ -4312,6 +4557,7 @@ def _resume_own_store(request: CombineRequest) -> _OwnStoreResult:
             context=request.context,
             state_root_fd=request.state_root_fd,
             locus_status=flat_locus_status,
+            rejected_judges=rejected_judges,
         )
         locus_unavailable_total += sum(flat_locus_status)
         if record is _RECORD_REJECTED or record is None:
@@ -4333,6 +4579,7 @@ def _resume_own_store(request: CombineRequest) -> _OwnStoreResult:
                     state_root_fd=request.state_root_fd,
                 ),
                 locus_status=generation_locus_status,
+                rejected_judges=rejected_judges,
             )
             locus_unavailable_total += sum(generation_locus_status)
             if generation is not None and generation is not _RECORD_REJECTED:
@@ -4380,6 +4627,7 @@ def _resume_own_store(request: CombineRequest) -> _OwnStoreResult:
         promoted_total=promoted_total,
         locus_unavailable_total=locus_unavailable_total,
         rejudged_candidate_ids=frozenset(rejudged_candidate_ids),
+        rejected_judges=frozenset(rejected_judges),
     )
 
 
@@ -4436,6 +4684,7 @@ def combine(
             locus_unavailable_total=0,
             rejudged_candidate_ids=frozenset(),
             hints=(),
+            rejected_judges=frozenset(),
         )
     if not request.resume and sources:
         raise ValueError("mutation store combine requires resume=True")
@@ -4621,6 +4870,7 @@ def combine(
         locus_unavailable_total=locus_unavailable_total,
         rejudged_candidate_ids=own.rejudged_candidate_ids,
         hints=tuple(hints),
+        rejected_judges=own.rejected_judges,
     )
 
 
