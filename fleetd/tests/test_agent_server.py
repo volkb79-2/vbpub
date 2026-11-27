@@ -1,14 +1,20 @@
-import os
+import errno
 import hashlib
+import os
 import select
 import socket
 import threading
 from dataclasses import replace
+from pathlib import Path
+from types import SimpleNamespace
 
-from fleetd.admission import ExitCode, InspectorAnswer
+import pytest
+
+from fleetd.admission import AdmissionError, ExitCode, InspectorAnswer
 from fleetd.agent_verbs import AgentReply
-from fleetd.agent_protocol import read_frame, write_frame
+from fleetd.agent_protocol import FrameError, read_frame, write_frame
 from fleetd.agent_server import AgentServer, open_agent_socket, serve_connection, serve_forced_command
+from fleetd import agent_server
 from test_agent_verbs import _lease_service, _service
 
 
@@ -361,3 +367,464 @@ def test_forced_command_uses_framed_stdin_stdout_and_transport_group(tmp_path):
             os.close(input_write)
         if output_write >= 0:
             os.close(output_write)
+
+
+@pytest.mark.parametrize("parent_kind", ["missing", "file", "symlink"])
+def test_socket_open_refuses_missing_non_directory_or_symlink_parent(tmp_path, parent_kind):
+    if parent_kind == "missing":
+        parent = tmp_path / "missing"
+    elif parent_kind == "file":
+        parent = tmp_path / "parent-file"
+        parent.write_text("not a directory", encoding="utf-8")
+    else:
+        real_parent = tmp_path / "real-parent"
+        real_parent.mkdir()
+        parent = tmp_path / "parent-link"
+        parent.symlink_to(real_parent, target_is_directory=True)
+
+    with pytest.raises(AdmissionError, match="existing real directory") as raised:
+        open_agent_socket(parent / "agent.sock")
+    assert raised.value.exit_code == ExitCode.RUNNER_FAILURE
+
+
+def test_socket_open_refuses_a_symlink_in_an_ancestor_component(tmp_path):
+    real_parent = tmp_path / "real-parent"
+    (real_parent / "runtime").mkdir(parents=True)
+    linked_parent = tmp_path / "linked-parent"
+    linked_parent.symlink_to(real_parent, target_is_directory=True)
+
+    with pytest.raises(AdmissionError, match="must not be a symlink") as raised:
+        open_agent_socket(linked_parent / "runtime" / "agent.sock")
+    assert raised.value.exit_code == ExitCode.RUNNER_FAILURE
+
+
+def test_socket_open_rejects_non_socket_path_and_keeps_an_active_listener(tmp_path):
+    regular_file = tmp_path / "agent.sock"
+    regular_file.write_text("owned file", encoding="utf-8")
+    with pytest.raises(AdmissionError, match="exists and is not a socket"):
+        open_agent_socket(regular_file)
+
+    active_path = tmp_path / "active.sock"
+    active = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    active.bind(str(active_path))
+    active.listen(1)
+    try:
+        with pytest.raises(AdmissionError, match="already has a listener") as raised:
+            open_agent_socket(active_path)
+        assert raised.value.exit_code == ExitCode.RUNNER_FAILURE
+    finally:
+        active.close()
+        active_path.unlink()
+
+
+def test_stale_socket_restart_rejects_unexpected_probe_error_and_changed_inode(tmp_path, monkeypatch):
+    path = tmp_path / "stale.sock"
+    stale = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    stale.bind(str(path))
+    stale.close()
+
+    def denied_connect(_socket, _path):
+        raise PermissionError(errno.EPERM, "probe denied")
+
+    monkeypatch.setattr(socket.socket, "connect", denied_connect)
+    with pytest.raises(AdmissionError, match="cannot inspect existing agent socket"):
+        agent_server._remove_stale_socket(path)
+
+    monkeypatch.undo()
+    real_lstat = Path.lstat
+    calls = [0]
+
+    def changed_inode(target):
+        result = real_lstat(target)
+        if target == path:
+            calls[0] += 1
+            if calls[0] == 2:
+                return SimpleNamespace(st_mode=result.st_mode, st_dev=result.st_dev, st_ino=result.st_ino + 1)
+        return result
+
+    monkeypatch.setattr(Path, "lstat", changed_inode)
+    with pytest.raises(AdmissionError, match="changed during restart") as changed:
+        agent_server._remove_stale_socket(path)
+    assert changed.value.exit_code == ExitCode.RUNNER_FAILURE
+    path.unlink()
+
+
+@pytest.mark.parametrize("unlink_failure", ["vanished", "denied"])
+def test_stale_socket_unlink_races_are_handled_without_removing_other_paths(tmp_path, monkeypatch, unlink_failure):
+    path = tmp_path / "stale.sock"
+    stale = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    stale.bind(str(path))
+    stale.close()
+    real_unlink = Path.unlink
+
+    def unlink_race(target, *args, **kwargs):
+        if target == path:
+            if unlink_failure == "vanished":
+                real_unlink(target, *args, **kwargs)
+                raise FileNotFoundError("socket disappeared")
+            raise PermissionError(errno.EACCES, "unlink denied")
+        return real_unlink(target, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", unlink_race)
+    if unlink_failure == "denied":
+        with pytest.raises(AdmissionError, match="cannot remove stale agent socket") as raised:
+            agent_server._remove_stale_socket(path)
+        assert raised.value.exit_code == ExitCode.RUNNER_FAILURE
+        monkeypatch.undo()
+        real_unlink(path)
+        return
+
+    listener = open_agent_socket(path)
+    assert listener.getsockname() == str(path)
+    listener.close()
+    monkeypatch.undo()
+    real_unlink(path)
+
+
+def test_open_agent_socket_rejects_relative_paths_and_closes_after_bind_failure(tmp_path, monkeypatch):
+    with pytest.raises(AdmissionError, match="absolute file path") as relative:
+        open_agent_socket(Path("relative.sock"))
+    assert relative.value.exit_code == ExitCode.RUNNER_FAILURE
+
+    class FailedListener:
+        closed = False
+
+        def bind(self, _path):
+            raise OSError("bind denied")
+
+        def close(self):
+            self.closed = True
+
+    listener = FailedListener()
+    monkeypatch.setattr(agent_server.socket, "socket", lambda *_args: listener)
+    with pytest.raises(AdmissionError, match="cannot bind fleetd agent socket") as raised:
+        open_agent_socket(tmp_path / "agent.sock")
+    assert raised.value.exit_code == ExitCode.RUNNER_FAILURE
+    assert listener.closed is True
+
+
+def test_inherited_listener_refuses_bad_descriptors_and_closes_invalid_duplicates(monkeypatch):
+    with pytest.raises(AdmissionError, match="non-negative integer") as negative:
+        agent_server.inherited_listener(-1)
+    assert negative.value.exit_code == ExitCode.RUNNER_FAILURE
+
+    monkeypatch.setattr(
+        agent_server.socket, "fromfd",
+        lambda *_args: (_ for _ in ()).throw(OSError("bad inherited fd")),
+    )
+    with pytest.raises(AdmissionError, match="invalid inherited agent listener fd") as bad_fd:
+        agent_server.inherited_listener(987654)
+    assert bad_fd.value.exit_code == ExitCode.RUNNER_FAILURE
+
+
+@pytest.mark.parametrize("socktype", [socket.SOCK_DGRAM, socket.SOCK_STREAM])
+def test_inherited_listener_closes_wrong_type_or_non_listening_descriptor(socktype):
+    original = socket.socket(socket.AF_UNIX, socktype)
+    try:
+        expected = "AF_UNIX stream socket" if socktype == socket.SOCK_DGRAM else "not listening"
+        with pytest.raises(AdmissionError, match=expected) as raised:
+            agent_server.inherited_listener(original.fileno())
+        assert raised.value.exit_code == ExitCode.RUNNER_FAILURE
+    finally:
+        original.close()
+
+
+def test_inherited_listener_closes_its_duplicate_when_type_validation_fails(monkeypatch):
+    duplicate = SimpleNamespace(family=socket.AF_UNIX, closed=False)
+
+    def getsockopt(_level, option):
+        if option == socket.SO_TYPE:
+            return socket.SOCK_DGRAM
+        raise AssertionError("type validation must stop before listening validation")
+
+    duplicate.getsockopt = getsockopt
+    duplicate.close = lambda: setattr(duplicate, "closed", True)
+    monkeypatch.setattr(agent_server.socket, "fromfd", lambda *_args: duplicate)
+    with pytest.raises(AdmissionError, match="AF_UNIX stream socket"):
+        agent_server.inherited_listener(55)
+    assert duplicate.closed is True
+
+
+def test_serve_once_handles_wake_limit_and_peer_authentication_refusal(tmp_path, monkeypatch):
+    service, _identity, _checkout = _service(
+        tmp_path, peer_credentials=(os.geteuid(), os.getegid()),
+    )
+    server = AgentServer.on_path(tmp_path / "wake.sock", service, service.policy)
+    server._select_waiter = lambda *_args: ([server._wake_read], [], [])
+    server.serve_once()
+    assert server.listener.fileno() >= 0
+    server.close()
+
+    limited_root = tmp_path / "limited"
+    limited_root.mkdir()
+    service, _identity, _checkout = _service(
+        limited_root, peer_credentials=(os.geteuid(), os.getegid()),
+    )
+    limited_policy = replace(service.policy, max_connections=0)
+    client_stream, server_stream = socket.socketpair()
+
+    class Listener:
+        def accept(self):
+            return server_stream, None
+
+        def close(self):
+            return None
+
+    limited = AgentServer(Listener(), service, limited_policy)
+    limited._select_waiter = lambda *_args: ([limited.listener], [], [])
+    limited.serve_once()
+    refusal = read_frame(client_stream, 1)
+    assert refusal["exit_code"] == ExitCode.IDENTITY_OR_TRANSPORT
+    assert "connection limit" in refusal["reason"]
+    client_stream.close()
+    limited.close()
+
+    identity_root = tmp_path / "identity"
+    identity_root.mkdir()
+    service, _identity, _checkout = _service(
+        identity_root, peer_credentials=(os.geteuid(), os.getegid()),
+    )
+    client_stream, server_stream = socket.socketpair()
+
+    class AcceptedListener:
+        def accept(self):
+            return server_stream, None
+
+        def close(self):
+            return None
+
+    identity_server = AgentServer(AcceptedListener(), service, service.policy)
+    identity_server._select_waiter = lambda *_args: ([identity_server.listener], [], [])
+    monkeypatch.setattr(
+        agent_server.AgentPolicy, "resolve_socket_peer",
+        lambda *_args: (_ for _ in ()).throw(AdmissionError(ExitCode.IDENTITY_OR_TRANSPORT, "unknown peer")),
+    )
+    identity_server.serve_once()
+    refusal = read_frame(client_stream, 1)
+    assert refusal["exit_code"] == ExitCode.IDENTITY_OR_TRANSPORT
+    assert refusal["reason"] == "unknown peer"
+    client_stream.close()
+    identity_server.close()
+
+
+def test_serve_forever_returns_when_closed_rejects_duplicate_and_skips_early_reconcile(tmp_path):
+    service, _identity, _checkout = _service(
+        tmp_path, peer_credentials=(os.geteuid(), os.getegid()),
+    )
+    closed = AgentServer.on_path(tmp_path / "closed.sock", service, service.policy)
+    closed.close()
+    closed.serve_forever()
+
+    duplicate = AgentServer.on_path(tmp_path / "duplicate.sock", service, service.policy)
+    duplicate._serving = True
+    with pytest.raises(AdmissionError, match="already serving") as raised:
+        duplicate.serve_forever()
+    assert raised.value.exit_code == ExitCode.RUNNER_FAILURE
+    duplicate._serving = False
+    duplicate.close()
+
+    calls = [0]
+    reconciliations = []
+    early = AgentServer.on_path(tmp_path / "early.sock", service, service.policy)
+
+    def select_waiter(readers, _writers, _errors, _timeout):
+        calls[0] += 1
+        if calls[0] == 1:
+            return [], [], []
+        return [early._wake_read], [], []
+
+    early._select_waiter = select_waiter
+    early._monotonic = lambda: 0.0
+    service.reconcile_leases = lambda: reconciliations.append("called")
+    early.serve_forever()
+    assert calls[0] == 2
+    assert reconciliations == []
+
+
+def test_serve_forever_reports_worker_start_failure_and_releases_connection(tmp_path, monkeypatch):
+    service, _identity, _checkout = _service(
+        tmp_path, peer_credentials=(os.geteuid(), os.getegid()),
+    )
+    client_stream, server_stream = socket.socketpair()
+    accept_calls = [0]
+
+    class Listener:
+        def accept(self):
+            accept_calls[0] += 1
+            return server_stream, None
+
+        def close(self):
+            return None
+
+    server = AgentServer(Listener(), service, service.policy)
+
+    class FailedThread:
+        def __init__(self, **_kwargs):
+            return None
+
+        def start(self):
+            raise RuntimeError("thread resource unavailable")
+
+    monkeypatch.setattr(agent_server.threading, "Thread", FailedThread)
+
+    def select_waiter(readers, _writers, _errors, _timeout):
+        if accept_calls[0] == 0:
+            return [server.listener], [], []
+        return [server._wake_read], [], []
+
+    server._select_waiter = select_waiter
+    server.serve_forever()
+    refusal = read_frame(client_stream, 1)
+    assert refusal["exit_code"] == ExitCode.RUNNER_FAILURE
+    assert "cannot start" in refusal["reason"]
+    assert server._ordinary_connections == set()
+    assert server._client_threads == set()
+    client_stream.close()
+
+
+def test_serve_forever_closes_connection_if_server_closes_before_worker_start(tmp_path, monkeypatch):
+    service, _identity, _checkout = _service(
+        tmp_path, peer_credentials=(os.geteuid(), os.getegid()),
+    )
+    client_stream, server_stream = socket.socketpair()
+    accepted = [False]
+
+    class Listener:
+        def accept(self):
+            accepted[0] = True
+            return server_stream, None
+
+        def close(self):
+            return None
+
+    server = AgentServer(Listener(), service, service.policy)
+
+    class ClosingThread:
+        def __init__(self, **_kwargs):
+            server._closed = True
+
+        def start(self):
+            raise AssertionError("closed server must not start the connection worker")
+
+    monkeypatch.setattr(agent_server.threading, "Thread", ClosingThread)
+    server._select_waiter = lambda *_args: (
+        ([server.listener] if not accepted[0] else [server._wake_read]), [], [],
+    )
+    server.serve_forever()
+    assert accepted[0] is True
+    assert client_stream.recv(1) == b""
+    assert server._ordinary_connections == set()
+    assert server._client_threads == set()
+    client_stream.close()
+
+
+def test_server_worker_releases_connection_after_peer_refusal_and_transport_oserror(tmp_path, monkeypatch):
+    service, _identity, _checkout = _service(
+        tmp_path, peer_credentials=(os.geteuid(), os.getegid()),
+    )
+    client_stream, server_stream = socket.socketpair()
+    worker = AgentServer.on_path(tmp_path / "unused.sock", service, service.policy)
+    worker._ordinary_connections.add(server_stream)
+    worker._client_threads.add(threading.current_thread())
+    monkeypatch.setattr(
+        agent_server.AgentPolicy, "resolve_socket_peer",
+        lambda *_args: (_ for _ in ()).throw(AdmissionError(ExitCode.IDENTITY_OR_TRANSPORT, "unknown peer")),
+    )
+    worker._serve_connection(server_stream)
+    refusal = read_frame(client_stream, 1)
+    assert refusal["exit_code"] == ExitCode.IDENTITY_OR_TRANSPORT
+    assert refusal["reason"] == "unknown peer"
+    assert worker._ordinary_connections == set()
+    assert worker._client_threads == set()
+    client_stream.close()
+    worker.close()
+
+    client_stream, server_stream = socket.socketpair()
+    worker = AgentServer.on_path(tmp_path / "transport.sock", service, service.policy)
+    worker._ordinary_connections.add(server_stream)
+    worker._client_threads.add(threading.current_thread())
+    monkeypatch.setattr(agent_server.AgentPolicy, "resolve_socket_peer", lambda *_args: _identity)
+    monkeypatch.setattr(
+        agent_server, "serve_connection",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("peer transport closed")),
+    )
+    worker._serve_connection(server_stream)
+    assert client_stream.recv(1) == b""
+    assert worker._ordinary_connections == set()
+    assert worker._client_threads == set()
+    client_stream.close()
+    worker.close()
+
+
+def test_server_close_contains_wake_and_connection_close_oserrors(tmp_path):
+    service, _identity, _checkout = _service(
+        tmp_path, peer_credentials=(os.geteuid(), os.getegid()),
+    )
+    server = AgentServer.on_path(tmp_path / "close.sock", service, service.policy)
+
+    class BrokenConnection:
+        def __init__(self):
+            self.calls = []
+
+        def shutdown(self, _how):
+            self.calls.append("shutdown")
+            raise OSError("already gone")
+
+        def close(self):
+            self.calls.append("close")
+            raise OSError("already closed")
+
+    connection = BrokenConnection()
+    server._ordinary_connections.add(connection)
+    server.close()
+    server.close()
+    assert connection.calls == ["shutdown", "close"]
+
+    wake_server = AgentServer.on_path(tmp_path / "wake-error.sock", service, service.policy)
+    wake_read = wake_server._wake_read
+    wake_write = wake_server._wake_write
+    wake_server._wake_write = SimpleNamespace(
+        send=lambda _value: (_ for _ in ()).throw(OSError("wake fd closed")),
+    )
+    wake_server._serving = True
+    wake_server.close()
+    assert wake_server._closed is True
+    wake_read.close()
+    wake_write.close()
+    wake_server.listener.close()
+
+
+def test_server_error_writer_and_catchall_return_bounded_wire_documents(tmp_path, monkeypatch):
+    service, identity, _checkout = _service(tmp_path)
+    monkeypatch.setattr(
+        agent_server, "write_frame",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(FrameError("write refused")),
+    )
+    assert agent_server._write_error(object(), service, ExitCode.REFUSAL, "test") is None
+
+    monkeypatch.undo()
+    client_stream, server_stream = socket.socketpair()
+    write_frame(client_stream, {"verb": "probe"})
+    client_stream.shutdown(socket.SHUT_WR)
+    monkeypatch.setattr(agent_server, "require_end_of_input", lambda *_args: None)
+    service.handle = lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("provider exploded"))
+
+    result = serve_connection(server_stream, server_stream, service, service.policy, identity)
+    reply = read_frame(client_stream, 1)
+    assert result == ExitCode.RUNNER_FAILURE
+    assert reply["exit_code"] == ExitCode.RUNNER_FAILURE
+    assert "unexpected agent failure: provider exploded" == reply["reason"]
+    client_stream.close()
+    server_stream.close()
+
+
+def test_forced_command_refuses_unknown_transport_group_on_wire(tmp_path):
+    service, _identity, _checkout = _service(tmp_path)
+    client_stream, server_stream = socket.socketpair()
+    result = serve_forced_command(client_stream, server_stream, service, service.policy, "unknown")
+    refusal = read_frame(client_stream, 1)
+    assert result == ExitCode.IDENTITY_OR_TRANSPORT
+    assert refusal["exit_code"] == ExitCode.IDENTITY_OR_TRANSPORT
+    assert refusal["reason"] == "unknown forced-command group"
+    client_stream.close()
+    server_stream.close()
