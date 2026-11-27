@@ -694,10 +694,6 @@ def _validate_btrfs_raw_plan(
             raise LayoutPolicyError(
                 "btrfs_data_kind_unsupported: a btrfs root accepts only data kind none or subvolumes"
             )
-    if run_io_benchmark:
-        raise LayoutPolicyError(
-            "btrfs_iobench_raw_unavailable: install-time iobench has no supported temporary target on a btrfs root"
-        )
     if swap_policy != "off" or swap_partition_count != 0:
         raise LayoutPolicyError(
             "btrfs_swap_needs_p3: btrfs swap needs WP-10 P3; until it lands set "

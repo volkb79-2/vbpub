@@ -2268,10 +2268,11 @@ MaxFileSec=1month
         return entries
 
     @staticmethod
-    def _geometry_for_comparison(attrs: dict[str, str]) -> dict[str, str | None]:
-        """Project a parsed partition-entry dict down to the fields a
-        write plan actually controls (start/size/type/name), case-folding
-        type. Live-confirmed 2026-09-09 (v1001 round 9, this same
+    def _geometry_for_comparison(
+        attrs: dict[str, str], *, include_name: bool = True,
+    ) -> dict[str, str | None]:
+        """Project parsed entries to controlled geometry, optionally including the GPT name.
+        Type is case-folded. Live-confirmed 2026-09-09 (v1001 round 9, this same
         readback-verification diagnostic's own first live outing): a
         raw dict `!=` between the in-memory plan and a real `sfdisk
         --dump` readback flags EVERY real write as a mismatch, not just
@@ -2282,12 +2283,14 @@ MaxFileSec=1month
         differences, undoing otherwise-successful partitioning. Compare
         only what the plan itself constrains.
         """
-        return {
+        geometry: dict[str, str | None] = {
             "start": attrs.get("start"),
             "size": attrs.get("size"),
             "type": (attrs.get("type") or "").upper(),
-            "name": attrs.get("name"),
         }
+        if include_name:
+            geometry["name"] = attrs.get("name")
+        return geometry
 
     @staticmethod
     def _partition_number_ranges(numbers: Iterable[int]) -> list[str]:
@@ -3239,6 +3242,8 @@ MaxFileSec=1month
         partitions: list[tuple[int, int]],
         before_root: dict[int, dict[str, str]],
         new_root_size: int,
+        *,
+        allow_replaceable_tail_swaps: bool = False,
     ) -> tuple[str, tuple[int, int, int]]:
         """Accept only a fresh tail, the exact planned swaps, or their exact span replacement."""
         expected_span = self._planned_tail_swap_span(partitions, before_root)
@@ -3302,12 +3307,16 @@ MaxFileSec=1month
                 if number != self.root_number and self._is_data_partition(entry)
                 and int(entry.get("start", "-1")) >= root_end
             ]
-            if actual_tail_swaps or data_after_root:
+            if data_after_root or (actual_tail_swaps and not allow_replaceable_tail_swaps):
                 raise InstallerError(
                     "io_benchmark_swap_span_state_mismatch: live tail is neither the planned swaps nor their exact span"
                 )
-            shape = "fresh"  # root and preserved pre-root entries exist
-            replaced_numbers = set()
+            if actual_tail_swaps:
+                shape = "replaceable-swaps"
+                replaced_numbers = set(actual_tail_swaps)
+            else:
+                shape = "fresh"  # root and preserved pre-root entries exist
+                replaced_numbers = set()
 
         span_end = span_start + span_size
         for other_number, other in current.items():
@@ -3387,12 +3396,63 @@ MaxFileSec=1month
                 raise InstallerError(
                     f"io_benchmark_swap_span_foreign_signature: refusing table conversion; {device} has {signature}"
                 )
+            partition_table = self._blkid_value(device, "PTTYPE")
+            if partition_table:
+                raise InstallerError(
+                    "io_benchmark_swap_span_foreign_signature: refusing table conversion; "
+                    f"{device} contains a nested {partition_table} partition table"
+                )
+
+    def _probe_swap_span_extent(self, number: int, start: int, size: int) -> None:
+        """Read-only low-level signature probe over the planned disk extent."""
+        if self.actions.dry_run:
+            return
+        disk_device = f"/dev/{self.root_disk}"
+        offset_bytes = start * 512
+        size_bytes = size * 512
+        try:
+            output = self._run(
+                [
+                    "/usr/sbin/blkid", "-p", "-o", "export",
+                    "-O", str(offset_bytes), "-S", str(size_bytes), disk_device,
+                ],
+                "probe the planned swap-span extent for existing signatures",
+                dangerous=False,
+            )
+        except ActionError as exc:
+            if "action failed (2)" in str(exc):
+                return
+            raise InstallerError(
+                f"cannot probe planned swap-span extent on {disk_device}: {exc}"
+            ) from exc
+        tags = {
+            key: value
+            for line in output.splitlines()
+            if "=" in line
+            for key, _separator, value in (line.partition("="),)
+        }
+        signature = tags.get("TYPE", "")
+        partition_table = tags.get("PTTYPE", "")
+        if (signature and signature.lower() != "swap") or partition_table:
+            detail = ", ".join(
+                f"{key}={value}"
+                for key, value in (("TYPE", signature), ("PTTYPE", partition_table))
+                if value
+            )
+            span_device = f"{self._partition_base}{number}"
+            raise InstallerError(
+                "io_benchmark_swap_span_foreign_signature: refusing to write the span over "
+                f"{disk_device} bytes {offset_bytes}-{offset_bytes + size_bytes - 1} ({detail}); "
+                "manual recovery: inspect and preserve any needed data in this exact extent, "
+                f"remove the foreign signature from its owning device (planned span {span_device}), then resume"
+            )
 
     def _apply_known_swap_shape(
         self,
         *,
         tail_swap_span: bool = False,
         record_in_dry_run: bool = False,
+        allow_replaceable_tail_swaps: bool = False,
     ) -> None:
         partitions, new_root_size = self._plan_swap_partitions()
         _disk_sectors, _root_start, current_root_size = self._disk_facts()
@@ -3422,11 +3482,25 @@ MaxFileSec=1month
             )
         if tail_swap_span or current_has_span:
             _current_shape, expected_swap_span = self._validate_swap_span_table_replacement(
-                current_entries, partitions, before_root, new_root_size
+                current_entries,
+                partitions,
+                before_root,
+                new_root_size,
+                allow_replaceable_tail_swaps=allow_replaceable_tail_swaps,
             )
             affected_numbers = self._tail_swap_numbers(len(partitions), before_root)
+            current_root_end = int(current_entries[self.root_number]["start"]) + int(
+                current_entries[self.root_number]["size"]
+            )
+            affected_numbers.extend(
+                number for number, entry in current_entries.items()
+                if self._is_swap_partition(entry)
+                and int(entry.get("start", "-1")) >= current_root_end
+            )
             if expected_swap_span:
                 affected_numbers.append(expected_swap_span[0])
+            if tail_swap_span and not current_has_span and expected_swap_span:
+                self._probe_swap_span_extent(*expected_swap_span)
             self._assert_swap_span_partitions_quiescent(current_entries, affected_numbers)
         # Check the affected devices first so a mounted, active or foreign-signed
         # swap/span gets the specific refusal below instead of the broader disk
@@ -3464,8 +3538,11 @@ MaxFileSec=1month
             }
             changed_numbers = {
                 number for number in old_numbers & new_numbers
-                if self._geometry_for_comparison(current_entries[number])
-                != self._geometry_for_comparison(plan_entries[number])
+                if self._geometry_for_comparison(
+                    current_entries[number], include_name=tail_swap_span or current_has_span
+                ) != self._geometry_for_comparison(
+                    plan_entries[number], include_name=tail_swap_span or current_has_span
+                )
             }
             if tail_swap_span or record_in_dry_run:
                 self._write_and_verify_partition_plan(
@@ -3480,11 +3557,15 @@ MaxFileSec=1month
                 )
         else:
             current_geometry = {
-                number: self._geometry_for_comparison(entry)
+                number: self._geometry_for_comparison(
+                    entry, include_name=tail_swap_span or current_has_span
+                )
                 for number, entry in current_entries.items()
             }
             plan_geometry = {
-                number: self._geometry_for_comparison(entry)
+                number: self._geometry_for_comparison(
+                    entry, include_name=tail_swap_span or current_has_span
+                )
                 for number, entry in plan_entries.items()
             }
             if current_geometry != plan_geometry:
@@ -3505,8 +3586,11 @@ MaxFileSec=1month
                 }
                 changed_numbers = {
                     number for number in old_numbers & new_numbers
-                    if self._geometry_for_comparison(current_entries[number])
-                    != self._geometry_for_comparison(plan_entries[number])
+                    if self._geometry_for_comparison(
+                        current_entries[number], include_name=tail_swap_span or current_has_span
+                    ) != self._geometry_for_comparison(
+                        plan_entries[number], include_name=tail_swap_span or current_has_span
+                    )
                 }
                 self._write_and_verify_partition_plan(
                     current_dump=current_dump,
@@ -4007,7 +4091,7 @@ MaxFileSec=1month
         return match.group(1), int(match.group(2)), int(match.group(3))
 
     def _wipe_swap_span(self) -> None:
-        """Erase benchmark markers only after the runner has finished or warned."""
+        """Erase filesystem signatures only after the runner has finished or warned."""
         number, start, size, device, partuuid = self._swap_span_partition()
         step = self.state.load().get("steps", {}).get("io_benchmark", {})
         status = step.get("status")
@@ -4037,11 +4121,6 @@ MaxFileSec=1month
             f"wipe benchmark signatures from temporary swap span {device}",
             dangerous=True,
         )
-        self._run(
-            ["/usr/bin/dd", "if=/dev/zero", f"of={device}", "bs=1M", "count=1", "conv=fsync"],
-            f"zero the first MiB of temporary swap span {device}",
-            dangerous=True,
-        )
 
     @staticmethod
     def _format_iocost_summary(results: dict[str, int]) -> str:
@@ -4054,6 +4133,13 @@ MaxFileSec=1month
     def _io_benchmark_state_dir(self) -> Path:
         """One iobench state directory per rung: a rung never reuses another rung's record."""
         return Path(self.config.state_dir) / "iobench" / self.config.io_benchmark_profile
+
+    def _unreapable_iobench_recovery(self) -> str:
+        return (
+            "operator recovery: reboot, confirm no iobench-install-runner or fio child remains, "
+            f"then set steps.io_benchmark.status to 'warned' in {Path(self.config.state_dir) / 'state.json'} "
+            "and resume; this skips io.cost calibration and restores the planned swaps"
+        )
 
     def _run_io_benchmark(self) -> None:
         """Run the configured iobench rung on the unformatted temporary tail-swap span."""
@@ -4099,6 +4185,38 @@ MaxFileSec=1month
         )
         try:
             self._packages(["fio"], "io_benchmark")
+        except ActionUnreapable as exc:
+            detail = (
+                f"fio package installation could not be reaped: {exc}; the span is not wiped and "
+                "the iobench runner has not started; operator recovery: wait for apt/dpkg to exit "
+                "or reboot, then resume stage two"
+            )
+            self._mark_step("io_benchmark_packages", "failed", detail)
+            raise InstallerError(detail) from exc
+        except Exception as exc:
+            detail = (
+                f"{identity}; iobench {profile} failed (advisory): {str(exc).splitlines()[0][:400]}; "
+                f"{self._write_advisory_log('io_benchmark', exc)}"
+            )
+            self._mark_step("io_benchmark", "warned", detail)
+            if not self.config.telegram_verbose_progress:
+                self._notify(f"<b>io benchmark</b>: {_code(detail)}", event=detail, status="run")
+            return
+
+        verified = self._swap_span_partition()
+        if verified != (number, start, size, device, partuuid):
+            raise InstallerError(
+                "io_benchmark_swap_span_identity_changed: the live span changed during fio package setup"
+            )
+        disk_sectors, root_start, root_size = self._disk_facts()
+        live = self._live_partition_entries(disk_sectors, root_start, root_size)
+        self._assert_swap_span_partitions_quiescent(live, affected)
+        self._run(
+            ["/usr/sbin/wipefs", "-a", device],
+            f"clear blank-or-swap signatures from temporary span before iobench {device}",
+            dangerous=True,
+        )
+        try:
             runner = Path(__file__).resolve().parents[1] / "tools" / "iobench-install-runner"
             self._run(
                 [
@@ -4138,7 +4256,10 @@ MaxFileSec=1month
             if not self.config.telegram_verbose_progress:
                 self._notify(f"<b>io benchmark</b>: {summary}", event=f"io benchmark: {summary}", status="ok")
         except ActionUnreapable as exc:
-            detail = f"{identity}; iobench could not be reaped; span {device} may still be in use: {exc}"
+            detail = (
+                f"{identity}; iobench could not be reaped; span {device} may still be in use: {exc}; "
+                f"{self._unreapable_iobench_recovery()}"
+            )
             self._mark_step("io_benchmark", "failed", detail)
             raise InstallerError(detail) from exc
         except Exception as exc:
@@ -5711,15 +5832,20 @@ MaxFileSec=1month
         disk_sectors, root_start, root_size = self._disk_facts()
         live = self._live_partition_entries(disk_sectors, root_start, root_size)
         before_root = self._partitions_before_root(live, root_start)
-        shape, _expected_span = self._validate_swap_span_table_replacement(
-            live, partitions, before_root, _target_root_size
-        )
         step = self.state.load().get("steps", {}).get("io_benchmark", {})
-        final = step.get("status") in IOBENCH_FINAL_STATUSES
         if step.get("status") == "failed" and "iobench could not be reaped" in str(step.get("detail", "")):
             raise InstallerError(
-                "io_benchmark_unreapable_span: prior runner could not be reaped; preserving the live span"
+                "io_benchmark_unreapable_span: prior runner could not be reaped; preserving the live span; "
+                f"{self._unreapable_iobench_recovery()}"
             )
+        shape, _expected_span = self._validate_swap_span_table_replacement(
+            live,
+            partitions,
+            before_root,
+            _target_root_size,
+            allow_replaceable_tail_swaps=not bool(step),
+        )
+        final = step.get("status") in IOBENCH_FINAL_STATUSES
 
         if self.actions.dry_run:
             self._apply_known_swap_shape(tail_swap_span=True)
@@ -5732,6 +5858,11 @@ MaxFileSec=1month
             if final:
                 return
             self._apply_known_swap_shape(tail_swap_span=True)
+        elif shape == "replaceable-swaps":
+            self._apply_known_swap_shape(
+                tail_swap_span=True,
+                allow_replaceable_tail_swaps=True,
+            )
         elif shape == "fresh":
             if final:
                 raise InstallerError(

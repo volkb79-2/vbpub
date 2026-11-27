@@ -87,7 +87,7 @@ WIZARD_SECTIONS = (
                 "partitioning",
                 "Disk plan JSON {root: \"*\"|\"keep\"|GiB|\"N%\", reserve_gb, "
                 "data: {kind: partitions|lvm, volumes: [{size, fs, mount, label}]}}. "
-                "Fixed and percentage sizes cannot be mixed.",
+                "Auto swap defaults to 8 GiB. Fixed and percentage sizes cannot be mixed.",
                 "json",
             ),
             WizardField("swap_policy", "Swap policy", "choice", ("on", "off")),

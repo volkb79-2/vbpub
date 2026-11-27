@@ -535,7 +535,9 @@ def validate_config(config: Config) -> None:
             )
         else:
             swap_slots = 0
-        highest_planned_number = 1 + spec.partition_count + swap_slots
+        # GPT numbers include the boot slot and the root partition before the
+        # configured data volumes and tail swaps.
+        highest_planned_number = 2 + spec.partition_count + swap_slots
         if highest_planned_number > layout_policy.GPT_MAX_PARTITIONS:
             raise layout_policy.LayoutPolicyError(
                 f"configured partition plan needs at least partition number {highest_planned_number}, above the GPT "
