@@ -39,6 +39,7 @@ from .executor import (
     _job_state_lock,
     _job_id,
     _resolve_system_user,
+    _EXECUTOR_JSON_MAX,
 )
 from .agent_providers import DockerInspectionError, run_docker_command
 from .hostside import open_beneath
@@ -65,6 +66,19 @@ _MEMORY_POLL_S = 10
 _MEMORY_SETTLE_S = 20
 _ARTIFACT_MAX_BYTES = 50 * 1024 * 1024
 _STORE_MAX_BYTES = 512 * 1024 * 1024
+MAX_STATE_RECORD_BYTES = _EXECUTOR_JSON_MAX
+MAX_EVENT_LINE_BYTES = 4096
+MAX_EVENT_FILE_BYTES = 512 * 1024
+MAX_EVENT_COUNT = 128
+MAX_EVENT_OBSERVATIONS_BYTES = 256 * 1024
+MAX_DOCKER_JOB_CONTAINER_IDS = 4096
+MAX_DIRECTORY_ENTRIES = 4096
+MAX_TREE_ENTRIES = 16384
+MAX_TREE_DEPTH = 128
+MAX_ARCHIVE_MEMBERS = 16384
+MAX_ARCHIVE_FILE_BYTES = 512 * 1024 * 1024
+MAX_ARCHIVE_UNCOMPRESSED_BYTES = 512 * 1024 * 1024
+MAX_STORE_PATHS = 128
 _RUN_GATE_VERDICT_CODES = {
     "PASS": 0,
     "FAIL": 1,
@@ -78,6 +92,13 @@ _DOCKER_SELECTOR_ENV = frozenset({
 _HELPER_BOOTSTRAP = (
     "import sys; root = sys.argv.pop(1); sys.path.insert(0, root); "
     "from fleetd.executor_worker import main; raise SystemExit(main())"
+)
+
+_PERMANENT_LIMIT_MARKERS = (
+    "MAX_STATE_RECORD_BYTES", "MAX_EVENT_LINE_BYTES", "MAX_EVENT_FILE_BYTES", "MAX_EVENT_COUNT",
+    "MAX_EVENT_OBSERVATIONS_BYTES", "MAX_DOCKER_JOB_CONTAINER_IDS", "MAX_DIRECTORY_ENTRIES",
+    "MAX_TREE_ENTRIES", "MAX_TREE_DEPTH", "MAX_ARCHIVE_MEMBERS", "MAX_ARCHIVE_FILE_BYTES",
+    "MAX_ARCHIVE_UNCOMPRESSED_BYTES", "MAX_STORE_PATHS",
 )
 
 
@@ -306,7 +327,18 @@ class DockerClient:
             lines = result.stdout.decode("ascii").splitlines()
         except UnicodeDecodeError as exc:
             raise AdmissionError(ExitCode.QUEUED_WITHDRAWN, "Docker job-container query returned non-ASCII ids") from exc
-        ids = tuple(line.strip() for line in lines if line.strip())
+        ids_list: list[str] = []
+        for line in lines:
+            candidate = line.strip()
+            if not candidate:
+                continue
+            if len(ids_list) >= MAX_DOCKER_JOB_CONTAINER_IDS:
+                raise AdmissionError(
+                    ExitCode.IDENTITY_OR_TRANSPORT,
+                    f"MAX_DOCKER_JOB_CONTAINER_IDS exceeded ({MAX_DOCKER_JOB_CONTAINER_IDS})",
+                )
+            ids_list.append(candidate)
+        ids = tuple(ids_list)
         if any(_CONTAINER_ID_RE.fullmatch(container_id) is None for container_id in ids):
             raise AdmissionError(ExitCode.QUEUED_WITHDRAWN, "Docker job-container query returned a non-full id")
         if len(ids) != len(set(ids)):
@@ -370,6 +402,18 @@ def _close(*fds: int) -> None:
             os.close(fd)
 
 
+def _bounded_directory_entries(directory_fd: int) -> list[str]:
+    """Read at most the named entry cap before sorting a directory listing."""
+
+    names: list[str] = []
+    with os.scandir(directory_fd) as entries:
+        for entry in entries:
+            if len(names) >= MAX_DIRECTORY_ENTRIES:
+                raise OSError(f"MAX_DIRECTORY_ENTRIES exceeded ({MAX_DIRECTORY_ENTRIES})")
+            names.append(entry.name)
+    return sorted(names)
+
+
 def _fsync_dir(path: Path) -> None:
     fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
@@ -388,22 +432,28 @@ def _tree_entries(
     except FileNotFoundError:
         return [], "absent"
     entries: list[tuple[str, bool, int]] = [(relative, True, 0)]
-    pending: list[tuple[str, int]] = [(relative, first_fd)]
+    pending: list[tuple[str, int, int]] = [(relative, first_fd, 0)]
     special_reason: str | None = None
+    visited_entries = 1
     try:
         while pending:
-            directory_rel, directory_fd = pending.pop()
+            directory_rel, directory_fd, depth = pending.pop()
             try:
-                names = sorted(os.listdir(directory_fd))
+                names = _bounded_directory_entries(directory_fd)
                 for name in names:
+                    if visited_entries >= MAX_TREE_ENTRIES:
+                        raise OSError(f"MAX_TREE_ENTRIES exceeded ({MAX_TREE_ENTRIES})")
+                    visited_entries += 1
                     child_rel = f"{directory_rel}/{name}"
                     info = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
                     if stat.S_ISDIR(info.st_mode):
+                        if depth >= MAX_TREE_DEPTH:
+                            raise OSError(f"MAX_TREE_DEPTH exceeded ({MAX_TREE_DEPTH})")
                         child_fd = os.open(
                             name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory_fd,
                         )
                         entries.append((child_rel, True, 0))
-                        pending.append((child_rel, child_fd))
+                        pending.append((child_rel, child_fd, depth + 1))
                     elif stat.S_ISREG(info.st_mode):
                         entries.append((child_rel, False, info.st_size))
                     elif reject_special:
@@ -413,12 +463,12 @@ def _tree_entries(
                 os.close(directory_fd)
             if special_reason:
                 break
-        for _relative, directory_fd in pending:
+        for _relative, directory_fd, _depth in pending:
             _close(directory_fd)
         pending.clear()
         return ([], special_reason) if special_reason else (entries, None)
     except BaseException:
-        for _relative, directory_fd in pending:
+        for _relative, directory_fd, _depth in pending:
             _close(directory_fd)
         raise
 
@@ -437,6 +487,10 @@ def _write_archive(
 ) -> None:
     """Write a gzip tar from fd-opened regular files and directories only."""
 
+    if len(entries) > MAX_ARCHIVE_MEMBERS:
+        raise OSError(f"MAX_ARCHIVE_MEMBERS exceeded ({MAX_ARCHIVE_MEMBERS})")
+    if sum(size for _path, is_directory, size in entries if not is_directory) > MAX_ARCHIVE_UNCOMPRESSED_BYTES:
+        raise OSError(f"MAX_ARCHIVE_UNCOMPRESSED_BYTES exceeded ({MAX_ARCHIVE_UNCOMPRESSED_BYTES})")
     output = os.fdopen(os.dup(output_fd), "wb")
     try:
         with tarfile.open(fileobj=output, mode="w:gz", format=tarfile.PAX_FORMAT) as archive:
@@ -465,6 +519,8 @@ def _write_archive(
         os.fsync(output_fd)
     finally:
         output.close()
+    if os.fstat(output_fd).st_size > MAX_ARCHIVE_FILE_BYTES:
+        raise OSError(f"MAX_ARCHIVE_FILE_BYTES exceeded ({MAX_ARCHIVE_FILE_BYTES})")
 
 
 def _archive_artifacts(root_fd: int, output_fd: int) -> Mapping[str, object]:
@@ -473,6 +529,8 @@ def _archive_artifacts(root_fd: int, output_fd: int) -> Mapping[str, object]:
         found, reason = _tree_entries(root_fd, root, reject_special=False)
         if reason not in {None, "absent"}:
             raise OSError(f"cannot inspect artifact tree {root}: {reason}")
+        if len(entries) + len(found) > MAX_TREE_ENTRIES:
+            raise OSError(f"MAX_TREE_ENTRIES exceeded ({MAX_TREE_ENTRIES})")
         for relative, is_directory, size in found:
             if is_directory or (_artifact_filename(relative.rsplit("/", 1)[-1]) and size < _ARTIFACT_MAX_BYTES):
                 entries.append((relative, is_directory, size))
@@ -481,10 +539,13 @@ def _archive_artifacts(root_fd: int, output_fd: int) -> Mapping[str, object]:
 
 
 def _archive_store(root_fd: int, output_fd: int, relatives: Sequence[str]) -> Mapping[str, object]:
+    if len(relatives) > MAX_STORE_PATHS:
+        raise OSError(f"MAX_STORE_PATHS exceeded ({MAX_STORE_PATHS})")
     entries: list[tuple[str, bool, int]] = []
     stores: list[dict[str, object]] = []
     logs: list[str] = []
     total = 0
+    total_entries = 0
     for relative in relatives:
         if (
             _STORE_PATH_RE.fullmatch(relative) is None
@@ -498,12 +559,19 @@ def _archive_store(root_fd: int, output_fd: int, relatives: Sequence[str]) -> Ma
             except NotADirectoryError:
                 found, special = [], "not-a-directory"
             except OSError as exc:
+                if any(marker in str(exc) for marker in (
+                    "MAX_DIRECTORY_ENTRIES", "MAX_TREE_ENTRIES", "MAX_TREE_DEPTH",
+                )):
+                    raise
                 found, special = [], "symlink" if exc.errno == errno.ELOOP else "unreadable"
             if special == "absent":
                 status, reason = "absent", None
             elif special:
                 status, reason = "failed", special
             else:
+                if total_entries + len(found) > MAX_TREE_ENTRIES:
+                    raise OSError(f"MAX_TREE_ENTRIES exceeded ({MAX_TREE_ENTRIES})")
+                total_entries += len(found)
                 size = sum(item_size for _path, is_directory, item_size in found if not is_directory)
                 if size > _STORE_MAX_BYTES or total + size > _STORE_MAX_BYTES:
                     status, reason = "too-large", str(size)
@@ -521,7 +589,9 @@ def _archive_store(root_fd: int, output_fd: int, relatives: Sequence[str]) -> Ma
             logs.append(f"STORE-COLLECT-FAILED {relative} {reason}")
     try:
         _write_archive(root_fd, output_fd, entries)
-    except (OSError, tarfile.TarError, ValueError):
+    except (OSError, tarfile.TarError, ValueError) as exc:
+        if any(marker in str(exc) for marker in _PERMANENT_LIMIT_MARKERS):
+            raise
         for item in stores:
             if item["status"] == "collected":
                 item.update(status="failed", reason="pack-failed")
@@ -548,41 +618,56 @@ def _verify_archive_fd(
     info = os.fstat(fd)
     if not stat.S_ISREG(info.st_mode):
         raise AdmissionError(ExitCode.STORE_COLLECTION_FAILED, "collected archive is not a regular file")
+    if info.st_size > MAX_ARCHIVE_FILE_BYTES:
+        raise AdmissionError(
+            ExitCode.STORE_COLLECTION_FAILED,
+            f"MAX_ARCHIVE_FILE_BYTES exceeded ({MAX_ARCHIVE_FILE_BYTES})",
+        )
     try:
         os.lseek(fd, 0, os.SEEK_SET)
         with os.fdopen(os.dup(fd), "rb") as stream:
-            with tarfile.open(fileobj=stream, mode="r:gz") as archive:
-                members = archive.getmembers()
+            with tarfile.open(fileobj=stream, mode="r|gz") as archive:
+                seen: set[str] = set()
+                total = 0
+                store_paths = (store_path,) if isinstance(store_path, str) else tuple(store_path or ())
+                for member_count, member in enumerate(archive, start=1):
+                    if member_count > MAX_ARCHIVE_MEMBERS:
+                        raise AdmissionError(
+                            ExitCode.STORE_COLLECTION_FAILED,
+                            f"MAX_ARCHIVE_MEMBERS exceeded ({MAX_ARCHIVE_MEMBERS})",
+                        )
+                    name = member.name.rstrip("/")
+                    parts = name.split("/")
+                    if (
+                        not name or name.startswith("/") or "\\" in name
+                        or any(part in {"", ".", ".."} for part in parts)
+                        or name in seen or not (member.isdir() or member.isfile())
+                    ):
+                        raise AdmissionError(ExitCode.STORE_COLLECTION_FAILED, f"collected {kind} archive has an unsafe member")
+                    seen.add(name)
+                    if kind == "artifacts" and not (
+                        name in {".assay", ".run-gate"} and member.isdir()
+                        or name.startswith(".assay/") or name.startswith(".run-gate/")
+                    ):
+                        raise AdmissionError(ExitCode.STORE_COLLECTION_FAILED, "artifact archive contains an unexpected path")
+                    if kind == "artifacts" and member.isfile() and member.size >= _ARTIFACT_MAX_BYTES:
+                        raise AdmissionError(ExitCode.STORE_COLLECTION_FAILED, "artifact archive contains an oversized file")
+                    if member.isfile():
+                        total += member.size
+                        if total > MAX_ARCHIVE_UNCOMPRESSED_BYTES:
+                            raise AdmissionError(
+                                ExitCode.STORE_COLLECTION_FAILED,
+                                f"MAX_ARCHIVE_UNCOMPRESSED_BYTES exceeded ({MAX_ARCHIVE_UNCOMPRESSED_BYTES})",
+                            )
+                    if kind == "store":
+                        if not any(name == path or name.startswith(path + "/") for path in store_paths):
+                            raise AdmissionError(ExitCode.STORE_COLLECTION_FAILED, "store archive contains an unexpected path")
+                        if total > _STORE_MAX_BYTES:
+                            raise AdmissionError(ExitCode.STORE_COLLECTION_FAILED, "store archive exceeds its uncompressed limit")
     except (OSError, EOFError, tarfile.TarError) as exc:
         raise AdmissionError(ExitCode.STORE_COLLECTION_FAILED, f"collected {kind} archive is unreadable: {exc}") from exc
     finally:
         os.lseek(fd, 0, os.SEEK_SET)
-    seen: set[str] = set()
-    total = 0
-    store_paths = (store_path,) if isinstance(store_path, str) else tuple(store_path or ())
-    for member in members:
-        name = member.name.rstrip("/")
-        parts = name.split("/")
-        if (
-            not name or name.startswith("/") or "\\" in name
-            or any(part in {"", ".", ".."} for part in parts)
-            or name in seen or not (member.isdir() or member.isfile())
-        ):
-            raise AdmissionError(ExitCode.STORE_COLLECTION_FAILED, f"collected {kind} archive has an unsafe member")
-        seen.add(name)
-        if kind == "artifacts" and not (
-            name in {".assay", ".run-gate"} and member.isdir()
-            or name.startswith(".assay/") or name.startswith(".run-gate/")
-        ):
-            raise AdmissionError(ExitCode.STORE_COLLECTION_FAILED, "artifact archive contains an unexpected path")
-        if kind == "artifacts" and member.isfile() and member.size >= _ARTIFACT_MAX_BYTES:
-            raise AdmissionError(ExitCode.STORE_COLLECTION_FAILED, "artifact archive contains an oversized file")
-        if kind == "store":
-            if not any(name == path or name.startswith(path + "/") for path in store_paths):
-                raise AdmissionError(ExitCode.STORE_COLLECTION_FAILED, "store archive contains an unexpected path")
-            total += member.size if member.isfile() else 0
-            if total > _STORE_MAX_BYTES:
-                raise AdmissionError(ExitCode.STORE_COLLECTION_FAILED, "store archive exceeds its uncompressed limit")
     return info.st_size
 
 
@@ -740,13 +825,20 @@ class HostJobWorker:
         self.event_path = Path()
         self.runner_process: RunnerProcess | None = None
         self.event_cursor = 0
+        self.event_offset = 0
+        self.event_bytes_read = 0
+        self.event_pending = bytearray()
+        self.event_records: list[Mapping[str, object]] = []
+        self.event_file_identity: tuple[int, int] | None = None
         self.event_observations: list[Mapping[str, object]] = []
+        self.event_observation_bytes = 0
         self.lane_error: str | None = None
+        self.permanent_defect: str | None = None
         self.terminal_completed = False
         self.memory_lock_fd = -1
 
     def _state(self) -> dict[str, object]:
-        raw = _read_regular(self.job_dir / "state.json", limit=1024 * 1024)
+        raw = _read_regular(self.job_dir / "state.json", limit=MAX_STATE_RECORD_BYTES)
         try:
             value = json.loads(raw.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -851,11 +943,18 @@ class HostJobWorker:
         return result
 
     def _helper(self, mode: str, *args: str, cwd_fd: int | None = None) -> CommandResult:
-        return self._run_checked(
-            self._helper_argv(mode, *args),
-            cwd_fd=self.repo_root_fd if cwd_fd is None else cwd_fd,
-            detail=f"runner-user helper {mode!r} failed",
-        )
+        try:
+            return self._run_checked(
+                self._helper_argv(mode, *args),
+                cwd_fd=self.repo_root_fd if cwd_fd is None else cwd_fd,
+                detail=f"runner-user helper {mode!r} failed",
+            )
+        except AdmissionError as exc:
+            marker = next((value for value in _PERMANENT_LIMIT_MARKERS if value in exc.reason), None)
+            if marker is None:
+                raise
+            self.permanent_defect = f"{marker} exceeded"
+            raise AdmissionError(ExitCode.IDENTITY_OR_TRANSPORT, self.permanent_defect) from exc
 
     @staticmethod
     def _helper_argv(mode: str, *args: str) -> list[str]:
@@ -937,7 +1036,11 @@ class HostJobWorker:
         """Return only real, full-commit directories that can seed a local clone."""
 
         candidates: list[str] = []
-        for name in sorted(os.listdir(self.repo_root_fd)):
+        try:
+            names = _bounded_directory_entries(self.repo_root_fd)
+        except OSError as exc:
+            raise AdmissionError(ExitCode.CHECKOUT_FAILURE, str(exc)) from exc
+        for name in names:
             if _COMMIT_RE.fullmatch(name) is None:
                 continue
             try:
@@ -1030,7 +1133,11 @@ class HostJobWorker:
             group_fd = open_beneath(uploads_fd, self.group, directory=True)
             name_fd = open_beneath(group_fd, name, directory=True)
             result: list[tuple[str, int]] = []
-            for digest in sorted(os.listdir(name_fd)):
+            try:
+                digests = _bounded_directory_entries(name_fd)
+            except OSError as exc:
+                raise AdmissionError(ExitCode.IDENTITY_OR_TRANSPORT, str(exc)) from exc
+            for digest in digests:
                 if _SHA256_RE.fullmatch(digest) is None:
                     continue
                 try:
@@ -1054,6 +1161,8 @@ class HostJobWorker:
             return result
         except FileNotFoundError:
             return []
+        except AdmissionError:
+            raise
         except (OSError, ValueError) as exc:
             raise AdmissionError(ExitCode.QUEUED_WITHDRAWN, f"cannot inspect host upload objects: {exc}") from exc
         finally:
@@ -1418,7 +1527,11 @@ class HostJobWorker:
         try:
             uploads_fd = open_beneath(root_fd, "uploads", directory=True)
             group_fd = open_beneath(uploads_fd, self.group, directory=True)
-            for name in sorted(os.listdir(group_fd)):
+            try:
+                names = _bounded_directory_entries(group_fd)
+            except OSError as exc:
+                raise AdmissionError(ExitCode.IDENTITY_OR_TRANSPORT, str(exc)) from exc
+            for name in names:
                 if re.fullmatch(r"assay-seed-[0-9]+\.tgz", name) is None:
                     continue
                 if not any(
@@ -1596,7 +1709,26 @@ class HostJobWorker:
         while True:
             try:
                 return self._save_state(**updates)
-            except (AdmissionError, OSError):
+            except AdmissionError as exc:
+                if (
+                    "executor JSON record exceeds" in exc.reason
+                    or "state.json exceeds" in exc.reason
+                ):
+                    self.permanent_defect = "MAX_STATE_RECORD_BYTES exceeded"
+                    raise AdmissionError(
+                        ExitCode.IDENTITY_OR_TRANSPORT, self.permanent_defect,
+                    ) from exc
+                self.waiter(1)
+                if self.runner_process is not None and not {
+                    "stop_signal", "cancel_refused", "guard_deregistered",
+                }.intersection(updates):
+                    try:
+                        current = self._state()
+                    except AdmissionError:
+                        continue
+                    if current.get("cancel_requested") is True:
+                        self._request_worker_stop(self.runner_process)
+            except OSError:
                 self.waiter(1)
                 if self.runner_process is not None and not {
                     "stop_signal", "cancel_refused", "guard_deregistered",
@@ -1665,7 +1797,11 @@ class HostJobWorker:
         except AdmissionError as exc:
             if exc.exit_code != ExitCode.QUEUED_WITHDRAWN:
                 self.lane_error = self.lane_error or exc.reason
-            return
+                if self.runner_process is not None:
+                    self._request_worker_stop(self.runner_process)
+                events = list(self.event_records)
+            else:
+                return
         for index in range(self.event_cursor, len(events)):
             event = events[index]
             if event.get("event") == "lane-started":
@@ -1693,8 +1829,27 @@ class HostJobWorker:
                         break
                     observation = {"index": index, "event": dict(event), "error": exc.reason}
                     self.lane_error = self.lane_error or exc.reason
+                observation_size = len(json.dumps(
+                    observation, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+                ).encode("utf-8")) + 1
+                if self.event_observation_bytes + observation_size > MAX_EVENT_OBSERVATIONS_BYTES:
+                    self.lane_error = self.lane_error or "MAX_EVENT_OBSERVATIONS_BYTES exceeded"
+                    self.event_cursor = index + 1
+                    if self.runner_process is not None:
+                        self._request_worker_stop(self.runner_process)
+                    break
                 self.event_observations.append(observation)
-                self._retry_state_save(lane_event_observations=list(self.event_observations))
+                self.event_observation_bytes += observation_size
+                try:
+                    self._retry_state_save(lane_event_observations=list(self.event_observations))
+                except AdmissionError as exc:
+                    if self.permanent_defect is not None:
+                        self.lane_error = self.lane_error or self.permanent_defect
+                        if self.runner_process is not None:
+                            self._request_worker_stop(self.runner_process)
+                        self.event_cursor = index + 1
+                        break
+                    raise exc
             self.event_cursor = index + 1
 
     @staticmethod
@@ -1741,6 +1896,11 @@ class HostJobWorker:
             )
             if answer.returncode != 0:
                 detail = answer.stderr.decode("utf-8", "replace").strip()
+                marker = next((value for value in _PERMANENT_LIMIT_MARKERS if value in detail), None)
+                if marker is not None:
+                    self.permanent_defect = f"{marker} exceeded"
+                    self.lane_error = self.lane_error or self.permanent_defect
+                    raise AdmissionError(ExitCode.IDENTITY_OR_TRANSPORT, self.permanent_defect)
                 raise AdmissionError(
                     ExitCode.STORE_COLLECTION_FAILED,
                     f"runner could not collect {kind} archive{': ' + detail if detail else ''}",
@@ -1753,7 +1913,15 @@ class HostJobWorker:
                 raise AdmissionError(ExitCode.STORE_COLLECTION_FAILED, f"runner returned invalid {kind} collection details")
             if kind == "store" and document.get("status") != "collected":
                 return "", 0, document
-            size = _verify_archive_fd(output_fd, kind=kind, store_path=store_path)
+            try:
+                size = _verify_archive_fd(output_fd, kind=kind, store_path=store_path)
+            except AdmissionError as exc:
+                marker = next((value for value in _PERMANENT_LIMIT_MARKERS if value in exc.reason), None)
+                if marker is None:
+                    raise
+                self.permanent_defect = f"{marker} exceeded"
+                self.lane_error = self.lane_error or self.permanent_defect
+                raise AdmissionError(ExitCode.IDENTITY_OR_TRANSPORT, self.permanent_defect) from exc
             digest, hashed_size = self._hash_fd(output_fd)
             if size != hashed_size:
                 raise AdmissionError(ExitCode.STORE_COLLECTION_FAILED, f"{kind} archive size changed during verification")
@@ -1818,7 +1986,12 @@ class HostJobWorker:
             return None
         try:
             artifact_digest, artifact_size = self._archive_saved("artifacts.tgz", kind="artifacts")
-        except AdmissionError:
+        except AdmissionError as exc:
+            marker = next((value for value in _PERMANENT_LIMIT_MARKERS if value in exc.reason), None)
+            if marker is not None:
+                self.permanent_defect = f"{marker} exceeded"
+                self.lane_error = self.lane_error or self.permanent_defect
+                raise AdmissionError(ExitCode.IDENTITY_OR_TRANSPORT, self.permanent_defect) from exc
             return None
         if collection.get("artifacts_sha256") != artifact_digest or collection.get("artifacts_size") != artifact_size:
             return None
@@ -1831,7 +2004,12 @@ class HostJobWorker:
                     "assay-store.tgz", kind="store", store_path=store_rel,
                 )
                 checksum = _read_regular(self.job_dir / "assay-store.tgz.sha256", limit=256)
-            except AdmissionError:
+            except AdmissionError as exc:
+                marker = next((value for value in _PERMANENT_LIMIT_MARKERS if value in exc.reason), None)
+                if marker is not None:
+                    self.permanent_defect = f"{marker} exceeded"
+                    self.lane_error = self.lane_error or self.permanent_defect
+                    raise AdmissionError(ExitCode.IDENTITY_OR_TRANSPORT, self.permanent_defect) from exc
                 return None
             if (
                 store.get("sha256") != store_digest or store.get("size") != store_size
@@ -1860,6 +2038,10 @@ class HostJobWorker:
             store_paths = list(store_rel)
         else:
             raise AdmissionError(ExitCode.REFUSAL, "stores.collect is not a path or a list of paths")
+        if len(store_paths) > MAX_STORE_PATHS:
+            self.permanent_defect = "MAX_STORE_PATHS exceeded"
+            self.lane_error = self.lane_error or self.permanent_defect
+            raise AdmissionError(ExitCode.IDENTITY_OR_TRANSPORT, self.permanent_defect)
         if (store_rel is not None and not store_paths) or any(
             _STORE_PATH_RE.fullmatch(path) is None
             or any(part in {"", ".", "..", ".git"} for part in path.split("/"))
@@ -1950,6 +2132,58 @@ class HostJobWorker:
                 document[key] = value
             return document
 
+        def parse_line(line: bytes) -> Mapping[str, object]:
+            line_number = len(self.event_records) + 1
+            if len(line) + 1 > MAX_EVENT_LINE_BYTES:
+                raise AdmissionError(
+                    ExitCode.IDENTITY_OR_TRANSPORT,
+                    f"MAX_EVENT_LINE_BYTES exceeded at Run-Gate event line {line_number}",
+                )
+            try:
+                document = json.loads(line.decode("utf-8"), object_pairs_hook=no_duplicate_keys)
+            except (UnicodeDecodeError, ValueError) as exc:
+                raise AdmissionError(
+                    ExitCode.IDENTITY_OR_TRANSPORT, f"Run-Gate event line {line_number} is unreadable",
+                ) from exc
+            if (
+                not isinstance(document, dict)
+                or document.get("api") != "fleet-host-agent/1"
+                or document.get("job_id") != self.job_id
+                or not isinstance(document.get("event"), str)
+                or document.get("event") not in {"lane-started", "lane-verdict"}
+                or not isinstance(document.get("lane"), str) or not document.get("lane")
+            ):
+                raise AdmissionError(ExitCode.IDENTITY_OR_TRANSPORT, f"Run-Gate event line {line_number} has invalid identity")
+            if document["event"] == "lane-started":
+                required = frozenset({"api", "event", "job_id", "lane", "container_id", "image_id", "adopted"})
+                keys = frozenset(document)
+                if keys not in {required, required | {"reason"}}:
+                    raise AdmissionError(ExitCode.IDENTITY_OR_TRANSPORT, f"Run-Gate event line {line_number} has an unexpected lane-started shape")
+                if (
+                    (document["container_id"] is not None and not isinstance(document["container_id"], str))
+                    or (document["image_id"] is not None and not isinstance(document["image_id"], str))
+                    or type(document["adopted"]) is not bool
+                    or ("reason" in document and not isinstance(document["reason"], str))
+                ):
+                    raise AdmissionError(ExitCode.IDENTITY_OR_TRANSPORT, f"Run-Gate event line {line_number} has invalid lane-started fields")
+            else:
+                required = frozenset({"api", "event", "job_id", "lane", "verdict", "exit_code", "lane_exit_code"})
+                if frozenset(document) != required:
+                    raise AdmissionError(ExitCode.IDENTITY_OR_TRANSPORT, f"Run-Gate event line {line_number} has an unexpected lane-verdict shape")
+                if (
+                    not isinstance(document["verdict"], str)
+                    or document["verdict"] not in _RUN_GATE_VERDICT_CODES
+                    or type(document["exit_code"]) is not int
+                    or (document["lane_exit_code"] is not None and type(document["lane_exit_code"]) is not int)
+                ):
+                    raise AdmissionError(ExitCode.IDENTITY_OR_TRANSPORT, f"Run-Gate event line {line_number} has invalid lane-verdict fields")
+            if len(self.event_records) >= MAX_EVENT_COUNT:
+                raise AdmissionError(
+                    ExitCode.IDENTITY_OR_TRANSPORT,
+                    f"MAX_EVENT_COUNT exceeded ({MAX_EVENT_COUNT})",
+                )
+            return document
+
         try:
             event_fd = open_beneath(parent_fd, self.event_rel)
             info = os.fstat(event_fd)
@@ -1959,56 +2193,45 @@ class HostJobWorker:
                 or info.st_uid != self.runner_identity.uid or stat.S_IMODE(info.st_mode) & 0o077
             ):
                 raise AdmissionError(ExitCode.IDENTITY_OR_TRANSPORT, "Run-Gate event file has unsafe ownership or links")
-            events: list[Mapping[str, object]] = []
-            with os.fdopen(os.dup(event_fd), "rb") as stream:
-                line_number = 0
+            if info.st_size > MAX_EVENT_FILE_BYTES:
+                raise AdmissionError(
+                    ExitCode.IDENTITY_OR_TRANSPORT,
+                    f"MAX_EVENT_FILE_BYTES exceeded ({MAX_EVENT_FILE_BYTES})",
+                )
+            identity = (info.st_dev, info.st_ino)
+            if self.event_file_identity is not None and identity != self.event_file_identity:
+                raise AdmissionError(ExitCode.IDENTITY_OR_TRANSPORT, "Run-Gate event file identity changed while following")
+            self.event_file_identity = identity
+            if info.st_size < self.event_offset:
+                raise AdmissionError(ExitCode.IDENTITY_OR_TRANSPORT, "Run-Gate event file shrank while following")
+            os.lseek(event_fd, self.event_offset, os.SEEK_SET)
+            remaining = info.st_size - self.event_offset
+            while remaining:
+                chunk = os.read(event_fd, min(65536, remaining))
+                if not chunk:
+                    break
+                remaining -= len(chunk)
+                self.event_offset += len(chunk)
+                self.event_bytes_read += len(chunk)
+                self.event_pending.extend(chunk)
                 while True:
-                    line = stream.readline(65537)
-                    if not line:
+                    newline = self.event_pending.find(b"\n")
+                    if newline < 0:
                         break
-                    line_number += 1
-                    if not line.endswith(b"\n") and not final:
-                        break
-                    if len(line) > 65536 or not line.endswith(b"\n"):
-                        raise AdmissionError(ExitCode.IDENTITY_OR_TRANSPORT, f"Run-Gate event line {line_number} is incomplete or too large")
-                    try:
-                        document = json.loads(line.decode("utf-8"), object_pairs_hook=no_duplicate_keys)
-                    except (UnicodeDecodeError, ValueError) as exc:
-                        raise AdmissionError(ExitCode.IDENTITY_OR_TRANSPORT, f"Run-Gate event line {line_number} is unreadable") from exc
-                    if (
-                        not isinstance(document, dict)
-                        or document.get("api") != "fleet-host-agent/1"
-                        or document.get("job_id") != self.job_id
-                        or not isinstance(document.get("event"), str)
-                        or document.get("event") not in {"lane-started", "lane-verdict"}
-                        or not isinstance(document.get("lane"), str) or not document.get("lane")
-                    ):
-                        raise AdmissionError(ExitCode.IDENTITY_OR_TRANSPORT, f"Run-Gate event line {line_number} has invalid identity")
-                    if document["event"] == "lane-started":
-                        required = frozenset({"api", "event", "job_id", "lane", "container_id", "image_id", "adopted"})
-                        keys = frozenset(document)
-                        if keys not in {required, required | {"reason"}}:
-                            raise AdmissionError(ExitCode.IDENTITY_OR_TRANSPORT, f"Run-Gate event line {line_number} has an unexpected lane-started shape")
-                        if (
-                            (document["container_id"] is not None and not isinstance(document["container_id"], str))
-                            or (document["image_id"] is not None and not isinstance(document["image_id"], str))
-                            or type(document["adopted"]) is not bool
-                            or ("reason" in document and not isinstance(document["reason"], str))
-                        ):
-                            raise AdmissionError(ExitCode.IDENTITY_OR_TRANSPORT, f"Run-Gate event line {line_number} has invalid lane-started fields")
-                    else:
-                        required = frozenset({"api", "event", "job_id", "lane", "verdict", "exit_code", "lane_exit_code"})
-                        if frozenset(document) != required:
-                            raise AdmissionError(ExitCode.IDENTITY_OR_TRANSPORT, f"Run-Gate event line {line_number} has an unexpected lane-verdict shape")
-                        if (
-                            not isinstance(document["verdict"], str)
-                            or document["verdict"] not in _RUN_GATE_VERDICT_CODES
-                            or type(document["exit_code"]) is not int
-                            or (document["lane_exit_code"] is not None and type(document["lane_exit_code"]) is not int)
-                        ):
-                            raise AdmissionError(ExitCode.IDENTITY_OR_TRANSPORT, f"Run-Gate event line {line_number} has invalid lane-verdict fields")
-                    events.append(document)
-            return events
+                    line = bytes(self.event_pending[:newline])
+                    del self.event_pending[:newline + 1]
+                    self.event_records.append(parse_line(line))
+                if len(self.event_pending) >= MAX_EVENT_LINE_BYTES:
+                    raise AdmissionError(
+                        ExitCode.IDENTITY_OR_TRANSPORT,
+                        f"MAX_EVENT_LINE_BYTES exceeded before newline ({MAX_EVENT_LINE_BYTES})",
+                    )
+            if final and self.event_pending:
+                raise AdmissionError(
+                    ExitCode.IDENTITY_OR_TRANSPORT,
+                    f"Run-Gate event line {len(self.event_records) + 1} is incomplete",
+                )
+            return list(self.event_records)
         except FileNotFoundError as exc:
             raise AdmissionError(ExitCode.IDENTITY_OR_TRANSPORT, "Run-Gate event file is missing") from exc
         except OSError as exc:
@@ -2617,6 +2840,44 @@ class HostJobWorker:
         record = {field: terminal[field] for field in fields}
         _atomic_json(self.job_dir / "terminal-pending.json", record)
 
+    def _rewrite_pending_terminal_as_error(self, reason: str) -> Mapping[str, object]:
+        """Bind a permanent cleanup limit into the result after stop proofs."""
+
+        path = self.job_dir / "result-pending.json"
+        try:
+            value = json.loads(_read_regular(path, limit=MAX_STATE_RECORD_BYTES).decode("utf-8"))
+        except (AdmissionError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise AdmissionError(ExitCode.QUEUED_WITHDRAWN, f"pending result cannot record {reason}: {exc}") from exc
+        if not isinstance(value, dict):
+            raise AdmissionError(ExitCode.QUEUED_WITHDRAWN, "pending result cannot record permanent cleanup failure")
+        binding = value.get("binding")
+        binding_record = dict(binding) if isinstance(binding, Mapping) else {}
+        reasons = binding_record.get("reasons")
+        reason_list = list(reasons) if isinstance(reasons, list) else []
+        if reason not in reason_list:
+            reason_list.append(reason)
+        binding_record.update(status="refused", reasons=reason_list)
+        value.update(verdict="ERROR", exit_code=int(ExitCode.IDENTITY_OR_TRANSPORT), binding=binding_record)
+        _atomic_json(path, value)
+        result_fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        try:
+            result_sha, result_size = self._hash_fd(result_fd)
+        finally:
+            os.close(result_fd)
+        lane = value.get("lane")
+        if not isinstance(lane, str) or not lane:
+            raise AdmissionError(ExitCode.QUEUED_WITHDRAWN, "pending result has no lane for permanent cleanup failure")
+        collection = value.get("collection")
+        collected_at = collection.get("collected_at") if isinstance(collection, Mapping) else None
+        terminal = {
+            "verdict": "ERROR", "exit_code": int(ExitCode.IDENTITY_OR_TRANSPORT),
+            "lane": lane, "api": "fleet-host-agent/1",
+            "collected_at": collected_at if isinstance(collected_at, str) else self.clock(),
+            "result_sha256": result_sha, "result_size": result_size,
+        }
+        self._persist_pending_terminal(terminal)
+        return terminal
+
     def _read_pending_terminal(self) -> Mapping[str, object]:
         raw = _read_regular(self.job_dir / "terminal-pending.json", limit=65536)
         try:
@@ -2776,7 +3037,19 @@ class HostJobWorker:
                     self._ensure_job_containers_stopped(remove=False)
                     containers = self._bind_container_events(events, expected_sha=request_sha)
                     self._retry_state_save(container_bindings=containers)
-                    self._collect()
+                    try:
+                        self._collect()
+                    except AdmissionError:
+                        if self.permanent_defect is None:
+                            raise
+                        self.lane_error = self.lane_error or self.permanent_defect
+                        self._retry_state_save(
+                            state="collecting",
+                            collection={
+                                "status": "failed", "reason": self.permanent_defect,
+                                "collected_at": self.clock(),
+                            },
+                        )
                     state = self._state()
                     cancelled = state.get("cancel_requested") is True
                     terminal = self._bind_verdict(events, process_status, containers, cancelled=cancelled)
@@ -2791,7 +3064,16 @@ class HostJobWorker:
                 self._teardown_containers(verified, expected_sha=expected_sha)
                 self._ensure_job_containers_stopped(remove=True)
                 self._ensure_scope_is_only_worker()
-                self._remove_checkout()
+                try:
+                    self._remove_checkout()
+                except AdmissionError:
+                    if self.permanent_defect is None:
+                        raise
+                    terminal = self._rewrite_pending_terminal_as_error(self.permanent_defect)
+                    self._publish_terminal(
+                        terminal, final_state="failed", reason=self.permanent_defect,
+                    )
+                    return int(terminal["exit_code"])
                 self._ensure_scope_is_only_worker()
                 self._ensure_job_containers_stopped(remove=False)
                 reason: str | None = None
@@ -3072,17 +3354,25 @@ def _open_parent(root_fd: int, relative: str) -> tuple[int, str]:
     return parent_fd, parts[-1]
 
 
-def _remove_tree_at(parent_fd: int, name: str) -> None:
+def _remove_tree_at(
+    parent_fd: int, name: str, *, visited: list[int] | None = None, depth: int = 0,
+) -> None:
     """Remove one entry beneath parent_fd without following any links."""
 
+    count = [0] if visited is None else visited
+    if count[0] >= MAX_TREE_ENTRIES:
+        raise OSError(f"MAX_TREE_ENTRIES exceeded ({MAX_TREE_ENTRIES})")
+    count[0] += 1
     info = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
     if not stat.S_ISDIR(info.st_mode):
         os.unlink(name, dir_fd=parent_fd)
         return
+    if depth >= MAX_TREE_DEPTH:
+        raise OSError(f"MAX_TREE_DEPTH exceeded ({MAX_TREE_DEPTH})")
     child_fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent_fd)
     try:
-        for child in os.listdir(child_fd):
-            _remove_tree_at(child_fd, child)
+        for child in _bounded_directory_entries(child_fd):
+            _remove_tree_at(child_fd, child, visited=count, depth=depth + 1)
     finally:
         os.close(child_fd)
     os.rmdir(name, dir_fd=parent_fd)
@@ -3092,7 +3382,7 @@ def _remove_tree_beneath(root_fd: int, relative: str) -> None:
     parent_fd, name = _open_parent(root_fd, relative)
     try:
         try:
-            _remove_tree_at(parent_fd, name)
+            _remove_tree_at(parent_fd, name, visited=[0])
         except FileNotFoundError:
             return
         os.fsync(parent_fd)
@@ -3195,7 +3485,14 @@ def _extract_seed(
         with os.fdopen(os.dup(fd), "rb") as archive_stream:
             try:
                 archive = tarfile.open(fileobj=archive_stream, mode="r:gz")
-                members = archive.getmembers()
+                members: list[tarfile.TarInfo] = []
+                while True:
+                    member = archive.next()
+                    if member is None:
+                        break
+                    if len(members) >= MAX_ARCHIVE_MEMBERS:
+                        raise ValueError(f"MAX_ARCHIVE_MEMBERS exceeded ({MAX_ARCHIVE_MEMBERS})")
+                    members.append(member)
             except (OSError, tarfile.TarError, EOFError) as exc:
                 raise ValueError(f"STORE-SEED-FAILED {relative} unreadable-archive") from exc
             seen: set[str] = set()
@@ -3223,6 +3520,11 @@ def _extract_seed(
                     total += member.size
                     if total > max_bytes:
                         raise ValueError(f"STORE-SEED-FAILED {relative} too-large {total}")
+                    if total > MAX_ARCHIVE_UNCOMPRESSED_BYTES:
+                        raise ValueError(
+                            f"STORE-SEED-FAILED {relative} MAX_ARCHIVE_UNCOMPRESSED_BYTES exceeded "
+                            f"({MAX_ARCHIVE_UNCOMPRESSED_BYTES})",
+                        )
                     normalized.append((member, name))
                 else:
                     raise ValueError(f"STORE-SEED-FAILED {relative} special-member")
@@ -3283,6 +3585,8 @@ def _extract_seed(
                     _close(member_fd, parent_fd)
             archive.close()
     except (tarfile.TarError, OSError) as exc:
+        if any(marker in str(exc) for marker in _PERMANENT_LIMIT_MARKERS):
+            raise ValueError(f"STORE-SEED-FAILED {relative} {exc}") from exc
         raise ValueError(f"STORE-SEED-FAILED {relative} unpack-failed") from exc
     finally:
         _close(fd)

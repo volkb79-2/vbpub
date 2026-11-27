@@ -557,6 +557,17 @@ def test_docker_client_queries_exact_job_label_and_accepts_only_explicit_missing
         absent.remove_stopped(container_id)
 
 
+def test_docker_job_container_query_refuses_more_than_the_named_id_limit(monkeypatch):
+    first, second = "a" * 64, "b" * 64
+    monkeypatch.setattr(executor_worker_module, "MAX_DOCKER_JOB_CONTAINER_IDS", 1)
+    docker = DockerClient(
+        2,
+        run=lambda argv, **_kwargs: subprocess.CompletedProcess(argv, 0, f"{first}\n{second}\n".encode(), b""),
+    )
+    with pytest.raises(AdmissionError, match="MAX_DOCKER_JOB_CONTAINER_IDS"):
+        docker.job_containers("controller-run-1")
+
+
 def test_executor_docker_client_uses_fixed_host_closed_environment_and_absolute_binary(monkeypatch):
     calls = []
 
@@ -1630,6 +1641,155 @@ def test_event_reader_ignores_an_incomplete_tail_while_running_but_refuses_it_at
         os.close(worker.repo_root_fd)
 
 
+def test_event_reader_advances_incrementally_and_enforces_the_named_byte_limit(tmp_path, monkeypatch):
+    worker = _worker(tmp_path, _VersionRunner({}))
+    worker.runner_identity = RunnerIdentity("test-runner", os.getuid(), os.getgid(), (os.getgid(),))
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    event_dir = tmp_path / ".fleetd-events" / "vbpub"
+    event_dir.mkdir(parents=True)
+    event_path = event_dir / "controller-run-1.jsonl"
+    event = {
+        "api": "fleet-host-agent/1", "job_id": "controller-run-1", "event": "lane-verdict",
+        "lane": "r0-r1", "verdict": "PASS", "exit_code": 0, "lane_exit_code": 0,
+    }
+    first = (json.dumps(event) + "\n").encode()
+    event_path.write_bytes(first)
+    event_path.chmod(0o600)
+    worker.repo_root = repo
+    worker.event_rel = ".fleetd-events/vbpub/controller-run-1.jsonl"
+    try:
+        assert worker._read_events(final=False) == [event]
+        assert worker.event_bytes_read == len(first)
+        event["verdict"] = "FAIL"
+        event["exit_code"] = 1
+        event["lane_exit_code"] = 1
+        second = (json.dumps(event) + "\n").encode()
+        with event_path.open("ab") as stream:
+            stream.write(second)
+        assert len(worker._read_events(final=False)) == 2
+        assert worker.event_bytes_read == len(first) + len(second)
+
+        monkeypatch.setattr(executor_worker_module, "MAX_EVENT_FILE_BYTES", len(first) + len(second) - 1)
+        with pytest.raises(AdmissionError, match="MAX_EVENT_FILE_BYTES"):
+            worker._read_events(final=False)
+    finally:
+        os.close(worker.repo_root_fd)
+
+
+def test_event_reader_refuses_excess_event_count_by_name(tmp_path, monkeypatch):
+    worker = _worker(tmp_path, _VersionRunner({}))
+    worker.runner_identity = RunnerIdentity("test-runner", os.getuid(), os.getgid(), (os.getgid(),))
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    event_dir = tmp_path / ".fleetd-events" / "vbpub"
+    event_dir.mkdir(parents=True)
+    event_path = event_dir / "controller-run-1.jsonl"
+    event = {
+        "api": "fleet-host-agent/1", "job_id": "controller-run-1", "event": "lane-verdict",
+        "lane": "r0-r1", "verdict": "PASS", "exit_code": 0, "lane_exit_code": 0,
+    }
+    event_path.write_text((json.dumps(event) + "\n") * 2, encoding="utf-8")
+    event_path.chmod(0o600)
+    worker.repo_root = repo
+    worker.event_rel = ".fleetd-events/vbpub/controller-run-1.jsonl"
+    monkeypatch.setattr(executor_worker_module, "MAX_EVENT_COUNT", 1)
+    try:
+        with pytest.raises(AdmissionError, match="MAX_EVENT_COUNT"):
+            worker._read_events(final=True)
+    finally:
+        os.close(worker.repo_root_fd)
+
+
+def test_event_reader_refuses_oversized_complete_and_incomplete_lines(tmp_path, monkeypatch):
+    worker = _worker(tmp_path, _VersionRunner({}))
+    worker.runner_identity = RunnerIdentity("test-runner", os.getuid(), os.getgid(), (os.getgid(),))
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    event_dir = tmp_path / ".fleetd-events" / "vbpub"
+    event_dir.mkdir(parents=True)
+    event_path = event_dir / "controller-run-1.jsonl"
+    event_path.write_text("x" * 20 + "\n", encoding="utf-8")
+    event_path.chmod(0o600)
+    worker.repo_root = repo
+    worker.event_rel = ".fleetd-events/vbpub/controller-run-1.jsonl"
+    monkeypatch.setattr(executor_worker_module, "MAX_EVENT_LINE_BYTES", 16)
+    try:
+        with pytest.raises(AdmissionError, match="MAX_EVENT_LINE_BYTES"):
+            worker._read_events(final=True)
+        worker.event_offset = 0
+        worker.event_bytes_read = 0
+        worker.event_records.clear()
+        worker.event_pending.clear()
+        worker.event_file_identity = None
+        event_path.write_text("x" * 16, encoding="utf-8")
+        with pytest.raises(AdmissionError, match="MAX_EVENT_LINE_BYTES"):
+            worker._read_events(final=False)
+    finally:
+        os.close(worker.repo_root_fd)
+
+
+def test_follow_lane_events_stops_normally_when_event_limit_is_exceeded(tmp_path):
+    worker, _runner, _job_dir, _checkout = _ready_worker(tmp_path)
+    worker.runner_process = object()
+    stopped = []
+    worker._read_events = lambda **_kwargs: (_ for _ in ()).throw(
+        AdmissionError(ExitCode.IDENTITY_OR_TRANSPORT, "MAX_EVENT_COUNT exceeded"),
+    )
+    worker._request_worker_stop = lambda process: stopped.append(process)
+    worker._follow_lane_events(final=False)
+    assert worker.lane_error == "MAX_EVENT_COUNT exceeded"
+    assert stopped == [worker.runner_process]
+    for fd in (worker.project_fd, worker.checkout_fd, worker.repo_root_fd):
+        if fd >= 0:
+            os.close(fd)
+
+
+def test_lane_event_observations_stop_before_exceeding_their_byte_budget(tmp_path, monkeypatch):
+    worker, _runner, _job_dir, _checkout = _ready_worker(tmp_path)
+    worker.request.update(lane="r0-r1", project=".")
+    worker._save_state(lane_mode="host")
+    worker.runner_process = object()
+    worker._container_mode = lambda _lane: ("host", None)
+    worker._inspect_container_binding = lambda *_args, **_kwargs: None
+    stopped = []
+    worker._request_worker_stop = lambda process: stopped.append(process)
+    monkeypatch.setattr(executor_worker_module, "MAX_EVENT_OBSERVATIONS_BYTES", 1)
+    event = {
+        "api": "fleet-host-agent/1", "job_id": worker.job_id, "event": "lane-started", "lane": "r0-r1",
+        "container_id": None, "image_id": None, "adopted": False,
+    }
+    worker._read_events = lambda **_kwargs: [event]
+    worker._follow_lane_events(final=False)
+    assert worker.lane_error == "MAX_EVENT_OBSERVATIONS_BYTES exceeded"
+    assert stopped == [worker.runner_process]
+    assert "lane_event_observations" not in worker._state()
+    for fd in (worker.project_fd, worker.checkout_fd, worker.repo_root_fd):
+        if fd >= 0:
+            os.close(fd)
+
+
+def test_oversized_state_record_is_permanent_instead_of_a_retry_loop(tmp_path):
+    worker, _runner, _job_dir, _checkout = _ready_worker(tmp_path)
+    waits = []
+
+    class _RetryReached(Exception):
+        pass
+
+    worker._save_state = lambda **_kwargs: (_ for _ in ()).throw(
+        AdmissionError(ExitCode.RUNNER_FAILURE, "cannot persist executor state: executor JSON record exceeds 1048576 bytes"),
+    )
+    worker.waiter = lambda seconds: (waits.append(seconds), (_ for _ in ()).throw(_RetryReached()))[1]
+    try:
+        with pytest.raises(AdmissionError, match="MAX_STATE_RECORD_BYTES"):
+            worker._retry_state_save(lane_event_observations=[])
+        assert waits == []
+    finally:
+        for fd in (worker.project_fd, worker.checkout_fd, worker.repo_root_fd):
+            if fd >= 0:
+                os.close(fd)
+
+
 @pytest.mark.parametrize("damage, expected", [
     ("broken-config", "run-gate-config-invalid-after-lane"),
     ("assay-symlink", "assay-directory-symlink-after-lane"),
@@ -2356,6 +2516,8 @@ def test_archive_filesystem_and_config_helpers_cover_safe_and_refusal_paths(tmp_
             executor_worker_module._verify_archive_fd(directory_fd, kind="artifacts")
         finally:
             os.close(directory_fd)
+
+
     with pytest.raises(AdmissionError, match="unreadable"):
         corrupt = os.open(tmp_path / "corrupt.tgz", os.O_CREAT | os.O_RDWR, 0o600)
         os.write(corrupt, b"not tar")
@@ -2410,6 +2572,150 @@ def test_archive_filesystem_and_config_helpers_cover_safe_and_refusal_paths(tmp_
             executor_worker_module._parse_toml_fd(config_fd, "symlink.toml")
     finally:
         os.close(config_fd)
+
+
+def test_bounded_directory_listing_refuses_an_entry_overflow(tmp_path, monkeypatch):
+    root = tmp_path / "many"
+    root.mkdir()
+    (root / "one").touch()
+    (root / "two").touch()
+    fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+    monkeypatch.setattr(executor_worker_module, "MAX_DIRECTORY_ENTRIES", 1)
+    try:
+        with pytest.raises(OSError, match="MAX_DIRECTORY_ENTRIES"):
+            executor_worker_module._bounded_directory_entries(fd)
+    finally:
+        os.close(fd)
+
+
+def test_tree_entries_refuse_an_entry_overflow_by_name(tmp_path, monkeypatch):
+    root = tmp_path / "tree"
+    root.mkdir()
+    (root / "data").mkdir()
+    (root / "data" / "one").touch()
+    (root / "data" / "two").touch()
+    fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+    monkeypatch.setattr(executor_worker_module, "MAX_TREE_ENTRIES", 2)
+    try:
+        with pytest.raises(OSError, match="MAX_TREE_ENTRIES"):
+            executor_worker_module._tree_entries(fd, "data", reject_special=True)
+    finally:
+        os.close(fd)
+
+
+def test_archive_verifier_refuses_excess_members_and_uncompressed_bytes(tmp_path, monkeypatch):
+    archive_path = tmp_path / "many.tgz"
+    with tarfile.open(archive_path, "w:gz") as archive:
+        for name, body in (("store/one", b"a"), ("store/two", b"bb")):
+            member = tarfile.TarInfo(name)
+            member.size = len(body)
+            archive.addfile(member, io.BytesIO(body))
+    fd = os.open(archive_path, os.O_RDONLY)
+    try:
+        monkeypatch.setattr(executor_worker_module, "MAX_ARCHIVE_MEMBERS", 1)
+        with pytest.raises(AdmissionError, match="MAX_ARCHIVE_MEMBERS"):
+            executor_worker_module._verify_archive_fd(fd, kind="store", store_path="store")
+        monkeypatch.setattr(executor_worker_module, "MAX_ARCHIVE_MEMBERS", 8)
+        monkeypatch.setattr(executor_worker_module, "MAX_ARCHIVE_UNCOMPRESSED_BYTES", 2)
+        with pytest.raises(AdmissionError, match="MAX_ARCHIVE_UNCOMPRESSED_BYTES"):
+            executor_worker_module._verify_archive_fd(fd, kind="store", store_path="store")
+    finally:
+        os.close(fd)
+
+
+def test_seed_unpacker_refuses_archive_member_overflow_before_creating_target(tmp_path, monkeypatch):
+    archive_path = tmp_path / "seed.tgz"
+    with tarfile.open(archive_path, "w:gz") as archive:
+        for name, body in (("store/one", b"a"), ("store/two", b"b")):
+            member = tarfile.TarInfo(name)
+            member.size = len(body)
+            archive.addfile(member, io.BytesIO(body))
+    root = tmp_path / "root"
+    root.mkdir()
+    root_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+    archive_fd = os.open(archive_path, os.O_RDONLY)
+    monkeypatch.setattr(executor_worker_module, "MAX_ARCHIVE_MEMBERS", 1)
+    try:
+        content = archive_path.read_bytes()
+        with pytest.raises(ValueError, match="MAX_ARCHIVE_MEMBERS"):
+            _extract_seed(
+                root_fd, archive_fd, "store", hashlib.sha256(content).hexdigest(), len(content), 100,
+            )
+        assert not (root / "store").exists()
+    finally:
+        os.close(archive_fd)
+        os.close(root_fd)
+
+
+def test_archive_helpers_bound_combined_tree_entries_and_store_path_count(tmp_path, monkeypatch):
+    root = tmp_path / "root"
+    root.mkdir()
+    for name in (".assay", ".run-gate", "one", "two"):
+        (root / name).mkdir()
+    root_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+    output_fd = os.open(root / "output.tgz", os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        monkeypatch.setattr(executor_worker_module, "MAX_TREE_ENTRIES", 1)
+        with pytest.raises(OSError, match="MAX_TREE_ENTRIES"):
+            executor_worker_module._archive_artifacts(root_fd, output_fd)
+        with pytest.raises(OSError, match="MAX_TREE_ENTRIES"):
+            executor_worker_module._archive_store(root_fd, output_fd, ["one", "two"])
+        monkeypatch.setattr(executor_worker_module, "MAX_STORE_PATHS", 1)
+        with pytest.raises(OSError, match="MAX_STORE_PATHS"):
+            executor_worker_module._archive_store(root_fd, output_fd, ["one", "two"])
+    finally:
+        os.close(output_fd)
+        os.close(root_fd)
+
+
+def test_tree_removal_bounds_total_entries_and_depth(tmp_path, monkeypatch):
+    root = tmp_path / "root"
+    root.mkdir()
+    tree = root / "tree"
+    tree.mkdir()
+    (tree / "nested").mkdir()
+    (tree / "nested" / "inside").touch()
+    (tree / "one").touch()
+    (tree / "two").touch()
+    root_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+    monkeypatch.setattr(executor_worker_module, "MAX_TREE_ENTRIES", 2)
+    try:
+        with pytest.raises(OSError, match="MAX_TREE_ENTRIES"):
+            executor_worker_module._remove_tree_beneath(root_fd, "tree")
+        monkeypatch.setattr(executor_worker_module, "MAX_TREE_ENTRIES", 100)
+        monkeypatch.setattr(executor_worker_module, "MAX_TREE_DEPTH", 0)
+        with pytest.raises(OSError, match="MAX_TREE_DEPTH"):
+            executor_worker_module._tree_entries(root_fd, "tree", reject_special=True)
+    finally:
+        os.close(root_fd)
+
+
+def test_archive_writer_and_verifier_enforce_named_file_and_uncompressed_caps(tmp_path, monkeypatch):
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / "value").write_bytes(b"payload")
+    root_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+    output_fd = os.open(root / "output.tgz", os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        monkeypatch.setattr(executor_worker_module, "MAX_ARCHIVE_MEMBERS", 1)
+        with pytest.raises(OSError, match="MAX_ARCHIVE_MEMBERS"):
+            executor_worker_module._write_archive(root_fd, output_fd, [
+                ("value", False, 7), ("other", False, 1),
+            ])
+        monkeypatch.setattr(executor_worker_module, "MAX_ARCHIVE_MEMBERS", 8)
+        monkeypatch.setattr(executor_worker_module, "MAX_ARCHIVE_UNCOMPRESSED_BYTES", 6)
+        with pytest.raises(OSError, match="MAX_ARCHIVE_UNCOMPRESSED_BYTES"):
+            executor_worker_module._write_archive(root_fd, output_fd, [("value", False, 7)])
+        monkeypatch.setattr(executor_worker_module, "MAX_ARCHIVE_UNCOMPRESSED_BYTES", 100)
+        monkeypatch.setattr(executor_worker_module, "MAX_ARCHIVE_FILE_BYTES", 1)
+        with pytest.raises(OSError, match="MAX_ARCHIVE_FILE_BYTES"):
+            executor_worker_module._write_archive(root_fd, output_fd, [("value", False, 7)])
+        os.lseek(output_fd, 0, os.SEEK_SET)
+        with pytest.raises(AdmissionError, match="MAX_ARCHIVE_FILE_BYTES"):
+            executor_worker_module._verify_archive_fd(output_fd, kind="store", store_path="value")
+    finally:
+        os.close(output_fd)
+        os.close(root_fd)
 
 
 def test_worker_psi_memory_admission_and_host_parsers_use_injected_facts(tmp_path, monkeypatch):
@@ -9171,6 +9477,50 @@ def test_finalize_lane_turns_permanent_repository_damage_into_terminal_error(tmp
         result = json.loads((job_dir / "result-pending.json").read_text(encoding="utf-8"))
         assert result["verdict"] == "ERROR"
         assert any(expected in reason for reason in result["binding"]["reasons"])
+        assert published[0][1]["final_state"] == "failed"
+    finally:
+        for fd in (worker.project_fd, worker.checkout_fd, worker.repo_root_fd):
+            if fd >= 0:
+                os.close(fd)
+
+
+def test_finalize_lane_turns_a_tree_limit_into_terminal_error_after_stop_proofs(tmp_path):
+    worker, _runner, job_dir, _checkout = _ready_worker(tmp_path)
+    worker.request.update(sha=SHA, project=".", lane="r0-r1")
+    worker._save_state(lane_mode="host", runner_name=None, checkout={"ready": True, "sha": SHA})
+    (job_dir / "job.log").write_text(
+        f"2026-11-27T00:00:00Z checkout {worker.repo_root / worker.checkout_rel} at {SHA}\n",
+        encoding="utf-8",
+    )
+    (job_dir / "lane.log").write_text(
+        "run-gate: lane 'r0-r1' verdict PASS; exit_code 0\n", encoding="utf-8",
+    )
+    event = {
+        "api": "fleet-host-agent/1", "job_id": worker.job_id, "event": "lane-verdict",
+        "lane": "r0-r1", "verdict": "PASS", "exit_code": 0, "lane_exit_code": 0,
+    }
+    worker._read_events = lambda **_kwargs: [event]
+    worker._validate_run_gate_after_run = lambda: None
+    worker._ensure_scope_is_only_worker = lambda: None
+    worker._ensure_job_containers_stopped = lambda **_kwargs: None
+    worker._bind_container_events = lambda *_args, **_kwargs: []
+
+    def too_many_entries():
+        worker.permanent_defect = "MAX_TREE_ENTRIES exceeded"
+        worker.lane_error = worker.permanent_defect
+        raise AdmissionError(ExitCode.IDENTITY_OR_TRANSPORT, worker.permanent_defect)
+
+    worker._collect = too_many_entries
+    worker._teardown_containers = lambda *_args, **_kwargs: None
+    worker._remove_checkout = lambda: None
+    published = []
+    worker._publish_terminal = lambda value, **kwargs: published.append((dict(value), kwargs))
+    try:
+        assert worker._finalize_lane(0) == int(ExitCode.IDENTITY_OR_TRANSPORT)
+        result = json.loads((job_dir / "result-pending.json").read_text(encoding="utf-8"))
+        assert result["verdict"] == "ERROR"
+        assert "MAX_TREE_ENTRIES exceeded" in result["binding"]["reasons"]
+        assert worker._state()["collection"]["reason"] == "MAX_TREE_ENTRIES exceeded"
         assert published[0][1]["final_state"] == "failed"
     finally:
         for fd in (worker.project_fd, worker.checkout_fd, worker.repo_root_fd):
