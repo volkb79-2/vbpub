@@ -113,23 +113,61 @@ done
 # Run detached and read `docker wait`'s container exit status separately from
 # the Docker CLI transport status; attached `docker run` can report transport
 # success after the command inside the container failed.
-unit_probe_suffix="${BASHPID:-$$}-${RANDOM}-${RANDOM}"
-unit_probe_name="assay-cgroup-unit-probe-$unit_probe_suffix"
-unit_probe_owner="$unit_probe_suffix"
+unit_probe_name=""
+unit_probe_owner=""
 unit_probe_id=""
+new_unit_probe_identity() {
+  local suffix="${BASHPID:-$$}-${RANDOM}-${RANDOM}"
+  unit_probe_name="assay-cgroup-unit-probe-$suffix"
+  unit_probe_owner="$suffix"
+  unit_probe_id=""
+}
 inspect_owned_unit_probe() {
-  local target="$1" facts inspected_id inspected_name inspected_owner
-  facts="$(timeout --signal=TERM --kill-after=5s 30s docker inspect "$target" \
-    --format '{{.Id}}|{{.Name}}|{{index .Config.Labels "io.assay.cgroup-parent.owner"}}')" \
-    || return 1
-  [[ "$facts" != *$'\n'* ]] || return 1
+  local target="$1" facts message absent
+  local inspect_status inspected_id inspected_name inspected_owner
+  local stderr_file nul_found
+  local format='{{.Id}}|{{.Name}}|{{index .Config.Labels "io.assay.cgroup-parent.owner"}}'
+  if facts="$(timeout --signal=TERM --kill-after=5s 30s docker inspect "$target" \
+    --format "$format")"; then
+    :
+  else
+    inspect_status=$?
+    [[ "$inspect_status" == 1 && "$target" == "$unit_probe_name" ]] || return 3
+    # Absence needs Docker's own statement for this exact name. Ask again and
+    # keep only stderr, in a file: with --format, a failed inspect also writes
+    # an empty stdout line. The second call must exit 1 and its whole stderr
+    # must be that one statement with at most one line terminator; success,
+    # another status or any extra byte is ambiguous.
+    stderr_file="$(mktemp)" || return 3
+    if timeout --signal=TERM --kill-after=5s 30s docker inspect "$target" \
+      --format "$format" >/dev/null 2>"$stderr_file"; then
+      inspect_status=0
+    else
+      inspect_status=$?
+    fi
+    # This read keeps every newline. It succeeds only when it stops at a NUL
+    # byte, so success means the file holds more than the plain statement.
+    message=""
+    nul_found=0
+    if IFS= read -r -d '' message <"$stderr_file"; then
+      nul_found=1
+    fi
+    rm -f -- "$stderr_file"
+    message="${message%$'\n'}"
+    absent="no such object: $target"
+    [[ "$inspect_status" == 1 && "$nul_found" == 0 \
+      && ( "${message,,}" == "${absent,,}" \
+        || "${message,,}" == "error: ${absent,,}" ) ]] || return 3
+    return 1
+  fi
+  [[ "$facts" != *$'\n'* ]] || return 2
   IFS='|' read -r inspected_id inspected_name inspected_owner <<<"$facts"
   [[ "$inspected_id" =~ ^[0-9a-f]{64}$ \
     && "$inspected_name" == "/$unit_probe_name" \
-    && "$inspected_owner" == "$unit_probe_owner" ]] || return 1
+    && "$inspected_owner" == "$unit_probe_owner" ]] || return 2
   if [[ "$unit_probe_id" =~ ^[0-9a-f]{64}$ \
     && "$inspected_id" != "$unit_probe_id" ]]; then
-    return 1
+    return 2
   fi
   printf '%s' "$inspected_id"
 }
@@ -164,17 +202,47 @@ cleanup_unit_probe() {
 }
 trap cleanup_unit_probe EXIT
 
-if unit_probe_id="$(
-  timeout --signal=TERM --kill-after=5s 30s docker run --detach \
-    --name="$unit_probe_name" \
-    --label="io.assay.cgroup-parent.owner=$unit_probe_owner" \
-    --cgroup-parent="$probe_parent" \
-    --cgroupns=private --network=none --cpus=0.25 --memory=128m \
-    --memory-swap=128m --pids-limit=64 --read-only --cap-drop=ALL \
-    --security-opt=no-new-privileges --user=1003:1003 \
-    --tmpfs=/tmp:rw,noexec,nosuid,size=16m \
-    --mount=type=bind,source=/run/dbus/system_bus_socket,target=/tmp/host-system-bus,readonly \
-    "$PROBE_IMAGE" sh -c '
+discard_failed_unit_probe() {
+  local created_id inspect_status
+  if created_id="$(inspect_owned_unit_probe "$unit_probe_name")"; then
+    timeout --signal=TERM --kill-after=5s 30s docker rm --force "$created_id" \
+      >/dev/null \
+      || return 1
+  else
+    inspect_status=$?
+    ((inspect_status == 1)) || return 1
+  fi
+  unit_probe_id=""
+  unit_probe_name=""
+  unit_probe_owner=""
+}
+
+start_unit_probe() {
+  local include_memory_stat="$1" run_status
+  local probe_script memory_stat_reader="" probe_before probe_after
+  local -a memory_stat_mount_args=()
+  new_unit_probe_identity
+  if [[ "$include_memory_stat" == yes ]]; then
+    memory_stat_mount_args=(
+      "--mount=type=bind,source=/sys/fs/cgroup${rel}/memory.stat,target=/tmp/host-memory.stat,readonly"
+    )
+    memory_stat_reader="$(cat <<'MEMORY_STAT_READER'
+    if [ -e /tmp/host-memory.stat ]; then
+      printf "ASSAY_MEMORY_STAT_BEGIN\n"
+      if timeout --kill-after=1s 3s awk '
+        $1 == "inactive_file" || $1 == "slab_reclaimable" ||
+        $1 == "file_dirty" || $1 == "file_writeback" { print }
+      ' /tmp/host-memory.stat; then
+        :
+      else
+        printf "ASSAY_MEMORY_STAT_READ_ERROR\n"
+      fi
+      printf "ASSAY_MEMORY_STAT_END\n"
+    fi
+MEMORY_STAT_READER
+)"
+  fi
+  probe_script="$(cat <<'UNIT_PROBE_SCRIPT'
 set -eu
 bus_address=unix:path=/tmp/host-system-bus
 busctl_json() {
@@ -182,7 +250,7 @@ busctl_json() {
     --address="$bus_address" --no-pager --json=short "$@"
 }
 json_value() {
-  /usr/bin/python3 -I -c '\''
+  /usr/bin/python3 -I -c '
 import json, sys
 payload = json.load(sys.stdin)
 value = payload["data"]
@@ -196,7 +264,7 @@ if isinstance(value, str):
 elif type(value) is not int or value < 0:
     raise SystemExit("D-Bus value is not a string or unsigned integer")
 print(value)
-'\''
+'
 }
 get_unit_path() {
   local unit="$1" result
@@ -236,19 +304,58 @@ emit_unit() {
     printf "ControlGroup=%s\nMemoryMax=%s\nMemoryHigh=%s\nMemorySwapMax=%s\nMemoryCurrent=%s\nCPUQuotaPerSecUSec=%s\nCPUWeight=%s\nIOWeight=%s\n" \
       "$control_group" "$memory_max" "$memory_high" "$memory_swap_max" \
       "$memory_current" "$cpu_quota" "$cpu_weight" "$io_weight"
+__ASSAY_MEMORY_STAT_READER__
   fi
   printf "ASSAY_UNIT_END=%s\n" "$unit"
 }
 gates_slice="$1"
 interactive_slice="$2"
 for unit in "$gates_slice" "$interactive_slice"; do emit_unit "$unit"; done
-' \
-    assay-cgroup-unit-probe "$slice" "$probe_parent"
-)"; then
-  :
+UNIT_PROBE_SCRIPT
+)"
+  probe_before="${probe_script%%$'\n__ASSAY_MEMORY_STAT_READER__'*}"
+  probe_after="${probe_script#*$'\n__ASSAY_MEMORY_STAT_READER__'}"
+  if [[ -n "$memory_stat_reader" ]]; then
+    probe_script="${probe_before}"$'\n'"${memory_stat_reader}${probe_after}"
+  else
+    probe_script="${probe_before}${probe_after}"
+  fi
+  if unit_probe_id="$(
+    timeout --signal=TERM --kill-after=5s 30s docker run --detach \
+      --name="$unit_probe_name" \
+      --label="io.assay.cgroup-parent.owner=$unit_probe_owner" \
+      --cgroup-parent="$probe_parent" \
+      --cgroupns=private --network=none --cpus=0.25 --memory=128m \
+      --memory-swap=128m --pids-limit=64 --read-only --cap-drop=ALL \
+      --security-opt=no-new-privileges --user=1003:1003 \
+      --tmpfs=/tmp:rw,noexec,nosuid,size=16m \
+      --mount=type=bind,source=/run/dbus/system_bus_socket,target=/tmp/host-system-bus,readonly \
+      "${memory_stat_mount_args[@]}" \
+      "$PROBE_IMAGE" sh -c "$probe_script" \
+      assay-cgroup-unit-probe "$slice" "$probe_parent"
+  )"; then
+    return 0
+  else
+    run_status=$?
+    return "$run_status"
+  fi
+}
+
+if ((memory_reserve_bytes > 0)); then
+  if start_unit_probe yes; then
+    :
+  else
+    mount_status=$?
+    discard_failed_unit_probe \
+      || die "could not safely reconcile Docker-host systemd query container \"$unit_probe_name\" after the memory.stat probe start failed; refusing fallback"
+    start_unit_probe no \
+      || die "could not start Docker-host systemd query container before any container uses \"$slice\" (exit $?)"
+    printf 'cgroup-parent: memory.stat-enabled probe could not start (exit %s); retrying the unmounted systemd probe\n' \
+      "$mount_status" >&2
+  fi
 else
-  run_status=$?
-  die "could not start Docker-host systemd query container before any container uses \"$slice\" (exit $run_status)"
+  start_unit_probe no \
+    || die "could not start Docker-host systemd query container before any container uses \"$slice\" (exit $?)"
 fi
 [[ "$unit_probe_id" =~ ^[0-9a-f]{64}$ ]] \
   || die 'Docker-host systemd query did not return one container ID'
@@ -335,16 +442,19 @@ verify_installed_slice() {
 
 # The cockpit has no host system bus. Query the Docker host's systemd manager
 # through its read-only system-bus socket, keeping the probe's cgroup namespace
-# private and exposing no host cgroup filesystem. The MDT host-side initialize
-# command verifies the interactive unit before it permits Docker to create the
-# cockpit. At runtime, kernel-hostname plus mount/PID namespace checks bind the
-# Docker lookup to this cockpit before its explicit parent is trusted. The
-# bootstrap container also has independent CPU, memory, and PID caps.
+# private. A RAM reservation mounts one host memory.stat file read-only; no
+# cgroupfs tree is mounted, and the probe's private cgroup namespace is not
+# changed. The MDT host-side initialize command verifies the interactive unit
+# before Docker creates the cockpit. At runtime, kernel-hostname plus mount/PID
+# namespace checks bind the Docker lookup to this cockpit before its explicit
+# parent is trusted. The bootstrap container also has independent CPU, memory,
+# and PID caps.
 verify_installed_slice "$probe_parent"
 verify_installed_slice "$slice"
 
-# The same private systemd query provides configured controls and current usage;
-# never switch the probe to the host cgroup namespace or mount host cgroupfs.
+# The same private systemd query provides configured controls and current usage.
+# A RAM reservation adds exactly one read-only memory.stat file bind; there is
+# no cgroupfs tree mount and no cgroup namespace change.
 control_group="$(unit_property "$slice" ControlGroup)"
 memory_max="$(unit_property "$slice" MemoryMax)"
 memory_high="$(unit_property "$slice" MemoryHigh)"
@@ -389,6 +499,72 @@ configured=0
 [[ "$configured" == 1 ]] \
   || die "host slice \"$slice\" has only systemd-default resource controls"
 
+parse_memory_stat_reclaimable() {
+  local output="$1" line key count
+  local block_started=0 block_count=0 block_ended=0
+  local inactive_file="" slab_reclaimable="" file_dirty="" file_writeback=""
+  local inactive_count=0 slab_count=0 dirty_count=0 writeback_count=0
+  local positive_bytes negative_bytes
+  while IFS= read -r line; do
+    case "$line" in
+      ASSAY_MEMORY_STAT_BEGIN)
+        ((block_count == 0 && block_started == 0 && block_ended == 0)) || return 1
+        block_count=1
+        block_started=1
+        continue
+        ;;
+      ASSAY_MEMORY_STAT_END)
+        ((block_started == 1 && block_ended == 0)) || return 1
+        block_started=0
+        block_ended=1
+        continue
+        ;;
+      ASSAY_MEMORY_STAT_READ_ERROR)
+        ((block_started == 1)) || return 1
+        return 1
+        ;;
+    esac
+    ((block_started == 1)) || continue
+    if [[ "$line" =~ ^[[:space:]]*(inactive_file|slab_reclaimable|file_dirty|file_writeback)([[:space:]]|$) ]]; then
+      key="${BASH_REMATCH[1]}"
+      [[ "$line" =~ ^[[:space:]]*${key}[[:space:]]+([0-9]+)$ ]] || return 1
+      count="${BASH_REMATCH[1]}"
+      fits_memory_arithmetic "$count" || return 1
+      case "$key" in
+        inactive_file)
+          inactive_count=$((inactive_count + 1))
+          inactive_file="$count"
+          ;;
+        slab_reclaimable)
+          slab_count=$((slab_count + 1))
+          slab_reclaimable="$count"
+          ;;
+        file_dirty)
+          dirty_count=$((dirty_count + 1))
+          file_dirty="$count"
+          ;;
+        file_writeback)
+          writeback_count=$((writeback_count + 1))
+          file_writeback="$count"
+          ;;
+      esac
+    fi
+  done <<<"$output"
+  ((block_count == 1 && block_started == 0 && block_ended == 1)) || return 1
+  ((inactive_count == 1 && slab_count == 1 && dirty_count == 1 \
+    && writeback_count == 1)) || return 1
+  # Each input is limited to 18 digits; two-term sums and adjusted headroom
+  # remain below Bash's signed 64-bit limit.
+  positive_bytes=$((10#$inactive_file + 10#$slab_reclaimable))
+  negative_bytes=$((10#$file_dirty + 10#$file_writeback))
+  if ((positive_bytes > negative_bytes)); then
+    memory_stat_reclaimable=$((positive_bytes - negative_bytes))
+  else
+    memory_stat_reclaimable=0
+  fi
+  return 0
+}
+
 if ((memory_reserve_bytes > 0)); then
   [[ "$memory_max" =~ ^[0-9]+$ ]] \
     || die "cannot establish finite RAM headroom for \"$slice\" (memory.max=$memory_max)"
@@ -397,11 +573,21 @@ if ((memory_reserve_bytes > 0)); then
     || die "Docker-host systemd query or reserve exceeds the safe RAM-admission arithmetic range for \"$slice\""
   ((10#$memory_current <= 10#$memory_max)) \
     || die "slice \"$slice\" reports memory.current above memory.max"
-  available_bytes=$((10#$memory_max - 10#$memory_current))
+  raw_headroom=$((10#$memory_max - 10#$memory_current))
+  adjusted_headroom="$raw_headroom"
+  memory_stat_basis=raw
+  if parse_memory_stat_reclaimable "$unit_properties"; then
+    memory_stat_basis=memory.stat-adjusted
+    adjusted_headroom=$((raw_headroom + memory_stat_reclaimable))
+    ((adjusted_headroom <= 10#$memory_max)) \
+      || adjusted_headroom=$((10#$memory_max))
+  fi
+  available_bytes="$adjusted_headroom"
   ((available_bytes >= 10#$memory_reserve_bytes)) \
-    || die "slice \"$slice\" has $available_bytes bytes of RAM headroom; B105 requires $memory_reserve_bytes bytes"
-  printf 'cgroup-parent: RAM admission OK for %s: current=%s limit=%s reserve=%s bytes\n' \
-    "$slice" "$memory_current" "$memory_max" "$memory_reserve_bytes" >&2
+    || die "slice \"$slice\" has $available_bytes bytes of RAM headroom; raw_headroom=$raw_headroom adjusted_headroom=$adjusted_headroom basis=$memory_stat_basis; B105 requires $memory_reserve_bytes bytes"
+  printf 'cgroup-parent: RAM admission OK for %s: current=%s limit=%s raw_headroom=%s adjusted_headroom=%s basis=%s reserve=%s bytes\n' \
+    "$slice" "$memory_current" "$memory_max" "$raw_headroom" \
+    "$adjusted_headroom" "$memory_stat_basis" "$memory_reserve_bytes" >&2
 fi
 
 printf '%s\n' "$slice"
