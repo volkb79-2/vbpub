@@ -1391,6 +1391,16 @@ def test_p4_liveness_issues_and_plan_only_progress_disclosure_are_pinned():
     design = " ".join(DESIGN_GUIDE.read_text(encoding="utf-8").split())
     readme = " ".join(README.read_text(encoding="utf-8").split())
     assay_toml = " ".join((REPO_ROOT / "assay.toml").read_text(encoding="utf-8").split())
+    config = " ".join(
+        (REPO_ROOT / "src" / "assay" / "config.py")
+        .read_text(encoding="utf-8")
+        .split()
+    )
+    backlog = " ".join(
+        (REPO_ROOT / "nyxloom-trove" / "4-backlog.md")
+        .read_text(encoding="utf-8")
+        .split()
+    )
 
     assert "max(3 x baseline wall, baseline wall + 60s)" in changes
     assert "parallel suite can consume more baseline tree CPU than wall time" in changes
@@ -1400,6 +1410,8 @@ def test_p4_liveness_issues_and_plan_only_progress_disclosure_are_pinned():
     assert "four times the CPU-without-progress bound" in changes
     assert "unclassified as `BUDGET_EXCEEDED`/`LANE_TIMEOUT`" in changes
     assert "same stop repeats on every resume" in changes
+    assert "The `plan` record reports plan-time eligibility only" in changes
+    assert "Whether a candidate's budget is advisory is decided at runtime after its CPU reads" in changes
     assert "150-minute assay-command budget" in changes
     assert "3-hour inner command cap" in changes
     assert "effective total is therefore at most 3 hours from container entry" in changes
@@ -1444,13 +1456,21 @@ def test_p4_liveness_issues_and_plan_only_progress_disclosure_are_pinned():
     assert "Only `clear` intervals advance `liveness_clock`" in changes
     assert "Before the first comparable interval the stop uses plain wall time" in changes
     assert "later unreadable intervals remain `unknown` and pause the eligible clock" in changes
+    assert "The wall fallback can stop a candidate starved by host load when pressure data is never comparable" in changes
+    assert "does not identify whether the candidate stalled or the host starved it" in changes
     assert "Before the first comparable pressure interval (`clear` or `stalled` from the resource comparator), it uses plain wall time" in consumers
     assert "only `clear` intervals advance it" in consumers
     assert "without restoring the wall fallback" in consumers
     assert "Continuous pressure can delay or prevent the stop" in consumers
+    assert "candidate starved by host load can still be stopped after four times the bound" in consumers
+    assert "cannot distinguish host starvation from a candidate stall" in consumers
     assert "separate no-progress wall backstop is a fatal `BUDGET_EXCEEDED`/`LANE_TIMEOUT`" in design
     assert "only `clear` intervals advance" in design
     assert "does not become `budget_exceeded`" in design
+    assert "candidate starved by host load can still be stopped after four times the bound" in design
+    assert "cannot distinguish host starvation from a candidate stall" in design
+    assert "The fallback can stop a candidate starved by host load when pressure data is never comparable" in config
+    assert "candidate starved by host load after four times the bound" in backlog
 
 
 def test_p4_liveness_hook_docs_follow_the_pinned_hook_list():

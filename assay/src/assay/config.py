@@ -2635,7 +2635,11 @@ def _refuse_unbounded_without_unit_bounds(
     intervals advance and both `stalled` and `unknown` intervals are
     ineligible. Later unreadable pressure data does not restore the wall-time
     fallback, so sustained pressure can delay or prevent this stop. The
-    per-candidate budget is ADVISORY while the watch is armed. Arming is a
+    fallback can stop a candidate starved by host load when pressure data is
+    never comparable: readable CPU and no completed event can reach four
+    times the bound without distinguishing host starvation from a candidate
+    stall; the attempt remains unclassified. The per-candidate budget is
+    advisory only after the candidate's CPU reads are available. Arming is a
     RUNTIME fact -- it needs liveness injection and baseline plugin records --
     and a config file is read before either is known. So this rule keeps
     refusing `"none"` by name and admitting the omitted / `"auto"` key, but it

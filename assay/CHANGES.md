@@ -44,17 +44,15 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   A retained resource trace is now COMPACTED past its 1024-sample cap instead of
   being marked incomplete, so no hang verdict is disabled by trace length and
   the stored evidence stays bounded.
-- `judge.mutation.budget_per_candidate` is **advisory** on a lane whose
-  progress watch is armed -- liveness injected, the baseline produced plugin
-  events, and the candidate's process-tree CPU is readable -- and still
-  **binding** on every other run (non-pytest argv, non-Python, ingested, a
-  plugin that wrote nothing, an unreadable CPU series). The sweep's `plan`
-  progress record states which regime applied in `progress_bound`
-  (`{armed, reason, cpu_without_progress_s, per_test_baseline_tests,
-  budget_per_candidate_role}`), and one WARN is printed the first time a
-  candidate overruns an advisory budget. `budget_per_candidate = "none"` is
-  still refused under `budget = "unbounded"`: unbounded admission is
-  unchanged, and its docstring/message now describe the advisory semantics.
+- `judge.mutation.budget_per_candidate` is **advisory** for an armed watch
+  only after that candidate's process-tree CPU is readable; if its CPU remains
+  unreadable, the budget binds at runtime. The `plan` record reports
+  plan-time eligibility only, based on liveness injection and baseline plugin
+  records. Whether a candidate's budget is advisory is decided at runtime
+  after its CPU reads. One WARN is printed the first time a candidate overruns
+  an advisory budget. `budget_per_candidate = "none"` is still refused under
+  `budget = "unbounded"`: unbounded admission is unchanged, and its
+  docstring/message now describe the advisory semantics.
 - README publishes a generated "what each runtime actually watches" matrix
   (anchor `#mutation-runtime-matrix`), rendered from
   `src/assay/mutation_runtime.py` and pinned byte for byte by
@@ -127,6 +125,11 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   unreadable intervals remain `unknown` and pause the eligible clock; they do
   not restore the wall fallback. Sustained pressure can therefore delay or
   prevent the stop.
+- The wall fallback can stop a candidate starved by host load when pressure
+  data is never comparable: with readable CPU and no completed event, four
+  times the bound can pass without the candidate receiving useful CPU. This
+  ends the sweep as an unclassified lane timeout; it does not identify whether
+  the candidate stalled or the host starved it.
 - The CPU-without-progress threshold is derived from baseline **wall** seconds
   (`max(3 x baseline wall, baseline wall + 60s)`) and compared with
   process-tree CPU. This is lenient for a serial suite because tree CPU grows

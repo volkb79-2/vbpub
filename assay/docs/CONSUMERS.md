@@ -4636,7 +4636,11 @@ are ineligible. If pressure data is never comparable, the wall-time fallback
 keeps the stop active. Once one interval is comparable, later unreadable
 intervals are `unknown` and pause the eligible clock without restoring the
 wall fallback. Continuous pressure can delay or prevent the stop. Candidate
-CPU readability is not required. The CPU and per-test `hung` bounds and the
+CPU readability is not required. **False-stop case:** if pressure data is
+never comparable, a candidate starved by host load can still be stopped after
+four times the bound when its CPU is readable but no completed event arrives.
+The stop ends the sweep as an unclassified lane timeout and cannot distinguish
+host starvation from a candidate stall. The CPU and per-test `hung` bounds and the
 lane deadline still win if they fire first. This stop is an unclassified fatal
 `BUDGET_EXCEEDED`/`LANE_TIMEOUT`: it writes no candidate result or mutation
 bucket, and `assay run` ends so `--resume` retries the missing candidate. It

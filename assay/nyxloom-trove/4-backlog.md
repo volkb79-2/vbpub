@@ -16284,6 +16284,12 @@ run, the wall fallback remains active. If it is comparable once and becomes
 unreadable later, those `unknown` intervals pause the eligible clock and do
 not restore the fallback; sustained pressure can delay or prevent the stop.
 
+When pressure data is never comparable, the wall fallback can stop a
+candidate starved by host load after four times the bound if CPU remains
+readable and no completed event arrives. This ends the sweep as an
+unclassified lane timeout and cannot distinguish host starvation from a
+candidate stall.
+
 **Wanted.** Consider ending only the stopped candidate as an unclassified
 attempt and continuing the sweep, while retaining the no-bucket/no-result
 semantics and making resume safe for the candidate's retry.
