@@ -2507,8 +2507,7 @@ mod tests {
     fn record_at_rejects_a_ring_oversize_event_before_writing_the_segment() {
         let temp = TempDir::new("event-ring-preflight");
         let config =
-            TierConfig::new("events", TierKind::Events, 60, 3600, 1 << 20, false)
-                .expect("config");
+            TierConfig::new("events", TierKind::Events, 60, 3600, 1 << 20, false).expect("config");
         let mut store = EventsStore::open(
             config,
             1,

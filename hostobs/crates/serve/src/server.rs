@@ -1786,10 +1786,7 @@ mod tests {
 
         assert_eq!(server.shutdown(), vec![id]);
         server.finish(id);
-        assert_eq!(
-            *closed.lock().expect("close-recording lock"),
-            vec![(id, 0)]
-        );
+        assert_eq!(*closed.lock().expect("close-recording lock"), vec![(id, 0)]);
     }
 
     #[test]

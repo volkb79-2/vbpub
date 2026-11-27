@@ -86,11 +86,9 @@ impl EventSink for TimedEventSink<'_> {
         let started = (self.clock)();
         let result = self.store.record_event(event, payload, real_ns);
         let elapsed_ns = (self.clock)().saturating_sub(started);
-        if let Some(line) = append_failure_line(
-            self.append_failed,
-            result.as_ref().err(),
-            elapsed_ns,
-        ) {
+        if let Some(line) =
+            append_failure_line(self.append_failed, result.as_ref().err(), elapsed_ns)
+        {
             eprintln!("{line}");
         }
         match &result {
@@ -142,10 +140,7 @@ fn failed_eviction_note(evicted: &Evicted) -> Option<&TierNote> {
         .find(|note| note.reason.contains("could not be removed"))
 }
 
-fn eviction_failure_line(
-    eviction_failed: &mut bool,
-    note: Option<&TierNote>,
-) -> Option<String> {
+fn eviction_failure_line(eviction_failed: &mut bool, note: Option<&TierNote>) -> Option<String> {
     match (note, *eviction_failed) {
         (Some(note), false) => {
             *eviction_failed = true;
@@ -157,7 +152,9 @@ fn eviction_failure_line(
         (Some(_), true) => None,
         (None, true) => {
             *eviction_failed = false;
-            Some(String::from("hostobs-probe: events eviction succeeded again"))
+            Some(String::from(
+                "hostobs-probe: events eviction succeeded again",
+            ))
         }
         (None, false) => None,
     }
@@ -165,9 +162,7 @@ fn eviction_failure_line(
 
 fn inferred_end_failure_line(failed: usize) -> Option<String> {
     (failed > 0).then(|| {
-        format!(
-            "hostobs-probe: could not store {failed} inferred event end(s) on connection close"
-        )
+        format!("hostobs-probe: could not store {failed} inferred event end(s) on connection close")
     })
 }
 
@@ -417,12 +412,9 @@ impl Backend for ProbeBackend {
             append_failed: &mut self.append_failed,
             eviction_failed: &mut self.eviction_failed,
         };
-        let failed = self.annotator.connection_closed(
-            &mut sink,
-            u64::from(conn.0),
-            self.now_ns,
-            real_ns,
-        );
+        let failed =
+            self.annotator
+                .connection_closed(&mut sink, u64::from(conn.0), self.now_ns, real_ns);
         if let Some(line) = inferred_end_failure_line(failed) {
             eprintln!("{line}");
         }
@@ -461,8 +453,8 @@ impl hostobs_serve::backend::Turn for ProbeBackend {
 #[cfg(test)]
 mod tests {
     use super::{
-        append_failure_line, eviction_failure_line, failed_eviction_note, inferred_end_failure_line,
-        real_at, seal_stall_line,
+        append_failure_line, eviction_failure_line, failed_eviction_note,
+        inferred_end_failure_line, real_at, seal_stall_line,
     };
     use crate::sampler::Published;
     use hostobs_store::error::StoreError;
@@ -497,7 +489,10 @@ mod tests {
         let mut failed = false;
         assert!(append_failure_line(&mut failed, Some(&error), 7_000_000)
             .is_some_and(|line| line.contains("append started failing")));
-        assert_eq!(append_failure_line(&mut failed, Some(&error), 8_000_000), None);
+        assert_eq!(
+            append_failure_line(&mut failed, Some(&error), 8_000_000),
+            None
+        );
         assert!(append_failure_line(&mut failed, None, 9_000_000)
             .is_some_and(|line| line.contains("append succeeded again")));
         assert_eq!(append_failure_line(&mut failed, None, 10_000_000), None);
@@ -515,8 +510,10 @@ mod tests {
             ..Evicted::default()
         };
         let mut failed = false;
-        assert!(eviction_failure_line(&mut failed, failed_eviction_note(&evicted))
-            .is_some_and(|line| line.contains("eviction started failing")));
+        assert!(
+            eviction_failure_line(&mut failed, failed_eviction_note(&evicted))
+                .is_some_and(|line| line.contains("eviction started failing"))
+        );
         assert_eq!(
             eviction_failure_line(&mut failed, failed_eviction_note(&evicted)),
             None

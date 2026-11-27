@@ -1214,13 +1214,8 @@ mod tests {
 
     fn send_annotate(rig: &mut Rig, backend: &mut CountingBackend, corr: u32, args: &str) {
         let input = line(corr, "annotate", args);
-        rig.conn.on_bytes(
-            &input,
-            rig.now,
-            &mut rig.hub,
-            backend,
-            &mut rig.streams,
-        );
+        rig.conn
+            .on_bytes(&input, rig.now, &mut rig.hub, backend, &mut rig.streams);
         rig.pump(usize::MAX);
     }
 

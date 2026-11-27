@@ -814,15 +814,8 @@ mod tests {
         for tier in &mut seed_config.tiers {
             tier.require_tmpfs = false;
         }
-        seed_config.events = TierConfig::new(
-            "events",
-            TierKind::Events,
-            1,
-            3600,
-            1 << 20,
-            false,
-        )
-        .expect("events tier");
+        seed_config.events = TierConfig::new("events", TierKind::Events, 1, 3600, 1 << 20, false)
+            .expect("events tier");
         seed_config.events_ring_bytes = 1 << 12;
 
         let seed_event = |name: &str, timestamp_ns: i64| {
@@ -846,11 +839,11 @@ mod tests {
             .expect("seed event")
         };
         let first_seed = seed_event("seed-first", 0);
-        let first_seed_frame = encode_event_frame(&first_seed.to_payload().expect("payload"))
-            .expect("frame");
+        let first_seed_frame =
+            encode_event_frame(&first_seed.to_payload().expect("payload")).expect("frame");
         let later_seed = seed_event("seed-later", 1_000_000_000);
-        let later_seed_frame = encode_event_frame(&later_seed.to_payload().expect("payload"))
-            .expect("frame");
+        let later_seed_frame =
+            encode_event_frame(&later_seed.to_payload().expect("payload")).expect("frame");
         let mut seed_store = Store::open(seed_config.clone()).expect("seed store");
         seed_store
             .record_event(&first_seed, &first_seed_frame, 0)
@@ -861,10 +854,8 @@ mod tests {
         seed_store.seal_all().expect("seal seed");
         let first_seed_name = seed_store.events().tier().scan().segments[0].name.clone();
         let fault_name = seed_store.events().tier().scan().segments[1].name.clone();
-        let cap_bytes = u64::try_from(
-            temp.read_file(&format!("events/{fault_name}")).len(),
-        )
-        .expect("seed file length");
+        let cap_bytes = u64::try_from(temp.read_file(&format!("events/{fault_name}")).len())
+            .expect("seed file length");
         drop(seed_store);
 
         seed_config.events.cap_bytes = cap_bytes;
@@ -893,8 +884,15 @@ mod tests {
         assert!(store.notes().iter().any(|note| {
             note.name == fault_name && note.reason.contains("could not be removed")
         }));
-        assert_eq!(store.stats().evicted_segments, 1, "the earlier eviction is retained");
-        assert!(store.evict(2_000_000_010).is_err(), "standalone eviction keeps its error");
+        assert_eq!(
+            store.stats().evicted_segments,
+            1,
+            "the earlier eviction is retained"
+        );
+        assert!(
+            store.evict(2_000_000_010).is_err(),
+            "standalone eviction keeps its error"
+        );
 
         let end = request(EventKind::End, "run", Some("run"));
         let closed = annotator
@@ -947,7 +945,9 @@ mod tests {
         );
 
         temp.remove(&link_name);
-        store.evict(2_000_000_100).expect("the next pass retries eviction");
+        store
+            .evict(2_000_000_100)
+            .expect("the next pass retries eviction");
         assert!(store
             .events()
             .tier()

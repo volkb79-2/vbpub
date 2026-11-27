@@ -594,6 +594,7 @@ mod tests {
     use std::thread::{self, JoinHandle};
     use std::time::{Duration, Instant};
 
+    use hostobs_probe::live::ProbeBackend;
     use hostobs_proto::envelope::{check_end, check_evt, check_rep};
     use hostobs_proto::event::decode_event_frame;
     use hostobs_proto::frame::{decode_block, FrameHeader, FrameType};
@@ -604,7 +605,7 @@ mod tests {
         read_cgroup_key_from, run, MAX_CGROUP_BYTES,
     };
     use hostobs_serve::backend::{
-        AnnotateArgs, AnnotateReply, AnnotateRefusal, Backend, BackendError, FixedBackend,
+        AnnotateArgs, AnnotateRefusal, AnnotateReply, Backend, BackendError, FixedBackend,
         Identity, StatusInfo, TickData, Turn,
     };
     use hostobs_serve::conn::{CgroupKey, Peer};
@@ -618,7 +619,6 @@ mod tests {
     use hostobs_store::fsio::testdir::TempDir;
     use hostobs_store::store::{Store, StoreConfig};
 
-    use crate::live::ProbeBackend;
     use crate::sampler::Published;
 
     const CLIENT_WAIT: Duration = Duration::from_secs(30);
@@ -732,11 +732,7 @@ mod tests {
             self.inner.status()
         }
 
-        fn current(
-            &self,
-            selection: &Selection,
-            max_rows: u32,
-        ) -> Result<TickData, BackendError> {
+        fn current(&self, selection: &Selection, max_rows: u32) -> Result<TickData, BackendError> {
             self.inner.current(selection, max_rows)
         }
 
@@ -1180,7 +1176,7 @@ mod tests {
             Annotator::new(50, 64).expect("annotator"),
             || 0,
         );
-        let close_signal = eventfd(EventfdFlags::CLOEXEC).expect("close eventfd");
+        let close_signal = eventfd(0, EventfdFlags::CLOEXEC).expect("close eventfd");
         let backend_signal = close_signal.try_clone().expect("clone close eventfd");
         let mut rig = Rig::with_backend(
             ServerLimits::new(),
