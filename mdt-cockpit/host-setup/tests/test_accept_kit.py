@@ -616,16 +616,18 @@ class HotsetTests(unittest.TestCase):
         self.assertTrue(self.wal.exists(), "the pending WAL remains for an operator to resolve")
 
     def test_refresh_commit_is_refused_when_the_kdamond_is_off(self) -> None:
-        self.sysfs_model()
+        model = self.sysfs_model()
         rc, out = run_hotset("setup", *self.args())
         self.assertEqual(rc, 0, out)
         rc, out = run_hotset("off", *self.args())
         self.assertEqual(rc, 0, out)
 
+        model.writes.clear()
         rc, out = run_hotset("refresh-schemes", *self.args("--step", "1"))
         self.assertEqual(rc, 3, out)
         self.assertIn("commit requires a running kdamond", out)
         self.assertEqual((self.kd / "0" / "state").read_text().strip(), "off")
+        self.assertEqual(model.writes, [], "an off kdamond is refused before staging or committing any scheme inputs")
 
     def test_start_refuses_a_memcg_path_the_kernel_cannot_resolve(self) -> None:
         model = self.sysfs_model()
@@ -773,6 +775,7 @@ class HotsetTests(unittest.TestCase):
         self.assertEqual(rc, 0, out)
         self.assertEqual(sample_sleep.call_args_list, [mock.call(0.125)])
 
+        (self.kd / "0" / "state").write_text("on\n")
         with mock.patch.object(hs, "load_lib", return_value=object()), \
                 mock.patch.object(hs, "physical_ranges", return_value=[(0, 4096)]), \
                 mock.patch.object(hs, "configure", side_effect=[hs.Refusal("transient refresh write"), None]), \
@@ -782,6 +785,7 @@ class HotsetTests(unittest.TestCase):
         self.assertEqual(refresh_sleep.call_args_list, [mock.call(0.125)])
 
     def test_refresh_reenumerates_and_retries_configuration(self) -> None:
+        self.sysfs_model(count=1, state="on")
         with mock.patch.object(hs, "load_lib", return_value=object()), \
                 mock.patch.object(hs, "physical_ranges", return_value=[(0, 4096)]), \
                 mock.patch.object(hs, "configure", side_effect=[hs.Refusal("a leaf vanished"), None]) as configure:
@@ -794,6 +798,7 @@ class HotsetTests(unittest.TestCase):
         self.assertTrue(configure.call_args_list[1].kwargs["commit"])
 
     def test_refresh_refuses_after_all_retries(self) -> None:
+        self.sysfs_model(count=1, state="on")
         with mock.patch.object(hs, "load_lib", return_value=object()), \
                 mock.patch.object(hs, "physical_ranges", return_value=[(0, 4096)]), \
                 mock.patch.object(hs, "configure", side_effect=hs.Refusal("a leaf vanished")) as configure:

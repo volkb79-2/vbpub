@@ -688,7 +688,7 @@ def setup(args) -> int:
         state_path = os.path.join(nrd, str(idx), "state")
         last_error: Exception | None = None
         for attempt in range(1, RETRY_ATTEMPTS + 1):
-            attempt_topology, _attempt_gaps = topology_snapshot(units, args.cgroup)
+            attempt_topology, attempt_gaps = topology_snapshot(units, args.cgroup)
             if not attempt_topology:
                 last_error = Inconclusive(f"no leaf memcg under {args.cgroup} remains during setup")
             else:
@@ -703,6 +703,13 @@ def setup(args) -> int:
                     break
                 except (Refusal, OSError, ValueError) as exc:
                     last_error = exc
+                    latest_topology, latest_gaps = topology_snapshot(units, args.cgroup)
+                    if (topology_identity(attempt_topology) == topology_identity(latest_topology)
+                            and attempt_gaps == latest_gaps):
+                        # A stable topology cannot explain this failure. Preserve
+                        # the original refusal instead of disguising a kernel or
+                        # sysfs fault as exhausted topology retries.
+                        raise
             if attempt < RETRY_ATTEMPTS:
                 retry_pause(args, attempt, "scheme setup", last_error or "no leaf memcg remains")
         else:
@@ -760,6 +767,12 @@ def refresh(args) -> int:
     units = parse_units(args.units)
     da = load_lib(args.lib, args.admin)
     kd = resolve_kdamond(args)
+    state_path = os.path.join(args.admin, "kdamonds", str(kd), "state")
+    state = read_lines(state_path)
+    if not state:
+        raise Refusal(f"{state_path} is unreadable; scheme refresh requires a running kdamond")
+    if state[0].strip() != "on":
+        raise Refusal(f"kdamond {kd} is {state[0].strip()!r}; commit requires a running kdamond")
     ranges = physical_ranges(args.iomem, mem_total_bytes(args.proc))
     previous = configured_topology(args.evidence, required=False)
     entries, _gaps = configure_topology_with_retries(
