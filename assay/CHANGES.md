@@ -7,6 +7,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 ### Fixed
 - fix(assay): include reclaimable file cache and slab in B105 RAM admission
   (B599)
+- B610: add behavioral coverage for every B577 component-sidecar line and branch missing from the 12.4.1 self-qualification-provisional run (739c3793d).
 - B577: the `PYTHONPATH` entries Assay itself injects (run-local plugin
   directories) are no longer part of the native-R2 judge identity, so they no
   longer make a resume reject stored records. A consumer's own `PYTHONPATH`
