@@ -6,6 +6,23 @@ no separate version number, so entries are grouped by the work that landed.
 
 ## [Unreleased]
 
+### Parallel controller mutation checks (P-plat-35)
+- `tests/test-mutations.sh` now submits the existing `expect_killed` calls to a
+  bounded pool, defaulting to `nproc` capped at the inherited 3-CPU
+  `tester-unified` environment limit. `CONTROLLER_MUTATION_JOBS=1..3` selects an
+  explicit width; invalid values refuse with exit 2. Workers retain one log per
+  label and preserve the existing nonzero-is-KILLED rule for every command
+  that starts. An unresolved command is a spawn failure. Workers print `KILLED`
+  as each check finishes, stop new work after a survivor, and fail closed on
+  missing results, duplicate labels, incomplete counts or survivors.
+  ctl-status, ctx-hooks, pi-review and remote-gate-cache checks run alone
+  relative to mutation workers because they contain short time boundaries.
+  Repeated wrappers, pi-impl, remote-gate and `test_dev.py` checks are
+  serialized by suite around their longer marker polling. The ordinary suite
+  test files remain sequential and unchanged.
+  `tests/test-mutation-runner.sh` covers the runner's fail-closed cases; the
+  ordinary suite tests remain sequential.
+
 ### Resume and keep-alive pane guards (P-plat-22c)
 - `resume-lib.sh` owns the pane view and shared markers used by both resume helpers and `ctl-keepalive.sh`. `pane_view`
   trims rows below the mode line only for the unfocused agents-panel hint, so panel rows cannot hide busy markers or

@@ -694,6 +694,23 @@ come from `CONTROLLER_GATE_LOCK` and `CONTROLLER_GATE2_LOCK`; see
 [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md). Copy those exact names from
 `controller.local.env.example` and export both before invoking the wrapper.
 
+`tests/test-mutations.sh` keeps its `expect_killed` checks and per-check logs,
+but runs up to three mutation checks at once. The `tester-unified` environment
+enforces 3 CPUs and declares no memory cap; the default width is `nproc`, capped
+at 3. Set `CONTROLLER_MUTATION_JOBS=1` for serial mutation checks or choose 2
+or 3 explicitly. Empty, non-integer, zero or above-cap values refuse the
+mutation run with exit 2. As before, nonzero check statuses are KILLED and zero
+is SURVIVED; an unresolved command is a spawn error, while an executed
+command's nonzero status—including 126 or 127—remains KILLED. Each killed check
+prints `KILLED: <label>` as it finishes. The final wait verifies that each
+registered check has one result. `test-ctl-status.sh`, `test-ctx-hooks.sh`,
+`test-pi-review.sh` and `test_remote_gate_cache.sh` run alone relative to
+mutation workers because they contain five-second boundaries or one-second
+timeouts. Repeated mutations of wrappers, pi-impl, remote-gate and `test_dev.py`
+are serialized by suite so their longer event polls do not race copies of the
+same suite. Those marker-based waits can overlap checks from other files. Unit
+test files in `tests/run-suite.sh` remain sequential and unchanged.
+
 The number of local slots is `CONTROLLER_GATE_SLOTS` (an integer from 1 to 8; unset
 or empty means 2, so nothing changes for a controller that sets nothing). The default
 stays 2 on purpose: the local slots guard the controller's own devcontainer, which has

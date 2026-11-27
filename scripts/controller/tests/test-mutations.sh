@@ -20,6 +20,10 @@ REPO_ROOT=$(cd -- "$SCRIPT_DIR/../../.." && pwd -P)
 ROOT=$(mktemp -d "${TMPDIR:-/tmp}/controller-mutation-test.XXXXXX")
 cleanup() { [[ -n ${KEEP_TEST_ROOT:-} ]] || rm -rf -- "$ROOT"; }
 trap cleanup EXIT
+# shellcheck source=mutation-runner.sh
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/mutation-runner.sh"
+mutation_runner_init "$ROOT" || exit $?
 python3 "$SCRIPT_DIR/mutate-sources.py" "$ROOT" || exit $?
 if ! CONTROLLER_TEST_PARALLEL_OD_STARTS=0 bash "$SCRIPT_DIR/test-wrappers.sh" > "$ROOT/wrappers-unmutated.log" 2>&1; then
   cat "$ROOT/wrappers-unmutated.log" >&2
@@ -36,16 +40,25 @@ for baseline in test-job-check.sh test-hardening-tools.sh test-gate-slots.sh tes
 done
 echo 'PASS unmutated job-check, hardening, gate-slot, pi-impl and pi-review tests before their mutation checks'
 export CONTROLLER_TEST_PARALLEL_OD_STARTS=0
-expect_killed() {
-  local label=$1; shift
-  if "$@" > "$ROOT/$label.log" 2>&1; then
-    echo "SURVIVED: $label" >&2
-    exit 1
-  fi
-  echo "KILLED: $label"
-  killed_count=$((killed_count + 1))
-}
-killed_count=0
+
+expect_killed mutation-runner-missing-result \
+  env CONTROLLER_MUTATION_RUNNER_SCRIPT="$ROOT/mutants/scripts/controller/mutation-runner-missing-result.sh" \
+    bash "$SCRIPT_DIR/test-mutation-runner.sh"
+expect_killed mutation-runner-spawn-failure \
+  env CONTROLLER_MUTATION_RUNNER_SCRIPT="$ROOT/mutants/scripts/controller/mutation-runner-spawn-failure.sh" \
+    bash "$SCRIPT_DIR/test-mutation-runner.sh"
+expect_killed mutation-runner-duplicate-label \
+  env CONTROLLER_MUTATION_RUNNER_SCRIPT="$ROOT/mutants/scripts/controller/mutation-runner-duplicate-label.sh" \
+    bash "$SCRIPT_DIR/test-mutation-runner.sh"
+expect_killed mutation-runner-invalid-width \
+  env CONTROLLER_MUTATION_RUNNER_SCRIPT="$ROOT/mutants/scripts/controller/mutation-runner-invalid-width.sh" \
+    bash "$SCRIPT_DIR/test-mutation-runner.sh"
+expect_killed mutation-runner-survivor-stop \
+  env CONTROLLER_MUTATION_RUNNER_SCRIPT="$ROOT/mutants/scripts/controller/mutation-runner-survivor-stop.sh" \
+    bash "$SCRIPT_DIR/test-mutation-runner.sh"
+expect_killed mutation-runner-late-wait \
+  env CONTROLLER_MUTATION_RUNNER_SCRIPT="$ROOT/mutants/scripts/controller/mutation-runner-late-wait.sh" \
+    bash "$SCRIPT_DIR/test-mutation-runner.sh"
 
 for pi_review_mutant in \
   pi-review-account-inverted pi-review-head-only pi-review-index-only \
@@ -232,6 +245,9 @@ for pi_case in \
   pi-record-owner-new-only:accepted-resume-records; do
   pi_mutant=${pi_case%%:*}
   pi_focus=${pi_case#*:}
+  if [[ $pi_mutant == pi-run-name-refusal-overwrites && $pi_focus == refusal-keeps-records ]]; then
+    pi_mutant=pi-run-name-refusal-overwrites-keeps-records
+  fi
   expect_killed "$pi_mutant" \
     env PI_TEST_FOCUS="$pi_focus" PI_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/$pi_mutant.sh" \
       bash "$SCRIPT_DIR/test-pi-impl.sh"
@@ -548,4 +564,4 @@ for profile_mutant in image-regex work-mount; do
   expect_killed "dev-profile-$profile_mutant" \
     env DEV_PROFILE_SCRIPT="$ROOT/mutants/scripts/controller/dev-profile-$profile_mutant" "${TESTER_VENV:?}/bin/python" -m pytest -x -q -p no:cacheprovider "$SCRIPT_DIR/test_dev.py"
 done
-echo "PASS hand mutations: $killed_count killed"
+mutation_runner_finish || exit $?

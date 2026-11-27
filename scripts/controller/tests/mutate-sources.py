@@ -49,6 +49,54 @@ def mutant(source: str, name: str, before: str, after: str, destination: Path = 
     target.chmod(0o755)
     return target
 
+
+def mutation_runner_mutant(name: str, before: str, after: str) -> Path:
+    return mutant("scripts/controller/tests/mutation-runner.sh", name, before, after)
+
+
+mutation_runner_mutant(
+    "mutation-runner-missing-result.sh",
+    "    printf 'WORKER ERROR: could not write result for %s\\n' \"$label\" >&2\n    return 70",
+    "    printf 'WORKER ERROR: could not write result for %s\\n' \"$label\" >&2\n    return 0",
+)
+mutation_runner_mutant(
+    "mutation-runner-spawn-failure.sh",
+    "  if ! mutation_runner_command_available \"$@\"; then\n    status=127\n    outcome=SPAWN_ERROR",
+    "  if false; then\n    status=127\n    outcome=SPAWN_ERROR",
+)
+mutation_runner_mutant(
+    "mutation-runner-duplicate-label.sh",
+    "  if [[ -e $MUTATION_RUNNER_REGISTERED/$label ]]; then\n"
+    "    mutation_runner_fail \"$label\" 'duplicate check label would share a log and result path'",
+    "  if false; then\n"
+    "    mutation_runner_fail \"$label\" 'duplicate check label would share a log and result path'",
+)
+mutation_runner_mutant(
+    "mutation-runner-invalid-width.sh",
+    "  if ! mutation_runner_configure_width; then",
+    "  if false; then",
+)
+mutation_runner_mutant(
+    "mutation-runner-survivor-stop.sh",
+    "mutation_runner_should_stop() {\n"
+    "  mutation_runner_observe_survivor\n"
+    "  (( MUTATION_RUNNER_SURVIVOR_OBSERVED != 0 ))\n"
+    "}",
+    "mutation_runner_should_stop() {\n"
+    "  return 1\n"
+    "}",
+)
+mutation_runner_mutant(
+    "mutation-runner-late-wait.sh",
+    "  while (( ${#MUTATION_RUNNER_PIDS[@]} > 0 )); do\n"
+    "    mutation_runner_reap_one || :\n"
+    "  done",
+    "  while false; do\n"
+    "    mutation_runner_reap_one || :\n"
+    "  done",
+)
+
+
 def pi_review_mutant(name: str, before: str, after: str) -> Path:
     """A pi-review.sh mutant keeps its siblings: the launcher runs
     "$SCRIPT_DIR/pi-impl.sh", so a copy without them would fail for every check
@@ -760,6 +808,10 @@ pi_wrapper_with_lib_mutant(
 mutant("scripts/controller/pi-impl.sh", "pi-run-name-refusal-overwrites.sh",
        'controller_run_claim "$name" || exit 2',
        'controller_run_claim "$name" || exit 2\ncontroller_run_record_owner')
+# One source mutant is checked against two distinct refusal behaviors. Give the
+# second check a unique runner label/path while retaining the same mutant bytes.
+shutil.copy2(controller / "pi-run-name-refusal-overwrites.sh",
+             controller / "pi-run-name-refusal-overwrites-keeps-records.sh")
 # CTL-23: the owner record belongs to a launch that is REAL. One mutant per
 # refusal the record must stay behind, so each clause is judged by its own case.
 mutant("scripts/controller/pi-impl.sh", "pi-record-owner-before-accounts.sh",
