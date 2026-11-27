@@ -2021,6 +2021,104 @@ def test_completed_events_redate_the_wall_backstop(tmp_path: Path) -> None:
     assert clock.t >= 24.0
 
 
+@pytest.mark.parametrize("reset_kind", ["replace", "truncate"])
+def test_completed_events_after_event_file_reset_redate_both_progress_windows(
+    tmp_path: Path, reset_kind: str
+) -> None:
+    """A fresh event stream keeps renewing both bounds after reader reset.
+
+    The old stream has more completed records than the new stream initially,
+    which exposed the monitor comparing a reset counter with its stale
+    marker. The candidate then completes events for longer than both bounds;
+    neither the CPU bound nor the no-progress wall stop may fire.
+    """
+    clock = _FakeClock()
+    proc = _ScriptedProc(pid=7020 if reset_kind == "replace" else 7021)
+    events_path = liveness.candidate_events_path(
+        tmp_path / "candidates", tmp_path / "cand"
+    )
+    initialized = False
+    reset_done = False
+
+    def cpu_reader(_pid: int) -> float:
+        nonlocal initialized, reset_done
+        if not initialized:
+            events_path.parent.mkdir(parents=True, exist_ok=True)
+            events_path.write_text(
+                "".join(json.dumps({"event": "phase"}) + "\n" for _ in range(20)),
+                encoding="utf-8",
+            )
+            initialized = True
+        elif not reset_done and clock.t >= 2.0:
+            if reset_kind == "replace":
+                replacement = events_path.with_suffix(".replacement")
+                replacement.write_text("", encoding="utf-8")
+                replacement.replace(events_path)
+            else:
+                events_path.write_text("", encoding="utf-8")
+            reset_done = True
+        elif reset_done and 3.0 <= clock.t < 30.0:
+            _append_event(events_path, {"event": "phase"})
+        if clock.t >= 30.0:
+            proc.finish(0)
+        return clock.t * 0.5
+
+    runner, cwd = _runner(
+        tmp_path,
+        proc=proc,
+        clock=clock,
+        cpu_reader=cpu_reader,
+        cpu_without_progress_bound_s=3.0,
+        expect_next_event_within_s=1000.0,
+    )
+
+    result = runner(("pytest", "-q"), env={}, cwd=cwd, timeout=1000.0)
+
+    assert result.returncode == 0
+    assert reset_done
+    assert clock.t >= 30.0  # more than the 3s CPU and 12s wall bounds.
+
+
+def test_event_file_reset_without_completion_does_not_redate_progress_windows(
+    tmp_path: Path,
+) -> None:
+    """A reset alone is not progress and cannot renew either stop window."""
+    clock = _FakeClock()
+    proc = _ScriptedProc(pid=7022)
+    events_path = liveness.candidate_events_path(
+        tmp_path / "candidates", tmp_path / "cand"
+    )
+    initialized = False
+    truncated = False
+
+    def cpu_reader(_pid: int) -> float:
+        nonlocal initialized, truncated
+        if not initialized:
+            events_path.parent.mkdir(parents=True, exist_ok=True)
+            _append_event(events_path, {"event": "phase"})
+            initialized = True
+        elif not truncated and clock.t >= 2.0:
+            events_path.write_text("", encoding="utf-8")
+            truncated = True
+        return clock.t * 0.5
+
+    runner, cwd = _runner(
+        tmp_path,
+        proc=proc,
+        clock=clock,
+        cpu_reader=cpu_reader,
+        cpu_without_progress_bound_s=2.0,
+        expect_next_event_within_s=1000.0,
+    )
+
+    with pytest.raises(liveness.LivenessHungExpired) as excinfo:
+        runner(("pytest", "-q"), env={}, cwd=cwd, timeout=1000.0)
+
+    assert truncated
+    assert clock.t == 5.0
+    assert excinfo.value.resource_evidence["decision"] == "cpu-without-progress"
+
+
 def test_session_finish_redates_the_wall_backstop_once(tmp_path: Path) -> None:
     clock = _FakeClock()
     proc = _ScriptedProc(pid=7011)
