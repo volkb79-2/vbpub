@@ -103,13 +103,36 @@ def test_doctor_process_probe_returns_the_real_result(tmp_path):
     assert result.stdout == "doctor-ok\n"
 
 
-def test_delegated_process_runs_the_real_child_and_returns_its_status(tmp_path):
+def test_doctor_process_probe_returns_a_nonzero_result_without_raising(monkeypatch):
+    completed = subprocess.CompletedProcess(
+        ["doctor-probe"], 7, stdout="probe output\n", stderr="probe failed\n",
+    )
+
+    def run_process(argv, **kwargs):
+        if kwargs.get("check", False) and completed.returncode:
+            raise subprocess.CalledProcessError(
+                completed.returncode, argv, output=completed.stdout,
+                stderr=completed.stderr,
+            )
+        return completed
+
+    monkeypatch.setattr(doctor, "run_process", run_process)
+
+    result = doctor._run(["doctor-probe"])
+
+    assert result.returncode == 7
+    assert result.stdout == "probe output\n"
+    assert result.stderr == "probe failed\n"
+
+
+def test_delegated_process_runs_the_real_child_and_returns_its_status(tmp_path, capfd):
     result = delegated._run(
         [sys.executable, "-c", "print('delegated'); raise SystemExit(3)"],
         cwd=tmp_path,
     )
 
     assert result == 3
+    assert "delegated\n" in capfd.readouterr().out
 
 
 def test_uncaptured_probe_forwards_only_supplied_keywords(monkeypatch):
