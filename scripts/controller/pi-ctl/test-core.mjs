@@ -331,6 +331,7 @@ test("bounded delivery reports accept the maximum-length peer message id", async
 	const f = fixture();
 	t.after(f.cleanup);
 	const messageId = `m${"x".repeat(127)}`;
+	f.throwOnSend(3);
 	fs.writeFileSync(path.join(f.root, "inbox", "receiver", "long-id.msg"),
 		`from=peer\nid=${messageId}\nto=receiver\ncreated=2027-01-15T08:00:00.000Z\n\ndelivery cannot be confirmed\n`, { mode: 0o600 });
 	for (const advance of [0, 1001, 5001, 30_001]) {
@@ -441,7 +442,7 @@ test("wake-ups persist across restart, fire overdue once, and can be listed or c
 	await restartedHandlers.get("session_start")({}, restartedContext);
 	assert.equal(restartedMessages.filter(({ message }) => message.customType === "pi-ctl-wakeup").length, 1);
 	assert.match(restartedMessages[0].message.content, /original prompt/);
-	assert.match(restartedMessages[0].message.content, new RegExp(id));
+	assert.match(restartedMessages[0].message.content, new RegExp(persisted.id));
 	assert.equal(JSON.parse(fs.readFileSync(path.join(f.root, "wakeups", "receiver.json"), "utf8")).length, 0);
 });
 
@@ -582,6 +583,10 @@ test("self-compaction runs only at agent_end and carries the goal, in-flight ids
 	assert.match(f.calls[0].message.content, /continue the original goal/);
 	const log = fs.readFileSync(path.join(f.root, "events", "receiver.jsonl"), "utf8");
 	assert.doesNotMatch(log, /Keep this original goal verbatim/);
+	f.events.get("session_shutdown")({});
+	await f.flushPromises();
+	const finalEvents = fs.readFileSync(path.join(f.root, "events", "receiver.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line));
+	assert.equal(finalEvents.at(-1).event, "shutdown", "queued Pi events cannot write extension state after session shutdown");
 });
 
 test("automatic compaction returns a supported persisted summary with role and goal readback", (t) => {

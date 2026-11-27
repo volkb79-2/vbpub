@@ -412,7 +412,7 @@ export function createController(pi, injected = {}, overrides = {}) {
 		const recent = sendWindow(guard, to, time);
 		if (!bypassLimit && recent.length >= config.sendLimit) {
 			log("send_refused", { to, reason: "per-peer rate limit" });
-			return { ok: false, reason: `per-peer send limit reached for ${to}; retry after the rate window` };
+			return { ok: false, reason: `per-peer rate limit reached for ${to}; retry after the rate window` };
 		}
 		if (!bypassLimit) {
 			recent.push({ id: messageId, time, status: "reserved" });
@@ -681,9 +681,11 @@ export function createController(pi, injected = {}, overrides = {}) {
 		let delivered = 0;
 		try {
 			for (const file of regularMessageFiles(dirs.processing)) {
+				if (stopped) break;
 				if (await processClaim(path.join(dirs.processing, file), ctx)) delivered++;
 			}
 			for (const file of regularMessageFiles(dirs.ownInbox)) {
+				if (stopped) break;
 				const source = path.join(dirs.ownInbox, file);
 				const claimPath = path.join(dirs.processing, `${makeId()}.msg`);
 				try {
@@ -735,6 +737,7 @@ export function createController(pi, injected = {}, overrides = {}) {
 	}
 
 	async function fireWakeup(id, ctx = currentContext) {
+		if (stopped) return false;
 		const entries = readWakeups();
 		const index = entries.findIndex((entry) => entry.id === id);
 		if (index < 0) return false;
@@ -779,6 +782,7 @@ export function createController(pi, injected = {}, overrides = {}) {
 	}
 
 	async function armWakeups(ctx = currentContext) {
+		if (stopped) return;
 		for (const handle of wakeupTimers.values()) timers.clearTimeout(handle);
 		wakeupTimers.clear();
 		let entries = readWakeups();
@@ -796,6 +800,7 @@ export function createController(pi, injected = {}, overrides = {}) {
 			const delay = Math.max(0, dueAt - now());
 			if (delay === 0) {
 				await fireWakeup(entry.id, ctx);
+				if (stopped) return;
 				continue;
 			}
 			const handle = timers.setTimeout(() => {
@@ -875,6 +880,7 @@ export function createController(pi, injected = {}, overrides = {}) {
 	}
 
 	function appendMonitorLine(monitor, line) {
+		if (stopped || monitor.shuttingDown) return;
 		const original = Buffer.from(line, "utf8");
 		const capped = original.subarray(0, CONFIG_DEFAULTS.monitorMaxLineBytes).toString("utf8");
 		monitor.pendingLines.push(original.length > CONFIG_DEFAULTS.monitorMaxLineBytes ? `${capped} [line truncated]` : capped);
@@ -889,6 +895,7 @@ export function createController(pi, injected = {}, overrides = {}) {
 	}
 
 	function consumeMonitorChunk(monitor, chunk) {
+		if (stopped || monitor.shuttingDown) return;
 		monitor.stdoutBuffer += Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk);
 		if (!monitor.ready) {
 			const newline = monitor.stdoutBuffer.indexOf("\n");
@@ -924,7 +931,7 @@ export function createController(pi, injected = {}, overrides = {}) {
 	}
 
 	function failMonitorReadiness(monitor, reason) {
-		if (monitor.ready || monitor.readinessFailed) return;
+		if (stopped || monitor.shuttingDown || monitor.ready || monitor.readinessFailed) return;
 		monitor.readinessFailed = true;
 		if (monitor.readinessTimer !== null) timers.clearTimeout(monitor.readinessTimer);
 		monitor.readinessTimer = null;
@@ -934,7 +941,7 @@ export function createController(pi, injected = {}, overrides = {}) {
 	}
 
 	function queueMonitorFlush(monitor, delay) {
-		if (monitor.flushTimer !== null || monitor.finished) return;
+		if (stopped || monitor.shuttingDown || monitor.flushTimer !== null || monitor.finished) return;
 		monitor.flushTimer = timers.setTimeout(() => {
 			monitor.flushTimer = null;
 			return flushMonitor(monitor);
@@ -942,6 +949,11 @@ export function createController(pi, injected = {}, overrides = {}) {
 	}
 
 	async function finishMonitorIfDrained(monitor, fromFlush = false) {
+		if (stopped || monitor.shuttingDown) {
+			monitor.finished = true;
+			monitors.delete(monitor.id);
+			return;
+		}
 		if (!monitor.processClosed || monitor.pendingLines.length > 0 || (monitor.flushing && !fromFlush)) return;
 		if (monitor.finalNotice === null) {
 			monitor.finished = true;
@@ -964,7 +976,7 @@ export function createController(pi, injected = {}, overrides = {}) {
 	}
 
 	async function flushMonitor(monitor) {
-		if (monitor.finished || monitor.flushing) return;
+		if (stopped || monitor.shuttingDown || monitor.finished || monitor.flushing) return;
 		monitor.flushing = true;
 		try {
 			const time = now();
@@ -1014,6 +1026,14 @@ export function createController(pi, injected = {}, overrides = {}) {
 	function closeMonitor(monitor, code, signal, error = null) {
 		if (monitor.processClosed) return;
 		monitor.processClosed = true;
+		if (stopped || monitor.shuttingDown) {
+			monitor.rejectReady?.(new Error("pi session shut down before monitor completion"));
+			monitor.rejectReady = null;
+			monitor.resolveReady = null;
+			monitor.finished = true;
+			monitors.delete(monitor.id);
+			return;
+		}
 		if (monitor.readinessTimer !== null) timers.clearTimeout(monitor.readinessTimer);
 		monitor.readinessTimer = null;
 		if (monitor.expiryTimer !== null) timers.clearTimeout(monitor.expiryTimer);
@@ -1105,6 +1125,7 @@ export function createController(pi, injected = {}, overrides = {}) {
 			flushing: false,
 			expiryTimer: null,
 			processClosed: false,
+			shuttingDown: false,
 			finished: false,
 			stopRequested: false,
 			queueLimitNotice: false,
@@ -1132,6 +1153,7 @@ export function createController(pi, injected = {}, overrides = {}) {
 		}
 		monitor.child.stdout.on("data", (chunk) => consumeMonitorChunk(monitor, chunk));
 		monitor.child.stderr.on("data", (chunk) => {
+			if (stopped || monitor.shuttingDown) return;
 			const text = Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk);
 			monitor.stderr = `${monitor.stderr}${text}`.slice(-8192);
 		});
@@ -1146,11 +1168,13 @@ export function createController(pi, injected = {}, overrides = {}) {
 		}, CONFIG_DEFAULTS.monitorReadyTimeoutMs);
 		try {
 			await ready;
+			if (stopped || monitor.shuttingDown) throw new Error("pi session shut down before monitor readiness");
 		} catch (error) {
 			throw new Error(`monitor refused: ${error.message}`);
 		}
 		monitor.expiryTimer = timers.setTimeout(async () => {
 			monitor.expiryTimer = null;
+			if (stopped || monitor.shuttingDown) return;
 			monitor.endReason = "expired";
 			monitor.stopRequested = true;
 			monitor.expired = true;
@@ -1307,7 +1331,7 @@ export function createController(pi, injected = {}, overrides = {}) {
 	}
 
 	function scheduleAlertRetry(delay) {
-		if (alertRetryTimer !== null) return;
+		if (stopped || alertRetryTimer !== null) return;
 		alertRetryTimer = timers.setTimeout(() => {
 			alertRetryTimer = null;
 			attemptCompactionAlert();
@@ -1315,6 +1339,7 @@ export function createController(pi, injected = {}, overrides = {}) {
 	}
 
 	function attemptCompactionAlert() {
+		if (stopped) return;
 		const state = readCompactionState();
 		if (!state.alertPending || state.alertSent) return;
 		try {
@@ -1357,6 +1382,7 @@ export function createController(pi, injected = {}, overrides = {}) {
 	}
 
 	function triggerSelfCompaction(ctx) {
+		if (stopped) return;
 		const tokens = ctx?.getContextUsage?.()?.tokens ?? null;
 		log("agent_end", { tokens });
 		if (tokens === null || tokens < config.compactAt || compactionAttempt) return;
@@ -1372,6 +1398,7 @@ export function createController(pi, injected = {}, overrides = {}) {
 			if (attempt.settled) return;
 			attempt.settled = true;
 			compactionAttempt = null;
+			if (stopped) return;
 			recordCompactionFailure(reason, ctx?.getContextUsage?.()?.tokens ?? tokens);
 		};
 		attempt.fail = fail;
@@ -1383,11 +1410,12 @@ export function createController(pi, injected = {}, overrides = {}) {
 					if (attempt.settled) return;
 					attempt.settled = true;
 					compactionAttempt = null;
+					if (stopped) return;
 					const afterTokens = ctx?.getContextUsage?.()?.tokens ?? null;
 					if (afterTokens !== null && afterTokens >= config.compactAt) recordCompactionFailure("context remained above the threshold", afterTokens);
 					else recordCompactionSuccess(afterTokens);
 					try {
-					inject("pi-ctl-resume", `compact-resume-${name}-${makeId()}`, `[Resume after compaction] Compaction completed. Run scripts/controller/resume-read.sh ${name}, then continue the original goal and the in-flight work.`);
+						inject("pi-ctl-resume", `compact-resume-${name}-${makeId()}`, `[Resume after compaction] Compaction completed. Run scripts/controller/resume-read.sh ${name}, then continue the original goal and the in-flight work.`);
 					} catch {
 						log("compaction_resume_inject_error", {});
 					}
@@ -1575,27 +1603,33 @@ export function createController(pi, injected = {}, overrides = {}) {
 		log("start", { name, pid });
 		if (!initialized) {
 			await recoverMonitors();
+			if (stopped) return;
 			initialized = true;
 		}
+		if (stopped) return;
 		if (readCompactionState().alertPending) attemptCompactionAlert();
 		await pollInbox(ctx);
+		if (stopped) return;
 		await armWakeups(ctx);
+		if (stopped) return;
 		writeReadyMarker();
 		if (pollTimer !== null) timers.clearInterval(pollTimer);
 		pollTimer = timers.setInterval(() => {
 			void pollInbox(currentContext).catch(() => {
-				log("inbox_poll_error", { reason: "poll failed" });
+				if (!stopped) log("inbox_poll_error", { reason: "poll failed" });
 			});
 		}, config.pollMs);
 	});
 	pi.on("turn_end", (_event, ctx) => {
+		if (stopped) return;
 		currentContext = ctx;
 		const tokens = ctx?.getContextUsage?.()?.tokens ?? null;
 		log("turn_tokens", { tokens });
-		void pollInbox(ctx).catch(() => log("inbox_poll_error", { reason: "turn reconciliation failed" }));
-		void armWakeups(ctx).catch(() => log("wakeup_reconcile_error", {}));
+		void pollInbox(ctx).catch(() => { if (!stopped) log("inbox_poll_error", { reason: "turn reconciliation failed" }); });
+		void armWakeups(ctx).catch(() => { if (!stopped) log("wakeup_reconcile_error", {}); });
 	});
 	pi.on("message_end", (event) => {
+		if (stopped) return;
 		const message = event?.message;
 		const id = message?.details?.piCtlId;
 		if (message?.role === "custom" && typeof message.customType === "string" && typeof id === "string") {
@@ -1603,12 +1637,14 @@ export function createController(pi, injected = {}, overrides = {}) {
 		}
 	});
 	pi.on("agent_end", (_event, ctx) => {
+		if (stopped) return;
 		currentContext = ctx;
-		void pollInbox(ctx).catch(() => log("inbox_poll_error", { reason: "agent reconciliation failed" }));
-		void armWakeups(ctx).catch(() => log("wakeup_reconcile_error", {}));
+		void pollInbox(ctx).catch(() => { if (!stopped) log("inbox_poll_error", { reason: "agent reconciliation failed" }); });
+		void armWakeups(ctx).catch(() => { if (!stopped) log("wakeup_reconcile_error", {}); });
 		triggerSelfCompaction(ctx);
 	});
 	pi.on("session_before_compact", (event, ctx) => {
+		if (stopped) return;
 		log("compaction_before", { reason: event?.reason ?? "unknown" });
 		if (event?.reason === "threshold" || event?.reason === "overflow") {
 			const compaction = automaticCompactionResult(event, ctx);
@@ -1616,21 +1652,38 @@ export function createController(pi, injected = {}, overrides = {}) {
 		}
 	});
 	pi.on("session_compact", (event) => {
+		if (stopped) return;
 		log("compaction_event", { result: "completed", reason: event?.reason ?? "unknown" });
 	});
 	pi.on("session_compact_failed", (event) => {
+		if (stopped) return;
 		log("compaction_event", { result: "failed", reason: event?.reason ?? "unknown" });
 		if (compactionAttempt) compactionAttempt.fail("session compaction event failed");
 	});
 	pi.on("session_shutdown", () => {
+		if (stopped) return;
 		stopped = true;
+		if (compactionAttempt) compactionAttempt.settled = true;
+		compactionAttempt = null;
 		if (pollTimer !== null) timers.clearInterval(pollTimer);
 		pollTimer = null;
 		for (const handle of wakeupTimers.values()) timers.clearTimeout(handle);
 		wakeupTimers.clear();
 		if (alertRetryTimer !== null) timers.clearTimeout(alertRetryTimer);
 		alertRetryTimer = null;
-		for (const monitor of monitors.values()) requestMonitorStop(monitor, "session shutdown");
+		for (const monitor of monitors.values()) {
+			monitor.shuttingDown = true;
+			for (const handle of [monitor.readinessTimer, monitor.flushTimer, monitor.expiryTimer]) {
+				if (handle !== null) timers.clearTimeout(handle);
+			}
+			monitor.readinessTimer = null;
+			monitor.flushTimer = null;
+			monitor.expiryTimer = null;
+			monitor.rejectReady?.(new Error("pi session shut down before monitor readiness"));
+			monitor.rejectReady = null;
+			monitor.resolveReady = null;
+			requestMonitorStop(monitor, "session shutdown");
+		}
 		releaseLock();
 		log("shutdown", { name });
 	});

@@ -6,6 +6,8 @@ set -uo pipefail
 # a check reads or writes. Relying on the caller ("run it with env -u") moved the
 # same defect into the operator's shell, where it read as a product bug.
 unset CONTROLLER_HOME CONTROLLER_RUNS_DIR CONTROLLER_LOGS_DIR CONTROLLER_REPO CONTROLLER_HOSTS_FILE
+# PI_CTL_CORE_MODULE is a mutation-test seam, never suite-wide configuration.
+unset PI_CTL_CORE_MODULE
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 REPO_ROOT=$(cd -- "$SCRIPT_DIR/../../.." && pwd -P)
 queue_test=$REPO_ROOT/scripts/netcup/runner/tests/test-queue.sh

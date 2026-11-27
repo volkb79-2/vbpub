@@ -1930,8 +1930,8 @@ mutant("scripts/controller/dev_profile.py", "dev-profile-work-mount", 'if mount.
 # pi controller harness: behavioral mutants for the four safety boundaries.
 pi_ctl_mutant(
     "claim-before-inject",
-    "\t\t\t\t\tfs.renameSync(source, claimPath);\n\t\t\t\t\tclaimed++;\n\t\t\t\t\tif (await processClaim(claimPath)) delivered++;",
-    "\t\t\t\t\tclaimed++;\n\t\t\t\t\tif (await processClaim(source)) delivered++;",
+    "\t\t\t\t\tfs.renameSync(source, claimPath);\n\t\t\t\t\tclaimed++;\n\t\t\t\t\tif (await processClaim(claimPath, ctx)) delivered++;",
+    "\t\t\t\t\tclaimed++;\n\t\t\t\t\tif (await processClaim(source, ctx)) delivered++;",
 )
 pi_ctl_mutant("name-validation", '\t\trequireName(to, "to");', "\t\t// mutant: recipient name validation omitted")
 pi_ctl_mutant('agent-end-only', '\tpi.on("agent_end", (_event, ctx) => {', '\tpi.on("turn_end", (_event, ctx) => {')
