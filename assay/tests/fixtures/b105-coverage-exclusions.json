@@ -18,7 +18,7 @@
       "reason": "TYPE_CHECKING imports MutantJob and CommandResult only for annotations; importing mutation or runner here would create a runtime cycle."
     },
     "src/assay/mutation_witness.py": {
-      "lines": [22, 23],
+      "lines": [23],
       "reason": "TYPE_CHECKING imports CommandPlan only for annotations; importing runner here would create a runtime cycle."
     },
     "src/assay/git.py": {

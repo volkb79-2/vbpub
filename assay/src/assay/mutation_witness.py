@@ -1165,8 +1165,10 @@ def inject_witness_plugin(
         )
     existing = env.get("PYTHONPATH", "")
     paths = existing.split(os.pathsep) if existing else []
+    pythonpath_insertions = plan.assay_pythonpath_insertions
     if str(plugin_dir) not in paths:
         env["PYTHONPATH"] = os.pathsep.join([str(plugin_dir), *paths])
+        pythonpath_insertions = (str(plugin_dir), *pythonpath_insertions)
     cli_only = plan.argv_appended if plan.cli_argv_appended is None else plan.cli_argv_appended
     already_enabled = any(
         token == f"-p{WITNESS_PLUGIN_MODULE}"
@@ -1193,6 +1195,7 @@ def inject_witness_plugin(
                 if plan.pre_injection_env_effective is not None
                 else MappingProxyType(dict(plan.env_effective))
             ),
+            assay_pythonpath_insertions=pythonpath_insertions,
             cli_argv_appended=cli_only,
         ),
         active=True,

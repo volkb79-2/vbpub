@@ -583,8 +583,11 @@ JUDGE_GENERATIONS_DIR = "judges"
 SHARD_MANIFEST_NAME = "shard.manifest"
 SHARD_MANIFEST_SCHEMA = "assay-shard-store/1"
 JUDGE_COMPONENTS_NAME = "judge-components.json"
-JUDGE_COMPONENTS_SCHEMA = "assay-judge-components/1"
+JUDGE_COMPONENTS_SCHEMA = "assay-judge-components/2"
 _JUDGE_COMPONENTS_LIMIT = 256 * 1024
+_JUDGE_COMPONENTS_MAX_PASSTHROUGH_NAMES = 128
+_JUDGE_COMPONENTS_MAX_ENV_NAME_LENGTH = 128
+_ENVIRONMENT_VARIABLE_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
 _SHARD_MANIFEST_KEYS = frozenset(
     {"schema", "shard_index", "shard_count", "judge_sha256", "plan_sha256", "candidate_total"}
 )
@@ -1222,6 +1225,7 @@ def read_judge_components(
         "declared_env",
         "environment_names",
         "passthrough_names_sha256",
+        "passthrough_other_values_sha256",
         "cwd",
         "project_prefix",
         "link_paths",
@@ -1242,10 +1246,16 @@ def read_judge_components(
     values = components.get("passthrough_values")
     if (
         not isinstance(names, list)
-        or any(not isinstance(name, str) for name in names)
+        or len(names) > _JUDGE_COMPONENTS_MAX_PASSTHROUGH_NAMES
+        or any(
+            not isinstance(name, str)
+            or len(name) > _JUDGE_COMPONENTS_MAX_ENV_NAME_LENGTH
+            or _ENVIRONMENT_VARIABLE_NAME_RE.fullmatch(name) is None
+            for name in names
+        )
         or names != sorted(set(names))
         or not isinstance(values, dict)
-        or set(values) != set(names)
+        or set(values) != set(names) & {"PATH", "PYTHONPATH"}
         or any(
             not isinstance(value, str) or _CANDIDATE_ID_RE.fullmatch(value) is None
             for value in values.values()

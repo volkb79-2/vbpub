@@ -920,10 +920,14 @@ class CommandPlan:
     #: remembering to opt out.
     cwd_declared: str | None = None
     #: (B577) The resolved environment before assay adds run-local plugin
-    #: paths. Child execution keeps ``env_effective``; judge identity reads
-    #: this snapshot for ``PYTHONPATH`` so liveness and cold-witness plugin
-    #: directories do not make otherwise identical resumes miss.
+    #: paths. Child execution keeps ``env_effective``; judge identity uses
+    #: this snapshot for ``PYTHONPATH`` only when its recorded insertions
+    #: exactly reproduce the current effective value.
     pre_injection_env_effective: Mapping[str, str] | None = None
+    #: Exact assay-owned path entries prepended to PYTHONPATH, in their
+    #: current left-to-right order. Identity may use the pre-injection value
+    #: only after reproducing this complete prefix against ``env_effective``.
+    assay_pythonpath_insertions: tuple[str, ...] = ()
     #: (B245 U5b) The changed-lines diff the ``{assay.changed_diff}``
     #: placeholder in ``argv_declared`` resolves to; ``None`` on every plan
     #: but the ingested cargo-mutants baseline's.

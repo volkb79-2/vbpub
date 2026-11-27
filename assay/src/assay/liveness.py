@@ -655,6 +655,9 @@ def inject_liveness_plugin(
             if plan.pre_injection_env_effective is not None
             else MappingProxyType(dict(plan.env_effective))
         ),
+        assay_pythonpath_insertions=(
+            str(liveness_dir), *plan.assay_pythonpath_insertions
+        ),
         cli_argv_appended=cli_only,
     )
     return LivenessInjection(
