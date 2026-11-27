@@ -1927,7 +1927,7 @@ for name, before, after in (
 mutant("scripts/controller/dev_profile.py", "dev-profile-image-regex", 'IMAGE = re.compile(r"^[a-z0-9][a-z0-9._/:@-]*$")', 'IMAGE = re.compile(r"(?s).*")')
 mutant("scripts/controller/dev_profile.py", "dev-profile-work-mount", 'if mount.startswith("{work}:") and dest != "/work":', 'if False:')
 
-# pi controller harness: behavioral mutants for the four safety boundaries.
+# pi controller harness: behavioral mutants for delivery, lifecycle and state-path safety.
 pi_ctl_mutant(
     "claim-before-inject",
     "\t\t\t\t\tfs.renameSync(source, claimPath);\n\t\t\t\t\tclaimed++;\n\t\t\t\t\tif (await processClaim(claimPath, ctx)) delivered++;",
@@ -1936,3 +1936,17 @@ pi_ctl_mutant(
 pi_ctl_mutant("name-validation", '\t\trequireName(to, "to");', "\t\t// mutant: recipient name validation omitted")
 pi_ctl_mutant('agent-end-only', '\tpi.on("agent_end", (_event, ctx) => {', '\tpi.on("turn_end", (_event, ctx) => {')
 pi_ctl_mutant("wrapper-required", "\t\tverifyWrapper();", "\t\t// mutant: PID namespace wrapper is not required")
+pi_ctl_mutant(
+    "root-symlink-components",
+    "\tassertNoSymlinkPathComponents(fs, path, rootInput);",
+    "\t// mutant: configured root symlink components are not checked",
+)
+pi_ctl_mutant(
+    "inherited-flock-required",
+    "\tconst sessionLockFd = typeof injected.verifySessionLock === \"function\"\n"
+    "\t\t? injected.verifySessionLock(root, name)\n"
+    "\t\t: verifySessionLockDescriptor(fs, path, root, name, env);",
+    "\tconst sessionLockFd = typeof injected.verifySessionLock === \"function\"\n"
+    "\t\t? injected.verifySessionLock(root, name)\n"
+    "\t\t: 12;",
+)

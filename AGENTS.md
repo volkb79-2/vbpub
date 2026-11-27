@@ -912,6 +912,23 @@ launch uses explicit extensions with `--no-extensions` and `--no-approve`; it do
 write project `.pi/settings.json` or wait for a trust dialog. Pi's `--no-approve` ignores
 trust-gated project-local resources, while the explicitly named extensions still load.
 
+Every component of the configured `PI_CTL_ROOT` path is checked as written before
+normalization; any symlink component is refused, including a final symlink followed by
+`/` or a symlink before `..`. This applies to system-owned components too. If one is a
+symlink, choose an absolute physical path with no symlink components. The parent-directory
+swap race after checking is BY DESIGN: it requires a hostile process with the same user
+identity, which already has read and write access to the state root. This check is not a
+tamper boundary against that user.
+
+The pane requires util-linux `flock` and holds the kernel lock on the persistent
+`locks/<role>.lock` file for the full pi process lifetime. The file is never unlinked or
+replaced; the kernel releases the lock when pi exits or crashes. Symlink and non-regular
+lock paths are refused. Before creating state, the extension checks its inherited file
+descriptor against this role's lock path and inode and requires an exclusive flock record
+in `/proc/self/fdinfo/<fd>`. A hand-started pi without the pane descriptor is refused.
+`--print-command` shows the lock path and requirement without starting anything. The
+registered suite checks that tester-unified provides `flock`.
+
 ```bash
 scripts/controller/pi-ctl-launch.sh hostobs
 PI_CTL_PROVIDER=opendesign_github2 scripts/controller/pi-ctl-launch.sh hostobs
@@ -975,6 +992,14 @@ intact. The event log records lifecycle facts and token counts, never message bo
 environment values.
 The controller suite covers the harness with a fake pi API; live provider and TUI behavior
 still need an operator smoke run after account access is available.
+
+The installed pi 1.6.0 bash tool starts its shell with only standard input, output and
+error in the Node `stdio` array (`dist/core/tools/bash.js:75-79`). Node 26 treats
+unspecified child descriptors 3 and above as `ignore` ([child-process stdio
+documentation](https://nodejs.org/api/child_process.html#optionsstdio)). The monitor
+spawn explicitly sets the controller lock descriptor to `ignore` in an extended stdio
+array, so neither a tool shell nor a monitor launched through `pi-pidns-bash` can keep
+the lock after pi exits.
 
 ## Persist reusable work in the repository
 

@@ -10,6 +10,10 @@ unset CONTROLLER_HOME CONTROLLER_RUNS_DIR CONTROLLER_LOGS_DIR CONTROLLER_REPO CO
 unset PI_CTL_CORE_MODULE
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 REPO_ROOT=$(cd -- "$SCRIPT_DIR/../../.." && pwd -P)
+command -v flock >/dev/null 2>&1 || {
+  echo 'FAIL: tester-unified image must provide util-linux flock for pi controller session locks' >&2
+  exit 2
+}
 queue_test=$REPO_ROOT/scripts/netcup/runner/tests/test-queue.sh
 files=(
   "$SCRIPT_DIR/../ctl-status.sh"

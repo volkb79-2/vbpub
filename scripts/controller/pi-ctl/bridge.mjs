@@ -3,6 +3,7 @@ import fsModule from "node:fs";
 import pathModule from "node:path";
 import { randomUUID } from "node:crypto";
 import { pathToFileURL } from "node:url";
+import { assertNoSymlinkPathComponents } from "./core.mjs";
 
 const NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
@@ -39,6 +40,7 @@ function repositoryRoot(fs, path, cwd) {
 
 function assertExternalRoot(fs, path, root, cwd) {
 	if (!path.isAbsolute(root)) throw new Error("PI_CTL_ROOT must be an absolute path");
+	assertNoSymlinkPathComponents(fs, path, root);
 	const repository = repositoryRoot(fs, path, cwd);
 	if (!repository) return;
 	const candidate = canonicalMaybeMissing(fs, path, path.resolve(root));

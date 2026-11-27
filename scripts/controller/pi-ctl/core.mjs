@@ -70,6 +70,58 @@ function canonicalMaybeMissing(fs, path, candidate) {
 	return path.join(fs.realpathSync(probe), ...missing);
 }
 
+export function assertNoSymlinkPathComponents(fs, path, candidate, label = "PI_CTL_ROOT") {
+	if (!path.isAbsolute(candidate)) throw new Error(`${label} must be an absolute path`);
+	let current = path.parse(candidate).root;
+	for (const component of candidate.slice(current.length).split(path.sep)) {
+		if (!component || component === ".") continue;
+		if (component === "..") {
+			current = path.dirname(current);
+			continue;
+		}
+		current = path.join(current, component);
+		try {
+			if (fs.lstatSync(current).isSymbolicLink()) throw new Error(`${label} contains a symlink path component: ${current}`);
+		} catch (error) {
+			if (error?.code !== "ENOENT" && error?.code !== "ENOTDIR") throw error;
+		}
+	}
+	return path.resolve(candidate);
+}
+
+export function verifySessionLockDescriptor(fs, path, root, name, env) {
+	const rawFd = env.PI_CTL_LOCK_FD;
+	if (!/^[0-9]+$/.test(rawFd ?? "") || Number(rawFd) < 3 || Number(rawFd) > 255) {
+		throw new Error("controller session lock is missing; start pi through scripts/controller/pi-ctl-pane.sh");
+	}
+	const fd = Number(rawFd);
+	const lockFile = path.join(root, "locks", `${name}.lock`);
+	let pathStat;
+	try {
+		pathStat = fs.lstatSync(lockFile);
+	} catch (error) {
+		throw new Error(`controller session lock path is missing or unsafe: ${error.message}`);
+	}
+	if (!pathStat.isFile() || pathStat.isSymbolicLink()) throw new Error("controller session lock path must be a regular, non-symlink file");
+	let fdStat;
+	let fdTarget;
+	let fdInfo;
+	try {
+		fdStat = fs.fstatSync(fd);
+		fdTarget = fs.readlinkSync(`/proc/self/fd/${fd}`);
+		fdInfo = fs.readFileSync(`/proc/self/fdinfo/${fd}`, "utf8");
+	} catch {
+		throw new Error("controller session lock descriptor is not inherited by pi; start pi through scripts/controller/pi-ctl-pane.sh");
+	}
+	if (!fdStat.isFile() || fdStat.dev !== pathStat.dev || fdStat.ino !== pathStat.ino || fdTarget !== lockFile) {
+		throw new Error("controller session lock descriptor does not match this role's lock file");
+	}
+	const lockHeld = fdInfo.split("\n").some((line) => /^lock:\s*\d+:\s+FLOCK\s+ADVISORY\s+WRITE(?:\s|$)/.test(line));
+	if (!lockHeld) throw new Error("controller session lock descriptor has no kernel flock; start pi through scripts/controller/pi-ctl-pane.sh");
+	fs.fchmodSync(fd, 0o600);
+	return fd;
+}
+
 function findRepositoryRoot(fs, path, cwd) {
 	let current = path.resolve(cwd);
 	while (true) {
@@ -189,19 +241,6 @@ function readJsonFile(fs, filename, fallback) {
 	}
 }
 
-function parseProcStartTicks(fs, pid) {
-	try {
-		const stat = fs.readFileSync(`/proc/${pid}/stat`, "utf8");
-		const close = stat.lastIndexOf(")");
-		if (close < 0) return null;
-		const fields = stat.slice(close + 1).trim().split(/\s+/);
-		const startTicks = fields[19]; // /proc/<pid>/stat field 22, after pid and comm.
-		return /^[0-9]+$/.test(startTicks ?? "") ? startTicks : null;
-	} catch {
-		return null;
-	}
-}
-
 function pruneTimes(values, now, windowMs) {
 	return values.filter((value) => Number.isSafeInteger(value) && value > now - windowMs && value <= now);
 }
@@ -236,11 +275,23 @@ export function createController(pi, injected = {}, overrides = {}) {
 	if (!home && !env.PI_CTL_ROOT && !overrides.root) throw new Error("HOME is required when PI_CTL_ROOT is unset");
 	const rootInput = overrides.root ?? env.PI_CTL_ROOT ?? path.join(home, "controller", "pi-ctl");
 	if (!path.isAbsolute(rootInput)) throw new Error("PI_CTL_ROOT must be an absolute path");
+	assertNoSymlinkPathComponents(fs, path, rootInput);
 	const root = path.resolve(rootInput);
+	for (const relative of [
+		"inbox", path.join("inbox", name), "processing", path.join("processing", name),
+		"rejected", path.join("rejected", name), "locks", path.join("locks", `${name}.lock`),
+		"guards", "events", "wakeups", "monitors", "compaction", "sessions", path.join("sessions", `${name}.session`),
+	]) assertNoSymlinkPathComponents(fs, path, path.join(root, relative));
 	const repository = findRepositoryRoot(fs, path, cwd);
 	if (repository) {
 		const canonicalRoot = canonicalMaybeMissing(fs, path, root);
 		if (isInside(path, canonicalRoot, repository)) throw new Error("PI_CTL_ROOT must be outside the repository");
+	}
+	const sessionLockFd = typeof injected.verifySessionLock === "function"
+		? injected.verifySessionLock(root, name)
+		: verifySessionLockDescriptor(fs, path, root, name, env);
+	if (!Number.isSafeInteger(sessionLockFd) || sessionLockFd < 3 || sessionLockFd > 255) {
+		throw new Error("controller session lock verifier did not return a valid inherited descriptor");
 	}
 	const config = {
 		pollMs: envInteger(env, "PI_CTL_POLL_MS", CONFIG_DEFAULTS.pollMs, { min: 100, max: 60_000 }),
@@ -272,7 +323,6 @@ export function createController(pi, injected = {}, overrides = {}) {
 	}
 	const eventFile = path.join(dirs.events, `${name}.jsonl`);
 	const guardFile = path.join(dirs.guards, `${name}.json`);
-	const lockFile = path.join(dirs.locks, `${name}.lock`);
 	const wakeupFile = path.join(dirs.wakeups, `${name}.json`);
 	const monitorFile = path.join(dirs.monitors, `${name}.json`);
 	const compactionFile = path.join(dirs.compaction, `${name}.json`);
@@ -288,7 +338,6 @@ export function createController(pi, injected = {}, overrides = {}) {
 	const wrapperPath = overrides.wrapperPath ?? injected.wrapperPath ?? env.PI_CTL_PIDNS_WRAPPER ?? null;
 	let pollTimer = null;
 	let stopped = false;
-	let lockRecord = null;
 	let initialized = false;
 	let compactionAttempt = null;
 	let alertRetryTimer = null;
@@ -876,6 +925,7 @@ export function createController(pi, injected = {}, overrides = {}) {
 		const childEnv = { ...env };
 		delete childEnv.OPENDESIGN_API_KEY_VOLKER;
 		delete childEnv.OPENDESIGN_API_KEY_GITHUB2;
+		delete childEnv.PI_CTL_LOCK_FD;
 		return childEnv;
 	}
 
@@ -1136,10 +1186,13 @@ export function createController(pi, injected = {}, overrides = {}) {
 		try {
 			writeMonitorState();
 			const wrappedCommand = `printf '%s\\n' ${shellQuote(readinessMarker)}; exec /bin/bash -c ${shellQuote(command)}`;
+			const childStdio = ["ignore", "pipe", "pipe"];
+			while (childStdio.length <= sessionLockFd) childStdio.push("ignore");
 			monitor.child = spawn(wrapperPath, ["-c", wrappedCommand], {
 				cwd,
 				env: monitorEnv(),
-				stdio: ["ignore", "pipe", "pipe"],
+				// Explicitly close the inherited controller lock in the wrapper and its children.
+				stdio: childStdio,
 			});
 		} catch (error) {
 			monitors.delete(id);
@@ -1427,65 +1480,9 @@ export function createController(pi, injected = {}, overrides = {}) {
 		}
 	}
 
-	function ownProcStartTicks() {
-		return parseProcStartTicks(fs, pid) ?? "unknown";
-	}
-
-	function claimLock() {
-		const record = `${pid} ${ownProcStartTicks()}\n`;
-		for (let attempt = 0; attempt < 4; attempt++) {
-			if (atomicCreateNoClobber(fs, path, lockFile, record)) {
-				lockRecord = record;
-				return;
-			}
-			let observed;
-			try {
-				observed = readRegularFileNoFollow(fs, lockFile);
-			} catch (error) {
-				if (error?.code === "ENOENT") continue;
-				throw new Error(`controller ${name} lock is unsafe or unreadable: ${error.message}`);
-			}
-			const match = /^(\d+) ([0-9]+|unknown)\n?$/.exec(observed.text);
-			if (match && Number(match[1]) === Number(pid) && match[2] === ownProcStartTicks()) {
-				lockRecord = observed.text;
-				return;
-			}
-			if (match) {
-				const currentStart = parseProcStartTicks(fs, Number(match[1]));
-				if (currentStart !== null && currentStart === match[2]) throw new Error(`controller ${name} already has a live lock`);
-				if (fs.existsSync(`/proc/${match[1]}`) && (currentStart === null || match[2] === "unknown")) {
-					throw new Error(`controller ${name} lock owner ${match[1]} is live but its start time cannot be verified`);
-				}
-			}
-			// Re-read and compare the inode and complete record before removing a
-			// stale or legacy partial lock. A concurrent replacement is retried.
-			let current;
-			try { current = readRegularFileNoFollow(fs, lockFile); } catch (error) {
-				if (error?.code === "ENOENT") continue;
-				throw new Error(`controller ${name} lock changed to an unsafe file: ${error.message}`);
-			}
-			if (current.stat.dev !== observed.stat.dev || current.stat.ino !== observed.stat.ino || current.text !== observed.text) continue;
-			try { fs.unlinkSync(lockFile); } catch (error) { if (error?.code !== "ENOENT") throw error; }
-		}
-		throw new Error(`controller ${name} lock is contended; retry session startup`);
-	}
-
 	function writeReadyMarker() {
 		if (readyFile === undefined) return;
 		atomicWrite(fs, path, path.resolve(readyFile), `${readyToken}\n`);
-	}
-
-	function releaseLock() {
-		if (!lockRecord) return;
-		try {
-			const observed = readRegularFileNoFollow(fs, lockFile);
-			if (observed.text !== lockRecord) return;
-			const current = readRegularFileNoFollow(fs, lockFile);
-			if (current.stat.dev === observed.stat.dev && current.stat.ino === observed.stat.ino && current.text === lockRecord) fs.unlinkSync(lockFile);
-		} catch {
-			// A replaced lock belongs to another process; leave it intact.
-		}
-		lockRecord = null;
 	}
 
 	const sendTool = {
@@ -1599,7 +1596,6 @@ export function createController(pi, injected = {}, overrides = {}) {
 	pi.on("session_start", async (_event, ctx) => {
 		stopped = false;
 		currentContext = ctx;
-		claimLock();
 		log("start", { name, pid });
 		if (!initialized) {
 			await recoverMonitors();
@@ -1684,7 +1680,6 @@ export function createController(pi, injected = {}, overrides = {}) {
 			monitor.resolveReady = null;
 			requestMonitorStop(monitor, "session shutdown");
 		}
-		releaseLock();
 		log("shutdown", { name });
 	});
 

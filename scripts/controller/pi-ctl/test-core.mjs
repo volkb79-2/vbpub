@@ -6,7 +6,7 @@ import test from "node:test";
 import { EventEmitter } from "node:events";
 import { acknowledge, watchOnce } from "./bridge.mjs";
 
-const { createController } = await import(process.env.PI_CTL_CORE_MODULE ?? "./core.mjs");
+const { createController, verifySessionLockDescriptor } = await import(process.env.PI_CTL_CORE_MODULE ?? "./core.mjs");
 
 function fixture(envExtra = {}) {
 	const temp = fs.mkdtempSync(path.join(os.tmpdir(), "pi-ctl-core-"));
@@ -97,6 +97,7 @@ function fixture(envExtra = {}) {
 		PI_CTL_NAME: "receiver",
 		PI_CTL_ROOT: root,
 		PI_CTL_PRIME: prime,
+		PI_CTL_LOCK_FD: "12",
 		...envExtra,
 	};
 	const controller = createController(fakePi, {
@@ -106,6 +107,7 @@ function fixture(envExtra = {}) {
 		wrapperPath: wrapper,
 		spawn: (...args) => spawnImpl(...args),
 		pid: 987654321,
+		verifySessionLock: () => 12,
 		now: () => currentTime,
 		makeId: () => `id-${++id}`,
 		timers,
@@ -174,6 +176,17 @@ test("rejects symlinked state directories before changing the external target mo
 		env: { HOME: f.temp, PI_CTL_NAME: "linked", PI_CTL_ROOT: rootLink }, cwd: f.repo,
 	}, { root: rootLink, name: "linked" }), /symlink/);
 	assert.equal(fs.statSync(outside).mode & 0o777, 0o755, "root symlink target permissions remain untouched");
+	const aliasTarget = path.join(f.temp, "symlink-target", "child");
+	fs.mkdirSync(aliasTarget, { recursive: true, mode: 0o755 });
+	const alias = path.join(f.temp, "state-alias");
+	fs.symlinkSync(aliasTarget, alias);
+	const normalizedAwayLink = `${alias}/../must-not-be-created`;
+	assert.throws(() => createController(fakeApiNoop(), {
+		env: { HOME: f.temp, PI_CTL_NAME: "linked-parent", PI_CTL_ROOT: normalizedAwayLink }, cwd: f.repo,
+	}, { root: normalizedAwayLink, name: "linked-parent" }), /symlink/);
+	assert.equal(fs.existsSync(path.join(f.temp, "symlink-target", "must-not-be-created")), false,
+		"a symlink component is checked before lexical normalization or state creation");
+	assert.equal(fs.statSync(aliasTarget).mode & 0o777, 0o755, "path refusal leaves the symlink target mode untouched");
 
 	const childRoot = path.join(f.temp, "child-link-root");
 	fs.mkdirSync(childRoot, { mode: 0o700 });
@@ -184,86 +197,57 @@ test("rejects symlinked state directories before changing the external target mo
 	assert.equal(fs.statSync(outside).mode & 0o777, 0o755, "child symlink target permissions remain untouched");
 });
 
-test("recovers an atomic-lock legacy partial record and refuses a symlink lock", async (t) => {
+test("a direct pi start without an inherited flock refuses before creating state", (t) => {
 	const f = fixture();
 	t.after(f.cleanup);
-	const lock = path.join(f.root, "locks", "receiver.lock");
-	fs.writeFileSync(lock, "", { mode: 0o600 });
-	const handlers = new Map();
-	const pi = {
-		on(event, handler) { handlers.set(event, handler); },
-		registerTool() {},
-		sendMessage() {},
-	};
-	createController(pi, { env: f.env, cwd: f.repo, pid: 987654321, now: f.now, timers: f.timers }, { root: f.root, name: "receiver" });
-	await handlers.get("session_start")({}, { sessionManager: { getEntries: () => [] } });
-	assert.match(fs.readFileSync(lock, "utf8"), /^987654321 unknown\n$/);
-	fs.unlinkSync(lock);
-	const target = path.join(f.temp, "lock-target");
-	fs.writeFileSync(target, "987654321 unknown\n", { mode: 0o600 });
-	fs.symlinkSync(target, lock);
-	const secondHandlers = new Map();
-	const secondPi = { on(event, handler) { secondHandlers.set(event, handler); }, registerTool() {}, sendMessage() {} };
-	createController(secondPi, { env: f.env, cwd: f.repo, pid: 987654321, now: f.now, timers: f.timers }, { root: f.root, name: "receiver" });
-	await assert.rejects(secondHandlers.get("session_start")({}, { sessionManager: { getEntries: () => [] } }), /unsafe or unreadable/);
-	assert.ok(fs.lstatSync(lock).isSymbolicLink());
-	assert.equal(fs.readFileSync(target, "utf8"), "987654321 unknown\n");
+	const unstartedRoot = path.join(f.temp, "manual-pi-state");
+	assert.throws(() => createController(fakeApiNoop(), {
+		env: { HOME: f.temp, PI_CTL_NAME: "manual", PI_CTL_ROOT: unstartedRoot }, cwd: f.repo,
+	}, { root: unstartedRoot, name: "manual" }), /start pi through scripts\/controller\/pi-ctl-pane\.sh/);
+	assert.equal(fs.existsSync(unstartedRoot), false, "the extension refuses before creating or chmod'ing its state root");
 });
 
-test("competing lock claimants cannot both own the same live role lock", async (t) => {
+test("the inherited lock descriptor must be a held flock on this role's regular lock file", (t) => {
 	const f = fixture();
 	t.after(f.cleanup);
-	const procStat = (pid, ticks) => `${pid} (fake-controller) S ${Array(18).fill("0").join(" ")} ${ticks}\n`;
+	const lockFile = path.join(f.root, "locks", "receiver.lock");
+	fs.writeFileSync(lockFile, "", { mode: 0o600 });
+	const fd = fs.openSync(lockFile, "r+");
+	let chmod = null;
 	const procFs = new Proxy(fs, {
 		get(target, property) {
 			if (property === "readFileSync") return (filename, ...args) => {
-				const match = /^\/proc\/(\d+)\/stat$/.exec(String(filename));
-				if (match && ["111111", "222222"].includes(match[1])) return procStat(match[1], match[1] === "111111" ? "111" : "222");
+				if (String(filename) === `/proc/self/fdinfo/${fd}`) return "pos:\t0\nlock:\t1: FLOCK ADVISORY WRITE 1234 00:2a:4567 0 EOF\n";
 				return target.readFileSync(filename, ...args);
 			};
+			if (property === "fchmodSync") return (descriptor, mode) => { chmod = { descriptor, mode }; };
 			const value = Reflect.get(target, property, target);
 			return typeof value === "function" ? value.bind(target) : value;
 		},
 	});
-	const handlers = [new Map(), new Map()];
-	const makePi = (map) => ({ on(event, handler) { map.set(event, handler); }, registerTool() {}, sendMessage() {} });
-	for (const [index, pid] of [111111, 222222].entries()) {
-		createController(makePi(handlers[index]), { fs: procFs, env: f.env, cwd: f.repo, pid, now: f.now, timers: f.timers }, { root: f.root, name: "receiver" });
+	try {
+		assert.equal(verifySessionLockDescriptor(procFs, path, f.root, "receiver", { PI_CTL_LOCK_FD: String(fd) }), fd);
+		assert.deepEqual(chmod, { descriptor: fd, mode: 0o600 }, "the verified lock inode is made private through its inherited descriptor");
+		const symlink = path.join(f.root, "locks", "linked.lock");
+		fs.symlinkSync(lockFile, symlink);
+		assert.throws(() => verifySessionLockDescriptor(procFs, path, f.root, "linked", { PI_CTL_LOCK_FD: String(fd) }), /regular, non-symlink/);
+		fs.unlinkSync(symlink);
+		const directory = path.join(f.root, "locks", "directory.lock");
+		fs.mkdirSync(directory);
+		assert.throws(() => verifySessionLockDescriptor(procFs, path, f.root, "directory", { PI_CTL_LOCK_FD: String(fd) }), /regular, non-symlink/);
+		const unlockedFs = new Proxy(procFs, {
+			get(target, property) {
+				if (property === "readFileSync") return (filename, ...args) => String(filename) === `/proc/self/fdinfo/${fd}`
+					? "pos:\t0\nlock:\t2: FLOCK ADVISORY READ 1234 00:2a:4567 0 EOF\n"
+					: Reflect.get(target, property)(filename, ...args);
+				const value = Reflect.get(target, property);
+				return typeof value === "function" ? value.bind(target) : value;
+			},
+		});
+		assert.throws(() => verifySessionLockDescriptor(unlockedFs, path, f.root, "receiver", { PI_CTL_LOCK_FD: String(fd) }), /no kernel flock/);
+	} finally {
+		fs.closeSync(fd);
 	}
-	const context = { sessionManager: { getEntries: () => [] } };
-	const outcomes = await Promise.allSettled(handlers.map((map) => map.get("session_start")({}, context)));
-	assert.equal(outcomes.filter((result) => result.status === "fulfilled").length, 1);
-	assert.equal(outcomes.filter((result) => result.status === "rejected").length, 1);
-	assert.match(outcomes.find((result) => result.status === "rejected").reason.message, /already has a live lock/);
-});
-
-test("a stale-lock replacement during recheck is preserved and retried", async (t) => {
-	const f = fixture();
-	t.after(f.cleanup);
-	const lock = path.join(f.root, "locks", "receiver.lock");
-	fs.writeFileSync(lock, "111111 1\n", { mode: 0o600 });
-	let lockRead = 0;
-	const procStat = (pid, ticks) => `${pid} (fake-controller) S ${Array(18).fill("0").join(" ")} ${ticks}\n`;
-	const raceFs = new Proxy(fs, {
-		get(target, property) {
-			if (property === "openSync") return (filename, ...args) => {
-				if (String(filename) === lock && ++lockRead === 2) target.writeFileSync(lock, "222222 222\n");
-				return target.openSync(filename, ...args);
-			};
-			if (property === "readFileSync") return (filename, ...args) => {
-				const match = /^\/proc\/(\d+)\/stat$/.exec(String(filename));
-				if (match?.[1] === "222222") return procStat("222222", "222");
-				return target.readFileSync(filename, ...args);
-			};
-			const value = Reflect.get(target, property, target);
-			return typeof value === "function" ? value.bind(target) : value;
-		},
-	});
-	const handlers = new Map();
-	const pi = { on(event, handler) { handlers.set(event, handler); }, registerTool() {}, sendMessage() {} };
-	createController(pi, { fs: raceFs, env: f.env, cwd: f.repo, pid: 333333, now: f.now, timers: f.timers }, { root: f.root, name: "receiver" });
-	await assert.rejects(handlers.get("session_start")({}, { sessionManager: { getEntries: () => [] } }), /already has a live lock/);
-	assert.equal(fs.readFileSync(lock, "utf8"), "222222 222\n");
 });
 
 test("send_message validates recipient names, rate-limits peers, and never logs message bodies", async (t) => {
@@ -307,6 +291,7 @@ test("claims inbox messages before injecting and retains a claim when injection 
 		now: () => 1_800_000_000_000,
 		makeId: () => "sender-id",
 		timers: f.timers,
+		verifySessionLock: () => 12,
 	}, { root: f.root, name: "peer" });
 	sender.writePeerMessage("receiver", "from peer");
 	f.throwOnSend();
@@ -356,6 +341,7 @@ test("truncates oversized input with a visible marker and skips symlinks", async
 		now: () => 1_800_000_000_000,
 		makeId: () => "sender-id",
 		timers: f.timers,
+		verifySessionLock: () => 12,
 	}, { root: f.root, name: "peer" });
 	sender.writePeerMessage("receiver", "x".repeat(600));
 	const inbox = path.join(f.root, "inbox", "receiver");
@@ -377,6 +363,7 @@ test("holds over-limit peer messages with one notice and delivers after the wind
 		now: () => 1_800_000_000_000,
 		makeId: (() => { let n = 0; return () => `peer-${++n}`; })(),
 		timers: f.timers,
+		verifySessionLock: () => 12,
 	}, { root: f.root, name: "peer" });
 	sender.writePeerMessage("receiver", "first");
 	sender.writePeerMessage("receiver", "second");
@@ -435,6 +422,7 @@ test("wake-ups persist across restart, fire overdue once, and can be listed or c
 		now: () => f.now(),
 		timers: f.timers,
 		makeId: () => "restart-id",
+		verifySessionLock: () => 12,
 	}, { root: f.root, name: "receiver", wrapperPath: f.wrapper });
 	assert.ok(restarted);
 	await restartedHandlers.get("session_start")({}, restartedContext);
@@ -524,6 +512,8 @@ test("monitor batches capped lines, stops only its own child, and reports exit o
 	assert.ok(id);
 	assert.equal(spawnOptions.env.OPENDESIGN_API_KEY_VOLKER, undefined);
 	assert.equal(spawnOptions.env.OPENDESIGN_API_KEY_GITHUB2, undefined);
+	assert.equal(spawnOptions.env.PI_CTL_LOCK_FD, undefined, "the monitor environment does not advertise the session lock descriptor");
+	assert.equal(spawnOptions.stdio[12], "ignore", "Node explicitly closes the session lock before starting the pidns wrapper");
 	children[0].stdout.emit("data", Buffer.from("one\ntwo\n"));
 	const flush = f.findTimeout(1000);
 	assert.ok(flush);
@@ -732,6 +722,19 @@ test("main bridge rejects in-repository state roots before creating paths", (t) 
 	const root = path.join(f.repo, ".controller-state", "pi-ctl");
 	assert.throws(() => watchOnce(root, { cwd: f.repo, emit() {} }), /outside the repository/);
 	assert.equal(fs.existsSync(path.join(f.repo, ".controller-state")), false);
+});
+
+test("main bridge checks every configured root component before canonicalizing it", (t) => {
+	const f = fixture();
+	t.after(f.cleanup);
+	const target = path.join(f.temp, "bridge-link-target", "child");
+	fs.mkdirSync(target, { recursive: true, mode: 0o755 });
+	const alias = path.join(f.temp, "bridge-state-alias");
+	fs.symlinkSync(target, alias);
+	const configuredRoot = `${alias}/../must-not-be-created`;
+	assert.throws(() => watchOnce(configuredRoot, { cwd: f.repo, emit() {} }), /symlink/);
+	assert.equal(fs.existsSync(path.join(f.temp, "bridge-link-target", "must-not-be-created")), false);
+	assert.equal(fs.statSync(target).mode & 0o777, 0o755, "the bridge refuses before chmod or state creation");
 });
 
 test("main bridge completes a durable acknowledgement left before a crash", (t) => {

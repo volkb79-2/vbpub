@@ -640,13 +640,13 @@ done
 # 320 GiB of guards, and also covers the pointer-compression cage, code range,
 # external/trusted pointer tables and Wasm guard mappings. NODE_OPTIONS caps
 # each Node process's old space at 256 MiB; the lane's existing cgroup memory
-# ceiling remains the real-memory cap. Only these four checks get the larger cap.
+# ceiling remains the real-memory cap. Only these six checks get the larger cap.
 # See Node's test isolation and CLI docs, and V8's sandbox layout:
 # https://nodejs.org/api/test.html#child-process-option-inheritance
 # https://nodejs.org/api/cli.html#--max-old-space-size-size-in-mib
 # https://github.com/v8/v8/blob/main/src/sandbox/sandbox.h
 # https://github.com/nodejs/node/blob/main/deps/v8/include/v8-internal.h
-for pi_ctl_mutant in claim-before-inject name-validation agent-end-only wrapper-required; do
+for pi_ctl_mutant in claim-before-inject name-validation agent-end-only wrapper-required root-symlink-components inherited-flock-required; do
   expect_assertion_killed_with_address_space_limit "pi-ctl-$pi_ctl_mutant" 2147483648 \
     env NODE_OPTIONS=--max-old-space-size=256 \
       PI_CTL_CORE_MODULE="$ROOT/mutants/scripts/controller/pi-ctl-$pi_ctl_mutant/core.mjs" \

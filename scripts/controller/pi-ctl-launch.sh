@@ -32,6 +32,35 @@ done
   exit 2
 }
 
+command -v flock >/dev/null 2>&1 || {
+  echo 'ERROR: flock is required to hold the controller session lock' >&2
+  exit 2
+}
+
+reject_symlink_components() {
+  local candidate=$1 current=/ rest component
+  [[ $candidate == /* ]] || return 1
+  rest=${candidate#/}
+  while [[ -n $rest ]]; do
+    if [[ $rest == */* ]]; then
+      component=${rest%%/*}
+      rest=${rest#*/}
+    else
+      component=$rest
+      rest=
+    fi
+    [[ -z $component || $component == . ]] && continue
+    if [[ $component == .. ]]; then
+      current=${current%/*}
+      [[ -n $current ]] || current=/
+      continue
+    fi
+    if [[ $current == / ]]; then current=/$component; else current=$current/$component; fi
+    [[ ! -L $current ]] || return 1
+  done
+  return 0
+}
+
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 REPO_ROOT=$(cd -- "$SCRIPT_DIR/../.." && pwd -P)
 COMMON_GIT_DIR=$(git -C "$REPO_ROOT" rev-parse --path-format=absolute --git-common-dir)
@@ -49,6 +78,10 @@ cwd_input=${PI_CTL_CWD:-$REPO_ROOT}
 cwd=$(cd -- "$cwd_input" && pwd -P)
 root=${PI_CTL_ROOT:-$HOME/controller/pi-ctl}
 [[ $root == /* ]] || { echo 'ERROR: PI_CTL_ROOT must be an absolute path' >&2; exit 2; }
+reject_symlink_components "$root" || {
+  printf 'ERROR: PI_CTL_ROOT contains a symlink path component: %s\n' "$root" >&2
+  exit 2
+}
 root=$(realpath -m -- "$root")
 [[ $root != / ]] || { echo 'ERROR: PI_CTL_ROOT cannot be /' >&2; exit 2; }
 for repo_path in "$REPO_ROOT" "$MAIN_ROOT"; do
@@ -58,6 +91,12 @@ for repo_path in "$REPO_ROOT" "$MAIN_ROOT"; do
       exit 2
       ;;
   esac
+done
+for checked_path in "$root/locks" "$root/locks/$role.lock" "$root/sessions" "$root/sessions/$role.session"; do
+  reject_symlink_components "$checked_path" || {
+    printf 'ERROR: PI_CTL_ROOT state path contains a symlink component: %s\n' "$checked_path" >&2
+    exit 2
+  }
 done
 prime=${PI_CTL_PRIME:-$MAIN_ROOT/.controller-state/PROGRAM-2026-11-24/PRIME-$role.md}
 [[ $prime == /* ]] || { echo 'ERROR: PI_CTL_PRIME must be an absolute path' >&2; exit 2; }
@@ -116,7 +155,9 @@ printf -v pane_command '%q ' "${pane_args[@]}"
 pane_command=${pane_command% }
 
 if (( print_command )); then
-  printf 'tmux session: %s\nworking directory: %q\nactive pi session id: %s\n' "$session_name" "$cwd" "$session_id"
+  printf 'tmux session: %s\nworking directory: %q\nactive pi session id: %s\nsession lock: %s (flock held by the pane until pi exits)\n' \
+    "$session_name" "$cwd" "$session_id" "$root/locks/$role.lock"
+  echo 'lock requirement: util-linux flock must be available; pi started by hand without the pane lock is refused'
   printf 'pi command: %q' "$pi_bin"
   for argument in "${pi_args[@]}"; do printf ' %q' "$argument"; done
   printf '\npane command: %s\n' "$pane_command"
@@ -131,53 +172,18 @@ unset OPENDESIGN_API_KEY_VOLKER OPENDESIGN_API_KEY_GITHUB2
   exit 2
 }
 command -v tmux >/dev/null 2>&1 || { echo 'ERROR: tmux is not available on PATH' >&2; exit 2; }
-if [[ -L $root || -L $root/locks || -L $root/sessions ]]; then
-  echo 'ERROR: PI_CTL_ROOT or one of its controller directories is a symlink' >&2
-  exit 2
-fi
 umask 077
 mkdir -p -- "$root/locks" "$root/sessions"
 chmod 0700 -- "$root" "$root/locks" "$root/sessions"
 
 lock_file=$root/locks/$role.lock
-process_start_ticks() {
-  local target_pid=$1 stat_line rest
-  [[ -r /proc/$target_pid/stat ]] || return 1
-  IFS= read -r stat_line < "/proc/$target_pid/stat" || return 1
-  rest=${stat_line##*)}
-  local -a fields=()
-  read -r -a fields <<< "$rest"
-  [[ ${fields[19]-} =~ ^[0-9]+$ ]] || return 1
-  printf '%s\n' "${fields[19]}"
-}
-
-if [[ -e $lock_file || -L $lock_file ]]; then
-  [[ -f $lock_file && ! -L $lock_file && -r $lock_file ]] || {
-    printf 'ERROR: invalid live lock for controller %s\n' "$role" >&2
-    exit 2
-  }
-  lock_pid='' lock_start='' lock_extra=''
-  IFS=' ' read -r lock_pid lock_start lock_extra < "$lock_file" || :
-  if [[ $lock_pid =~ ^[1-9][0-9]*$ && ( $lock_start =~ ^[0-9]+$ || $lock_start == unknown ) && -z $lock_extra ]]; then
-    if [[ -e /proc/$lock_pid ]]; then
-      if [[ $lock_start == unknown ]]; then
-        printf 'ERROR: controller %s has a live lock (pid %s)\n' "$role" "$lock_pid" >&2
-        exit 2
-      fi
-      current_start=$(process_start_ticks "$lock_pid") || {
-        printf 'ERROR: cannot verify controller lock liveness for pid %s\n' "$lock_pid" >&2
-        exit 2
-      }
-      if [[ $current_start == "$lock_start" ]]; then
-        printf 'ERROR: controller %s has a live lock (pid %s)\n' "$role" "$lock_pid" >&2
-        exit 2
-      fi
-    fi
-  else
-    echo "INFO: controller lock for $role is an incomplete legacy record; the extension will verify and recover it"
-  fi
-  # Leave stale records in place. The extension atomically reclaims them after
-  # verifying the observed inode; the launcher must not race that replacement.
+if [[ -L $lock_file || ( -e $lock_file && ! -f $lock_file ) ]]; then
+  printf 'ERROR: controller lock path is not a regular, non-symlink file: %s\n' "$lock_file" >&2
+  exit 2
+fi
+if ! flock -n "$lock_file" true; then
+  printf 'ERROR: controller %s already has a live session lock\n' "$role" >&2
+  exit 2
 fi
 
 if tmux has-session -t "$session_name" 2>/dev/null; then
