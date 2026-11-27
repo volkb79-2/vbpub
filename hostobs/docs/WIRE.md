@@ -409,8 +409,8 @@ the frame `corr` (JSON: the recovered `corr`, §8.1), `detail.key` as above; (4)
 verb other than `hello` is `hello-required` on its own `corr`, `hello` with a `corr` other than 1 is
 `bad-frame` `corr` 0 (both fatal); (5) a verb not in the table or reserved (§4.13): `unknown-verb`; (6) a
 verb the level does not know: `forbidden`; (7) `hello` when already answered, either mode: `bad-request`
-`{"key":"verb"}`; (8) retired (JSON mode never reaches a level with BLK verbs, §1.3); (9) a verb known
-but not served by this build: `unknown-verb`; (10) `too-many-requests` (non-fatal, `detail {}`) for a
+`{"key":"verb"}`; (8) retired (JSON mode never reaches a level with BLK verbs, §1.3); (9) a verb known at the
+level but not served there by this build: `unknown-verb`; (10) `too-many-requests` (non-fatal, `detail {}`) for a
 one-block verb while the connection's Query pool is not empty, or a `series_batch` at the
 per-connection history cap (§5.1 "No request waits"); the one other `too-many-requests` is judged at
 step 12; (11) the argument schema: `bad-request` with the schema path (a `hello` with a JSON-mode
@@ -603,53 +603,57 @@ push the REP over `max_reply_bytes` (§5.1 reply sizes).
 (as 4.10), "outcome": str|null (end only), "code": str ≤ 64 | null, "attrs": {key: str} (≤ 8 pairs,
 key a `name` ≤ 64 B, value ≤ 256 B)}`.
 
-> Result `{"t_mono_ns": u64, "span": u64|null}` (the opened or closed span's id; `null` for `point`). All seven args
-> members are required (`key`, `outcome`, `code` may be `null`; `ctx`, `attrs` may be `{}`); a client `t_mono_ns`
-> is an unknown key. Every `key`, `code`, `ctx` value, `attrs` key and `attrs` value refuses U+0000-U+001F and
-> U+007F (`bad-request` at its path: `attrs.<k>` under the §4.2 echo rule, else `attrs`); `"` and `\` are allowed.
-> `attrs` keys `uid gid pid comm peer issuer` are refused at `attrs.<k>`. After the schema, in order: idempotent
-> repeat (answered `ok`), `rate-limited`, `budget {"pool":"spans"}` (64 open per uid, 4,096 per probe),
-> `span-unknown` (no open span of that `key` on this connection). Worst request at 3× per string (§4.2): name 64, key
-> 192, ctx 5 × (13 + 384) = 1,985, outcome 24, code 192, attrs 8 × (64 + 768 + 8) = 6,720, envelope < 300: < 9,500 B
-> ≤ 16 KiB.
->
-> **Issuer and forgeability.** `issuer` is `uid:<n>`, the uid `SO_PEERCRED` reports for the connection (the
-> credentials of the `connect()` caller, read once at accept). It is the only provenance a reader may rely on, and
-> only a process with `CAP_SETUID` chooses it. At accept the probe also records an advisory label `peer`: the
-> `SO_PEERCRED` pid as seen from the probe's PID namespace (`null` when 0), that pid's `comm`, and the cgroup key
-> read from `/proc/<pid>/cgroup` (`null` when unreadable, outside the probe's cgroup namespace or not on cgroup2).
-> The label MAY be wrong (pid reuse between `connect()` and the read; a containerized probe sees no pid) and MUST NOT
-> carry authorization, dedupe, rate-limit or quota weight; a connection whose label is all `null` is served
-> normally. No name is authorized by issuer in M3 (HOB-106). A child that inherits the connected fd annotates as the
-> original connector. The **subject** of an event (cgroup, run, candidate) is client data in `ctx`/`attrs` and is
-> never verified; `ctx.session` at observer never attaches an event to a session (M6, control only).
->
-> **Spans** belong to the connection: `end` closes the innermost open span with that `key` opened on the same
-> connection; when the connection closes, each span it left open gets one `end` with `outcome: abandoned`,
-> `inferred: true`, stamped at the close and recorded without a token. A probe that exits without that close leaves
-> the span open.
->
-> **Rate.** One token bucket per uid, probe-wide and shared by all of the uid's connections. It holds integer credit
-> in ns: capacity 64 × 20,000,000, cost 20,000,000, credit += elapsed ns capped at capacity (50/s sustained, 64-event
-> burst). Too little credit is `rate-limited {"retry_after_ms": ceil(deficit_ns / 1,000,000)}` (1..20). A bucket
-> outlives its connections until it is full again; at most 1,024 non-full buckets are held, and a new uid beyond
-> that is `rate-limited {"retry_after_ms": 20}`. Every request that passes the schema and is not an idempotent
-> repeat costs one token, also when it is then refused `budget` or `span-unknown`. Config keys
-> `annotate_rate_per_s` 50, `annotate_burst` 64; not announced in `hello.limits`.
->
-> **Idempotency.** On `kind: point`, `attrs` may carry `boot_id` (1..128 B) and `seq` (`0|[1-9][0-9]{0,19}`, ≤ u64)
-> together; one without the other is `bad-request` at the missing one, and either on `begin`/`end` is `bad-request`
-> `attrs.boot_id`. The probe keeps the reply of each keyed event under `(uid, name, boot_id, seq)` (4,096 entries
-> probe-wide, 900 s of `CLOCK_MONOTONIC`, oldest first out, emptied by a probe restart); a repeat inside that
-> retention returns the first reply, records nothing and costs no token. Outside it a repeat is a second event:
-> readers MUST dedupe on `(name, boot_id, seq)`.
->
-> **Registered names** (append-only, `fixtures/wire/event-names.json`): `run`, `lane`, `candidate`,
-> `candidate.prep`, `candidate.build`, `candidate.run`, `txn`, `txn.step`, `thrashguard.freeze`,
-> `thrashguard.thaw`. Any grammar-valid name is accepted, except that under the registered prefix `thrashguard.`
-> only the table's names are (`bad-request` `name`). `thrashguard.freeze`/`.thaw` are `point`s with `ctx.run`,
-> `key` = unit, `attrs` `cgroup`, `cgroup_id`, `boot_id`, `seq` (the interval's, on both), `seconds` on the thaw
-> only (a freeze never carries it), `code` = the thaw reason.
+Result `{"t_mono_ns": u64, "span": u64|null}` (the opened or closed span's id; `null` for `point`). All seven args
+members are required (`key`, `outcome`, `code` may be `null`; `ctx`, `attrs` may be `{}`); a client `t_mono_ns`
+is an unknown key. Every `key`, `code`, `ctx` value, `attrs` key and `attrs` value refuses U+0000-U+001F and
+U+007F (`bad-request` at its path: `attrs.<k>` under the §4.2 echo rule, else `attrs`); `"` and `\` are allowed.
+`attrs` keys `uid gid pid comm peer issuer` are refused at `attrs.<k>`. After the schema, in order: idempotent
+repeat (answered `ok`), `rate-limited`, `budget {"pool":"spans"}` (64 open per uid, 4,096 per probe),
+`span-unknown` (no open span of that `key` on this connection). Worst request at 3× per string (§4.2): name 64, key
+192, ctx 5 × (13 + 384) = 1,985, outcome 24, code 192, attrs 8 × (64 + 768 + 8) = 6,720, envelope < 300: < 9,500 B
+≤ 16 KiB.
+
+**Issuer and forgeability.** `issuer` is `uid:<n>`, the uid `SO_PEERCRED` reports for the connection (the
+credentials of the `connect()` caller, read once at accept). It is the only provenance a reader may rely on, and
+only a process with `CAP_SETUID` chooses it. At accept the probe also records an advisory label `peer`: the
+`SO_PEERCRED` pid as seen from the probe's PID namespace (`null` when 0), that pid's `comm`, and the cgroup key
+read from `/proc/<pid>/cgroup` (`null` when unreadable, outside the probe's cgroup namespace or not on cgroup2).
+The label MAY be wrong (pid reuse between `connect()` and the read; a containerized probe sees no pid) and MUST NOT
+carry authorization, dedupe, rate-limit or quota weight; a connection whose label is all `null` is served
+normally. No name is authorized by issuer in M3 (HOB-106). A child that inherits the connected fd annotates as the
+original connector. The **subject** of an event (cgroup, run, candidate) is client data in `ctx`/`attrs` and is
+never verified; `ctx.session` at observer never attaches an event to a session (M6, control only).
+
+**Spans** belong to the connection: `end` closes the innermost open span with that `key` opened on the same
+connection; when the connection closes, each span it left open gets one `end` with `outcome: abandoned`,
+`inferred: true`, stamped at the close and recorded without a token. A probe that exits without that close leaves
+the span open.
+
+**Rate.** One token bucket per uid, probe-wide and shared by all of the uid's connections. It holds integer credit
+in ns: capacity 64 × 20,000,000, cost 20,000,000, credit += elapsed ns capped at capacity (50/s sustained, 64-event
+burst). Too little credit is `rate-limited {"retry_after_ms": ceil(deficit_ns / 1,000,000)}` (1..20). A bucket
+outlives its connections until it is full again; at most 1,024 non-full buckets are held, and a new uid beyond
+that is `rate-limited {"retry_after_ms": 20}`. Every request that passes the schema and is not an idempotent
+repeat costs one token, also when it is then refused `budget` or `span-unknown`. Config keys
+`annotate_rate_per_s` 50, `annotate_burst` 64; not announced in `hello.limits`.
+
+**Idempotency.** On `kind: point`, `attrs` may carry `boot_id` (1..128 B) and `seq` (`0|[1-9][0-9]{0,19}`, ≤ u64)
+together; one without the other is `bad-request` at the missing one, and either on `begin`/`end` is `bad-request`
+`attrs.boot_id`. The probe keeps the reply of each keyed event under `(uid, name, boot_id, seq)` (4,096 entries
+probe-wide, 900 s of `CLOCK_MONOTONIC`, oldest first out, emptied by a probe restart); a repeat inside that
+retention returns the first reply, records nothing and costs no token. Outside it a repeat is a second event:
+readers MUST dedupe on `(name, boot_id, seq)`.
+
+**Registered names** (append-only, `fixtures/wire/event-names.json`): `run`, `lane`, `candidate`,
+`candidate.prep`, `candidate.build`, `candidate.run`, `txn`, `txn.step`, `thrashguard.freeze`,
+`thrashguard.thaw`. Any grammar-valid name is accepted, except that under the registered prefix `thrashguard.`
+only the table's names are (`bad-request` `name`). `thrashguard.freeze`/`.thaw` are `point`s with `ctx.run`,
+`key` = unit, `attrs` `cgroup`, `cgroup_id`, `boot_id`, `seq` (the interval's, on both), `seconds` on the thaw
+only (a freeze never carries it), `code` = the thaw reason.
+
+The `idle_ms` deadline is not armed while a connection owns an open span (§5.4); the observer endpoint is a local
+Unix stream socket, so a peer that exits closes it and its spans end as `abandoned` at close time, while a process
+that inherited the descriptor keeps the connection and its spans open.
 
 A segment seal can fsync inside an append and stall this server turn. Every client's reply and every
 subscription tick waits for that turn: a stall shorter than a tick interval delays the tick, while a longer
@@ -929,7 +933,7 @@ without sockets):
 | `AwaitHello` | `corr ≠ 0` and `check_req` fails (§4.2), or a `hello` with `corr = 1` whose args are invalid | non-fatal `bad-request` REP on its own `corr` (D-W28, §4.2 first): the state stays `AwaitHello` and the hello timer keeps running |
 | `JsonNoHello` | first complete line | handled as a request ⇒ `Ready` (hello optional, §8.4) |
 | `Ready` | complete request | dispatch (§4.2 precedence); answered or refused in this turn (§5.1 "No request waits") |
-| `Ready` | no live subscription, reader at `Header{0}`, queue empty | arm `idle_deadline = now + idle_ms` (disarmed by any received byte or enqueued frame) |
+| `Ready` | no open span, no live subscription, reader at `Header{0}`, queue empty | arm `idle_deadline = now + idle_ms` (disarmed by any received byte or enqueued frame) |
 | `Ready` | `now > idle_deadline` | `Closing(idle)` |
 | `Ready` | reader `eof()` clean (`SHUT_WR`) | `Draining`: `end_stream` every subscription with reason `client-eof`, close when the queue is empty |
 | any | reader error, hub `Close(slow-client)`, server shutdown | `Closing(code)` |
@@ -1325,7 +1329,9 @@ Connection cases (P5b, Rust only, a fake clock, one per §5.4 row; in P5b-1 and 
 the timer: silent close), `conn-unknown-mode`, `conn-json-first-line` (observer),
 `conn-json-block-level` (`{` at observe: one `binary-required` line, close), `conn-hello-required`,
 `conn-hello-corr-not-1` (`bad-frame`), `conn-corr-zero-req` (`bad-frame`), `conn-idle` (`idle` at
-`+idle_ms + 1`), `conn-not-idle-with-subscription`, `conn-half-close` (END `client-eof`, then close),
+`+idle_ms + 1`), `conn-not-idle-with-subscription`, `conn-idle-open-span`,
+`conn-idle-after-span-end`, `conn-refused-begin-idle`, `conn-one-span-remains-open`,
+`conn-peer-eof-after-idle`, `conn-half-close` (END `client-eof`, then close),
 `conn-request-too-large` (`frame-too-large`), `conn-request-deadline` (`deadline`),
 `conn-prefix-surplus` (the 8-byte prefix and a complete `hello` REQ in one write: hello answered),
 `conn-dribbling-reader` (a subscriber reading one byte per 4 s: `slow-client` at its pinned head's

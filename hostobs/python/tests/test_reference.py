@@ -26,6 +26,8 @@ FIXTURES = HOSTOBS / "fixtures" / "wire"
 EVENT_FIXTURES = HOSTOBS / "fixtures" / "event"
 RATES = HOSTOBS / "fixtures" / "rates"
 SEGMENTS = HOSTOBS / "fixtures" / "segment"
+WIRE_DOC = HOSTOBS / "docs" / "WIRE.md"
+CONSUMERS_DOC = HOSTOBS / "docs" / "CONSUMERS.md"
 sys.path.insert(0, str(HOSTOBS / "python" / "reference"))
 
 import make_event_fixtures  # noqa: E402
@@ -47,6 +49,44 @@ MEM_CURRENT_FACTS = {
     "scope": "cgroup",
     "source": "cgroupfs",
 }
+
+
+class AnnotationWireDocs(unittest.TestCase):
+    def test_precedence_step_nine_names_level_and_build(self):
+        wire = " ".join(WIRE_DOC.read_text(encoding="utf-8").split())
+        self.assertIn(
+            "(9) a verb known at the level but not served there by this build: `unknown-verb`",
+            wire,
+        )
+
+    def test_annotate_normative_text_is_not_rendered_as_a_quote(self):
+        wire = WIRE_DOC.read_text(encoding="utf-8")
+        start = wire.index('Result `{"t_mono_ns": u64, "span": u64|null}`')
+        end = wire.index("\n\nA segment seal can fsync", start)
+        section = wire[start:end]
+        self.assertTrue(section.startswith("Result "))
+        self.assertFalse(any(line.startswith("> ") for line in section.splitlines()))
+
+    def test_open_span_idle_policy_and_slot_cost_are_documented(self):
+        wire = " ".join(WIRE_DOC.read_text(encoding="utf-8").split())
+        consumers = " ".join(CONSUMERS_DOC.read_text(encoding="utf-8").split())
+        self.assertIn(
+            "The `idle_ms` deadline is not armed while a connection owns an open span (§5.4)",
+            wire,
+        )
+        self.assertIn(
+            "observer endpoint is a local Unix stream socket, so a peer that exits closes it and "
+            "its spans end as `abandoned` at close time, while a process that inherited the "
+            "descriptor keeps the connection and its spans open",
+            wire,
+        )
+        self.assertIn("no open span, no live subscription", wire)
+        self.assertIn(
+            "It may stay quiet longer than `idle_ms`, and it ends when its connection closes; "
+            "until then it holds one connection slot",
+            consumers,
+        )
+        self.assertIn("128 open connections total and 64 per peer uid", consumers)
 
 
 class WireFixtures(unittest.TestCase):

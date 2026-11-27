@@ -555,11 +555,13 @@ follow them.
    observer member may emit any grammar-valid event name, so a reader trusts `thrashguard.*` only
    when `issuer` is the expected uid. All root emitters share one uid rate bucket across connections.
 
-   A span belongs to its connection. A one-shot `hostobs-mark begin` connection closes when the
-   command exits, so its open span is recorded as `abandoned`. A normal connection close also writes
-   inferred abandoned ends. `SIGTERM` keeps its default action under HOB-92: a stopped probe writes
-   no inferred ends, and open spans remain open just as they do after a crash. Only the internal
-   `Server::shutdown` stop path closes connections and records their inferred ends.
+   A span belongs to its connection. It may stay quiet longer than `idle_ms`, and it ends when its
+   connection closes; until then it holds one connection slot. The observer caps remain 128 open
+   connections total and 64 per peer uid. A one-shot `hostobs-mark begin` connection closes when
+   the command exits, so its open span is recorded as `abandoned`. A normal connection close also
+   writes inferred abandoned ends. `SIGTERM` keeps its default action under HOB-92: a stopped probe
+   writes no inferred ends, and open spans remain open just as they do after a crash. Only the
+   internal `Server::shutdown` stop path closes connections and records their inferred ends.
 
    Appends run synchronously on the server thread and do not fsync for an ordinary record. Sealing
    a segment (and any eviction during that append) can fsync and stall the turn. All clients' replies

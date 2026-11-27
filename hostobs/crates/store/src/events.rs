@@ -783,6 +783,38 @@ impl EventRing {
             .collect()
     }
 
+    fn check_fits(&self, event: &Event) -> Result<(), StoreError> {
+        let bytes = event.bytes();
+        if bytes > self.capacity {
+            return Err(StoreError::JobTooLarge {
+                len: bytes,
+                max: self.capacity,
+            });
+        }
+        Ok(())
+    }
+
+    fn push_fitting(&mut self, event: Event) -> Vec<EvictedEvent> {
+        let bytes = event.bytes();
+        let mut evicted = Vec::new();
+        while self.bytes.saturating_add(bytes) > self.capacity {
+            let Some((old, old_bytes)) = self.events.pop_front() else {
+                break;
+            };
+            self.bytes = self.bytes.saturating_sub(old_bytes);
+            self.displaced = self.displaced.saturating_add(1);
+            self.displaced_bytes = self.displaced_bytes.saturating_add(old_bytes);
+            evicted.push(EvictedEvent {
+                event: old,
+                bytes: old_bytes,
+            });
+        }
+        self.events.push_back((event, bytes));
+        self.bytes = self.bytes.saturating_add(bytes);
+        self.accepted = self.accepted.saturating_add(1);
+        evicted
+    }
+
     /// The displacements so far.
     #[must_use]
     pub const fn displaced(&self) -> u64 {
@@ -808,30 +840,8 @@ impl EventRing {
     /// [`StoreError::JobTooLarge`] when the event alone is larger than the whole ring (a
     /// `VecDeque` that accepted it would have to be over its bound to be honest about it).
     pub fn push(&mut self, event: Event) -> Result<Vec<EvictedEvent>, StoreError> {
-        let bytes = event.bytes();
-        if bytes > self.capacity {
-            return Err(StoreError::JobTooLarge {
-                len: bytes,
-                max: self.capacity,
-            });
-        }
-        let mut evicted = Vec::new();
-        while self.bytes.saturating_add(bytes) > self.capacity {
-            let Some((old, old_bytes)) = self.events.pop_front() else {
-                break;
-            };
-            self.bytes = self.bytes.saturating_sub(old_bytes);
-            self.displaced = self.displaced.saturating_add(1);
-            self.displaced_bytes = self.displaced_bytes.saturating_add(old_bytes);
-            evicted.push(EvictedEvent {
-                event: old,
-                bytes: old_bytes,
-            });
-        }
-        self.events.push_back((event, bytes));
-        self.bytes = self.bytes.saturating_add(bytes);
-        self.accepted = self.accepted.saturating_add(1);
-        Ok(evicted)
+        self.check_fits(&event)?;
+        Ok(self.push_fitting(event))
     }
 }
 
@@ -1289,7 +1299,7 @@ impl EventsStore {
         }
     }
 
-    /// Record one event: validate it, push it into the ring, and append its payload.
+    /// Record one event: preflight its ring charge, append its payload, then commit it to RAM.
     ///
     /// This compatibility entry point keeps the historical `t_mono_ns` segment timestamp;
     /// callers with a serve-side wall timestamp use [`EventsStore::record_at`].
@@ -1303,6 +1313,7 @@ impl EventsStore {
     ///
     /// The vocabulary refusals of [`Event::new`] ([`StoreError::EventVocabulary`],
     /// [`StoreError::EventVocabularyName`], [`StoreError::EventFieldTooLong`]),
+    /// [`StoreError::JobTooLarge`] when the event cannot fit the RAM ring,
     /// [`StoreError::PayloadFrameType`] for a payload that is not an EVT frame, and every
     /// append refusal.
     pub fn record(
@@ -1319,6 +1330,11 @@ impl EventsStore {
     ///
     /// `t_mono_ns` stays on the event for event/1 and in-memory ordering; `real_ns` names,
     /// buckets and evicts the stored segment.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError::JobTooLarge`] when the event cannot fit the RAM ring,
+    /// [`StoreError::PayloadFrameType`] for a non-EVT payload, and every append refusal.
     pub fn record_at(
         &mut self,
         event: &Event,
@@ -1327,9 +1343,10 @@ impl EventsStore {
         epoch: u64,
         dict_generation: u32,
     ) -> Result<AppendOutcome, StoreError> {
+        self.ring.check_fits(event)?;
         let job = Job::new(payload.to_vec(), real_ns, Vec::new());
         let outcome = self.tier.append(&job, epoch, dict_generation)?;
-        self.ring.push(event.clone())?;
+        self.ring.push_fitting(event.clone());
         self.stored = self.stored.saturating_add(1);
         Ok(outcome)
     }
@@ -2484,6 +2501,26 @@ mod tests {
             event.t_mono_ns, 10,
             "monotonic event time stays independent"
         );
+    }
+
+    #[test]
+    fn record_at_rejects_a_ring_oversize_event_before_writing_the_segment() {
+        let temp = TempDir::new("event-ring-preflight");
+        let config =
+            TierConfig::new("events", TierKind::Events, 60, 3600, 1 << 20, false)
+                .expect("config");
+        let mut store = EventsStore::open(
+            config,
+            1,
+            StoreDir::open(temp.path(), false).expect("dir"),
+            1 << 22,
+        )
+        .expect("events store");
+        let event = point_record("run", None);
+        let error = store.record_at(&event, &evt(8), 10, 1, 1);
+        assert!(matches!(error, Err(StoreError::JobTooLarge { max: 1, .. })));
+        assert!(store.ring().is_empty());
+        assert!(store.tier().scan().segments.is_empty());
     }
 
     #[test]

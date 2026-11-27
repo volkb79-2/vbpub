@@ -1029,10 +1029,14 @@ impl Tier {
     /// start bucket or the open segment has reached its byte budget, and enforce both bounds
     /// afterwards.
     ///
+    /// A record write that succeeds always returns an [`AppendOutcome`]. Eviction trouble after
+    /// that write is reported in `AppendOutcome::evicted.notes`; the failed segment remains in
+    /// the ring and a later pass retries it.
+    ///
     /// # Errors
     ///
     /// [`StoreError::SegmentIncarnations`] for more ids than this tier admits, and every
-    /// append/seal/eviction refusal (a payload past the tier's frame bound is refused by the
+    /// append or seal refusal (a payload past the tier's frame bound is refused by the
     /// segment's own block-frame check, before anything is written).
     pub fn append(
         &mut self,
@@ -1110,7 +1114,18 @@ impl Tier {
             .open
             .as_ref()
             .map_or_else(String::new, |open| open.name().to_string());
-        let evicted = self.evict(job.real_ns)?;
+        let (mut evicted, failure) = self.evict_pass(job.real_ns);
+        if let Some((name, error)) = failure {
+            self.report(
+                &mut evicted,
+                TierNote {
+                    name,
+                    reason: format!(
+                        "segment could not be removed ({error}); retained for the next eviction pass"
+                    ),
+                },
+            );
+        }
         Ok(AppendOutcome {
             segment: landed,
             sealed,
@@ -1127,6 +1142,14 @@ impl Tier {
     /// [`StoreError::Io`] when a removal fails (the segment stays in the ring, so the total is
     /// still honest and the next pass retries).
     pub fn evict(&mut self, now_ns: i64) -> Result<Evicted, StoreError> {
+        let (evicted, failure) = self.evict_pass(now_ns);
+        match failure {
+            Some((_, error)) => Err(error),
+            None => Ok(evicted),
+        }
+    }
+
+    fn evict_pass(&mut self, now_ns: i64) -> (Evicted, Option<(String, StoreError)>) {
         let mut evicted = Evicted::default();
         // `keep_s`: a segment leaves when its whole span is older than the window. Its span is
         // its start plus its own duration, so a segment whose end is exactly the window's edge
@@ -1144,7 +1167,9 @@ impl Tier {
             if !expired {
                 break;
             }
-            self.remove_segment(&name, &mut evicted)?;
+            if let Err(error) = self.remove_segment(&name, &mut evicted) {
+                return (evicted, Some((name, error)));
+            }
         }
         // `keep_s` also applies to quarantined files, by the (start_s, seq) their names keep:
         // debris does not outlive the history it came from (HOB-43).
@@ -1180,10 +1205,12 @@ impl Tier {
                 else {
                     break;
                 };
-                self.remove_segment(&name, &mut evicted)?;
+                if let Err(error) = self.remove_segment(&name, &mut evicted) {
+                    return (evicted, Some((name, error)));
+                }
             }
         }
-        Ok(evicted)
+        (evicted, None)
     }
 
     /// Remove the oldest quarantined file this tier owns, updating the byte total.
@@ -1676,6 +1703,22 @@ mod tests {
             1 << 22,
         )
         .expect("tier")
+    }
+
+    #[test]
+    fn append_reports_a_sealed_name_only_on_rollover() {
+        let temp = TempDir::new("append-sealed-name");
+        let mut tier = tier(&temp, 3600, 0);
+        let first = tier.append(&job(0, 16), 1, 1).expect("first append");
+        assert_eq!(first.sealed, None);
+        let same_bucket = tier
+            .append(&job(1_000_000_000, 16), 1, 1)
+            .expect("same-bucket append");
+        assert_eq!(same_bucket.sealed, None);
+        let rollover = tier
+            .append(&job(60_000_000_000, 16), 1, 1)
+            .expect("rollover append");
+        assert_eq!(rollover.sealed.as_deref(), Some("hot-0-0.seg"));
     }
 
     #[test]

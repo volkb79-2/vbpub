@@ -595,6 +595,7 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use hostobs_proto::envelope::{check_end, check_evt, check_rep};
+    use hostobs_proto::event::decode_event_frame;
     use hostobs_proto::frame::{decode_block, FrameHeader, FrameType};
     use rustix::event::{eventfd, EventfdFlags};
 
@@ -603,14 +604,22 @@ mod tests {
         read_cgroup_key_from, run, MAX_CGROUP_BYTES,
     };
     use hostobs_serve::backend::{
-        Backend, BackendError, FixedBackend, Identity, StatusInfo, TickData, Turn,
+        AnnotateArgs, AnnotateReply, AnnotateRefusal, Backend, BackendError, FixedBackend,
+        Identity, StatusInfo, TickData, Turn,
     };
-    use hostobs_serve::conn::CgroupKey;
+    use hostobs_serve::conn::{CgroupKey, Peer};
     use hostobs_serve::encode::{control_frame, server_prefix};
     use hostobs_serve::limits::Level;
     use hostobs_serve::selection::Selection;
     use hostobs_serve::server::{Server, ServerLimits};
     use hostobs_serve::tick::{query_block, BlockBounds};
+    use hostobs_store::annotate::Annotator;
+    use hostobs_store::events::EventKind;
+    use hostobs_store::fsio::testdir::TempDir;
+    use hostobs_store::store::{Store, StoreConfig};
+
+    use crate::live::ProbeBackend;
+    use crate::sampler::Published;
 
     const CLIENT_WAIT: Duration = Duration::from_secs(30);
     const HELLO_ARGS: &str = r#"{"client":"driver-test","proto":{"major":1,"minor":2}}"#;
@@ -709,6 +718,50 @@ mod tests {
         }
     }
 
+    struct ProbeCloseBackend {
+        inner: ProbeBackend,
+        closed: OwnedFd,
+    }
+
+    impl Backend for ProbeCloseBackend {
+        fn identity(&self) -> Identity {
+            self.inner.identity()
+        }
+
+        fn status(&self) -> StatusInfo {
+            self.inner.status()
+        }
+
+        fn current(
+            &self,
+            selection: &Selection,
+            max_rows: u32,
+        ) -> Result<TickData, BackendError> {
+            self.inner.current(selection, max_rows)
+        }
+
+        fn annotate(
+            &mut self,
+            conn: hostobs_serve::hub::ConnId,
+            peer: &Peer,
+            args: &AnnotateArgs,
+        ) -> Result<AnnotateReply, AnnotateRefusal> {
+            self.inner.annotate(conn, peer, args)
+        }
+
+        fn connection_closed(&mut self, conn: hostobs_serve::hub::ConnId) {
+            self.inner.connection_closed(conn);
+            rustix::io::write(&self.closed, &1_u64.to_le_bytes())
+                .expect("connection close signals the test");
+        }
+    }
+
+    impl Turn for ProbeCloseBackend {
+        fn begin_turn(&mut self, now_ns: u64) -> bool {
+            self.inner.begin_turn(now_ns)
+        }
+    }
+
     struct Rig {
         addresses: Vec<(Level, SocketAddr)>,
         wake: OwnedFd,
@@ -721,6 +774,19 @@ mod tests {
 
     impl Rig {
         fn new(limits: ServerLimits, levels: &[Level], data: TickData) -> Rig {
+            Self::with_backend(limits, levels, move |annotate_wake, seq, closed| {
+                TestBackend::new(seq, data, annotate_wake, closed)
+            })
+        }
+
+        fn with_backend<B>(
+            limits: ServerLimits,
+            levels: &[Level],
+            build_backend: impl FnOnce(OwnedFd, Arc<AtomicU64>, Arc<AtomicU64>) -> B,
+        ) -> Rig
+        where
+            B: Backend + Turn + Send + 'static,
+        {
             let wake =
                 eventfd(0, EventfdFlags::CLOEXEC | EventfdFlags::NONBLOCK).expect("wake eventfd");
             let sampler_wake = wake.try_clone().expect("clone wake fd");
@@ -751,8 +817,7 @@ mod tests {
                 listeners.push((*level, listener));
             }
 
-            let backend =
-                TestBackend::new(Arc::clone(&seq), data, annotate_wake, Arc::clone(&closed));
+            let backend = build_backend(annotate_wake, Arc::clone(&seq), Arc::clone(&closed));
             let server = Server::new(limits, backend);
             let proc_root = peer_fixture_root().join("proc");
             let cgroup_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -1095,6 +1160,85 @@ mod tests {
         assert!(reply.contains(r#""ok":true"#), "{reply}");
         assert!(reply.contains(r#""t_mono_ns":17"#), "{reply}");
         assert_eq!(subscriber.block_seq(2), 2);
+    }
+
+    #[test]
+    fn observer_eof_after_idle_window_stores_the_inferred_end_at_close_time() {
+        let temp = TempDir::new("driver-span-close");
+        let mut store_config = StoreConfig::plan_v4(temp.path(), 4242, 1).expect("store config");
+        for tier in &mut store_config.tiers {
+            tier.require_tmpfs = false;
+        }
+        let store = Store::open(store_config.clone()).expect("store");
+        let fixed = FixedBackend::new();
+        let started_mono_ns = 1;
+        let started_real_ns = 1_000;
+        let probe = ProbeBackend::new(
+            fixed.identity(),
+            Arc::new(Published::new(started_mono_ns, started_real_ns)),
+            store,
+            Annotator::new(50, 64).expect("annotator"),
+            || 0,
+        );
+        let close_signal = eventfd(EventfdFlags::CLOEXEC).expect("close eventfd");
+        let backend_signal = close_signal.try_clone().expect("clone close eventfd");
+        let mut rig = Rig::with_backend(
+            ServerLimits::new(),
+            &[Level::Observer],
+            move |_annotate_wake, _seq, _closed| ProbeCloseBackend {
+                inner: probe,
+                closed: backend_signal,
+            },
+        );
+
+        let mut client = rig.connect_json(Level::Observer);
+        let hello = format!("{{\"corr\":1,\"verb\":\"hello\",\"args\":{HELLO_ARGS}}}");
+        assert!(client.request(&hello).contains(r#""ok":true"#));
+        let begin = concat!(
+            r#"{"corr":2,"verb":"annotate","args":{"kind":"begin","name":"run","#,
+            r#""key":null,"ctx":{},"outcome":null,"code":null,"attrs":{}}}"#,
+        );
+        assert!(client.request(begin).contains(r#""span":1"#));
+
+        let close_ns = 400_000_000_001_u64;
+        assert!(close_ns > 300_000_000_000, "close is beyond idle_ms");
+        rig.now.store(close_ns, Ordering::SeqCst);
+        drop(client);
+        let mut signal = [0_u8; 8];
+        assert_eq!(
+            rustix::io::read(&close_signal, &mut signal).expect("peer EOF closes the span"),
+            signal.len()
+        );
+        rig.stop_and_join().expect("driver stops cleanly");
+
+        let expected_real_ns = started_real_ns
+            .checked_add(i64::try_from(close_ns - started_mono_ns).expect("elapsed fits"))
+            .expect("real time fits");
+        let store = Store::open(store_config).expect("reopen store");
+        let disk = store
+            .events()
+            .range(0, i64::MAX, 8, 1 << 16)
+            .expect("read event records");
+        assert_eq!(disk.len(), 2, "begin and inferred end are on disk");
+        let ends: Vec<_> = disk
+            .records
+            .iter()
+            .filter_map(|record| {
+                decode_event_frame(&record.payload)
+                    .ok()
+                    .filter(|payload| payload.kind == EventKind::End.code())
+                    .map(|payload| (record.real_ns, payload))
+            })
+            .collect();
+        assert_eq!(ends.len(), 1);
+        let (real_ns, payload) = &ends[0];
+        assert_eq!(*real_ns, expected_real_ns);
+        assert_eq!(
+            payload.t_mono_ns,
+            i64::try_from(close_ns).expect("monotonic time fits")
+        );
+        assert_eq!(payload.span, 1);
+        assert!(payload.inferred);
     }
 
     #[test]

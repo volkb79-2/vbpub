@@ -782,6 +782,7 @@ impl Store {
     ///
     /// # Errors
     ///
+    /// [`StoreError::JobTooLarge`] when the event cannot fit the RAM ring,
     /// [`StoreError::PayloadFrameType`] for a payload that is not an EVT frame, and every
     /// append refusal.
     pub fn record_event(

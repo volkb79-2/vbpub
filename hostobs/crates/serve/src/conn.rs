@@ -61,7 +61,7 @@ use hostobs_proto::frame::{FrameType, FRAME_HEADER_LEN, PROTO_MINOR};
 use hostobs_proto::quality;
 use hostobs_proto::stream::{ConnTimers, Detect, Feed, FrameReader, ModeDetect, RawFrame, Timer};
 
-use crate::backend::{AnnotateRefusal, Backend, Identity, StatusInfo};
+use crate::backend::{AnnotateKind, AnnotateRefusal, Backend, Identity, StatusInfo};
 use crate::classify::{
     classify_with, Call, ConnFacts, Dispatch, Mode, Phase, Prefix, Query, Refusal, SERVER_MAJOR,
 };
@@ -279,6 +279,7 @@ pub struct Conn {
     close_code: Option<Code>,
     final_bytes: Option<Vec<u8>>,
     subs: BTreeMap<u32, SelId>,
+    open_spans: usize,
 }
 
 impl Conn {
@@ -305,6 +306,7 @@ impl Conn {
             close_code: None,
             final_bytes: None,
             subs: BTreeMap::new(),
+            open_spans: 0,
         }
     }
 
@@ -554,7 +556,8 @@ impl Conn {
         let idle = self.state == State::Ready
             && self.at_boundary()
             && hub.queued(self.id) == Pools::default()
-            && self.subs.is_empty();
+            && self.subs.is_empty()
+            && self.open_spans == 0;
         self.timers.on_idle_condition(idle, now_ns);
     }
 
@@ -925,7 +928,18 @@ impl Conn {
                 return;
             }
             Call::Annotate(args) => match backend.annotate(self.id, &self.peer, args) {
-                Ok(reply) => annotate_result(reply.t_mono_ns, reply.span),
+                Ok(reply) => {
+                    match args.kind {
+                        AnnotateKind::Begin => {
+                            self.open_spans = self.open_spans.saturating_add(1);
+                        }
+                        AnnotateKind::End => {
+                            self.open_spans = self.open_spans.saturating_sub(1);
+                        }
+                        AnnotateKind::Point => {}
+                    }
+                    annotate_result(reply.t_mono_ns, reply.span)
+                }
                 Err(refusal) => {
                     let (code, detail) = match refusal {
                         AnnotateRefusal::RateLimited { retry_after_ms } => {
@@ -1032,6 +1046,14 @@ mod tests {
 
     const MS: u64 = 1_000_000;
     const HELLO_ARGS: &str = r#"{"client":"t","proto":{"major":1,"minor":2}}"#;
+    const BEGIN_ARGS: &str = concat!(
+        r#"{"kind":"begin","name":"run","key":null,"ctx":{},"#,
+        r#""outcome":null,"code":null,"attrs":{}}"#,
+    );
+    const END_ARGS: &str = concat!(
+        r#"{"kind":"end","name":"run","key":null,"ctx":{},"#,
+        r#""outcome":"ok","code":null,"attrs":{}}"#,
+    );
 
     fn req(corr: u32, verb: &str) -> Vec<u8> {
         let args = if verb == "hello" { HELLO_ARGS } else { "{}" };
@@ -1188,6 +1210,18 @@ mod tests {
         fn connection_closed(&mut self, conn: ConnId) {
             self.inner.connection_closed(conn);
         }
+    }
+
+    fn send_annotate(rig: &mut Rig, backend: &mut CountingBackend, corr: u32, args: &str) {
+        let input = line(corr, "annotate", args);
+        rig.conn.on_bytes(
+            &input,
+            rig.now,
+            &mut rig.hub,
+            backend,
+            &mut rig.streams,
+        );
+        rig.pump(usize::MAX);
     }
 
     #[test]
@@ -1696,6 +1730,80 @@ mod tests {
         assert_eq!(json.conn.close_code(), Some(Code::Idle));
         let expected = error_line(0, Code::Idle, &Detail::Empty);
         assert_eq!(json.conn.take_final(), Some(expected));
+    }
+
+    #[test]
+    fn conn_idle_stays_disarmed_while_a_span_is_open() {
+        let mut rig = ready_json(Level::Observer);
+        let mut backend = CountingBackend::new();
+        backend.annotate_script.push_back(Ok(AnnotateReply {
+            t_mono_ns: 1,
+            span: Some(1),
+        }));
+        send_annotate(&mut rig, &mut backend, 2, BEGIN_ARGS);
+        rig.tick(400_000 * MS);
+        assert_eq!(rig.conn.state(), State::Ready);
+        assert_eq!(rig.conn.close_code(), None);
+    }
+
+    #[test]
+    fn conn_idle_rearms_after_the_last_span_ends() {
+        let mut rig = ready_json(Level::Observer);
+        let mut backend = CountingBackend::new();
+        backend.annotate_script.extend([
+            Ok(AnnotateReply {
+                t_mono_ns: 1,
+                span: Some(1),
+            }),
+            Ok(AnnotateReply {
+                t_mono_ns: 2,
+                span: Some(1),
+            }),
+        ]);
+        send_annotate(&mut rig, &mut backend, 2, BEGIN_ARGS);
+        send_annotate(&mut rig, &mut backend, 3, END_ARGS);
+        rig.tick(300_000 * MS);
+        assert_eq!(rig.conn.state(), State::Ready);
+        rig.tick(1);
+        assert_eq!(rig.conn.close_code(), Some(Code::Idle));
+    }
+
+    #[test]
+    fn conn_refused_begin_does_not_hold_the_idle_slot() {
+        let mut rig = ready_json(Level::Observer);
+        let mut backend = CountingBackend::new();
+        backend
+            .annotate_script
+            .push_back(Err(AnnotateRefusal::Internal));
+        send_annotate(&mut rig, &mut backend, 2, BEGIN_ARGS);
+        rig.tick(300_000 * MS + 1);
+        assert_eq!(rig.conn.close_code(), Some(Code::Idle));
+    }
+
+    #[test]
+    fn conn_one_ended_span_keeps_idle_disarmed_while_another_remains_open() {
+        let mut rig = ready_json(Level::Observer);
+        let mut backend = CountingBackend::new();
+        backend.annotate_script.extend([
+            Ok(AnnotateReply {
+                t_mono_ns: 1,
+                span: Some(1),
+            }),
+            Ok(AnnotateReply {
+                t_mono_ns: 2,
+                span: Some(2),
+            }),
+            Ok(AnnotateReply {
+                t_mono_ns: 3,
+                span: Some(2),
+            }),
+        ]);
+        send_annotate(&mut rig, &mut backend, 2, BEGIN_ARGS);
+        send_annotate(&mut rig, &mut backend, 3, BEGIN_ARGS);
+        send_annotate(&mut rig, &mut backend, 4, END_ARGS);
+        rig.tick(400_000 * MS);
+        assert_eq!(rig.conn.state(), State::Ready);
+        assert_eq!(rig.conn.close_code(), None);
     }
 
     #[test]

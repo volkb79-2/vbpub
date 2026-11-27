@@ -282,26 +282,32 @@ impl Annotator {
     }
 
     /// Infer and append one abandoned end for every span owned by `conn`. Spans are removed
-    /// before appends so an append failure cannot leave a dead connection's span open.
+    /// before appends so an append failure cannot leave a dead connection's span open. Returns
+    /// how many ends could not be encoded or stored.
     pub fn connection_closed<S: EventSink>(
         &mut self,
         sink: &mut S,
         conn: u64,
         t_mono_ns: u64,
         real_ns: i64,
-    ) {
+    ) -> usize {
         let spans = self.spans.take_connection(conn);
         let Ok(t_mono_ns) = i64::try_from(t_mono_ns) else {
-            return;
+            return spans.len();
         };
+        let mut failed = 0usize;
         for span in spans {
-            self.append_inferred(sink, &span, t_mono_ns, real_ns);
+            if !self.append_inferred(sink, &span, t_mono_ns, real_ns) {
+                failed = failed.saturating_add(1);
+            }
         }
+        failed
     }
 
-    /// Discard a connection's open spans when its close timestamp cannot be represented.
-    pub fn forget_connection(&mut self, conn: u64) {
-        let _ = self.spans.take_connection(conn);
+    /// Discard a connection's open spans when its close timestamp cannot be represented and
+    /// return how many inferred ends this prevents from being stored.
+    pub fn forget_connection(&mut self, conn: u64) -> usize {
+        self.spans.take_connection(conn).len()
     }
 
     fn append_inferred<S: EventSink>(
@@ -310,17 +316,17 @@ impl Annotator {
         span: &OpenSpan,
         t_mono_ns: i64,
         real_ns: i64,
-    ) {
+    ) -> bool {
         let Ok(event) = span.inferred_end(t_mono_ns, real_ns) else {
-            return;
+            return false;
         };
         let Ok(payload) = event
             .to_payload()
             .and_then(|payload| encode_event_frame(&payload))
         else {
-            return;
+            return false;
         };
-        let _ = sink.record_event(&event, &payload, real_ns);
+        sink.record_event(&event, &payload, real_ns).is_ok()
     }
 
     fn consume(&mut self, uid: u32, now_ns: u64) -> Result<(), AnnotateError> {
@@ -373,7 +379,7 @@ fn ceil_ms(ns: u64) -> u32 {
 mod tests {
     use std::collections::BTreeMap;
 
-    use hostobs_proto::event::decode_event_frame;
+    use hostobs_proto::event::{decode_event_frame, encode_event_frame};
 
     use super::{
         AnnotateError, Annotator, Caller, EventReply, EventRequest, EventSink,
@@ -381,7 +387,10 @@ mod tests {
     };
     use crate::error::StoreError;
     use crate::events::{CtxKey, Event, EventCgroupKey, EventKind, EventPeer, Outcome};
-    use crate::tier::{AppendOutcome, Evicted};
+    use crate::format::TierKind;
+    use crate::fsio::testdir::TempDir;
+    use crate::store::{Store, StoreConfig};
+    use crate::tier::{AppendOutcome, Evicted, TierConfig};
 
     #[derive(Default)]
     struct MemorySink {
@@ -776,11 +785,176 @@ mod tests {
         expect_ok(&mut annotator, &mut sink, 1, 7, &begin, 0);
         expect_ok(&mut annotator, &mut sink, 1, 7, &begin, 0);
         sink.fail_next = true;
-        annotator.connection_closed(&mut sink, 1, 2, 3);
+        assert_eq!(annotator.connection_closed(&mut sink, 1, 2, 3), 1);
         assert_eq!(annotator.open_spans(), 0);
         assert_eq!(sink.events.len(), 3);
         assert_eq!(sink.events[2].span, 2);
         assert!(sink.events[2].inferred);
+    }
+
+    #[test]
+    fn an_unrepresentable_close_time_counts_every_span_that_was_discarded() {
+        let mut annotator = Annotator::new(50, 64).expect("config");
+        let mut sink = MemorySink::default();
+        let begin = request(EventKind::Begin, "run", None);
+        expect_ok(&mut annotator, &mut sink, 1, 7, &begin, 0);
+        expect_ok(&mut annotator, &mut sink, 1, 7, &begin, 0);
+        assert_eq!(annotator.connection_closed(&mut sink, 1, u64::MAX, 3), 2);
+        assert_eq!(annotator.open_spans(), 0);
+
+        expect_ok(&mut annotator, &mut sink, 2, 7, &begin, 0);
+        assert_eq!(annotator.forget_connection(2), 1);
+        assert_eq!(annotator.open_spans(), 0);
+    }
+
+    #[test]
+    fn append_eviction_failure_still_commits_annotations_and_retries() {
+        let temp = TempDir::new("annotate-eviction-failure");
+        let mut seed_config = StoreConfig::plan_v4(temp.path(), 4242, 1).expect("config");
+        for tier in &mut seed_config.tiers {
+            tier.require_tmpfs = false;
+        }
+        seed_config.events = TierConfig::new(
+            "events",
+            TierKind::Events,
+            1,
+            3600,
+            1 << 20,
+            false,
+        )
+        .expect("events tier");
+        seed_config.events_ring_bytes = 1 << 12;
+
+        let seed_event = |name: &str, timestamp_ns: i64| {
+            let mut attrs = BTreeMap::new();
+            for index in 0..8 {
+                attrs.insert(format!("seed{index}"), "x".repeat(256));
+            }
+            Event::new_record(
+                EventKind::Point,
+                name,
+                Some(name),
+                7,
+                timestamp_ns,
+                timestamp_ns,
+                None,
+                0,
+                None,
+                BTreeMap::new(),
+                attrs,
+            )
+            .expect("seed event")
+        };
+        let first_seed = seed_event("seed-first", 0);
+        let first_seed_frame = encode_event_frame(&first_seed.to_payload().expect("payload"))
+            .expect("frame");
+        let later_seed = seed_event("seed-later", 1_000_000_000);
+        let later_seed_frame = encode_event_frame(&later_seed.to_payload().expect("payload"))
+            .expect("frame");
+        let mut seed_store = Store::open(seed_config.clone()).expect("seed store");
+        seed_store
+            .record_event(&first_seed, &first_seed_frame, 0)
+            .expect("first seed record");
+        seed_store
+            .record_event(&later_seed, &later_seed_frame, 1_000_000_000)
+            .expect("later seed record");
+        seed_store.seal_all().expect("seal seed");
+        let first_seed_name = seed_store.events().tier().scan().segments[0].name.clone();
+        let fault_name = seed_store.events().tier().scan().segments[1].name.clone();
+        let cap_bytes = u64::try_from(
+            temp.read_file(&format!("events/{fault_name}")).len(),
+        )
+        .expect("seed file length");
+        drop(seed_store);
+
+        seed_config.events.cap_bytes = cap_bytes;
+        let mut store = Store::open(seed_config).expect("bounded store");
+        let link_name = format!("events/{fault_name}");
+        temp.remove(&link_name);
+        temp.symlink_to(&link_name, temp.path());
+
+        let mut annotator = Annotator::new(50, 64).expect("annotator");
+        let caller = Caller {
+            conn: 5,
+            uid: 7,
+            peer: peer(),
+        };
+        let begin = request(EventKind::Begin, "run", Some("run"));
+        let opened = annotator
+            .annotate(&mut store, caller.clone(), &begin, 101, 2_000_000_010)
+            .expect("eviction after a written begin is reported, not refused");
+        assert_eq!(opened.span, Some(1));
+        assert_eq!(annotator.open_spans(), 1);
+        assert!(store
+            .events()
+            .ring()
+            .events()
+            .any(|event| event.kind == EventKind::Begin));
+        assert!(store.notes().iter().any(|note| {
+            note.name == fault_name && note.reason.contains("could not be removed")
+        }));
+        assert_eq!(store.stats().evicted_segments, 1, "the earlier eviction is retained");
+        assert!(store.evict(2_000_000_010).is_err(), "standalone eviction keeps its error");
+
+        let end = request(EventKind::End, "run", Some("run"));
+        let closed = annotator
+            .annotate(&mut store, caller.clone(), &end, 102, 2_000_000_020)
+            .expect("end is stored once despite repeated eviction trouble");
+        assert_eq!(closed.span, opened.span);
+        assert_eq!(annotator.open_spans(), 0);
+
+        let mut point = request(EventKind::Point, "run", None);
+        point
+            .attrs
+            .insert(String::from("boot_id"), String::from("boot-1"));
+        point.attrs.insert(String::from("seq"), String::from("1"));
+        point.idempotency = Some((String::from("boot-1"), 1));
+        let first_point = annotator
+            .annotate(&mut store, caller.clone(), &point, 103, 2_000_000_030)
+            .expect("keyed point");
+        let before_repeat = store.events().ring().len();
+        assert_eq!(
+            annotator
+                .annotate(&mut store, caller, &point, 104, 2_000_000_040)
+                .expect("point repeat"),
+            first_point
+        );
+        assert_eq!(store.events().ring().len(), before_repeat);
+        assert_eq!(store.events().stats().stored, 3);
+        assert_eq!(
+            store
+                .events()
+                .ring()
+                .events()
+                .filter(|event| event.kind == EventKind::End)
+                .count(),
+            1
+        );
+
+        let on_disk = store
+            .events()
+            .range(2_000_000_000, 2_000_000_100, 8, 1 << 16)
+            .expect("read the event segment");
+        assert_eq!(on_disk.len(), 3);
+        assert_eq!(
+            on_disk
+                .records
+                .iter()
+                .filter_map(|record| decode_event_frame(&record.payload).ok())
+                .filter(|payload| payload.kind == EventKind::End.code())
+                .count(),
+            1
+        );
+
+        temp.remove(&link_name);
+        store.evict(2_000_000_100).expect("the next pass retries eviction");
+        assert!(store
+            .events()
+            .tier()
+            .scan()
+            .segments
+            .iter()
+            .all(|segment| segment.name != fault_name && segment.name != first_seed_name));
     }
 
     #[test]

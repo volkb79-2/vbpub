@@ -18,7 +18,7 @@ use hostobs_store::annotate::{AnnotateError, Annotator, Caller, EventRequest, Ev
 use hostobs_store::error::StoreError;
 use hostobs_store::events::{CtxKey, Event, EventCgroupKey, EventKind, EventPeer, Outcome};
 use hostobs_store::store::Store;
-use hostobs_store::tier::AppendOutcome;
+use hostobs_store::tier::{AppendOutcome, Evicted, TierNote};
 
 use crate::sampler::{Published, Tick};
 
@@ -32,6 +32,7 @@ pub struct ProbeBackend {
     annotator: Annotator,
     append_clock: Box<dyn Fn() -> u64 + Send + Sync>,
     append_failed: bool,
+    eviction_failed: bool,
 }
 
 impl ProbeBackend {
@@ -54,6 +55,7 @@ impl ProbeBackend {
             annotator,
             append_clock: Box::new(append_clock),
             append_failed: false,
+            eviction_failed: false,
         }
     }
 
@@ -71,6 +73,7 @@ struct TimedEventSink<'a> {
     store: &'a mut Store,
     clock: &'a (dyn Fn() -> u64 + Send + Sync),
     append_failed: &'a mut bool,
+    eviction_failed: &'a mut bool,
 }
 
 impl EventSink for TimedEventSink<'_> {
@@ -83,28 +86,89 @@ impl EventSink for TimedEventSink<'_> {
         let started = (self.clock)();
         let result = self.store.record_event(event, payload, real_ns);
         let elapsed_ns = (self.clock)().saturating_sub(started);
-        let elapsed_ms = elapsed_ns / 1_000_000;
+        if let Some(line) = append_failure_line(
+            self.append_failed,
+            result.as_ref().err(),
+            elapsed_ns,
+        ) {
+            eprintln!("{line}");
+        }
         match &result {
             Ok(outcome) => {
+                if let Some(line) = eviction_failure_line(
+                    self.eviction_failed,
+                    failed_eviction_note(&outcome.evicted),
+                ) {
+                    eprintln!("{line}");
+                }
                 if let Some(line) = seal_stall_line(outcome.sealed.as_deref(), elapsed_ns) {
                     eprintln!("{line}");
                 }
-                if *self.append_failed {
-                    eprintln!("hostobs-probe: events append succeeded again after {elapsed_ms} ms");
-                    *self.append_failed = false;
-                }
-            }
-            Err(error) if !*self.append_failed => {
-                eprintln!(
-                    "hostobs-probe: events append started failing: {} after {elapsed_ms} ms",
-                    error
-                );
-                *self.append_failed = true;
             }
             Err(_) => {}
         }
         result
     }
+}
+
+fn append_failure_line(
+    append_failed: &mut bool,
+    error: Option<&StoreError>,
+    elapsed_ns: u64,
+) -> Option<String> {
+    let elapsed_ms = elapsed_ns / 1_000_000;
+    match (error, *append_failed) {
+        (Some(error), false) => {
+            *append_failed = true;
+            Some(format!(
+                "hostobs-probe: events append started failing: {error} after {elapsed_ms} ms"
+            ))
+        }
+        (Some(_), true) => None,
+        (None, true) => {
+            *append_failed = false;
+            Some(format!(
+                "hostobs-probe: events append succeeded again after {elapsed_ms} ms"
+            ))
+        }
+        (None, false) => None,
+    }
+}
+
+fn failed_eviction_note(evicted: &Evicted) -> Option<&TierNote> {
+    evicted
+        .notes
+        .iter()
+        .find(|note| note.reason.contains("could not be removed"))
+}
+
+fn eviction_failure_line(
+    eviction_failed: &mut bool,
+    note: Option<&TierNote>,
+) -> Option<String> {
+    match (note, *eviction_failed) {
+        (Some(note), false) => {
+            *eviction_failed = true;
+            Some(format!(
+                "hostobs-probe: events eviction started failing: {}",
+                note.reason
+            ))
+        }
+        (Some(_), true) => None,
+        (None, true) => {
+            *eviction_failed = false;
+            Some(String::from("hostobs-probe: events eviction succeeded again"))
+        }
+        (None, false) => None,
+    }
+}
+
+fn inferred_end_failure_line(failed: usize) -> Option<String> {
+    (failed > 0).then(|| {
+        format!(
+            "hostobs-probe: could not store {failed} inferred event end(s) on connection close"
+        )
+    })
 }
 
 fn event_peer(peer: &Peer) -> EventPeer {
@@ -323,6 +387,7 @@ impl Backend for ProbeBackend {
             store: &mut self.store,
             clock: self.append_clock.as_ref(),
             append_failed: &mut self.append_failed,
+            eviction_failed: &mut self.eviction_failed,
         };
         let caller = Caller {
             conn: u64::from(conn.0),
@@ -340,17 +405,27 @@ impl Backend for ProbeBackend {
 
     fn connection_closed(&mut self, conn: ConnId) {
         let Some(real_ns) = real_at(&self.published, self.now_ns) else {
-            self.annotator.forget_connection(u64::from(conn.0));
-            eprintln!("hostobs-probe: could not derive time for inferred event ends");
+            let failed = self.annotator.forget_connection(u64::from(conn.0));
+            if let Some(line) = inferred_end_failure_line(failed) {
+                eprintln!("{line}");
+            }
             return;
         };
         let mut sink = TimedEventSink {
             store: &mut self.store,
             clock: self.append_clock.as_ref(),
             append_failed: &mut self.append_failed,
+            eviction_failed: &mut self.eviction_failed,
         };
-        self.annotator
-            .connection_closed(&mut sink, u64::from(conn.0), self.now_ns, real_ns);
+        let failed = self.annotator.connection_closed(
+            &mut sink,
+            u64::from(conn.0),
+            self.now_ns,
+            real_ns,
+        );
+        if let Some(line) = inferred_end_failure_line(failed) {
+            eprintln!("{line}");
+        }
     }
 }
 
@@ -385,8 +460,13 @@ impl hostobs_serve::backend::Turn for ProbeBackend {
 
 #[cfg(test)]
 mod tests {
-    use super::{real_at, seal_stall_line};
+    use super::{
+        append_failure_line, eviction_failure_line, failed_eviction_note, inferred_end_failure_line,
+        real_at, seal_stall_line,
+    };
     use crate::sampler::Published;
+    use hostobs_store::error::StoreError;
+    use hostobs_store::tier::{Evicted, TierNote};
 
     #[test]
     fn real_time_is_startup_wall_time_plus_checked_monotonic_elapsed() {
@@ -403,6 +483,57 @@ mod tests {
             seal_stall_line(Some("events-1-2.seg"), 25_000_000),
             Some(String::from(
                 "hostobs-probe: events segment events-1-2.seg sealed, the append stalled the server turn 25 ms"
+            ))
+        );
+    }
+
+    #[test]
+    fn append_failure_episode_logs_only_the_start_and_recovery() {
+        let error = StoreError::Io {
+            op: "append",
+            os_code: None,
+            message: String::from("injected failure"),
+        };
+        let mut failed = false;
+        assert!(append_failure_line(&mut failed, Some(&error), 7_000_000)
+            .is_some_and(|line| line.contains("append started failing")));
+        assert_eq!(append_failure_line(&mut failed, Some(&error), 8_000_000), None);
+        assert!(append_failure_line(&mut failed, None, 9_000_000)
+            .is_some_and(|line| line.contains("append succeeded again")));
+        assert_eq!(append_failure_line(&mut failed, None, 10_000_000), None);
+        assert!(!failed);
+    }
+
+    #[test]
+    fn eviction_failure_episode_logs_only_the_start_and_recovery() {
+        let note = TierNote {
+            name: String::from("events-0-0.seg"),
+            reason: String::from("segment could not be removed (symlink)"),
+        };
+        let evicted = Evicted {
+            notes: vec![note],
+            ..Evicted::default()
+        };
+        let mut failed = false;
+        assert!(eviction_failure_line(&mut failed, failed_eviction_note(&evicted))
+            .is_some_and(|line| line.contains("eviction started failing")));
+        assert_eq!(
+            eviction_failure_line(&mut failed, failed_eviction_note(&evicted)),
+            None
+        );
+        assert!(eviction_failure_line(&mut failed, None)
+            .is_some_and(|line| line.contains("eviction succeeded again")));
+        assert_eq!(eviction_failure_line(&mut failed, None), None);
+        assert!(!failed);
+    }
+
+    #[test]
+    fn inferred_end_failures_log_once_per_close_only_when_any_end_was_lost() {
+        assert_eq!(inferred_end_failure_line(0), None);
+        assert_eq!(
+            inferred_end_failure_line(2),
+            Some(String::from(
+                "hostobs-probe: could not store 2 inferred event end(s) on connection close"
             ))
         );
     }
