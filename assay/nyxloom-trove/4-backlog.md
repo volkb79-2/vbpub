@@ -16369,3 +16369,20 @@ run although the kernel could reclaim the memory. Observed on v1001 at
 about 3.3 GB of the slice usage in file cache and memory PSI full avg60 0.06
 (`rgw-self-qualification-provisional-20261127T073114-v1001`, refused before
 the lane started). The matching run-gate admission defect is RG-332.
+
+## B600 — P4 advisory-budget comments overstate when the budget binds
+
+**Status: OPEN, filed 2026-11-27 (P-assay-4f round-4 review, low); severity:
+low.**
+
+The comments at `assay/src/assay/runner.py:6121` and
+`assay/src/assay/mutation.py:2307` say the candidate budget binds if CPU
+*becomes* unreadable. `assay/src/assay/liveness.py` sets `cpu_readable` after
+the first successful sample and never clears it, so the budget binds on this
+ground only when candidate CPU was never readable. If CPU reads start failing
+later while the event stream stays intact, the budget stays advisory, and
+continuing completed events can keep resetting the no-progress wall stop. The
+stream-break exception in both comments is accurate.
+
+**Close when.** Both comments say "was never readable", or the runtime policy
+changes to bind on a later loss and a test pins that behaviour.
