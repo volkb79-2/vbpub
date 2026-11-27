@@ -57,6 +57,60 @@ def mutant(source: str, name: str, before: str, after: str, destination: Path = 
     target.chmod(0o755)
     return target
 
+
+def mutation_runner_mutant(name: str, before: str, after: str) -> Path:
+    return mutant("scripts/controller/tests/mutation-runner.sh", name, before, after)
+
+
+mutation_runner_mutant(
+    "mutation-runner-missing-result.sh",
+    "    printf 'WORKER ERROR: could not write result for %s\\n' \"$label\" >&2\n    return 70",
+    "    printf 'WORKER ERROR: could not write result for %s\\n' \"$label\" >&2\n    return 0",
+)
+mutation_runner_mutant(
+    "mutation-runner-spawn-failure.sh",
+    "  if ! mutation_runner_command_available \"$@\"; then\n    status=127\n    outcome=SPAWN_ERROR",
+    "  if false; then\n    status=127\n    outcome=SPAWN_ERROR",
+)
+mutation_runner_mutant(
+    "mutation-runner-duplicate-label.sh",
+    "  if [[ -e $MUTATION_RUNNER_REGISTERED/$label ]]; then\n"
+    "    mutation_runner_fail \"$label\" 'duplicate check label would share a log and result path'",
+    "  if false; then\n"
+    "    mutation_runner_fail \"$label\" 'duplicate check label would share a log and result path'",
+)
+mutation_runner_mutant(
+    "mutation-runner-invalid-width.sh",
+    "    [[ $value != 0 ]] || return 1",
+    "    : # mutant lets zero reach the effective-width guard",
+)
+mutation_runner_mutant(
+    "mutation-runner-survivor-stop.sh",
+    "mutation_runner_should_stop() {\n"
+    "  mutation_runner_observe_survivor\n"
+    "  (( MUTATION_RUNNER_SURVIVOR_OBSERVED != 0 ))\n"
+    "}",
+    "mutation_runner_should_stop() {\n"
+    "  return 1\n"
+    "}",
+)
+mutation_runner_mutant(
+    "mutation-runner-override-error-killed.sh",
+    "    elif mutation_runner_override_unreadable \"$log\" \"$@\"; then",
+    "    elif false; then",
+)
+mutation_runner_mutant(
+    "mutation-runner-late-wait.sh",
+    "      if (( ${#MUTATION_RUNNER_PIDS[@]} > 0 )); then\n"
+    "        if ! mutation_runner_reap_one; then break; fi\n"
+    "        continue\n"
+    "      fi",
+    "      if (( ${#MUTATION_RUNNER_PIDS[@]} > 0 )); then\n"
+    "        break # mutant skips the final worker wait\n"
+    "      fi",
+)
+
+
 def pi_review_mutant(name: str, before: str, after: str) -> Path:
     """A pi-review.sh mutant keeps its siblings: the launcher runs
     "$SCRIPT_DIR/pi-impl.sh", so a copy without them would fail for every check
@@ -792,8 +846,8 @@ mutant("scripts/controller/pi-impl.sh", "pi-run-name-refusal-overwrites.sh",
        'controller_run_claim "$name" || exit 2',
        'controller_run_claim "$name" || exit 2\ncontroller_run_record_owner')
 # Keep the same owner-ordering defect under a distinct mutant name for the
-# accepted-record oracle; test-mutations.sh gives each named mutant one loop
-# entry even when two focused checks exercise the same weak source edge.
+# accepted-record oracle: the runner gives every check its own label, log and
+# result path, so two focused checks of one weak source edge need two names.
 mutant("scripts/controller/pi-impl.sh", "pi-run-name-refusal-overwrites-records.sh",
        'controller_run_claim "$name" || exit 2',
        'controller_run_claim "$name" || exit 2\ncontroller_run_record_owner')

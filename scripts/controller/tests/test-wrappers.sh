@@ -824,14 +824,16 @@ resume_pid=$!
 # Wait for EVIDENCE that this invocation owns the name (its own pid is in the
 # owner record), then for the marker to be gone while its child still works.
 saw_owner=0
-for _ in {1..200}; do
+# Allow a full minute for the owner record under concurrent mutation workers.
+for _ in {1..1200}; do
   recorded=$(sed -n 's/^pid=\([0-9][0-9]*\).*/\1/p' "$ROOT/controller/runs/manual-resume.lock" 2>/dev/null | head -n 1)
   if [[ $recorded == "$resume_pid" ]]; then saw_owner=1; break; fi
   sleep 0.05
 done
 (( saw_owner == 1 )) || fail 'the resumed invocation never recorded itself as the run owner'
 saw_absence=0
-for _ in {1..200}; do
+# Allow a full minute for the resumed child to clear its old marker.
+for _ in {1..1200}; do
   if [[ ! -e $ROOT/controller/runs/manual-resume.done ]]; then saw_absence=1; break; fi
   sleep 0.05
 done
@@ -860,7 +862,8 @@ FAKE_CODEX_HOLD_UNTIL="$ROOT/owned-codex-run.release" PATH="$ROOT/bin:$PATH" HOM
   "$CODEX_IMPL_SCRIPT" "$ROOT/worktree" "$ROOT/brief.md" owned-codex-run \
   > "$ROOT/owned-codex-run.out" 2>&1 &
 owned_pid=$!
-for _ in {1..100}; do [[ -e $ROOT/controller/runs/owned-codex-run.lock ]] && break; sleep 0.1; done
+# Allow a full minute for the run lock to appear under concurrent mutation workers.
+for _ in {1..600}; do [[ -e $ROOT/controller/runs/owned-codex-run.lock ]] && break; sleep 0.1; done
 if PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" CONTROLLER_REPO="$ROOT/repo" \
   CODEX_ROUTE=luna CODEX_HOME_LUNA="$ROOT/codex-luna" CODEX_SQLITE_HOME="$ROOT/sqlite" CODEX_LOG="$ROOT/owned2.log" \
   "$CODEX_IMPL_SCRIPT" "$ROOT/worktree" "$ROOT/brief.md" owned-codex-run \

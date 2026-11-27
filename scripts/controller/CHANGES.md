@@ -6,6 +6,25 @@ no separate version number, so entries are grouped by the work that landed.
 
 ## [Unreleased]
 
+### Parallel controller mutation checks (P-plat-35)
+- `tests/test-mutations.sh` now submits the existing `expect_killed` calls to a
+  bounded pool, defaulting to `nproc` capped at the inherited 3-CPU
+  `tester-unified` environment limit. `CONTROLLER_MUTATION_JOBS=1..3` selects an
+  explicit width; invalid or ineffective values refuse. Worker checks have a
+  600-second wall bound, a 1 GiB virtual-address-space bound, and the suite
+  lane has a 4 GiB memory cap. Timeout, memory/resource-limit and runner errors
+  fail the lane instead of counting as KILLED. The pending dispatcher skips
+  blocked same-suite checks, starts other eligible checks, preserves exclusive
+  groups, and reaps whichever recorded worker finishes first. Missing results,
+  duplicate labels, incomplete counts and survivors still fail closed. The
+  ordinary suite test files remain sequential and unchanged.
+- Fix round 1 adds deterministic two-survivor ordering, per-bound unit cases,
+  effective-width and no-worker wait guards, and reporting that summarizes
+  checks left unstarted after a survivor. It lengthens three pi-impl event and
+  readiness bounds and three wrapper readiness polls to 60 seconds. The round
+  1 work report records the review dispositions and per-file scheduling
+  estimate.
+
 ### Added
 - **Per-command PID namespace guard for pi implementer bash (P-plat-26d).** A tracked `pi-pidns-extension.js`, explicitly selected with `--no-extensions -e` on first launches, resumes and automatic continuations, replaces both the built-in bash tool and user `!`/`!!` operations with `pi-pidns-bash`. With the tracked extension, Python bootstrap, worker and launcher unchanged, each command starts in a fresh user and PID namespace; the wrapper hides the tmux socket directory and Docker API socket paths and refuses with exit 125 before running a command if bwrap cannot set it up. The Python bootstrap starts as `/usr/bin/python3 -IS`: interpreter startup ignores `PYTHON*` settings and skips site initialization before bwrap, while the original environment remains available to Bash commands. It restores `SIGPIPE` and `SIGXFSZ` to their default dispositions before execing Bash, and strips `BASH_ENV`, `ENV`, exported Bash functions, `SHELLOPTS` and `BASHOPTS`; `pi-impl.sh` strips child startup hooks before preflight and every Pi invocation. A same-user agent can edit these guard files and change how a later command starts, so the guard prevents accidental signal commands through the current launch path but is not tamper-resistant (CTL-65). `pi-impl.sh` probes the wrapper before claiming the run name and refuses with exit 2 on failure. Worktree settings cannot replace the CLI extension and no settings file is written. With those guard assets unchanged, the namespace blocks the current command's signals to outer PIDs; it does not confine file writes, network access or other Unix sockets, and `/proc` remains the outer procfs (`kill -0 1` succeeds for namespace PID 1). Tests and mutants cover argv, fail-closed behavior, launch refusal, all pi launch paths, review-mode invariance and a live signal-zero isolation probe that skips loudly if the gate forbids user namespaces.
 - **A pi run mode, and review mode is the wrapper's own switch (P-plat-26c).**

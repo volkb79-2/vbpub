@@ -39,6 +39,8 @@ files=(
   "$SCRIPT_DIR/../resume-read.sh"
   "$SCRIPT_DIR/../ctl-keepalive.sh"
   "$SCRIPT_DIR/pane-frame-lib.sh"
+  "$SCRIPT_DIR/mutation-runner.sh"
+  "$SCRIPT_DIR/test-mutation-runner.sh"
   "$REPO_ROOT/scripts/netcup/runner/host-sat-queue.sh"
   "$REPO_ROOT/scripts/netcup/runner/remote-gate-cache.sh"
   "$REPO_ROOT/scripts/netcup/runner/tests/test_remote_gate_cache.sh"
@@ -67,7 +69,7 @@ files=(
   "$queue_test"
 )
 for file in "${files[@]}"; do bash -n "$file" || exit $?; done
-for file in "$SCRIPT_DIR/../dev_profile.py" "$SCRIPT_DIR/../pi-pidns-bash" "$SCRIPT_DIR/test_dev.py"; do
+for file in "$SCRIPT_DIR/../dev_profile.py" "$SCRIPT_DIR/../pi-pidns-bash" "$SCRIPT_DIR/test_dev.py" "$SCRIPT_DIR/mutate-sources.py"; do
   python3 -I -c 'import ast, sys; ast.parse(open(sys.argv[1]).read(), sys.argv[1])' "$file" || exit $?
 done
 if command -v shellcheck >/dev/null 2>&1; then
@@ -98,6 +100,7 @@ bash "$SCRIPT_DIR/test-clear-resume.sh" || exit $?
 bash "$SCRIPT_DIR/test-compact-resume.sh" || exit $?
 bash "$SCRIPT_DIR/test-resume-read.sh" || exit $?
 bash "$SCRIPT_DIR/test-ctl-keepalive.sh" || exit $?
+bash "$SCRIPT_DIR/test-mutation-runner.sh" || exit $?
 bash "$queue_test" || exit $?
 bash "$REPO_ROOT/scripts/netcup/runner/tests/test_remote_gate_cache.sh" || exit $?
 bash "$SCRIPT_DIR/test-mutations.sh" || exit $?

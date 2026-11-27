@@ -18,3 +18,9 @@ budget = "90m"
 # RG-320/RG-326: SILENT BY CONSTRUCTION while the controller test suite runs;
 # no <=300s output cadence is guaranteed; no bound is measured; see RG-326.
 stall_timeout = "90m"
+
+# Each of the three mutation workers is capped at 1 GiB; reserve one GiB for
+# the lane parent and its baseline suite work. This table stays after every
+# key of [lanes.suite]: a key below it belongs to resources.
+[lanes.suite.resources]
+memory = "4g"
