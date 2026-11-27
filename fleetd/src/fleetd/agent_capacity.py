@@ -96,6 +96,9 @@ def host_capacity_from_facts(document: HostFacts) -> HostCapacity:
         lambda value: {principal: tuple(classes) for principal, classes in value.items()},
     )
     disk_floors = _mapped_fact(policy["disk_floors"], "policy.disk_floors", lambda value: dict(value))
+    max_upload_store_bytes = _field_fact(
+        policy["max_upload_store_bytes"], "policy.max_upload_store_bytes",
+    )
     admission = _mapped_fact(policy["admission"], "policy.admission", lambda value: dict(value))
 
     cpu_max_fact = _field_fact(gate_slice["cpu_max"], "gate_slice.cpu_max")
@@ -142,6 +145,7 @@ def host_capacity_from_facts(document: HostFacts) -> HostCapacity:
             footprint_charges_bytes=charges,
             priority_classes_by_principal=priorities,
             disk_floors=disk_floors,
+            max_upload_store_bytes=max_upload_store_bytes,
             psi_refuse_some_avg10=_field_fact(policy["psi_refuse_some_avg10"], "policy.psi_refuse_some_avg10"),
             admission=admission,
             aging_s=_field_fact(policy["aging_s"], "policy.aging_s"),

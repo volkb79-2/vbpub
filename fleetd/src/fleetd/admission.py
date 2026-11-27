@@ -140,6 +140,7 @@ class PolicyFacts:
     footprint_charges_bytes: Fact[Mapping[str, int]]
     priority_classes_by_principal: Fact[Mapping[str, tuple[str, ...]]]
     disk_floors: Fact[Mapping[str, int]]
+    max_upload_store_bytes: Fact[int]
     psi_refuse_some_avg10: Fact[float]
     admission: Fact[Mapping[str, object]]
     aging_s: Fact[float]

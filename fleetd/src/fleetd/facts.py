@@ -54,6 +54,7 @@ class FactsConfig:
     priority_classes_by_principal: dict[str, list[str]] | None
     disk_floors: dict[str, int] | None
     max_upload_bytes: int | None
+    max_upload_store_bytes: int | None
     admission: dict[str, Any] | None
     aging_s: float | None
     legacy_charge_bytes: int | None
@@ -211,7 +212,7 @@ def load_facts_config(root: Path = DEFAULT_ROOT) -> FactsConfig:
         {
             "max_lane_containers", "host_reserve_bytes", "planning_cap", "max_footprint",
             "max_planned_bytes", "footprint_charges_bytes", "priority_classes_by_principal",
-            "disk_floors", "max_upload_bytes", "admission", "aging_s",
+            "disk_floors", "max_upload_bytes", "max_upload_store_bytes", "admission", "aging_s",
             "legacy_charge_bytes", "legacy_planned_cores",
         },
     )
@@ -260,6 +261,11 @@ def load_facts_config(root: Path = DEFAULT_ROOT) -> FactsConfig:
     max_upload_bytes = policy.get("max_upload_bytes")
     if max_upload_bytes is not None:
         max_upload_bytes = _optional_bytes(max_upload_bytes, "facts.toml.policy.max_upload_bytes")
+    max_upload_store_bytes = policy.get("max_upload_store_bytes")
+    if max_upload_store_bytes is not None:
+        max_upload_store_bytes = _optional_bytes(
+            max_upload_store_bytes, "facts.toml.policy.max_upload_store_bytes",
+        )
     admission = (
         _admission_config(policy["admission"], "facts.toml.policy.admission")
         if "admission" in policy else None
@@ -282,7 +288,7 @@ def load_facts_config(root: Path = DEFAULT_ROOT) -> FactsConfig:
         control_slice, profile_reserve_bytes, overcommit, oversubscribe_max,
         psi_refuse_number, max_lane, gate_slice, checkout_root, docker_root, host_reserve,
         planning_cap, max_footprint, max_planned_bytes, footprint_charges_bytes,
-        priority_classes_by_principal, disk_floors, max_upload_bytes, admission,
+        priority_classes_by_principal, disk_floors, max_upload_bytes, max_upload_store_bytes, admission,
         aging_s, legacy_charge_bytes, legacy_planned_cores,
     )
 
@@ -1114,6 +1120,10 @@ def collect_host_facts(
         ),
         "disk_floors": _fact(config.disk_floors, "not-configured: facts.toml.policy.disk_floors"),
         "max_upload_bytes": _fact(config.max_upload_bytes, "not-configured: facts.toml.policy.max_upload_bytes"),
+        "max_upload_store_bytes": _fact(
+            config.max_upload_store_bytes,
+            "not-configured: facts.toml.policy.max_upload_store_bytes",
+        ),
         "admission": _fact(config.admission, "not-configured: facts.toml.policy.admission"),
         "aging_s": _configured_policy_fact(config.aging_s, "aging_s", "seconds"),
         "legacy_charge_bytes": _configured_policy_fact(

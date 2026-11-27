@@ -127,8 +127,18 @@ existing `lease_id` and immutable container ID.
 
 Local framing: ordinary verbs use one request per connection, 4-byte big-endian byte length + UTF-8 JSON object, max 64 KiB.
 `lease` is controller-socket-only and keeps its connection open for the full gate-container lifetime; grant/bind/ack messages use the same frame size, then Run-Gate closes after removal.
-For `put`, exactly `bytes` follows,
-streamed and capped by required `policy.max_upload_bytes`; client half-closes after the request and server rejects truncation/extra input.
+For `put`, exactly `bytes` follows, streamed and capped by required
+`policy.max_upload_bytes`. Before reading the body, the agent reserves the
+declared size under a cross-process upload-store lock and requires
+`stored + in_flight + new <= policy.max_upload_store_bytes` and
+`upload_fs_available - in_flight_remaining - new >= max(policy.disk_floors)`.
+Both facts are required; unavailable facts refuse. The stored scan counts
+regular files across all groups without following symlinks and refuses an
+unreadable file. A reservation starts before the first body byte and ends only
+when the object is committed or its partial is discarded. The lock is not held
+while the body streams. Client half-closes after the request and server rejects
+truncation/extra input. Retention and garbage collection are C3b follow-up
+FD-062.
 `fetch` ranges are at most 8 MiB; responses use the same frame + body.
 
 **Several clients, several ciu roots.** The record names `repo` and `requested_by`, and the host
@@ -279,16 +289,20 @@ and fallbacks are hazards"). The agent answers `/2` only; `fleet facts validate`
 | `freeze.since_utc`, `freeze.by`, `freeze_reason` | time, strings | hostobs events | `null`+reason `not-collected until thrashguard P4` |
 | `freeze.queued` | int | none (agctl draft has no source, `agctl-estate-snapshot-draft.md:38-39`) | `null`+reason `not-collected` |
 | `policy.host_role`, `.psi_refuse_some_avg10`, `.max_lane_containers` | as /1 (`fleetd/src/fleetd/contracts.py:510-524`) | `/etc/fleetd/facts.toml` | role null → refuse (`fleetd/src/fleetd/plan.py:480-483`) |
-| `policy.planning_cap`, `.max_footprint`, `.max_planned_bytes`, `.footprint_charges_bytes`, `.priority_classes_by_principal`, `.disk_floors`, `.max_upload_bytes`, `.admission` | number, class, bytes, admission settings | optional `/etc/fleetd/facts.toml` host policy | missing value → `null`+reason; later host admission consumes these optional settings, current planner does not require them; requirement on the `put` verb, which package C adds: it must refuse (2) every upload while `policy.max_upload_bytes` is null |
+| `policy.planning_cap`, `.max_footprint`, `.max_planned_bytes`, `.footprint_charges_bytes`, `.priority_classes_by_principal`, `.disk_floors`, `.max_upload_bytes`, `.max_upload_store_bytes`, `.admission` | number, class, bytes, admission settings | optional `/etc/fleetd/facts.toml` host policy | missing value → `null`+reason; current planner does not require them; `put` refuses (2) when either upload cap or disk floors is unavailable |
 | `policy.aging_s`, `.legacy_charge_bytes`, `.legacy_planned_cores` | seconds, bytes per legacy job, planned cores per legacy job | `/etc/fleetd/facts.toml` host policy added by design package C | missing value → `null`+reason; `aging_s` is required for queue decisions; the two legacy values are required when a legacy job is listed; unknown needed values return 75 |
 | `queue.planned_cores`, `.charged_bytes`, `.waiting` | number, bytes, count | host agent's admission book | `null`+reason |
 | `jobs[]` | `{id,state,requested_by,resources,started_utc,progress_done,progress_total,progress_unit,last_progress_utc}` | `jobs/` dir | `null`+reason `not-collected` |
 | `tools[]` | as /1 | probes | `null`+reason |
 
-`facts.toml.policy` currently has a closed key set (`fleetd/src/fleetd/facts.py`, `_object`). Design package C must add acceptance for
-`aging_s`, `legacy_charge_bytes`, and `legacy_planned_cores` before any deployment writes those keys; writing one first breaks fact
-collection. This library requires `policy.legacy_planned_cores` when the legacy provider lists a job and returns 75 with that key in
-the reason when it is unknown.
+`facts.toml.policy` currently has a closed key set (`fleetd/src/fleetd/facts.py`, `_object`). Install a release that accepts an optional
+policy key before any deployment writes it; writing an unknown key first breaks
+fact collection. `aging_s`, `legacy_charge_bytes`, `legacy_planned_cores`, and
+`max_upload_store_bytes` have no default and emit null with a reason when
+unconfigured. A host must configure `max_upload_store_bytes` before relying on
+`put`. This library requires `policy.legacy_planned_cores` when the legacy
+provider lists a job and returns 75 with that key in the reason when it is
+unknown.
 
 **Changes this design asks of the draft's rows** (`.controller-state/platform/design/agctl-estate-snapshot-draft.md`), named for the agctl owner: the draft's
 `queue.*` row ("slots stay `source: remote-gate`/`run-gate`") is replaced by the agent's queue;

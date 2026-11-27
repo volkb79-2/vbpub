@@ -912,7 +912,7 @@ def _validate_host_facts_2(value: object) -> HostFacts:
     policy = _object(root["policy"], "host-facts/2.policy", {
         "host_role", "psi_refuse_some_avg10", "max_lane_containers", "planning_cap", "max_footprint",
         "max_planned_bytes", "footprint_charges_bytes", "priority_classes_by_principal", "disk_floors",
-        "max_upload_bytes", "admission", "aging_s", "legacy_charge_bytes", "legacy_planned_cores",
+        "max_upload_bytes", "max_upload_store_bytes", "admission", "aging_s", "legacy_charge_bytes", "legacy_planned_cores",
     })
     def host_role(value: object, where: str) -> object:
         role = _string(value, where)
@@ -934,6 +934,7 @@ def _validate_host_facts_2(value: object) -> HostFacts:
     _wrapped(policy["priority_classes_by_principal"], "host-facts/2.policy.priority_classes_by_principal", _v2_policy_object("priority_classes_by_principal"))
     _wrapped(policy["disk_floors"], "host-facts/2.policy.disk_floors", _v2_policy_object("disk_floors"))
     _wrapped_int(policy["max_upload_bytes"], "host-facts/2.policy.max_upload_bytes", minimum=1)
+    _wrapped_int(policy["max_upload_store_bytes"], "host-facts/2.policy.max_upload_store_bytes", minimum=1)
     _wrapped(policy["admission"], "host-facts/2.policy.admission", _v2_policy_object("admission"))
     def positive_number(value: object, where: str) -> object:
         result = _number(value, where, minimum=0)

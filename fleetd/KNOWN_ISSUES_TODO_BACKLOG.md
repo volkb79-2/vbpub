@@ -64,6 +64,7 @@
 | FD-059 | Measure and design PSI-aware admission before enforcing a prediction | P1 | OPEN (design only) | 2026-11-27 |
 | FD-060 | A granted lease client can stay connected forever without binding | P2 | OPEN (design bound missing) | 2026-11-27 |
 | FD-061 | Persist executor result details for terminal status | P2 | OPEN | 2026-11-27 |
+| FD-062 | Retain and garbage-collect host upload objects | P2 | OPEN (C3b follow-up) | 2026-11-27 |
 
 ## FD-001 Lite campaign lifecycle
 
@@ -1173,3 +1174,16 @@ those durable facts and must not invent a verdict or exit code. C3b must decide
 which executor result fields are durable and atomically persist them before
 releasing the admission charge, then let terminal status answer from that
 record after restart. Cancel of this terminal record remains a refusal.
+
+## FD-062 Retain and garbage-collect host upload objects
+
+**State:** OPEN; C3b follow-up. **Priority:** P2. **Filed:** 2026-11-27.
+
+C3a bounds aggregate stored and in-flight upload bytes with
+`policy.max_upload_store_bytes`, but it does not delete committed objects.
+C3b must define retention and garbage collection for content-addressed upload
+objects. Collection must preserve objects referenced by admitted or terminal
+job records and coordinate with active uploads; no expiry or quota default is
+defined here.
+
+Source: P-fd-05 C3a round 2 controller ruling (2026-11-27).

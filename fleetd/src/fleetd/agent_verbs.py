@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 import errno
+import fcntl
 import hashlib
 import json
 import os
@@ -13,9 +14,10 @@ import socket
 import stat
 import tempfile
 import tomllib
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Iterable, Mapping
+from typing import Any, Callable, Iterable, Iterator, Mapping
 
 from .admission import AdmissionError, ExitCode, InspectorAnswer
 from .agent_admission import AgentAdmission, AgentExecutor
@@ -118,6 +120,15 @@ class AgentReply:
             os.close(fd)
 
 
+@dataclass
+class _UploadReservation:
+    fd: int
+    path: Path
+    temporary_fd: int
+    temporary_name: str
+    expected: int
+
+
 class AgentVerbService:
     """Serve read, upload and artifact verbs without opening the admission book."""
 
@@ -182,6 +193,288 @@ class AgentVerbService:
         if fact["v"] is None:
             raise AdmissionError(ExitCode.REFUSAL, f"policy.max_upload_bytes unavailable: {fact['reason']}")
         return int(fact["v"])
+
+    def _put_limits(self) -> tuple[int, int, int]:
+        policy = self._facts()["policy"]
+        upload = policy["max_upload_bytes"]
+        if upload["v"] is None:
+            raise AdmissionError(ExitCode.REFUSAL, f"policy.max_upload_bytes unavailable: {upload['reason']}")
+        store = policy["max_upload_store_bytes"]
+        if store["v"] is None:
+            raise AdmissionError(
+                ExitCode.REFUSAL,
+                f"policy.max_upload_store_bytes unavailable: {store['reason']}",
+            )
+        floors = policy["disk_floors"]
+        if floors["v"] is None:
+            raise AdmissionError(ExitCode.REFUSAL, f"policy.disk_floors unavailable: {floors['reason']}")
+        if not isinstance(floors["v"], Mapping) or not floors["v"]:
+            raise AdmissionError(ExitCode.REFUSAL, "policy.disk_floors has no configured floors")
+        return (
+            int(upload["v"]), int(store["v"]),
+            max(int(value) for value in floors["v"].values()),
+        )
+
+    @contextmanager
+    def _upload_store_lock(self) -> Iterator[None]:
+        lock_path = self.paths.state_dir / ".upload-store.lock"
+        try:
+            fd = os.open(
+                lock_path,
+                os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0),
+                0o600,
+            )
+        except OSError as exc:
+            raise AdmissionError(ExitCode.RUNNER_FAILURE, f"cannot lock upload store accounting: {exc}") from exc
+        try:
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode) or stat.S_IMODE(info.st_mode) & 0o077:
+                raise AdmissionError(ExitCode.REFUSAL, "upload store lock is not a private regular file")
+            fcntl.flock(fd, fcntl.LOCK_EX)
+        except AdmissionError:
+            os.close(fd)
+            raise
+        except OSError as exc:
+            os.close(fd)
+            raise AdmissionError(ExitCode.RUNNER_FAILURE, f"cannot lock upload store accounting: {exc}") from exc
+        try:
+            yield
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            os.close(fd)
+
+    @staticmethod
+    def _write_upload_reservation(
+        fd: int, expected: int, remaining: int, temporary_name: str,
+    ) -> None:
+        record = json.dumps({
+            "schema": "fleet-upload-reservation/1",
+            "expected": expected,
+            "remaining": remaining,
+            "temporary": temporary_name,
+        }, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        os.ftruncate(fd, 0)
+        os.lseek(fd, 0, os.SEEK_SET)
+        view = memoryview(record)
+        while view:
+            count = os.write(fd, view)
+            if count <= 0:
+                raise OSError("upload reservation write made no progress")
+            view = view[count:]
+
+    def _read_upload_reservation(self, fd: int, token: str) -> tuple[int, int, str]:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_size > 4096:
+            raise AdmissionError(ExitCode.RUNNER_FAILURE, "upload reservation is not a bounded regular file")
+        os.lseek(fd, 0, os.SEEK_SET)
+        raw = os.read(fd, 4097)
+        try:
+            record = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise AdmissionError(ExitCode.RUNNER_FAILURE, f"upload reservation is unreadable: {exc}") from exc
+        temporary = f"upload-part-{token}"
+        if (
+            not isinstance(record, dict)
+            or set(record) != {"schema", "expected", "remaining", "temporary"}
+            or record["schema"] != "fleet-upload-reservation/1"
+            or type(record["expected"]) is not int
+            or record["expected"] < 0
+            or type(record["remaining"]) is not int
+            or not 0 <= record["remaining"] <= record["expected"]
+            or record["temporary"] != temporary
+        ):
+            raise AdmissionError(ExitCode.RUNNER_FAILURE, "upload reservation has an invalid closed shape")
+        return record["expected"], record["remaining"], temporary
+
+    def _remove_upload_partial(self, temporary_name: str) -> None:
+        path = self.paths.incoming_dir / temporary_name
+        try:
+            info = path.lstat()
+        except FileNotFoundError:
+            return
+        if not stat.S_ISREG(info.st_mode):
+            raise AdmissionError(ExitCode.RUNNER_FAILURE, f"upload partial {temporary_name!r} is not a regular file")
+        os.unlink(path)
+
+    def _recover_upload_reservations_locked(self) -> tuple[int, int, set[str]]:
+        expected_total = 0
+        remaining_total = 0
+        live_partials: set[str] = set()
+        try:
+            entries = list(os.scandir(self.paths.incoming_dir))
+        except OSError as exc:
+            raise AdmissionError(ExitCode.RUNNER_FAILURE, f"cannot inspect upload reservations: {exc}") from exc
+        for entry in entries:
+            if not entry.name.startswith(".upload-reservation-") or not entry.name.endswith(".json"):
+                continue
+            token = entry.name[len(".upload-reservation-"):-len(".json")]
+            if not token or re.fullmatch(r"[A-Za-z0-9_-]+", token) is None:
+                raise AdmissionError(ExitCode.RUNNER_FAILURE, "upload reservation filename is malformed")
+            try:
+                fd = os.open(entry.path, os.O_RDWR | getattr(os, "O_NOFOLLOW", 0))
+            except FileNotFoundError as exc:
+                raise AdmissionError(ExitCode.RUNNER_FAILURE, "upload reservation changed during recovery") from exc
+            except OSError as exc:
+                raise AdmissionError(ExitCode.RUNNER_FAILURE, f"cannot recover upload reservation: {exc}") from exc
+            locked = False
+            try:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    locked = True
+                except BlockingIOError:
+                    expected, remaining, temporary = self._read_upload_reservation(fd, token)
+                    expected_total += expected
+                    remaining_total += remaining
+                    live_partials.add(temporary)
+                    continue
+                expected, _remaining, temporary = self._read_upload_reservation(fd, token)
+                self._remove_upload_partial(temporary)
+                os.unlink(entry.path)
+            except FileNotFoundError:
+                raise AdmissionError(ExitCode.RUNNER_FAILURE, "upload reservation changed during recovery")
+            except OSError as exc:
+                raise AdmissionError(ExitCode.RUNNER_FAILURE, f"cannot recover upload reservation: {exc}") from exc
+            finally:
+                if locked:
+                    fcntl.flock(fd, fcntl.LOCK_UN)
+                os.close(fd)
+        try:
+            entries = list(os.scandir(self.paths.incoming_dir))
+            for entry in entries:
+                if entry.name.startswith("upload-part-") and entry.name not in live_partials:
+                    self._remove_upload_partial(entry.name)
+        except OSError as exc:
+            raise AdmissionError(ExitCode.RUNNER_FAILURE, f"cannot recover orphaned upload partials: {exc}") from exc
+        return expected_total, remaining_total, live_partials
+
+    def _stored_upload_bytes(self) -> int:
+        total = 0
+        if self.paths.uploads_dir.is_symlink() or not self.paths.uploads_dir.is_dir():
+            raise AdmissionError(ExitCode.REFUSAL, "agent upload directory is not a real directory")
+
+        def visit(directory: Path) -> None:
+            nonlocal total
+            try:
+                entries = list(os.scandir(directory))
+            except OSError as exc:
+                raise AdmissionError(ExitCode.RUNNER_FAILURE, f"cannot inspect stored uploads: {exc}") from exc
+            for entry in entries:
+                try:
+                    info = entry.stat(follow_symlinks=False)
+                except OSError as exc:
+                    raise AdmissionError(ExitCode.RUNNER_FAILURE, f"cannot inspect stored upload {entry.name!r}: {exc}") from exc
+                if stat.S_ISLNK(info.st_mode):
+                    continue
+                path = Path(entry.path)
+                if stat.S_ISDIR(info.st_mode):
+                    visit(path)
+                elif stat.S_ISREG(info.st_mode):
+                    try:
+                        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+                    except OSError as exc:
+                        raise AdmissionError(ExitCode.RUNNER_FAILURE, f"cannot read stored upload {entry.name!r}: {exc}") from exc
+                    try:
+                        opened = os.fstat(fd)
+                        if not stat.S_ISREG(opened.st_mode):
+                            raise AdmissionError(ExitCode.RUNNER_FAILURE, f"stored upload {entry.name!r} changed type")
+                        total += opened.st_size
+                    except OSError as exc:
+                        raise AdmissionError(ExitCode.RUNNER_FAILURE, f"cannot inspect stored upload {entry.name!r}: {exc}") from exc
+                    finally:
+                        os.close(fd)
+
+        visit(self.paths.uploads_dir)
+        return total
+
+    def _upload_free_bytes(self) -> int:
+        try:
+            stats = os.statvfs(self.paths.uploads_dir)
+        except OSError as exc:
+            raise AdmissionError(ExitCode.RUNNER_FAILURE, f"cannot inspect upload filesystem free space: {exc}") from exc
+        if type(stats.f_bavail) is not int or type(stats.f_frsize) is not int or stats.f_bavail < 0 or stats.f_frsize < 0:
+            raise AdmissionError(ExitCode.RUNNER_FAILURE, "upload filesystem returned invalid available-byte facts")
+        return stats.f_bavail * stats.f_frsize
+
+    def _reserve_upload(
+        self, expected: int, store_limit: int, floor_bytes: int,
+    ) -> _UploadReservation:
+        if self.paths.incoming_dir.is_symlink() or not self.paths.incoming_dir.is_dir():
+            raise AdmissionError(ExitCode.REFUSAL, "agent incoming directory is not a real directory")
+        with self._upload_store_lock():
+            in_flight, remaining, _live = self._recover_upload_reservations_locked()
+            stored = self._stored_upload_bytes()
+            if stored + in_flight + expected > store_limit:
+                raise AdmissionError(
+                    ExitCode.REFUSAL,
+                    f"put would exceed policy.max_upload_store_bytes {store_limit}",
+                )
+            available = self._upload_free_bytes()
+            if available - remaining - expected < floor_bytes:
+                raise AdmissionError(
+                    ExitCode.REFUSAL,
+                    f"put would breach configured disk floor {floor_bytes}",
+                )
+            temporary_fd = -1
+            reservation_fd = -1
+            temporary_name = ""
+            reservation_path: Path | None = None
+            try:
+                temporary_fd, temporary_name = tempfile.mkstemp(
+                    prefix="upload-part-", dir=self.paths.incoming_dir,
+                )
+                os.fchmod(temporary_fd, 0o600)
+                token = Path(temporary_name).name.removeprefix("upload-part-")
+                reservation_path = self.paths.incoming_dir / f".upload-reservation-{token}.json"
+                reservation_fd = os.open(
+                    reservation_path,
+                    os.O_CREAT | os.O_EXCL | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0),
+                    0o600,
+                )
+                fcntl.flock(reservation_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                self._write_upload_reservation(reservation_fd, expected, expected, Path(temporary_name).name)
+                os.fsync(reservation_fd)
+                self._fsync_directory(self.paths.incoming_dir)
+            except OSError:
+                if temporary_fd >= 0:
+                    os.close(temporary_fd)
+                if temporary_name:
+                    try:
+                        os.unlink(temporary_name)
+                    except FileNotFoundError:
+                        pass
+                if reservation_fd >= 0:
+                    os.close(reservation_fd)
+                if reservation_path is not None:
+                    try:
+                        os.unlink(reservation_path)
+                    except FileNotFoundError:
+                        pass
+                raise
+            return _UploadReservation(
+                reservation_fd, reservation_path, temporary_fd, temporary_name, expected,
+            )
+
+    def _update_upload_remaining(self, reservation: _UploadReservation, remaining: int) -> None:
+        with self._upload_store_lock():
+            self._write_upload_reservation(
+                reservation.fd, reservation.expected, remaining,
+                Path(reservation.temporary_name).name,
+            )
+
+    def _discard_upload_reservation(self, reservation: _UploadReservation) -> None:
+        with self._upload_store_lock():
+            self._remove_upload_partial(Path(reservation.temporary_name).name)
+            try:
+                os.unlink(reservation.path)
+            except FileNotFoundError:
+                pass
+            self._fsync_directory(self.paths.incoming_dir)
+
+    def _release_upload_reservation(self, reservation: _UploadReservation) -> None:
+        if reservation.fd >= 0:
+            fd, reservation.fd = reservation.fd, -1
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            os.close(fd)
 
     def handle(
         self,
@@ -337,7 +630,10 @@ class AgentVerbService:
             refs.append(checkout.name)
         return self._envelope(repo=repo, refs=refs)
 
-    def _stream_upload(self, stream: object, expected: int, digest: str, target: object) -> None:
+    def _stream_upload(
+        self, stream: object, expected: int, digest: str, target: object,
+        on_chunk: Callable[[int], None] | None = None,
+    ) -> None:
         try:
             fd = stream if type(stream) is int else stream.fileno()
         except (AttributeError, OSError, ValueError) as exc:
@@ -362,6 +658,8 @@ class AgentVerbService:
             target.write(chunk)  # type: ignore[attr-defined]
             hasher.update(chunk)
             remaining -= len(chunk)
+            if on_chunk is not None:
+                on_chunk(remaining)
 
         try:
             readable, _, _ = select.select([fd], [], [], self.policy.idle_connection_s)
@@ -377,19 +675,21 @@ class AgentVerbService:
 
     def _put(self, request: Mapping[str, Any], identity: AgentIdentity, body_stream: object) -> AgentReply:
         expected = int(request["bytes"])
-        maximum = self._max_upload_bytes()
+        maximum, store_limit, floor_bytes = self._put_limits()
         if expected > maximum:
             raise AdmissionError(ExitCode.REFUSAL, f"put.bytes {expected} exceeds policy.max_upload_bytes {maximum}")
         name = str(request["name"])
         digest = str(request["sha256"])
-        temporary_fd = -1
-        temporary_name = ""
+        reservation: _UploadReservation | None = None
+        completed = False
         try:
-            temporary_fd, temporary_name = tempfile.mkstemp(prefix="upload-", dir=self.paths.incoming_dir)
-            os.fchmod(temporary_fd, 0o600)
-            with os.fdopen(temporary_fd, "wb", closefd=True) as target:
-                temporary_fd = -1
-                self._stream_upload(body_stream, expected, digest, target)
+            reservation = self._reserve_upload(expected, store_limit, floor_bytes)
+            with os.fdopen(reservation.temporary_fd, "wb", closefd=True) as target:
+                reservation.temporary_fd = -1
+                self._stream_upload(
+                    body_stream, expected, digest, target,
+                    lambda remaining: self._update_upload_remaining(reservation, remaining),
+                )
                 target.flush()
                 os.fsync(target.fileno())
             uploads_dir = self.paths.uploads_dir
@@ -408,31 +708,36 @@ class AgentVerbService:
             if destination_dir.is_symlink() or not destination_dir.is_dir():
                 raise AdmissionError(ExitCode.REFUSAL, "put destination is not a real directory")
             destination = destination_dir / digest
-            if destination.is_symlink():
-                raise AdmissionError(ExitCode.REFUSAL, "put destination is a symlink")
-            if destination.exists():
-                existing = self._hash_file(destination)
-                if existing != (expected, digest):
-                    raise AdmissionError(ExitCode.REFUSAL, "existing host-created upload does not match its content address")
-                os.unlink(temporary_name)
-            else:
-                os.replace(temporary_name, destination)
-                temporary_name = ""
-                self._fsync_directory(destination_dir)
+            with self._upload_store_lock():
+                if destination.is_symlink():
+                    raise AdmissionError(ExitCode.REFUSAL, "put destination is a symlink")
+                if destination.exists():
+                    existing = self._hash_file(destination)
+                    if existing != (expected, digest):
+                        raise AdmissionError(ExitCode.REFUSAL, "existing host-created upload does not match its content address")
+                    os.unlink(reservation.temporary_name)
+                else:
+                    os.replace(reservation.temporary_name, destination)
+                    self._fsync_directory(destination_dir)
+                os.unlink(reservation.path)
+                self._fsync_directory(self.paths.incoming_dir)
             reply_path = str(destination.resolve(strict=True))
+            completed = True
             return AgentReply(self._envelope(name=name, sha256=digest, bytes=expected, path=reply_path))
         except AdmissionError:
             raise
         except OSError as exc:
             raise AdmissionError(ExitCode.RUNNER_FAILURE, f"cannot store put body: {exc}") from exc
         finally:
-            if temporary_fd >= 0:
-                os.close(temporary_fd)
-            if temporary_name:
+            if reservation is not None:
+                if reservation.temporary_fd >= 0:
+                    os.close(reservation.temporary_fd)
+                    reservation.temporary_fd = -1
                 try:
-                    os.unlink(temporary_name)
-                except FileNotFoundError:
-                    pass
+                    if not completed:
+                        self._discard_upload_reservation(reservation)
+                finally:
+                    self._release_upload_reservation(reservation)
 
     @staticmethod
     def _fsync_directory(path: Path) -> None:

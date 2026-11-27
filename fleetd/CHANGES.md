@@ -21,6 +21,7 @@ All notable changes to this project are recorded here.
 - Open lane declarations and progress streams through trusted directory descriptors without following any path component; cap progress ranges and client response bodies at 8 MiB.
 - Return terminal status only from its durable completion record and refuse cancel of completed jobs. C3b owns executor-backed terminal details (FD-061).
 - Advertise `lease` only when object, legacy-job and container-identity inspectors are configured; C3b wires those providers, so the shipped C3a CLI does not advertise it.
+- Bound aggregate stored and in-flight uploads with required `policy.max_upload_store_bytes` and the upload filesystem disk floor; leave retention and garbage collection to C3b (FD-062).
 
 ### Fixed
 - Import the admission exception handled by `fleetd-agent`, so startup admission failures return their specified exit code instead of raising `NameError`.

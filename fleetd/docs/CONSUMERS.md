@@ -240,6 +240,7 @@ planning_cap = 5
 max_footprint = "large"
 max_planned_bytes = 7516192768
 max_upload_bytes = 1073741824
+max_upload_store_bytes = 10737418240
 
 [policy.footprint_charges_bytes]
 tiny = 67108864
@@ -263,7 +264,10 @@ settle_s = 5
 `overcommit`, `oversubscribe_max`, and the PSI refusal threshold are explicit
 host policy inputs, so an incomplete file fails with a field-specific error.
 The added policy settings in this example are optional facts: omitting one
-does not supply a default and emits null with a `not-configured` reason. The
+does not supply a default and emits null with a `not-configured` reason. Install
+a fleetd release that accepts `policy.max_upload_store_bytes` before adding
+that key to the closed host config; configure it before enabling `put` on the
+host. Until it is configured, `put` refuses with exit 2. The
 `host_reserve_bytes` setting is emitted once as `memory.host_reserve_bytes`;
 the other policy settings remain under `policy.*`. `planning_cap` is the
 configured policy value; `cpu.planning_cap` is separately derived from the

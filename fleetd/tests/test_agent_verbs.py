@@ -1,6 +1,7 @@
 import hashlib
 import json
 import errno
+import multiprocessing
 import os
 import io
 import socket
@@ -79,6 +80,51 @@ def _direct_put(service, identity, name, content):
     finally:
         client.close()
         server.close()
+
+
+def _upload_policy(service, *, store_bytes=None, floors=None):
+    document = service.facts_provider().to_dict()
+    document["policy"]["max_upload_store_bytes"] = (
+        {"v": store_bytes} if store_bytes is not None else {
+            "v": None, "reason": "not-configured: test upload store limit",
+        }
+    )
+    if floors is not None:
+        document["policy"]["disk_floors"] = {"v": floors}
+    facts = validate_host_facts(document)
+    service.facts_provider = lambda: facts
+
+
+def _upload_reservation_record(token, *, expected=1, remaining=1, temporary=None):
+    return {
+        "schema": "fleet-upload-reservation/1",
+        "expected": expected,
+        "remaining": remaining,
+        "temporary": f"upload-part-{token}" if temporary is None else temporary,
+    }
+
+
+class _ObservedSocket:
+    def __init__(self, stream, observed):
+        self.stream = stream
+        self.observed = observed
+
+    def fileno(self):
+        self.observed.set()
+        return self.stream.fileno()
+
+
+def _upload_process(service, identity, name, content, stream, observed, result):
+    try:
+        reply = service._put({
+            "name": name, "sha256": hashlib.sha256(content).hexdigest(), "bytes": len(content),
+        }, identity, _ObservedSocket(stream, observed))
+        result.send(("ok", reply.document))
+    except AdmissionError as exc:
+        result.send(("error", exc.exit_code, exc.reason))
+    finally:
+        stream.close()
+        result.close()
 
 
 def _job(service, identity, request=None):
@@ -421,6 +467,645 @@ def test_put_creates_host_owned_content_addressed_candidate_file(tmp_path):
     assert path == service.paths.uploads_dir / identity.group / "candidates" / hashlib.sha256(content).hexdigest()
     assert path.read_bytes() == content
     assert service.paths.candidate_paths(identity.group) == frozenset({str(path.resolve())})
+
+
+def test_put_store_limit_allows_equality_refuses_plus_one_and_charges_reuploads(tmp_path):
+    service, identity, _checkout = _service(tmp_path)
+    _upload_policy(service, store_bytes=5, floors={"checkout": 0})
+
+    first = _put(service, identity, "candidates", b"four")
+    second = _put(service, identity, "candidates", b"5")
+    assert Path(first["path"]).read_bytes() == b"four"
+    assert Path(second["path"]).read_bytes() == b"5"
+
+    with pytest.raises(AdmissionError, match="max_upload_store_bytes") as plus_one:
+        _put(service, identity, "candidates", b"x")
+    assert plus_one.value.exit_code == ExitCode.REFUSAL
+    with pytest.raises(AdmissionError, match="max_upload_store_bytes") as reupload:
+        _put(service, identity, "candidates", b"four")
+    assert reupload.value.exit_code == ExitCode.REFUSAL
+
+
+def test_concurrent_puts_reserve_across_processes_before_reading_their_bodies(tmp_path):
+    service, identity, _checkout = _service(tmp_path)
+    _upload_policy(service, store_bytes=4, floors={"checkout": 0})
+    context = multiprocessing.get_context("fork")
+    first_content = b"abc"
+    second_content = b"xy"
+    first_client, first_server = socket.socketpair()
+    first_observed = context.Event()
+    first_receive, first_send = context.Pipe(duplex=False)
+    first = context.Process(
+        target=_upload_process,
+    args=(service, identity, "candidates", first_content, first_server, first_observed, first_send),
+    )
+    second_client = second_server = None
+    second_receive = second_send = None
+    second_observed = None
+    second = None
+    try:
+        first.start()
+        first_server.close()
+        first_send.close()
+        assert first_observed.wait(3), "first put did not reserve before reading its body"
+
+        second_client, second_server = socket.socketpair()
+        second_observed = context.Event()
+        second_receive, second_send = context.Pipe(duplex=False)
+        second = context.Process(
+            target=_upload_process,
+            args=(service, identity, "candidates", second_content, second_server, second_observed, second_send),
+        )
+        second.start()
+        second_server.close()
+        second_send.close()
+        assert second_receive.poll(3), "second put did not return while the first body was parked"
+        second_reply = second_receive.recv()
+        assert second_reply[0:2] == ("error", ExitCode.REFUSAL)
+        assert "max_upload_store_bytes" in second_reply[2]
+        assert first.is_alive()
+        assert any(entry.name.startswith("upload-part-") for entry in service.paths.incoming_dir.iterdir())
+
+        first_client.sendall(first_content)
+        first_client.shutdown(socket.SHUT_WR)
+        assert first_receive.poll(3), "first put did not finish after its body was supplied"
+        first_reply = first_receive.recv()
+        assert first_reply[0] == "ok"
+        assert Path(first_reply[1]["path"]).read_bytes() == first_content
+    finally:
+        for client, content in ((first_client, first_content), (second_client, second_content)):
+            if client is not None:
+                try:
+                    client.sendall(content)
+                    client.shutdown(socket.SHUT_WR)
+                except OSError:
+                    pass
+                client.close()
+        first.join(3)
+        if second is not None:
+            second.join(3)
+        assert not first.is_alive(), "first upload worker did not exit"
+        if second is not None:
+            assert not second.is_alive(), "second upload worker did not exit"
+        first_receive.close()
+        if second_receive is not None:
+            second_receive.close()
+
+
+def test_put_disk_floor_reservation_subtracts_live_remaining_bytes(tmp_path, monkeypatch):
+    service, _identity, _checkout = _service(tmp_path)
+    monkeypatch.setattr(
+        agent_verbs.os, "statvfs",
+        lambda _path: SimpleNamespace(f_bavail=10, f_frsize=1),
+    )
+    reservation = service._reserve_upload(3, 100, 6)
+    try:
+        with pytest.raises(AdmissionError, match="breach configured disk floor") as floor:
+            service._reserve_upload(2, 100, 6)
+        assert floor.value.exit_code == ExitCode.REFUSAL
+        assert Path(reservation.temporary_name).exists()
+    finally:
+        service._discard_upload_reservation(reservation)
+        service._release_upload_reservation(reservation)
+
+
+def test_put_counts_regular_files_across_groups_without_following_symlinks(tmp_path):
+    service, identity, _checkout = _service(tmp_path)
+    _upload_policy(service, store_bytes=3, floors={"checkout": 0})
+    other_group = service.paths.uploads_dir / "another-group" / "artifact"
+    other_group.mkdir(parents=True)
+    (other_group / "stored-object").write_bytes(b"12")
+    outside = tmp_path / "outside-large-object"
+    outside.write_bytes(b"not counted" * 100)
+    (other_group / "external-link").symlink_to(outside)
+
+    reply = _put(service, identity, "candidates", b"3")
+
+    assert Path(reply["path"]).read_bytes() == b"3"
+    assert outside.read_bytes() == b"not counted" * 100
+
+
+def test_put_refuses_unreadable_stored_regular_files(tmp_path, monkeypatch):
+    service, identity, _checkout = _service(tmp_path)
+    _upload_policy(service, store_bytes=100, floors={"checkout": 0})
+    stored = service.paths.uploads_dir / "other" / "artifact" / "object"
+    stored.parent.mkdir(parents=True)
+    stored.write_bytes(b"stored")
+    real_open = os.open
+
+    def refuse_stored(path, flags, *args, **kwargs):
+        if Path(path) == stored and flags & os.O_ACCMODE == os.O_RDONLY:
+            raise PermissionError("stored object unreadable")
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(agent_verbs.os, "open", refuse_stored)
+    with pytest.raises(AdmissionError, match="cannot read stored upload") as unreadable:
+        _put(service, identity, "candidates", b"new")
+    assert unreadable.value.exit_code == ExitCode.RUNNER_FAILURE
+    assert stored.read_bytes() == b"stored"
+
+
+def test_put_refuses_below_disk_floor_and_when_store_limit_is_unknown(tmp_path, monkeypatch):
+    service, identity, _checkout = _service(tmp_path)
+    _upload_policy(service, store_bytes=100, floors={"checkout": 10, "docker": 20})
+    monkeypatch.setattr(
+        agent_verbs.os, "statvfs",
+        lambda _path: SimpleNamespace(f_bavail=19, f_frsize=1),
+    )
+    with pytest.raises(AdmissionError, match="breach configured disk floor") as floor:
+        _put(service, identity, "candidates", b"a")
+    assert floor.value.exit_code == ExitCode.REFUSAL
+
+    _upload_policy(service, store_bytes=None, floors={"checkout": 0})
+    with pytest.raises(AdmissionError, match="max_upload_store_bytes unavailable") as unknown:
+        _put(service, identity, "candidates", b"a")
+    assert unknown.value.exit_code == ExitCode.REFUSAL
+
+
+@pytest.mark.parametrize(
+    ("field", "wrapper", "reason"),
+    [
+        ("max_upload_bytes", {"v": None, "reason": "per-object cap missing"}, "max_upload_bytes unavailable"),
+        ("disk_floors", {"v": None, "reason": "disk floors missing"}, "disk_floors unavailable"),
+        ("disk_floors", {"v": {}}, "no configured floors"),
+    ],
+)
+def test_put_refuses_when_each_required_upload_fact_is_unavailable(tmp_path, field, wrapper, reason):
+    service, identity, _checkout = _service(tmp_path)
+    _upload_policy(service, store_bytes=100, floors={"checkout": 0})
+    policy = service.facts_provider().to_dict()["policy"]
+    policy[field] = wrapper
+    service._facts = lambda: {"policy": policy}
+
+    with pytest.raises(AdmissionError, match=reason) as unavailable:
+        service._put({"bytes": 1, "name": "candidates", "sha256": "a" * 64}, identity, object())
+    assert unavailable.value.exit_code == ExitCode.REFUSAL
+
+
+def test_upload_store_lock_refuses_symlink_private_mode_and_lock_errors(tmp_path, monkeypatch):
+    service, identity, _checkout = _service(tmp_path)
+    lock_path = service.paths.state_dir / ".upload-store.lock"
+    outside = tmp_path / "outside-lock"
+    outside.write_bytes(b"untouched")
+    lock_path.symlink_to(outside)
+    with pytest.raises(AdmissionError, match="cannot lock upload store") as linked:
+        service._put({"bytes": 1, "name": "candidates", "sha256": "a" * 64}, identity, object())
+    assert linked.value.exit_code == ExitCode.RUNNER_FAILURE
+    assert outside.read_bytes() == b"untouched"
+
+    lock_path.unlink()
+    lock_path.write_bytes(b"lock")
+    lock_path.chmod(0o644)
+    with pytest.raises(AdmissionError, match="not a private regular file") as public:
+        service._put({"bytes": 1, "name": "candidates", "sha256": "a" * 64}, identity, object())
+    assert public.value.exit_code == ExitCode.REFUSAL
+
+    lock_path.unlink()
+    real_open = os.open
+    opened_fds = []
+
+    def capture_open(path, *args, **kwargs):
+        fd = real_open(path, *args, **kwargs)
+        if Path(path) == lock_path:
+            opened_fds.append(fd)
+        return fd
+
+    real_flock = agent_verbs.fcntl.flock
+
+    def fail_exclusive(fd, operation):
+        if operation == agent_verbs.fcntl.LOCK_EX:
+            raise OSError("upload store lock unavailable")
+        return real_flock(fd, operation)
+
+    monkeypatch.setattr(agent_verbs.os, "open", capture_open)
+    monkeypatch.setattr(agent_verbs.fcntl, "flock", fail_exclusive)
+    with pytest.raises(AdmissionError, match="cannot lock upload store accounting") as failed:
+        service._put({"bytes": 1, "name": "candidates", "sha256": "a" * 64}, identity, object())
+    assert failed.value.exit_code == ExitCode.RUNNER_FAILURE
+    assert len(opened_fds) == 1
+    with pytest.raises(OSError):
+        os.fstat(opened_fds[0])
+
+
+def test_put_recovers_dead_partial_and_restart_counts_committed_objects(tmp_path):
+    service, identity, _checkout = _service(tmp_path)
+    _upload_policy(service, store_bytes=4, floors={"checkout": 0})
+    committed = _put(service, identity, "candidates", b"four")
+    restarted = AgentVerbService(
+        tmp_path / "state", service.policy, service.facts_provider, agent_version="1.0.0",
+    )
+    restarted_identity = identity
+    _upload_policy(restarted, store_bytes=4, floors={"checkout": 0})
+    with pytest.raises(AdmissionError, match="max_upload_store_bytes") as stored_limit:
+        _put(restarted, restarted_identity, "candidates", b"x")
+    assert stored_limit.value.exit_code == ExitCode.REFUSAL
+    assert Path(committed["path"]).read_bytes() == b"four"
+
+    _upload_policy(restarted, store_bytes=6, floors={"checkout": 0})
+    reservation = restarted._reserve_upload(2, 6, 0)
+    os.write(reservation.temporary_fd, b"p")
+    restarted._update_upload_remaining(reservation, 1)
+    partial = Path(reservation.temporary_name)
+    record = reservation.path
+    os.close(reservation.temporary_fd)
+    reservation.temporary_fd = -1
+    restarted._release_upload_reservation(reservation)
+
+    fresh = _put(restarted, restarted_identity, "candidates", b"ok")
+    assert Path(fresh["path"]).read_bytes() == b"ok"
+    assert not partial.exists()
+    assert not record.exists()
+
+
+@pytest.mark.parametrize(
+    "record_bytes",
+    [
+        b"x" * 4097,
+        b"{not json",
+        json.dumps([]).encode(),
+        json.dumps({"schema": "bad"}).encode(),
+        json.dumps({**_upload_reservation_record("token"), "expected": True}).encode(),
+        json.dumps({**_upload_reservation_record("token"), "expected": -1, "remaining": 0}).encode(),
+        json.dumps({**_upload_reservation_record("token"), "remaining": True}).encode(),
+        json.dumps({**_upload_reservation_record("token"), "remaining": 2}).encode(),
+        json.dumps({**_upload_reservation_record("token"), "temporary": "other"}).encode(),
+        json.dumps({"schema": "fleet-upload-reservation/1", "expected": 1, "remaining": 1}).encode(),
+    ],
+)
+def test_put_refuses_malformed_or_oversized_reservation_records(tmp_path, record_bytes):
+    service, identity, _checkout = _service(tmp_path)
+    _upload_policy(service, store_bytes=100, floors={"checkout": 0})
+    reservation = service.paths.incoming_dir / ".upload-reservation-token.json"
+    partial = service.paths.incoming_dir / "upload-part-token"
+    reservation.write_bytes(record_bytes)
+    partial.write_bytes(b"partial")
+
+    with pytest.raises(AdmissionError) as invalid:
+        service._put({"bytes": 1, "name": "candidates", "sha256": "a" * 64}, identity, object())
+    assert invalid.value.exit_code == ExitCode.RUNNER_FAILURE
+    assert reservation.exists()
+    assert partial.read_bytes() == b"partial"
+
+
+def test_put_recovery_rejects_invalid_reservation_names_and_symlink_partials(tmp_path):
+    service, identity, _checkout = _service(tmp_path)
+    _upload_policy(service, store_bytes=100, floors={"checkout": 0})
+    malformed_name = service.paths.incoming_dir / ".upload-reservation-!.json"
+    malformed_name.write_text("{}", encoding="utf-8")
+    with pytest.raises(AdmissionError, match="filename is malformed") as name_error:
+        service._put({"bytes": 1, "name": "candidates", "sha256": "a" * 64}, identity, object())
+    assert name_error.value.exit_code == ExitCode.RUNNER_FAILURE
+    malformed_name.unlink()
+
+    reservation = service.paths.incoming_dir / ".upload-reservation-token.json"
+    partial = service.paths.incoming_dir / "upload-part-token"
+    outside = tmp_path / "outside-partial"
+    outside.write_bytes(b"preserve")
+    reservation.write_text(json.dumps(_upload_reservation_record("token")), encoding="utf-8")
+    partial.symlink_to(outside)
+    with pytest.raises(AdmissionError, match="not a regular file") as partial_error:
+        service._put({"bytes": 1, "name": "candidates", "sha256": "a" * 64}, identity, object())
+    assert partial_error.value.exit_code == ExitCode.RUNNER_FAILURE
+    assert outside.read_bytes() == b"preserve"
+
+
+def test_put_reaps_orphan_partials_and_maps_reservation_scan_failures(tmp_path, monkeypatch):
+    service, identity, _checkout = _service(tmp_path)
+    _upload_policy(service, store_bytes=100, floors={"checkout": 0})
+    orphan = service.paths.incoming_dir / "upload-part-orphan"
+    orphan.write_bytes(b"dead before reservation")
+    reply = _put(service, identity, "candidates", b"new")
+    assert Path(reply["path"]).read_bytes() == b"new"
+    assert not orphan.exists()
+
+    real_scandir = os.scandir
+    incoming = service.paths.incoming_dir
+
+    def fail_scan(path):
+        if Path(path) == incoming:
+            raise PermissionError("reservation directory unreadable")
+        return real_scandir(path)
+
+    monkeypatch.setattr(agent_verbs.os, "scandir", fail_scan)
+    with pytest.raises(AdmissionError, match="cannot inspect upload reservations") as scan_error:
+        service._put({"bytes": 1, "name": "candidates", "sha256": "a" * 64}, identity, object())
+    assert scan_error.value.exit_code == ExitCode.RUNNER_FAILURE
+
+
+def test_put_recovery_maps_disappearing_reservation_and_flock_errors(tmp_path, monkeypatch):
+    service, identity, _checkout = _service(tmp_path)
+    _upload_policy(service, store_bytes=100, floors={"checkout": 0})
+    reservation = service.paths.incoming_dir / ".upload-reservation-token.json"
+    reservation.write_text(json.dumps(_upload_reservation_record("token")), encoding="utf-8")
+    real_open = os.open
+
+    def disappear(path, flags, *args, **kwargs):
+        if Path(path) == reservation:
+            reservation.unlink()
+            raise FileNotFoundError("reservation disappeared")
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(agent_verbs.os, "open", disappear)
+    with pytest.raises(AdmissionError, match="changed during recovery") as vanished:
+        service._put({"bytes": 1, "name": "candidates", "sha256": "a" * 64}, identity, object())
+    assert vanished.value.exit_code == ExitCode.RUNNER_FAILURE
+    monkeypatch.undo()
+
+    reservation.write_text(json.dumps(_upload_reservation_record("token")), encoding="utf-8")
+    real_open = os.open
+
+    def fail_reservation_open(path, flags, *args, **kwargs):
+        if Path(path) == reservation:
+            raise PermissionError("reservation cannot be opened")
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(agent_verbs.os, "open", fail_reservation_open)
+    with pytest.raises(AdmissionError, match="cannot recover upload reservation") as open_error:
+        service._put({"bytes": 1, "name": "candidates", "sha256": "a" * 64}, identity, object())
+    assert open_error.value.exit_code == ExitCode.RUNNER_FAILURE
+    monkeypatch.undo()
+
+    reservation.write_text(json.dumps(_upload_reservation_record("token")), encoding="utf-8")
+    real_unlink = os.unlink
+
+    def disappear_during_recovery(path, *args, **kwargs):
+        if Path(path) == reservation:
+            real_unlink(path, *args, **kwargs)
+            raise FileNotFoundError("reservation disappeared during recovery")
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(agent_verbs.os, "unlink", disappear_during_recovery)
+    with pytest.raises(AdmissionError, match="changed during recovery") as unlink_error:
+        service._put({"bytes": 1, "name": "candidates", "sha256": "a" * 64}, identity, object())
+    assert unlink_error.value.exit_code == ExitCode.RUNNER_FAILURE
+    monkeypatch.undo()
+
+    reservation.write_text(json.dumps(_upload_reservation_record("token")), encoding="utf-8")
+    real_flock = agent_verbs.fcntl.flock
+
+    def fail_reservation_flock(fd, operation):
+        if operation == agent_verbs.fcntl.LOCK_EX | agent_verbs.fcntl.LOCK_NB:
+            raise OSError("reservation flock failed")
+        return real_flock(fd, operation)
+
+    monkeypatch.setattr(agent_verbs.fcntl, "flock", fail_reservation_flock)
+    with pytest.raises(AdmissionError, match="cannot recover upload reservation") as flock_error:
+        service._put({"bytes": 1, "name": "candidates", "sha256": "a" * 64}, identity, object())
+    assert flock_error.value.exit_code == ExitCode.RUNNER_FAILURE
+
+
+@pytest.mark.parametrize("failure", ["scan", "entry-stat"])
+def test_put_stored_upload_scan_errors_refuse_without_reading_body(tmp_path, monkeypatch, failure):
+    service, identity, _checkout = _service(tmp_path)
+    _upload_policy(service, store_bytes=100, floors={"checkout": 0})
+    uploads = service.paths.uploads_dir
+    real_scandir = os.scandir
+    if failure == "scan":
+        def failing_scandir(path):
+            if Path(path) == uploads:
+                raise PermissionError("stored uploads cannot be scanned")
+            return real_scandir(path)
+        expected = "cannot inspect stored uploads"
+    else:
+        def failing_scandir(path):
+            if Path(path) == uploads:
+                entry = SimpleNamespace(name="unreadable-entry", path=str(uploads / "unreadable-entry"))
+                entry.stat = lambda **_kwargs: (_ for _ in ()).throw(OSError("entry stat failed"))
+                return [entry]
+            return real_scandir(path)
+        expected = "cannot inspect stored upload"
+    monkeypatch.setattr(agent_verbs.os, "scandir", failing_scandir)
+
+    with pytest.raises(AdmissionError, match=expected) as unreadable:
+        service._put({"bytes": 1, "name": "candidates", "sha256": "a" * 64}, identity, object())
+    assert unreadable.value.exit_code == ExitCode.RUNNER_FAILURE
+
+
+@pytest.mark.parametrize("failure", ["changed-type", "fstat"])
+def test_put_stored_file_descriptor_validation_refuses_races(tmp_path, monkeypatch, failure):
+    service, identity, _checkout = _service(tmp_path)
+    _upload_policy(service, store_bytes=100, floors={"checkout": 0})
+    stored = service.paths.uploads_dir / "other" / "artifact" / "object"
+    stored.parent.mkdir(parents=True)
+    stored.write_bytes(b"stored")
+    real_open = os.open
+    opened = set()
+
+    def capture_open(path, flags, *args, **kwargs):
+        fd = real_open(path, flags, *args, **kwargs)
+        if Path(path) == stored:
+            opened.add(fd)
+        return fd
+
+    real_fstat = os.fstat
+
+    def invalid_fstat(fd):
+        if fd in opened:
+            if failure == "fstat":
+                raise OSError("stored upload fstat failed")
+            return SimpleNamespace(st_mode=agent_verbs.stat.S_IFDIR, st_size=0)
+        return real_fstat(fd)
+
+    monkeypatch.setattr(agent_verbs.os, "open", capture_open)
+    monkeypatch.setattr(agent_verbs.os, "fstat", invalid_fstat)
+    reason = "cannot inspect stored upload" if failure == "fstat" else "changed type"
+    with pytest.raises(AdmissionError, match=reason) as invalid:
+        service._put({"bytes": 1, "name": "candidates", "sha256": "a" * 64}, identity, object())
+    assert invalid.value.exit_code == ExitCode.RUNNER_FAILURE
+    assert stored.read_bytes() == b"stored"
+
+
+@pytest.mark.parametrize("failure", ["statvfs", "invalid-values"])
+def test_put_free_space_query_failures_are_closed_refusals(tmp_path, monkeypatch, failure):
+    service, identity, _checkout = _service(tmp_path)
+    if failure == "statvfs":
+        monkeypatch.setattr(
+            agent_verbs.os, "statvfs",
+            lambda _path: (_ for _ in ()).throw(OSError("statvfs failed")),
+        )
+        reason = "cannot inspect upload filesystem free space"
+    else:
+        monkeypatch.setattr(
+            agent_verbs.os, "statvfs",
+            lambda _path: SimpleNamespace(f_bavail=True, f_frsize=1),
+        )
+        reason = "invalid available-byte facts"
+    with pytest.raises(AdmissionError, match=reason) as unavailable:
+        service._put({"bytes": 1, "name": "candidates", "sha256": "a" * 64}, identity, object())
+    assert unavailable.value.exit_code == ExitCode.RUNNER_FAILURE
+
+
+def test_put_rejects_a_symlinked_incoming_directory(tmp_path):
+    service, identity, _checkout = _service(tmp_path)
+    incoming = service.paths.incoming_dir
+    moved = tmp_path / "moved-incoming"
+    incoming.rename(moved)
+    incoming.symlink_to(moved, target_is_directory=True)
+
+    with pytest.raises(AdmissionError, match="incoming directory is not a real directory") as unsafe:
+        service._put({"bytes": 1, "name": "candidates", "sha256": "a" * 64}, identity, object())
+    assert unsafe.value.exit_code == ExitCode.REFUSAL
+    assert list(moved.iterdir()) == []
+
+
+def test_put_recovers_orphan_scan_errors_after_reservation_scan(tmp_path, monkeypatch):
+    service, identity, _checkout = _service(tmp_path)
+    incoming = service.paths.incoming_dir
+    real_scandir = os.scandir
+    calls = [0]
+
+    def fail_orphan_scan(path):
+        if Path(path) == incoming:
+            calls[0] += 1
+            if calls[0] == 2:
+                raise OSError("orphan scan failed")
+        return real_scandir(path)
+
+    monkeypatch.setattr(agent_verbs.os, "scandir", fail_orphan_scan)
+    with pytest.raises(AdmissionError, match="cannot recover orphaned upload partials") as scan_error:
+        service._put({"bytes": 1, "name": "candidates", "sha256": "a" * 64}, identity, object())
+    assert scan_error.value.exit_code == ExitCode.RUNNER_FAILURE
+
+
+def test_put_reservation_write_zero_progress_and_fsync_cleanup(tmp_path, monkeypatch):
+    service, identity, _checkout = _service(tmp_path)
+    monkeypatch.setattr(agent_verbs.os, "write", lambda *_args: 0)
+    with pytest.raises(AdmissionError, match="cannot store put body") as no_progress:
+        service._put({"bytes": 1, "name": "candidates", "sha256": "a" * 64}, identity, object())
+    assert no_progress.value.exit_code == ExitCode.RUNNER_FAILURE
+    assert list(service.paths.incoming_dir.iterdir()) == []
+
+    monkeypatch.undo()
+    monkeypatch.setattr(
+        agent_verbs.os, "fsync",
+        lambda *_args: (_ for _ in ()).throw(OSError("reservation fsync failed")),
+    )
+    with pytest.raises(AdmissionError, match="cannot store put body") as sync_error:
+        service._put({"bytes": 1, "name": "candidates", "sha256": "a" * 64}, identity, object())
+    assert sync_error.value.exit_code == ExitCode.RUNNER_FAILURE
+    assert list(service.paths.incoming_dir.iterdir()) == []
+
+
+def test_put_ignores_non_regular_upload_entries_without_following_them(tmp_path, monkeypatch):
+    service, identity, _checkout = _service(tmp_path)
+    _upload_policy(service, store_bytes=4, floors={"checkout": 0})
+    uploads = service.paths.uploads_dir
+    real_scandir = os.scandir
+
+    def scan_with_fifo(path):
+        if Path(path) == uploads:
+            fifo = SimpleNamespace(name="pipe", path=str(uploads / "pipe"))
+            fifo.stat = lambda *, follow_symlinks: SimpleNamespace(st_mode=agent_verbs.stat.S_IFIFO)
+            return [fifo]
+        return real_scandir(path)
+
+    monkeypatch.setattr(agent_verbs.os, "scandir", scan_with_fifo)
+    reply = _put(service, identity, "candidates", b"data")
+
+    assert Path(reply["path"]).read_bytes() == b"data"
+
+
+def test_put_refuses_upload_root_replaced_with_symlink_after_body(tmp_path, monkeypatch):
+    service, identity, _checkout = _service(tmp_path)
+    _upload_policy(service, store_bytes=100, floors={"checkout": 0})
+    content = b"body then root swap"
+    client, server = socket.socketpair()
+    moved = tmp_path / "moved-upload-root"
+    original_stream = service._stream_upload
+
+    def swap_root_after_body(*args):
+        original_stream(*args)
+        service.paths.uploads_dir.rename(moved)
+        service.paths.uploads_dir.symlink_to(moved, target_is_directory=True)
+
+    monkeypatch.setattr(service, "_stream_upload", swap_root_after_body)
+    try:
+        client.sendall(content)
+        client.shutdown(socket.SHUT_WR)
+        with pytest.raises(AdmissionError, match="agent upload directory is not a real directory") as swapped:
+            service._put({
+                "name": "candidates", "sha256": hashlib.sha256(content).hexdigest(), "bytes": len(content),
+            }, identity, server)
+        assert swapped.value.exit_code == ExitCode.REFUSAL
+        assert list(moved.iterdir()) == []
+        assert list(service.paths.incoming_dir.iterdir()) == []
+    finally:
+        client.close()
+        server.close()
+        service.paths.uploads_dir.unlink()
+        moved.rename(service.paths.uploads_dir)
+
+
+def test_put_cleans_descriptor_and_reservation_when_fdopen_fails(tmp_path, monkeypatch):
+    service, identity, _checkout = _service(tmp_path)
+    _upload_policy(service, store_bytes=10, floors={"checkout": 0})
+    descriptors = []
+
+    def fail_fdopen(fd, *_args, **_kwargs):
+        descriptors.append(fd)
+        raise OSError("fdopen failed")
+
+    monkeypatch.setattr(agent_verbs.os, "fdopen", fail_fdopen)
+    with pytest.raises(AdmissionError, match="cannot store put body") as failed:
+        service._put({
+            "name": "candidates", "sha256": hashlib.sha256(b"x").hexdigest(), "bytes": 1,
+        }, identity, object())
+
+    assert failed.value.exit_code == ExitCode.RUNNER_FAILURE
+    assert len(descriptors) == 1
+    with pytest.raises(OSError):
+        os.fstat(descriptors[0])
+    assert list(service.paths.incoming_dir.iterdir()) == []
+
+
+def test_put_reservation_setup_tolerates_partial_cleanup_races(tmp_path, monkeypatch):
+    service, identity, _checkout = _service(tmp_path)
+    _upload_policy(service, store_bytes=10, floors={"checkout": 0})
+    real_unlink = os.unlink
+    removed = []
+
+    def unlink_then_report_missing(path, *args, **kwargs):
+        candidate = Path(path)
+        if candidate.parent == service.paths.incoming_dir and (
+            candidate.name.startswith("upload-part-")
+            or candidate.name.startswith(".upload-reservation-")
+        ):
+            real_unlink(path, *args, **kwargs)
+            removed.append(candidate.name)
+            raise FileNotFoundError(candidate)
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(agent_verbs.os, "unlink", unlink_then_report_missing)
+    monkeypatch.setattr(
+        service, "_fsync_directory",
+        lambda _path: (_ for _ in ()).throw(OSError("reservation directory sync failed")),
+    )
+    with pytest.raises(AdmissionError, match="cannot store put body") as failed:
+        service._put({
+            "name": "candidates", "sha256": hashlib.sha256(b"").hexdigest(), "bytes": 0,
+        }, identity, object())
+
+    assert failed.value.exit_code == ExitCode.RUNNER_FAILURE
+    assert any(name.startswith("upload-part-") for name in removed)
+    assert any(name.startswith(".upload-reservation-") for name in removed)
+    assert list(service.paths.incoming_dir.iterdir()) == []
+
+
+def test_put_discard_and_release_are_idempotent_when_reservation_was_removed(tmp_path):
+    service, _identity, _checkout = _service(tmp_path)
+    reservation = service._reserve_upload(1, 10, 0)
+    fd = reservation.fd
+    reservation.path.unlink()
+
+    service._discard_upload_reservation(reservation)
+    service._release_upload_reservation(reservation)
+    service._release_upload_reservation(reservation)
+
+    assert not Path(reservation.temporary_name).exists()
+    assert not reservation.path.exists()
+    assert reservation.fd == -1
+    with pytest.raises(OSError):
+        os.fstat(fd)
 
 
 def test_put_refuses_a_symlinked_group_directory_before_writing_outside_state(tmp_path):
@@ -1758,9 +2443,17 @@ def test_put_maps_creation_and_fsync_errors_without_leaving_temporary_files(tmp_
 
     monkeypatch.undo()
     content = b"directory sync"
+    destination_dir = service.paths.uploads_dir / identity.group / "candidates"
+    real_fsync_directory = service._fsync_directory
+
+    def fail_destination_sync(path):
+        if path == destination_dir:
+            raise OSError("directory fsync failed")
+        real_fsync_directory(path)
+
     monkeypatch.setattr(
         service, "_fsync_directory",
-        lambda _path: (_ for _ in ()).throw(OSError("directory fsync failed")),
+        fail_destination_sync,
     )
     client, server = socket.socketpair()
     try:

@@ -39,6 +39,7 @@ def test_host_capacity_projects_validated_facts_and_configured_policy(tmp_path):
     assert capacity.policy.footprint_charges_bytes.value["small"] == 268435456
     assert capacity.policy.priority_classes_by_principal.value["worker"] == ("dev", "gate", "campaign")
     assert capacity.policy.disk_floors.value["checkout"] == 1073741824
+    assert capacity.policy.max_upload_store_bytes.value == 10 * 1024**3
     assert capacity.policy.admission.value["queue_path"] == "/run/fleetd/queue"
     assert capacity.policy.aging_s.value == 60.0
     assert capacity.policy.legacy_charge_bytes.value == 536870912
@@ -93,11 +94,14 @@ def test_capacity_fact_refuses_null_values_without_a_nonempty_reason(wrapper):
 def test_capacity_mapping_preserves_unknown_policy_reason():
     facts = _collect().to_dict()
     facts["policy"]["footprint_charges_bytes"] = _unknown("footprint charges are not configured")
+    facts["policy"]["max_upload_store_bytes"] = _unknown("upload store is not configured")
 
     capacity = host_capacity_from_facts(validate_host_facts(facts))
 
     assert capacity.policy.footprint_charges_bytes.value is None
     assert capacity.policy.footprint_charges_bytes.reason == "footprint charges are not configured"
+    assert capacity.policy.max_upload_store_bytes.value is None
+    assert capacity.policy.max_upload_store_bytes.reason == "upload store is not configured"
 
 
 def test_host_capacity_ignores_frozen_count_without_hostobs_reader():

@@ -205,6 +205,19 @@ from trusted directory descriptors with no-follow traversal of every path
 component. Each progress response is capped at 8 MiB and includes the matching
 `next_offset`; clients refuse any response body larger than that cap.
 
+`put` requires configured positive `policy.max_upload_bytes` and
+`policy.max_upload_store_bytes` facts and a known non-empty `policy.disk_floors`
+map; any unavailable input refuses with exit 2. A cross-process flock
+serializes the stored-byte scan and reservation. The scan counts regular files
+across all upload groups without following symlinks; an unreadable stored file
+refuses. The aggregate check is `stored + in_flight + new <= policy.max_upload_store_bytes`,
+including re-uploads of an existing object. Before accepting a reservation,
+the upload filesystem must also satisfy `available - in_flight_remaining - new
+>= max(policy.disk_floors.values())`. Reservations count from before the first
+body byte through commit or discard. The lock is not held while the body
+streams. Dead-process partials are reaped only after their reservation flock
+is available. Retention and garbage collection are not implemented (FD-062).
+
 `agent.toml.max_connections` is a required positive integer with no default. It
 bounds ordinary local connections; an excess connection is refused with exit
 3. Once a lease has an admission handle, its connection leaves that ordinary
@@ -305,8 +318,9 @@ New host-owned settings are optional so rollout does not invent policy:
 `[gate_slice].slice`, `[paths].checkout_root`, `[paths].docker_root`, and
 `[policy]` keys `host_reserve_bytes`, `planning_cap`, `max_footprint`,
 `max_planned_bytes`, `footprint_charges_bytes`,
-`priority_classes_by_principal`, `disk_floors`, `max_upload_bytes`, and
-`admission`. Missing settings become null facts with a source-specific reason.
+`priority_classes_by_principal`, `disk_floors`, `max_upload_bytes`,
+`max_upload_store_bytes`, and `admission`. Missing settings become null facts
+with a source-specific reason.
 `policy.host_reserve_bytes` is emitted as `memory.host_reserve_bytes` so this
 quantity has one name. These additions do not change the current planner's
 inputs or placement formulas: it does not require `memory.host_reserve_bytes`

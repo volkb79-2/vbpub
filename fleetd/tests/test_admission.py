@@ -89,6 +89,7 @@ def _capacity(
             _fact(charges),
             _fact({"ops": ("merge-gate", "dev", "gate", "campaign")}),
             _fact({"checkout": 0, "docker": 0}),
+            Fact.unknown("not-configured: facts.toml.policy.max_upload_store_bytes"),
             _fact(3.0),
             _fact({"wait_s": 0.0, "settle_s": 0.0}),
             _fact(aging_s),
