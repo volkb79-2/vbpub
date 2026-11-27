@@ -132,9 +132,8 @@ Add only the intended human or service identities to the appropriate groups:
 - `hostobs-observe` grants reads; command-line details are not served at any level yet;
 - `hostobs-operator` is reserved for reads with command-line details (`procs`, not served yet);
   today it returns the same data as `hostobs-observe`;
-- `hostobs-observer` is reserved for annotation writes attributed to the
-  caller's uid. Annotation is not served yet; today this socket answers only
-  `hello`.
+- `hostobs-observer` grants annotation writes attributed to the caller's uid;
+  this socket serves `hello` and `annotate` only.
 
 The probe runs as `hostobs` and never binds the sockets itself: systemd passes
 the three root-owned listening fds by their `FileDescriptorName`.

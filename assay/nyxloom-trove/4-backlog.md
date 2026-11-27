@@ -239,6 +239,10 @@ items:
   - {id: B590, title: "release-gate.sh can signal a reaped pid when TERM or INT arrives after the remote child's wait (also in 12.3.0)", type: bugfix, component: gate, context_estimate: small}
   - {id: B591, title: "P-assay-14b final-review follow-ups: a test read race, a wrong CONSUMERS reason, a wrong CHANGES claim about 12.3.0, trap loose ends", type: bugfix, component: gate, context_estimate: small}
   - {id: B592, title: "release-gate.sh can signal a reaped heartbeat pid during heartbeat shutdown", type: bugfix, component: gate, context_estimate: small}
+  - {id: B593, title: "R3 canary control failures omit the first failing test and bounded output tail", type: bugfix, component: canary, context_estimate: small}
+  - {id: B594, title: "per-attempt canary expiry is reported as a lane-wide deadline expiry", type: bugfix, component: canary, context_estimate: small}
+  - {id: B595, title: "native R2 tail retries can start with any positive lane time when the candidate budget is disabled", type: bugfix, component: mutation, context_estimate: small}
+  - {id: B596, title: "release gate should simulate the cmru CHANGES fold as a pre-flight", type: bugfix, component: gate, context_estimate: medium}
   - {id: B597, title: "An armed no-progress wall stop ends the sweep and can repeat on resume", type: bugfix, component: mutation, context_estimate: medium}
   - {id: B598, title: "P-assay-4f final-review follow-ups M1, M3 and L4-L7", type: bugfix, component: mutation, context_estimate: small}
 ---
@@ -16217,6 +16221,46 @@ Second half (deliberate, hence documented rather than taken here): `tools/releas
 **Wanted.** Make heartbeat shutdown safe when the signal handler re-enters after the heartbeat has been reaped, while still stopping and waiting for a live heartbeat.
 
 **Close when.** A gate-lane test pins the post-wait, pre-clear window and proves the handler does not signal the reaped heartbeat pid, while the live-heartbeat cancellation test still proves shutdown completes.
+
+## B593 — R3 canary control failures omit the first failing test and bounded output tail
+
+**Status: OPEN (filed 2026-11-27 from vbpub-core 2026-11-26 follow-up 1); severity: medium (diagnostic evidence).**
+
+**Symptom.** When the known-good control does not pass, the canary result retains its coarse outcome but not its reason code, the failing test identity or a bounded output tail. `CanaryAttempt` records `control_outcome` but no control reason code and no command output (`src/assay/verdict.py:1639,1651`; `expected_reason_code`/`observed_reason_code` describe the transformed half, and `control_reason_code`, computed at `src/assay/canary.py:793`, is used only for the contention classification); the isolated control call obtains a `control_unit` and then passes only `control_outcome` into the attempt (`src/assay/canary.py:773,811,932`). Established by reading; not reproduced with a live gate in this filing. The related absence of `command_started`/`command_finished` progress events for canary halves is already tracked by B064 (`src/assay/runner.py:3946-3950`) and is not duplicated here.
+
+**Wanted.** For a non-PASS control, preserve its reason code, the first failing test and a bounded tail of its output in the canary diagnostic evidence. Keep this evidence tied to the control half so it is distinguishable from a transformed-run failure.
+
+**Close when.** A registered-lane test with a failing control exposes the correct failing test and bounded output tail, and a passing control does not add failure details. The existing B064 progress work remains separate.
+
+## B594 — per-attempt canary expiry is reported as a lane-wide deadline expiry
+
+**Status: OPEN (filed 2026-11-27 from vbpub-core 2026-11-26 follow-up 2); severity: low (misleading diagnosis).**
+
+**Symptom.** `run_isolated_canary` tightens the lane deadline to the canary's `budget_per_attempt` (`src/assay/canary.py:737-740`), but `LaneDeadline.remaining()` raises the fixed message “the lane-wide deadline expired” for any finite deadline (`src/assay/runner.py:392`). Thus an attempt-level expiry names the wrong clock. Established by reading; not reproduced with a live gate in this filing.
+
+**Wanted.** Preserve whether the active deadline is lane-wide or per-attempt and report the matching scope when it expires.
+
+**Close when.** A registered-lane test proves a per-attempt expiry identifies the attempt budget, while a true lane expiry continues to identify the lane budget.
+
+## B595 — native R2 tail retries can start with any positive lane time when the candidate budget is disabled
+
+**Status: OPEN (filed 2026-11-27 from vbpub-core 2026-11-26 follow-up 3); severity: low (campaign time use).**
+
+**Symptom.** The finding that `budget_per_candidate = "none"` is silently unbounded is false (established by reading): the runner warns that each mutant command is unbounded (`src/assay/runner.py:6031-6038`), and inactive pytest liveness also emits a warning that liveness and hung detection are off (`src/assay/liveness.py:585-597`). The remaining behavior is that the serial retry admission guard compares remaining time with the per-candidate budget only when that budget is non-null (`src/assay/mutation.py:4814-4821`). With the explicit `none` setting, a retry can start whenever the lane deadline has any positive time left; the lane deadline still bounds that attempt. Established by reading; not reproduced with a live gate in this filing.
+
+**Wanted.** Define and pin whether an unbounded per-candidate setting permits a best-effort tail retry on any positive lane remainder or whether a separate admission rule should apply. Any reserve must come from a declared or derived source, not a host-specific constant.
+
+**Close when.** A registered-lane test exercises a retry with `budget_per_candidate = "none"` and little lane time remaining, and the chosen admission policy is recorded and enforced.
+
+## B596 — release gate should simulate the cmru CHANGES fold as a pre-flight
+
+**Status: OPEN (filed 2026-11-27 from the 2026-11-26 manual release simulation); severity: medium.**
+
+**Symptom.** cmru folds `[Unreleased]` into the new release section in the release candidate before the release gate runs. A docs test that reads `[Unreleased]` or assumes only branch-current sections can pass on every package head and then fail after the fold; this happened on the first 12.3.0 attempt and again in the 2026-11-26 manual simulation (`tooling-tests` run `rgw-tooling-tests-20261126T231821-v1001`). The affected test is `test_rust_baseline_docs_match_the_available_assay_surface` (`tests/core/test_docs_examples_and_vocabulary.py:230` at c06b1a829). At that base it still reads current sections only (`:236`, `:249-250`), while the entry it needs is in `[12.3.0]` (`CHANGES.md:388`), so the next fold fails it. The helper it uses, `_current_changes_text` (`[Unreleased]` plus the newest release, `:146`), and the helper's two tests (`:253`, `:267`) came from commit `08e27ea7f`. Commit `153737031` (on main through merge `a4571315c`, q342; not in this branch's base) fixes this one test by reading the whole history. Its original form, `0fb0b687b` (branch-only), also covers a P4 liveness pin of the same shape. Neither makes the release gate run the docs tests against a changelog folded by cmru.
+
+**Wanted.** Before the release gate's long lanes, or in a registered lane on every package head, make a disposable copy and fold the changelog with cmru's own functions twice: once for this release and once for the following release. Run the docs tests against both folded states. No design decision is taken here.
+
+**Close when.** A registered pre-flight exercises both consecutive release folds using cmru's implementation and the docs tests pass against both resulting changelogs without mutating the package worktree.
 
 ## B597 — an armed no-progress wall stop ends the sweep and can repeat on resume
 

@@ -31,13 +31,25 @@ pytest only. Release contract: `cmru.toml` (tag `test-policy-vX.Y.Z`, wheel to G
   direct children by `(pid, starttime)`. A new child gets `estate_policy_settle_seconds` to exit; survivors and
   zombies are then pinned with a pidfd, re-checked for the same parent and start time, killed through the pidfd
   when alive, and reaped with bounded `waitid(P_PIDFD, WNOHANG)` polling. The scan/kill/reap sequence repeats so
-  grandchildren reparented by killing their parent are found too, with a 10-pass bound that is itself reported.
-  A zombie is reported as a zombie leak, a live child is reported after successful SIGKILL and reap, and a child
-  still unreaped at the deadline is reported as unreaped: cleanup never hangs or hides the leak. `fail` reports a
-  teardown error; `warn` warns and cleans up. A deliberate exception uses
+  grandchildren reparented by killing their parent are found too. An identity that remains unreaped is reported
+  once and excluded from later settle and cleanup passes; a reused pid with a different start time is still
+  examined. When a pass finds nothing else, the guard makes one reap-only retry for each reported unreaped
+  identity (each retry waits up to the same bounded reap deadline) without adding another report; if one of
+  them is gone, the guard scans again, because its own children can have reparented to pytest. At the 10-pass
+  bound the outstanding retries still run, and the bound is reported when other new children remain. A zombie is reported as a zombie leak, a live child is reported after successful SIGKILL
+  and reap, and a child still unreaped at the deadline is reported as unreaped: cleanup never hides the leak.
+  `fail` reports a teardown error; `warn` warns and cleans up. A deliberate exception uses
   `@pytest.mark.estate_allow("children", reason="...", backlog="XX-NN")`. Non-Linux runs are a no-op and record
   one warning. Allowed tests leave live children alone but new direct-child zombies are reaped with
-  `waitid(WNOHANG)` so they do not accumulate (TP-12).
+  `waitid(WNOHANG)` so they do not accumulate (TP-12). With procfs `hidepid=1`, reading `/proc/<pid>/stat` of a
+  process pytest may not inspect (another user's, or one that became non-dumpable or changed credentials,
+  including a child) can be refused with `EACCES` or `EPERM`; no test mounts such a procfs, so both are handled.
+  On either, the guard uses non-reaping `waitid(P_PID, pid, WEXITED|WNOHANG|WNOWAIT)`: a successful probe means
+  the pid is our child, alive or waitable, and fails loudly; `ECHILD` or `ESRCH` permits skipping it, while
+  another probe error fails loudly. Under `hidepid=2` (`invisible`) or `hidepid=ptraceable`, the `/proc/<pid>`
+  directory of such a process is omitted from the `/proc` listing. Since the guard enumerates that listing, a
+  child that becomes invisible is **not detected**. TP-19 tracks a possible alternate enumeration source. See
+  [proc(5)'s `hidepid` description](https://manpages.debian.org/trixie/manpages/proc.5.en.html).
 
   **Adopting the child guard:** a process created lazily by module or session code, or by a self-daemonizing tool
   (`gpg-agent`, SSH `ControlPersist`, git `gc.autoDetach` or automatic maintenance), is a new child of pytest and
@@ -76,9 +88,14 @@ pytest only. Release contract: `cmru.toml` (tag `test-policy-vX.Y.Z`, wheel to G
 
 ## Limits
 
-* Plugin, static analysis: only the test function's own source is analysed, not helpers it calls (the thread,
-  fd and child checks are the backstop). Quiet false negatives, backlog TP-09: aliased clock imports
-  (`from time import perf_counter as pc`), `datetime.now()` deltas, sleeps in helpers, randomness.
+* Plugin, static analysis: only a named test function's own source is analysed, not helpers it calls (the thread,
+  fd and child checks are the backstop). The plugin unwraps `functools.wraps` decorators, caches up to 64 parsed
+  source strings, and reports one `[source-analysis]` policy line if it cannot locate a function at the source
+  line or cannot parse the file. That line is an ordinary policy finding: `fail` mode fails the test and no
+  `estate_allow` rule accepts it. A lambda assigned as a test has no matching function node, so it gets that line
+  and its body is not analyzed. Some sources are skipped without a line (TP-20). Quiet false negatives,
+  backlog TP-09: aliased clock imports (`from time import perf_counter as pc`), `datetime.now()` deltas, sleeps
+  in helpers, randomness.
 * Order and shared-state dependence is NOT detected (backlog TP-07): a test that passes only in file order is stable
   when the file runs whole and fails with exit 1 when run alone, which looks like an ordinary failure.
 * flakehunt validation: only `slow-cpu` in container mode has run against real docker (v1001). `cpu-contended`

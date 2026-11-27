@@ -9,6 +9,18 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 ## [Unreleased]
 
+### Added
+- run-gate: paired `--event-file` and `--job-id` flags emit host-owned
+  `lane-started` and `lane-verdict` JSONL events for fleet runners (RG-329,
+  rev 78).
+
+### Fixed
+- fix(run-gate): validate event container identities, protect event files,
+  bind consumer acceptance to lane mode, and close the RG-329 review findings
+  (rev 78).
+- fix(run-gate): keep an unrecognised start line in the re-attach record so the
+  same-name identity check still applies, and publish no image id without a
+  container id (RG-329, rev 78).
 <!-- cmru: release history -->
 
 ## [25.10.0] - 2026-11-26
@@ -120,7 +132,10 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
   symbols in the no-time-budgets design, and distinguish `auto` from
   `auto-derived` by lane kind.
 - docs(run-gate): correct the RG-318 refusal quote and file RG-323–RG-325
-  follow-ups for effective CPU-time support.
+  follow-ups for effective CPU-time support; document RG-329's event-file
+  contract and verdict acceptance rule.
+
+<!-- cmru: release history -->
 <!-- cmru: pending release notes end -->
 
 ## [25.9.0] - 2026-11-24

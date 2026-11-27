@@ -97,6 +97,10 @@ class Verdict(unittest.TestCase):
         config = tomllib.loads(text)
         self.assertEqual(set(config), {"probe", "limits", "store"})
         self.assertEqual(
+            config["limits"],
+            {"max_rows": 1024, "annotate_rate_per_s": 50, "annotate_burst": 64},
+        )
+        self.assertEqual(
             set(config["store"]),
             {"dir", "tmpfs_dir", "events_cap_bytes", "events_ring_bytes"},
         )

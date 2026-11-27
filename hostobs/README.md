@@ -145,10 +145,12 @@ package and the `hostobs-mark` command. No release exists yet, and this branch
 does not build a release wheel. See [packaging](docs/PACKAGING.md) and [consumer
 instructions](docs/CONSUMERS.md).
 
-No hostobs probe currently serves `annotate`. `deploy/` installs the observer
-socket, and connecting to it needs membership in the `hostobs-observer` group.
-Until `annotate` is served, `hostobs-mark` prints a notice and exits 0;
-`--require` exits 1.
+The probe serves `annotate` on the observer socket. `deploy/` installs the
+observer socket, and connecting to it needs membership in the `hostobs-observer`
+group. `hostobs-mark` takes the socket path from `HOSTOBS_OBSERVER_SOCKET` and
+exits 0 once the probe accepts the annotation. When the annotation cannot be
+written (variable unset, socket unreachable, error reply or bad reply),
+`hostobs-mark` prints a notice and exits 0; `--require` exits 1.
 
 ## Developing and debugging
 

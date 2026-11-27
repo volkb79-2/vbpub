@@ -1762,6 +1762,8 @@ Source: Opus r1 review of P-plat-21 at head 4b9563cbd and r2 review at head b216
 
 **Status:** FIXED (2026-11-24, P-plat-20: `gate-run.sh` waits for memory PSI `full` avg10 < 3 after taking a slot, bounded by `CONTROLLER_GATE_PSI_WAIT_S`; exit 75 "not admitted, nothing ran", unreadable PSI exits 75 at once).
 
+**Update 2026-11-27 (operator via main):** the threshold is now memory PSI `full` avg60 >= 10; avg10 spikes are ignored. Still open: one rule for `gate-run.sh`, `dev` host-admission/1 (`full` avg10 >= 3) and `remote-gate.py` (memory `some` / io `full` avg10 > 25); see CTL-62, whose avg10 >= 3 wording predates this decision. The text below records the original defect.
+
 `gate-run.sh` admitted a local gate as soon as one of its slot locks was free. At 07:50Z on 2026-11-24 the cockpit host ran 4 local gates at memory PSI `full` avg10 3-6, above the programme's only stop signal (>= 3). Sessions can be told to stop, but external codex implementers that call `gate-run.sh` mid-run cannot. Same semantics as host-admission/1 of `scripts/controller/dev` (CTL-52, package P-plat-02), so one rule covers both.
 
 Source: vbpub-main-controller, 2026-11-24 07:50Z (cockpit PSI 3-6 with 4 local gates).

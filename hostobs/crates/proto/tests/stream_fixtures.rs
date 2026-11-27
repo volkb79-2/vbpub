@@ -162,7 +162,11 @@ fn valid_wire_frames() -> Vec<Vec<u8>> {
         .unwrap_or_else(|error| panic!("read {WIRE_DIR}: {error}"))
         .filter_map(|entry| entry.ok())
         .map(|entry| entry.file_name().to_string_lossy().into_owned())
-        .filter(|name| name.ends_with(".json") && name != "quality.json")
+        // Not wire cases: event-names.json is the registered event-name list that serve's
+        // test reads, and quality.json is the quality vocabulary; neither has a `.bin`.
+        .filter(|name| {
+            name.ends_with(".json") && name != "quality.json" && name != "event-names.json"
+        })
         .map(|name| name.trim_end_matches(".json").to_string())
         .collect();
     names.sort();

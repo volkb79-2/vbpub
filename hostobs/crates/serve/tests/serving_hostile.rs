@@ -285,6 +285,7 @@ fn check_refusal(query: &Query<'_>, refusal: &Refusal) {
             assert_eq!(*feature, "cgroup_id");
         }
         Detail::Pool(_) => assert_eq!(refusal.code, Code::Budget),
+        Detail::RetryAfterMs(_) => assert_eq!(refusal.code, Code::RateLimited),
     }
     check_error_encodings(refusal.code, refusal.corr, &refusal.detail);
 }

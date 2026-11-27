@@ -298,8 +298,8 @@ def test_survivor_is_carried_pessimistically_and_keeps_the_r2_claim_failing(
     r2 = next(claim for claim in verdict["claims"] if claim["rigor"] == "R2")
     assert r2["status"] == "FAIL"
     assert code == 1, (out, err)
-    assert out.count("--rejudge-carried") == 1
-    assert "WP4 replay" in out
+    assert "assay run <lane> --resume --rejudge-outcome survived" in out
+    assert "--rejudge-carried" not in out
 
 
 def test_carry_forward_records_the_outcome_without_progress(

@@ -33,7 +33,9 @@ RUST_ERROR = HOSTOBS / "crates" / "proto" / "src" / "error.rs"
 def cases():
     out = []
     for path in sorted(FIXTURES.glob("*.json")):
-        if path.name == "quality.json":
+        # Not wire cases: event-names.json is the registered event-name list that serve's
+        # Rust test (verbs.rs) pins its constant against.
+        if path.name in ("quality.json", "event-names.json"):
             continue
         out.append((json.loads(path.read_text(encoding="utf-8")), path.with_suffix(".bin").read_bytes()))
     return out

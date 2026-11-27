@@ -224,7 +224,11 @@ class DeployUnits(unittest.TestCase):
             {"levels", "tick_ms", "cgroup_root"},
             f"{CONFIG}: [probe] keys",
         )
-        self.assertEqual(set(self.config["limits"]), {"max_rows"}, f"{CONFIG}: [limits] keys")
+        self.assertEqual(
+            set(self.config["limits"]),
+            {"max_rows", "annotate_rate_per_s", "annotate_burst"},
+            f"{CONFIG}: [limits] keys",
+        )
         self.assertEqual(
             self.config["probe"]["levels"],
             list(LEVELS),
@@ -240,6 +244,16 @@ class DeployUnits(unittest.TestCase):
         )
         self.assertEqual(
             self.config["limits"]["max_rows"], 1024, f"{CONFIG}: [limits] max_rows"
+        )
+        self.assertEqual(
+            self.config["limits"]["annotate_rate_per_s"],
+            50,
+            f"{CONFIG}: [limits] annotate_rate_per_s",
+        )
+        self.assertEqual(
+            self.config["limits"]["annotate_burst"],
+            64,
+            f"{CONFIG}: [limits] annotate_burst",
         )
         self.assertEqual(
             set(self.config["store"]),

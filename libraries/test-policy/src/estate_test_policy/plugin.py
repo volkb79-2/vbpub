@@ -11,9 +11,11 @@ a project opts in. In ``off`` the plugin only registers its markers.
 from __future__ import annotations
 
 import inspect
+import linecache
 import os
 import threading
 import time
+import tokenize
 import warnings
 
 import pytest
@@ -125,16 +127,27 @@ def _static_lines(item: pytest.Item, allowed: set[str], threshold: float) -> lis
     if function is None:
         return []
     try:
-        lines, first = inspect.getsourcelines(function)
-    except (OSError, TypeError):  # dynamically created tests have no source
+        function = inspect.unwrap(function)
+        filename = inspect.getsourcefile(function)
+        code = function.__code__
+        if filename is None:
+            return []
+        linecache.checkcache(filename)
+        source = "".join(linecache.getlines(filename))
+    except (AttributeError, OSError, TypeError, ValueError):  # dynamically created tests have no source
         return []
-    return [
-        violation.render()
-        for violation in policy.analyze_source(
-            "".join(lines), sleep_threshold=threshold, first_line=first
-        )
-        if violation.rule not in allowed
-    ]
+    if not source:
+        return []
+    function_line = code.co_firstlineno
+    try:
+        node = policy._function_at_line(policy._module_tree(source), function_line)
+        if node is None:
+            return [f"[source-analysis] cannot locate test function in {filename} at line {function_line}"]
+        # Analyze the located node: consumer conftests wrap the public analyze_source with fragment rewrites.
+        violations = policy._analyze_tree(node, threshold)
+    except (SyntaxError, tokenize.TokenError) as exc:
+        return [f"[source-analysis] could not analyze {filename}: {exc}"]
+    return [violation.render() for violation in violations if violation.rule not in allowed]
 
 
 def _settled_leaks(before: policy.Snapshot, settle: float) -> list[str]:

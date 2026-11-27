@@ -70,6 +70,11 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   could have handed a spinning candidate a "no CPU burned" verdict).
 - A resource trace longer than 1024 samples no longer disables the hang
   verdict it supports.
+- The `[10.1.0]` entry's `--resume --rejudge crashed` is wrong: `--rejudge` takes candidate ids.
+  Use `--resume --rejudge-outcome crashed`; README, CONSUMERS and DESIGN-GUIDE are corrected. The
+  carried-survivor note no longer names the nonexistent `--rejudge-carried`; it prints
+  `assay run <lane> --resume --rejudge-outcome survived`. The README's Rust support row now says
+  that real Rust R2 qualification passed and that hostobs has a hand-run lane.
 - release-gate.sh (B579 round 2 and round 3): a failed defaults import names its own cause,
   including a temporary file that cannot be created and an import that dies printing nothing;
   the heartbeat trap signals only a job its own loop owns. The failure branch used to quote the

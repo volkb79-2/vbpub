@@ -14,10 +14,10 @@
 //! 6. the level does not know the verb: `forbidden`;
 //! 7. `hello` when the connection is `Ready` (either mode): `bad-request`, key `verb` (R8);
 //! 8. retired (D-W51: JSON mode never reaches a block level, see mode detection);
-//! 9. the verb is known but not served by this package: `unknown-verb`;
+//! 9. the verb is known but not served at this level by this package: `unknown-verb`;
 //! 10. a one-block verb (`current`, `snapshot_at`) while the connection's Query pool holds
 //!     unwritten blocks: `too-many-requests` (other verbs are never refused by it);
-//! 11. the argument schema (`hello`, `status`, `current`, `subscribe`, `unsubscribe`):
+//! 11. the argument schema (`hello`, `status`, `current`, `subscribe`, `unsubscribe`, `annotate`):
 //!     `bad-request` with the schema path, or, for a JSON-mode `hello` with a `proto.major`
 //!     other than 1, `unsupported-version` (fatal, R8); a binary `hello.proto` must equal the
 //!     client's own prefix (R7).
@@ -30,6 +30,7 @@ use hostobs_proto::envelope::{check_req, members, EnvelopeError, Kind};
 use hostobs_proto::frame::{FrameType, PROTO_MINOR};
 
 use crate::args::{self, bounded_key, HelloArgs, SubscribeArgs};
+use crate::backend::AnnotateArgs;
 use crate::codes::{Code, Detail};
 use crate::limits::{IntervalRule, Level};
 use crate::selection::Selection;
@@ -117,6 +118,8 @@ pub enum Call {
     Subscribe(SubscribeArgs),
     /// `unsubscribe` with its checked subscription corr.
     Unsubscribe(u32),
+    /// `annotate` with its checked event fields.
+    Annotate(AnnotateArgs),
 }
 
 /// A request that passed every check.
@@ -311,6 +314,10 @@ fn call_of(
             Ok(sub) => Ok(Call::Unsubscribe(sub)),
             Err(error) => Err(bad_args(corr, &error)),
         },
+        "annotate" => match args::annotate(text) {
+            Ok(args) => Ok(Call::Annotate(args)),
+            Err(error) => Err(bad_args(corr, &error)),
+        },
         // Unreachable while `verb_gate` passes only served verbs with a schema here: a served
         // verb without one is a server defect, never the client's `unknown-verb`.
         _ => Err(refuse(Code::Internal, corr)),
@@ -379,7 +386,7 @@ pub fn classify_with(query: &Query<'_>, facts: &ConnFacts) -> Result<Dispatch, R
     };
     let name = query.payload.get(req.verb.clone()).unwrap_or_default();
     let verb = verb_gate(query, corr, name)?;
-    if !verb.served {
+    if !verb.served_at(query.level) {
         return Err(refuse(Code::UnknownVerb, corr));
     }
     let text = query.payload.get(req.args.clone()).unwrap_or_default();
@@ -829,6 +836,33 @@ mod tests {
             ..binary(text.as_bytes())
         };
         assert_refusal(&query, Code::Forbidden, 5, &Detail::Empty);
+    }
+
+    #[test]
+    fn annotate_is_served_only_at_observer_and_unknown_at_control() {
+        let args = r#"{"kind":"point","name":"run","key":null,"ctx":{},"outcome":null,"code":null,"attrs":{}}"#;
+        let observer_line = line("annotate", args, 2);
+        let query = Query {
+            level: Level::Observer,
+            ..json(observer_line.as_bytes())
+        };
+        assert!(matches!(dispatched(&query).call, Call::Annotate(_)));
+
+        for level in [Level::Observe, Level::Operator] {
+            let text = req("annotate", args);
+            let query = Query {
+                level,
+                ..binary(text.as_bytes())
+            };
+            assert_refusal(&query, Code::Forbidden, 5, &Detail::Empty);
+        }
+
+        let control_line = line("annotate", args, 2);
+        let query = Query {
+            level: Level::Control,
+            ..json(control_line.as_bytes())
+        };
+        assert_refusal(&query, Code::UnknownVerb, 2, &Detail::Empty);
     }
 
     #[test]
@@ -1647,6 +1681,7 @@ mod tests {
                 Detail::Empty => panic!("an error detail is a key"),
                 Detail::Feature(feature) => panic!("unexpected feature detail {feature}"),
                 Detail::Pool(pool) => panic!("unexpected pool {pool:?}"),
+                Detail::RetryAfterMs(value) => panic!("unexpected rate delay {value}"),
             }
             let refusal = refused(&json(&payload));
             assert_eq!(refusal.code, Code::BadRequest);
