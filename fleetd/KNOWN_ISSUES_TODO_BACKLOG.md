@@ -65,6 +65,7 @@
 | FD-060 | A granted lease client can stay connected forever without binding | P2 | OPEN (design bound missing) | 2026-11-27 |
 | FD-061 | Persist executor result details for terminal status | P2 | OPEN | 2026-11-27 |
 | FD-062 | Retain and garbage-collect host upload objects | P2 | OPEN (C3b follow-up) | 2026-11-27 |
+| FD-063 | Incrementally count large Assay progress files | P2 | OPEN | 2026-11-27 |
 
 ## FD-001 Lite campaign lifecycle
 
@@ -1187,3 +1188,16 @@ job records and coordinate with active uploads; no expiry or quota default is
 defined here.
 
 Source: P-fd-05 C3a round 2 controller ruling (2026-11-27).
+
+## FD-063 Incrementally count large Assay progress files
+
+**State:** OPEN. **Priority:** P2. **Filed:** 2026-11-27.
+
+C3a bounds the Assay candidate-count scan to the opened file's 8 MiB snapshot.
+Larger progress files report `done: null` with a reason rather than making the
+host rescan an unbounded JSONL history on every progress request. A future
+incremental design must preserve duplicate candidate de-duplication and the
+no-follow descriptor safety of the current reader. No checkpoint format or
+retention policy is defined here.
+
+Source: P-fd-05 C3a fix round 2 controller ruling (2026-11-27).

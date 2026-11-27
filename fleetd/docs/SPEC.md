@@ -209,7 +209,12 @@ checkout, resolving `assay_lane` through `hostside.resolve_assay_lane`, and
 streams from a byte offset. Lane declarations and progress files are opened
 from trusted directory descriptors with no-follow traversal of every path
 component. Each progress response is capped at 8 MiB and includes the matching
-`next_offset`; clients refuse any response body larger than that cap.
+`next_offset`; clients refuse any response body larger than that cap. Assay
+candidate counting reads at most the opened file's size up to the named
+`MAX_ASSAY_PROGRESS_COUNT_BYTES` limit of 8 MiB. A larger file returns
+`done: null` with a non-empty `done_reason`; smaller files omit `done_reason`.
+The read uses the opened-size snapshot, so appends during counting do not extend
+the scan. Incremental counting remains FD-063.
 
 `put` requires configured positive `policy.max_upload_bytes` and
 `policy.max_upload_store_bytes` facts and a known non-empty `policy.disk_floors`

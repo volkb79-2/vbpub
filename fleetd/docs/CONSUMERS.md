@@ -135,7 +135,11 @@ admission or a durable request write.
 Lane declarations and progress files are opened from trusted directory
 descriptors with no-follow traversal of every component. Progress replies cap
 each range at 8 MiB and return the matching `next_offset`; the client refuses a
-larger response body. Terminal status reads only `fleet-admission-terminal/1`
+larger response body. The host counts Assay candidates only when the opened
+progress file is at most 8 MiB; larger files return `done: null` and a
+non-empty `done_reason`, while smaller files omit `done_reason`. The scan is
+bounded to the opened-size snapshot. Incremental counting remains FD-063.
+Terminal status reads only `fleet-admission-terminal/1`
 and returns `completed` plus its recorded completion time, without fabricating
 executor results. Cancel of a terminal job refuses with exit 2. C3b owns the
 durable executor result details (FD-061).

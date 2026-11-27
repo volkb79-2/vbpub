@@ -14,7 +14,7 @@ import pytest
 
 from fleetd.admission import AdmissionError, ExitCode
 from fleetd.admission import InspectorAnswer
-from fleetd.agent_verbs import AgentVerbService
+from fleetd.agent_verbs import AgentVerbService, MAX_ASSAY_PROGRESS_COUNT_BYTES
 from fleetd import agent_verbs
 from fleetd.agent_protocol import MAX_FETCH_BYTES, FrameError, read_frame, write_frame
 from fleetd.contracts import HostFacts, validate_host_facts
@@ -1226,6 +1226,78 @@ def test_assay_progress_uses_resolved_lane_and_streams_from_byte_offset(tmp_path
     assert reply.document["offset"] == len(first)
     assert reply.document["unit"] == "assay_candidates"
     assert _body(reply) == second
+
+
+@pytest.mark.parametrize(
+    ("size_delta", "expected_done"),
+    [(-1, 1), (0, 1), (1, None)],
+)
+def test_assay_progress_done_count_is_bounded_at_eight_mib(tmp_path, size_delta, expected_done):
+    assert MAX_ASSAY_PROGRESS_COUNT_BYTES == 8 * 1024 * 1024
+    service, identity, _checkout = _service(tmp_path)
+    job_dir = _job(service, identity)
+    checkout = job_dir / "checkout"
+    checkout.mkdir()
+    (checkout / "run-gate.toml").write_text(
+        '[lanes."r0-r1"]\nkind = "assay"\nassay_lane = "contract-assay"\n', encoding="utf-8",
+    )
+    progress = checkout / ".assay" / "progress-contract-assay.jsonl"
+    progress.parent.mkdir()
+    candidate = json.dumps({"event": "candidate", "candidate_id": "counted"}).encode() + b"\n"
+    progress.write_bytes(candidate)
+    size = MAX_ASSAY_PROGRESS_COUNT_BYTES + size_delta
+    with progress.open("r+b") as stream:
+        stream.truncate(size)
+
+    reply = service.handle({
+        "verb": "progress", "job_id": "controller-run-1", "offset": size,
+    }, identity)
+    try:
+        assert reply.document["done"] == expected_done
+        if size_delta == 1:
+            assert isinstance(reply.document["done_reason"], str)
+            assert reply.document["done_reason"]
+            assert "8 MiB" in reply.document["done_reason"] or "8388608" in reply.document["done_reason"]
+        else:
+            assert "done_reason" not in reply.document
+        assert reply.document["offset"] == size
+        assert reply.document["next_offset"] == size
+        assert reply.document["length"] == 0
+    finally:
+        reply.close()
+
+
+def test_assay_progress_count_stops_at_opened_size_when_file_grows(tmp_path, monkeypatch):
+    progress = tmp_path / "progress.jsonl"
+    candidate = json.dumps({"event": "candidate", "candidate_id": "before"}).encode() + b"\n"
+    progress.write_bytes(candidate)
+    with progress.open("r+b") as stream:
+        stream.truncate(MAX_ASSAY_PROGRESS_COUNT_BYTES)
+    opened_size = progress.stat().st_size
+    fd = os.open(progress, os.O_RDONLY)
+    original_read = os.read
+    total_read = 0
+    grew = False
+    later = json.dumps({"event": "candidate", "candidate_id": "after"}).encode() + b"\n"
+
+    def grow_then_read(read_fd, count):
+        nonlocal grew, total_read
+        if not grew:
+            with progress.open("ab") as stream:
+                stream.write(later)
+            grew = True
+        chunk = original_read(read_fd, count)
+        total_read += len(chunk)
+        return chunk
+
+    monkeypatch.setattr(agent_verbs.os, "read", grow_then_read)
+    try:
+        assert AgentVerbService._assay_done_count(fd, opened_size) == 1
+        assert grew
+        assert total_read == MAX_ASSAY_PROGRESS_COUNT_BYTES
+        assert progress.stat().st_size > opened_size
+    finally:
+        os.close(fd)
 
 
 def test_command_progress_uses_lane_log_byte_offset(tmp_path):

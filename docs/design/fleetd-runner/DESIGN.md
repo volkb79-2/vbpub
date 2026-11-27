@@ -165,7 +165,11 @@ where `assay_lane` comes from `hostside.resolve_assay_lane(checkout, project, la
 by byte offset (`run-gate-project/SPEC.md:2321-2342`). Command lanes have no candidates
 (`run-gate-project/SPEC.md:416-436`): `done` and `total` are null, with
 `unit: log_bytes` from the agent's `lane.log` offset. The executor records start, stage and end
-for `dev`. Answers include `{done,total,unit,last_progress_utc}`; `jobs[]` uses
+for `dev`. Assay done-counting reads at most the opened file size up to
+`MAX_ASSAY_PROGRESS_COUNT_BYTES` (8 MiB). Larger files return `done: null` and
+a non-empty `done_reason`; otherwise `done_reason` is absent. Appends after the
+opened-size snapshot do not extend the scan; incremental counting remains
+FD-063. Answers include `{done,total,unit,last_progress_utc}`; `jobs[]` uses
 `progress_unit` and `last_progress_utc` to match the draft (`.controller-state/platform/design/agctl-estate-snapshot-draft.md:44-45`).
 
 **cancel** takes `{job_id, reason}`. A queued job is atomically removed and needs no collector;

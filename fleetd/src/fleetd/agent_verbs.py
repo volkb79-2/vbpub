@@ -35,6 +35,7 @@ from .contracts import ContractError, HostFacts, validate_host_facts
 from .hostside import open_beneath, resolve_assay_lane
 
 AGENT_SCHEMA = "fleet-host-agent/1"
+MAX_ASSAY_PROGRESS_COUNT_BYTES = 8 * 1024 * 1024
 _COMMIT_RE = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
 _SEMVER_RE = re.compile(
     r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"
@@ -908,7 +909,9 @@ class AgentVerbService:
         return fd, size
 
     @staticmethod
-    def _assay_done_count(fd: int, size: int) -> int:
+    def _assay_done_count(fd: int, size: int) -> int | None:
+        if size > MAX_ASSAY_PROGRESS_COUNT_BYTES:
+            return None
         os.lseek(fd, 0, os.SEEK_SET)
         remainder = b""
         candidate_ids: set[str] = set()
@@ -980,10 +983,17 @@ class AgentVerbService:
         actual_offset = min(offset, size)
         body_length = min(MAX_FETCH_BYTES, size - actual_offset)
         os.lseek(fd, actual_offset, os.SEEK_SET)
-        document = self._envelope(
-            job_id=job_id, offset=actual_offset, next_offset=actual_offset + body_length, length=body_length,
-            done=done, total=None, unit=unit, last_progress_utc=last_progress,
-        )
+        progress_fields: dict[str, object] = {
+            "job_id": job_id, "offset": actual_offset,
+            "next_offset": actual_offset + body_length, "length": body_length,
+            "done": done, "total": None, "unit": unit,
+            "last_progress_utc": last_progress,
+        }
+        if lane_kind == "assay" and size > MAX_ASSAY_PROGRESS_COUNT_BYTES:
+            progress_fields["done_reason"] = (
+                f"progress file exceeds the {MAX_ASSAY_PROGRESS_COUNT_BYTES}-byte count limit"
+            )
+        document = self._envelope(**progress_fields)
         return AgentReply(document, body_fd=fd, body_length=body_length)
 
 
