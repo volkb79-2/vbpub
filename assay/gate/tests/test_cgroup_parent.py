@@ -307,12 +307,13 @@ def _execute_unit_probe_script(
     memory_stat_path: Path,
     *,
     reader_mode: str = "normal",
+    timeout_available: bool = True,
 ):
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir(exist_ok=True)
     busctl = fake_bin / "busctl"
     busctl.write_text(
-        r'''#!/usr/bin/env python3
+        r'''#!/usr/bin/python3
 import json
 import sys
 
@@ -349,8 +350,9 @@ print(json.dumps({"data": value}))
     )
     busctl.chmod(0o755)
     timeout = fake_bin / "timeout"
-    timeout.write_text(
-        r'''#!/usr/bin/env python3
+    if timeout_available:
+        timeout.write_text(
+            r'''#!/usr/bin/python3
 import json
 import os
 import sys
@@ -372,16 +374,21 @@ if args[0] == "awk":
         raise SystemExit(2)
 os.execvpe(args[0], args, os.environ)
 ''',
-        encoding="utf-8",
-    )
-    timeout.chmod(0o755)
-    executable_script = script.replace("/usr/bin/busctl", "busctl").replace(
+            encoding="utf-8",
+        )
+        timeout.chmod(0o755)
+    executable_script = script
+    if not timeout_available:
+        executable_script = executable_script.replace(
+            "timeout --kill-after=2s 5s /usr/bin/busctl", "busctl"
+        )
+    executable_script = executable_script.replace("/usr/bin/busctl", "busctl").replace(
         "/tmp/host-memory.stat", str(memory_stat_path)
     )
     timeout_log = tmp_path / "timeout.argv"
     proc = subprocess.run(
         [
-            "sh",
+            "/bin/sh",
             "-c",
             executable_script,
             "assay-cgroup-unit-probe",
@@ -392,7 +399,10 @@ os.execvpe(args[0], args, os.environ)
         text=True,
         check=False,
         env={
-            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "PATH": (
+                f"{fake_bin}:{os.environ['PATH']}"
+                if timeout_available else str(fake_bin)
+            ),
             "TIMEOUT_LOG": str(timeout_log),
             "READER_MODE": reader_mode,
         },
@@ -1117,6 +1127,14 @@ def test_generated_probe_script_reads_only_gates_memory_stat_with_a_bound(
     )
     assert failed_reader.returncode == 0, failed_reader.stderr
     assert "ASSAY_MEMORY_STAT_READ_ERROR" in failed_reader.stdout
+
+    missing_timeout_dir = tmp_path / "missing-timeout-execution"
+    missing_timeout_dir.mkdir()
+    missing_timeout, _ = _execute_unit_probe_script(
+        missing_timeout_dir, script, stat_file, timeout_available=False
+    )
+    assert missing_timeout.returncode == 0, missing_timeout.stderr
+    assert "ASSAY_MEMORY_STAT_READ_ERROR" in missing_timeout.stdout
 
     unreserved_dir = tmp_path / "unreserved"
     unreserved_dir.mkdir()

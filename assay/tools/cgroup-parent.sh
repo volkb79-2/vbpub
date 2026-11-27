@@ -123,11 +123,19 @@ new_unit_probe_identity() {
   unit_probe_id=""
 }
 inspect_owned_unit_probe() {
-  local target="$1" facts inspected_id inspected_name inspected_owner
-  facts="$(timeout --signal=TERM --kill-after=5s 30s docker inspect "$target" \
-    --format '{{.Id}}|{{.Name}}|{{index .Config.Labels "io.assay.cgroup-parent.owner"}}')" \
-    || return 1
-  [[ "$facts" != *$'\n'* ]] || return 1
+  local target="$1" facts inspect_status inspected_id inspected_name inspected_owner
+  if facts="$(timeout --signal=TERM --kill-after=5s 30s docker inspect "$target" \
+    --format '{{.Id}}|{{.Name}}|{{index .Config.Labels "io.assay.cgroup-parent.owner"}}' 2>&1)"; then
+    :
+  else
+    inspect_status=$?
+    if [[ "$inspect_status" == 1 && "$target" == "$unit_probe_name" \
+      && "$facts" == "Error: No such object: $unit_probe_name" ]]; then
+      return 1
+    fi
+    return 3
+  fi
+  [[ "$facts" != *$'\n'* ]] || return 2
   IFS='|' read -r inspected_id inspected_name inspected_owner <<<"$facts"
   [[ "$inspected_id" =~ ^[0-9a-f]{64}$ \
     && "$inspected_name" == "/$unit_probe_name" \
@@ -196,7 +204,8 @@ start_unit_probe() {
     memory_stat_reader="$(cat <<'MEMORY_STAT_READER'
     if [ -e /tmp/host-memory.stat ]; then
       printf "ASSAY_MEMORY_STAT_BEGIN\n"
-      if awk '
+      if command -v timeout >/dev/null 2>&1 \
+        && timeout --kill-after=1s 3s awk '
         $1 == "inactive_file" || $1 == "slab_reclaimable" ||
         $1 == "file_dirty" || $1 == "file_writeback" { print }
       ' /tmp/host-memory.stat; then
@@ -314,7 +323,7 @@ if ((memory_reserve_bytes > 0)); then
   else
     mount_status=$?
     discard_failed_unit_probe \
-      || die 'could not remove the verified Docker-host systemd query container after its memory.stat mount failed'
+      || die "could not safely reconcile Docker-host systemd query container \"$unit_probe_name\" after the memory.stat probe start failed; refusing fallback"
     start_unit_probe no \
       || die "could not start Docker-host systemd query container before any container uses \"$slice\" (exit $?)"
     printf 'cgroup-parent: memory.stat-enabled probe could not start (exit %s); retrying the unmounted systemd probe\n' \
