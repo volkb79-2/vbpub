@@ -764,7 +764,7 @@ elif [[ "$requested_lane" == "self-qualification-provisional" ]]; then
     if "$assay_bin" campaign init --file assay.toml \
         --campaign "$campaign" \
         --lane self-qualification-provisional \
-        --hours 2 \
+        --hours 3 \
         --state-dir .assay/mutation-state-self-qualification-provisional \
         --wheel-sha256 "$wheel_digest"; then
       :

@@ -112,6 +112,44 @@ def test_o9_a_missing_or_absent_events_file_has_no_rows(tmp_path: Path) -> None:
     assert liveness.baseline_phase_durations(tmp_path / "absent.ndjson") == []
 
 
+def test_per_test_baseline_uses_the_last_duration_for_each_repeated_phase(
+    tmp_path: Path,
+) -> None:
+    events = _write(
+        tmp_path / "repeated-nodeid.ndjson",
+        [
+            {"event": "session_start", "pid": 100},
+            _phase("same", "setup", 1.0),
+            {**_call("same"), "duration_s": 2.0},
+            _phase("same", "teardown", 3.0),
+            _phase("same", "setup", 4.0),
+            {**_call("same"), "duration_s": 5.0},
+            _phase("same", "teardown", 6.0),
+        ],
+    )
+    # Each phase uses the second occurrence; the two test runs are not added
+    # together into a single, inflated per-test CPU baseline.
+    assert liveness.baseline_per_test_seconds(events) == {"same": 15.0}
+
+
+def test_per_test_baseline_skips_unusable_nodes_and_other_phase_kinds(
+    tmp_path: Path,
+) -> None:
+    events = _write(
+        tmp_path / "unusable-baseline-records.ndjson",
+        [
+            _phase("ignored", "other", 9.0),
+            _phase(["unhashable"], "setup", 8.0),
+            _call(["unhashable"]),
+            _phase("kept", "setup", 1.0),
+            _call("kept"),
+            _phase("kept", "teardown", 3.0),
+        ],
+    )
+
+    assert liveness.baseline_per_test_seconds(events) == {"kept": 5.0}
+
+
 # --------------------------------------------------------------------------
 # read_resource_sidecar / first_event_times
 # --------------------------------------------------------------------------

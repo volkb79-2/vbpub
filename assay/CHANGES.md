@@ -4,7 +4,150 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
+<!-- cmru: release history -->
+
+## [12.4.0] - 2026-11-27
+<!-- cmru: generated -->
+<!-- cmru: source-end=92203057faa57b12f345321dc8dfa7fc2a562b87 -->
+
 ### Fixed
+- fix(assay): drop the redundant advisory-warned flag (6c51ecf6b)
+- fix(assay): inspect opened event stream descriptor (36b1143d6)
+- fix(assay): disarm progress bounds for broken event streams (37980e741)
+- fix(assay): keep event reader progress cumulative (4876ff7fb)
+- fix(assay): keep event progress monotonic across resets (32575b3a3)
+- fix(assay): keep injected liveness for idle lanes (13053b72a)
+- fix(assay): stop armed candidates stalled without progress (b34868fa7)
+- fix(assay): attribute liveness records to session owner (7010cc267)
+- fix(assay): preserve release gate signal diagnostics (d3d828b3d)
+- fix(run-gate): close the RG-320 delta review findings (controller fix-forward) (5ea5145d6)
+- fix(assay): clear reaped release client before heartbeat stop (6fe093201)
+- fix(run-gate): close RG-320 P1 review findings (3b2076056)
+- fix(assay): a silent defaults import names its exit status (B579 round 3) (d2efe71a0)
+- fix(assay): the heartbeat trap names only jobs its own loop owns (B579 round 3) (ae997bd6f)
+- fix(run-gate): arm container stall watch by runner (2e84cedaf)
+- fix(assay): S2's test_start hook must join the witness liveness pin set (325bdf3ca)
+- fix(assay): name the defaults temp-file failure, and correct which check runs first (f6b8be0c0)
+- fix(assay): release-gate heartbeat trap never signals the inherited $! (B579 round 2) (fe15f0efc)
+
+### Changed
+- assay: credit pressure in no-progress stop (c751a6b19)
+- chore(assay): raise the self-qualification-provisional lane budget to 150m (29a898d57)
+- Revert "test only: restore the old order for the red proof" (9300d52ca)
+- test only: restore the old order for the red proof (a42c55662)
+- Correct B577 PYTHONPATH workaround (1b15e891b)
+- Document P4 liveness limits and cleanup (699610357)
+- Bound compacted liveness evidence (3390e291c)
+- Fix per-test CPU window timing (777e3f666)
+- Fix per-test liveness windows (7400360ff)
+- chore(assay): add mutation_runtime.py to every whole-target judge lane (d4b61b1e6)
+
+### Documentation
+- docs(assay): add --only-candidates evidence under B532 (23981d8ab)
+- docs(assay): refresh P4 review test line references (74b7cafca)
+- docs(assay): file B599, B105 headroom counts file cache as used (c7eb90044)
+- docs(assay): clarify fallback ends the mutation sweep (23ee40754)
+- docs(assay): disclose liveness wall fallback risk (5874b40c4)
+- docs(assay): record P4 follow-up backlog closure (66457dfd0)
+- docs(assay): disclose P4 liveness stop behavior (edb509410)
+- docs(assay): fix the A3 review findings that are text only (B596 facts, CHANGES entry, Rust R2 status wording, B593/B595) (87a64954c)
+- docs(assay): fix rejudge guidance and file A3 findings (2cf8f00d8)
+- docs(assay): address P-assay-14c review findings (e621058d0)
+- docs(assay): close B591 review follow-ups (25d3890c4)
+- docs(assay): file B590 and B591, P-assay-14b final-review follow-ups; fix B581 citation (78b9e4a2f)
+- docs(assay): B579's round-3 commits in its status line (9ce67a977)
+- docs(assay): the release gate's exit-code split, B581's citations and CHANGES (ea7f6e542)
+- docs(assay): A2 — the one v21 delta amendment (wall-stop result, timeout kills, P-13 decoupled) (d937b74be)
+- docs(assay): S4 language matrix generated from one code source, advisory-budget migration note (73d9b3ade)
+- docs(assay): design — effective CPU time (A1) (a8ff8fde8)
+- docs(assay): design — effective CPU time (A1) (cc0fcb0ae)
+- docs(assay): SPEC TIM-030 — CPU normalization unit is the recorded Geekbench major's reference machine (01524eb6a)
+- docs(assay): SPEC.md fix round 1 (independent review findings F1-F23) (d66a8094e)
+- docs(assay): SPEC.md chapters 5-9 (store, liveness, time semantics, CLI, consumer contract) (72480d0a6)
+- docs(assay): SPEC.md chapters 0-4 (purpose, rigor, verdict, judge identity) (26c3013ab)
+
+### Testing
+- test(assay): cover remaining R1 liveness evidence branches (b7ca0b87f)
+- test(assay): cover event reader open races (e5c176cd4)
+- test(assay): expect cumulative reader counts (fa25982ee)
+- test(assay): exercise liveness stop in parallel mutation run (f6e397d0e)
+- test(assay): cover liveness event reader resets (1647b43d9)
+- test(assay): refresh liveness reader and coverage pins (c56273ab5)
+- test(assay): read the one-time Rust baseline CHANGES entry from the whole history, so the next release does not fail the docs lane (153737031)
+- test(assay): pin liveness progress to session owner pid (b9b4c775f)
+- test(assay): pin B590 reaped client signal window (7792fba2d)
+- test(assay): pin the reverted branches the round-2 review found, and shellcheck both scripts (c92c9556c)
+- test(assay): S1's pressure test asserts the CPU evidence policy, dropping an unused local (b1a6bee88)
+- test(assay): window-host budget-kill test no longer races process START-UP (14f81bb97)
+- test(assay): S3 advisory-vs-binding budget regimes, hung rejudge/resume, B581/B582, protocol /3 (3bab655a1)
+- test(assay): S2 per-test CPU bound tests (looping, slow-but-under, unknown nodeid, xdist, overlap) (25af53625)
+- test(assay): S1 CPU-without-progress bound, monotonic CPU series, compacted trace (567fe9e22)
+
+<!-- cmru: pending release notes begin -->
+### Changed
+- `self-qualification-provisional` keeps a 150-minute assay-command budget
+  (was 60) and its campaign expiry is now 3 hours from init (was 2). A loaded
+  gate host needed 1991 s for the baseline alone and the lane ended
+  `BUDGET_EXCEEDED` before the canary finished
+  (`rgw-self-qualification-provisional-20261126T225114-v1001`). The whole
+  container invocation is bounded by its 3-hour inner command cap; Run-Gate's
+  outer budget is 210 minutes. The effective total is therefore at most 3
+  hours from container entry, including setup and finalization, while the
+  assay command itself remains capped at 150 minutes.
+- A native Python/pytest R2 lane now detects a candidate that stops making
+  progress, instead of ending it on elapsed wall time. The idle,
+  CPU-without-progress, and per-test bounds are reported as `hung` (never
+  `killed`) and both new decisions are accepted by the durable evidence path,
+  resume and `--rejudge-outcome`:
+  * **CPU without progress** -- process-tree CPU seconds since the last
+    COMPLETED plugin event (a `test` or a `phase` report; stdout/stderr growth,
+    `test_start` and `test_finish` do not reset it) exceeds `max(3x baseline wall,
+    baseline wall + 60s)`. The CPU series is monotonic: a descendant exiting
+    banks its peak instead of lowering the total, so a spinning candidate
+    cannot erase work it did. It ignores pressure state entirely -- no pause,
+    no eligibility.
+  * **Per-test CPU bound** -- while exactly one test is in flight, CPU seconds
+    since its `test_start` exceed `max(10x that nodeid's baseline
+    setup+call+teardown seconds, 60s)`. Skipped under xdist and when more than
+    one test is in flight (the process-tree bound is then the backstop), and
+    skipped for a nodeid the baseline never measured. The evidence names the
+    nodeid, the bound and the measured value.
+  * The existing pressure-adjusted idle rule is unchanged.
+  * An armed watch also has a no-progress wall stop: when no completed
+    `test`/`phase` event arrives for four times the CPU-without-progress bound,
+    the attempt ends unclassified as `BUDGET_EXCEEDED`/`LANE_TIMEOUT`. It
+    writes no candidate result or mutation bucket and is retried on resume; it
+    is neither `hung` nor `budget_exceeded`. It does not depend on candidate
+    CPU readability. Its clock uses the pressure-credit rule described under
+    Known issues below. The CPU and per-test `hung` bounds and lane deadline
+    still win when they fire first.
+  A retained resource trace is now COMPACTED past its 1024-sample cap instead of
+  being marked incomplete, so no hang verdict is disabled by trace length and
+  the stored evidence stays bounded.
+- `judge.mutation.budget_per_candidate` is **advisory** for an armed watch
+  only after that candidate's process-tree CPU is readable; if its CPU remains
+  unreadable, the budget binds at runtime. The `plan` record reports
+  plan-time eligibility only, based on liveness injection and baseline plugin
+  records. Whether a candidate's budget is advisory is decided at runtime
+  after its CPU reads. One WARN is printed the first time a candidate overruns
+  an advisory budget. `budget_per_candidate = "none"` is still refused under
+  `budget = "unbounded"`: unbounded admission is unchanged, and its
+  docstring/message now describe the advisory semantics.
+- README publishes a generated "what each runtime actually watches" matrix
+  (anchor `#mutation-runtime-matrix`), rendered from
+  `src/assay/mutation_runtime.py` and pinned byte for byte by
+  `tests/core/test_mutation_runtime_matrix.py`. It corrects a stale cell: SQL
+  never produces a `hung` result, because liveness is injected only for a
+  Python/pytest lane. `docs/CONSUMERS.md` gains the advisory-budget migration
+  note, and `docs/DESIGN-GUIDE.md` explains why the matrix is generated. The
+  `assay-capabilities/2` output is unchanged.
+
+### Fixed
+- The CPU-without-progress bound no longer loses a descendant's work when that
+  descendant exits mid-candidate (the process-tree total used to drop, which
+  could have handed a spinning candidate a "no CPU burned" verdict).
+- A resource trace longer than 1024 samples no longer disables the hang
+  verdict it supports.
 - The `[10.1.0]` entry's `--resume --rejudge crashed` is wrong: `--rejudge` takes candidate ids.
   Use `--resume --rejudge-outcome crashed`; README, CONSUMERS and DESIGN-GUIDE are corrected. The
   carried-survivor note no longer names the nonexistent `--rejudge-carried`; it prints
@@ -39,7 +182,59 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - assay's backlog frontmatter gains the `B580` line whose entry body already existed (filed
   2026-11-25, recorded in the 12.3.0 notes): a gap fill, with no code or behaviour change.
 
-<!-- cmru: release history -->
+### Known issues
+- The no-progress wall stop ends the mutation run with
+  `BUDGET_EXCEEDED`/`LANE_TIMEOUT`, leaves the stopped candidate without a
+  result record, and retries that missing identity on resume. With one job,
+  if it is the first outstanding candidate, the same stop repeats on every
+  resume and candidates after it remain untried. With multiple jobs, already
+  in-flight candidates drain and persist their results before the fatal stop;
+  unstarted candidates remain for normal dispatch on resume. Ending only the
+  stopped candidate and continuing the sweep is the remaining design option
+  tracked by B597.
+- The no-progress wall stop uses the idle rule's pressure-credited clock after
+  pressure data has produced one comparable interval. A comparable interval
+  is one the resource comparator calls `clear` or `stalled`. Only `clear`
+  intervals advance `liveness_clock`: any positive delta in host or cgroup
+  CPU PSI (`some`), memory or I/O PSI (`some`/`full`), or cgroup CPU throttle
+  counters (`nr_throttled`, `throttled_usec`) makes an interval `stalled` and
+  ineligible. Missing, incomplete, reset, or mismatched snapshots are
+  `unknown` and also ineligible. Before the first comparable interval the
+  stop uses plain wall time, so pressure data that is unreadable throughout
+  the run does not disable it. Once comparability has been established, later
+  unreadable intervals remain `unknown` and pause the eligible clock; they do
+  not restore the wall fallback. Sustained pressure can therefore delay or
+  prevent the stop.
+- The wall fallback can stop a candidate starved by host load when pressure
+  data is never comparable: with readable CPU and no completed event, four
+  times the bound can pass without the candidate receiving useful CPU. This
+  ends the sweep as an unclassified lane timeout; it does not identify whether
+  the candidate stalled or the host starved it.
+- An event stream breaks after at least one record has been read if the file
+  is replaced (device/inode change), truncated, vanishes, or cannot be read;
+  its first appearance is not a break. From the detecting poll, the
+  CPU-without-progress `hung` bound, the per-test bound, and the no-progress
+  wall stop are disarmed for the rest of that candidate run, even if the file
+  returns. The candidate budget then binds through the same path used when
+  candidate CPU is unreadable. With `budget_per_candidate = "none"`, only the
+  lane deadline remains. The idle rule keeps its origin/main current-file
+  counting: a vanished file reads as zero and an empty return is not progress.
+- Detection uses device/inode and length, not content comparison. A same-inode
+  rewrite that is not shorter than the reader's offset between polls looks
+  like an append, so candidate code can forge progress; B585 tracks this limit.
+- The CPU-without-progress threshold is derived from baseline **wall** seconds
+  (`max(3 x baseline wall, baseline wall + 60s)`) and compared with
+  process-tree CPU. This is lenient for a serial suite because tree CPU grows
+  no faster than wall time. A parallel suite can consume more baseline tree
+  CPU than wall time, so a healthy candidate can be stopped as `hung`; this
+  never counts as `killed`.
+- The per-test threshold (`max(10 x that test's baseline seconds, 60s)`) is
+  also compared with process-tree CPU. Background processes, tests that fan
+  out far beyond 10x, or setup cost moving to another nodeid under randomized
+  test order can stop a healthy candidate as `hung`.
+- The P4 behavior is not yet synchronized with SPEC LIV-070/075/080 and
+  LIV-110..140. Backlog B584 tracks that documentation update.
+<!-- cmru: pending release notes end -->
 
 ## [12.3.0] - 2026-11-25
 <!-- cmru: generated -->

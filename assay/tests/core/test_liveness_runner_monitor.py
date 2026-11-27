@@ -35,6 +35,7 @@ import os
 import subprocess
 import sys
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -89,7 +90,7 @@ class _FakePopen:
         self.calls: list[dict[str, object]] = []
 
     def __call__(self, argv, *, env, cwd, stdout, stderr, start_new_session):
-        self.calls.append({"argv": tuple(argv), "cwd": cwd})
+        self.calls.append({"argv": tuple(argv), "cwd": cwd, "env": dict(env)})
         return self._proc
 
 
@@ -126,6 +127,11 @@ def _runner(
     expect_next_event_within_s: float = 15.0,
     pre_first_event_within_s: float | None = None,
     sleep=None,
+    cpu_window_s: float | None = None,
+    cpu_without_progress_bound_s: float | None = None,
+    per_test_cpu_baseline_s=None,
+    per_test_xdist: bool = False,
+    advisory_budget_s: float | None = None,
 ) -> tuple[liveness.LivenessRunner, Path]:
     events_dir = tmp_path / "candidates"
     runner = liveness.LivenessRunner(
@@ -146,6 +152,11 @@ def _runner(
         ),
         popen=_FakePopen(proc),
         process_group_killer=_ignore_process_group,
+        cpu_window_s=cpu_window_s,
+        cpu_without_progress_bound_s=cpu_without_progress_bound_s,
+        per_test_cpu_baseline_s=per_test_cpu_baseline_s,
+        per_test_xdist=per_test_xdist,
+        advisory_budget_s=advisory_budget_s,
     )
     cwd = tmp_path / "cand"
     cwd.mkdir()
@@ -204,6 +215,39 @@ def test_idle_with_flat_cpu_is_hung(tmp_path: Path) -> None:
         runner(("pytest", "-q"), env={}, cwd=cwd, timeout=600.0)
     assert excinfo.value.timeout == 600.0
     assert proc.waited  # `_kill` reaped it.
+
+
+def test_unarmed_liveness_runner_keeps_idle_rule_and_exit_hygiene(
+    tmp_path: Path,
+) -> None:
+    """Without P4 progress bounds, the injected runner still has its
+    pre-P4 idle detection and `ASSAY_LIVENESS_EXIT` behavior."""
+    clock = _FakeClock()
+    proc = _ScriptedProc(pid=4243)
+    popen = _FakePopen(proc)
+    cwd = tmp_path / "candidate"
+    cwd.mkdir()
+    runner = liveness.LivenessRunner(
+        events_dir=tmp_path / "candidates",
+        expect_next_event_within_s=15.0,
+        monotonic=clock.now,
+        sleep=clock.advance,
+        cpu_reader=lambda _pid: 0.0,
+        resource_reader=lambda _pid: _clear_resource_snapshot(),
+        popen=popen,
+        process_group_killer=_ignore_process_group,
+        cpu_without_progress_bound_s=None,
+        per_test_cpu_baseline_s=None,
+        advisory_budget_s=None,
+    )
+    with pytest.raises(liveness.LivenessHungExpired) as excinfo:
+        runner(("python", "-m", "pytest", "-q"), env={}, cwd=cwd, timeout=90.0)
+
+    assert excinfo.value.resource_evidence["decision"] == "idle-hang"
+    assert runner.cpu_without_progress_bound_s is None
+    assert runner._per_test_cpu_baseline_s == {}
+    assert runner.advisory_budget_s is None
+    assert popen.calls[0]["env"][liveness.ASSAY_LIVENESS_EXIT_ENV] == "1"
     # `hung` requires >= 30s of CPU history (the trailing window) as well as
     # the 15s idle threshold -- the loop must not fire before both are
     # satisfied.
@@ -386,11 +430,22 @@ def test_deadlock_is_detectable_after_pressure_ends(tmp_path: Path) -> None:
     )
 
 
-def test_truncated_resource_trace_cannot_certify_a_hang(
+def test_past_the_sample_cap_the_trace_is_compacted_not_disabled(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(liveness, "_LIVENESS_RESOURCE_TRACE_MAX_SAMPLES", 3)
-    monkeypatch.setattr(liveness, "_HUNG_CPU_WINDOW_S", 100.0)
+    """(P4/S1) The retired behaviour: past
+    `_LIVENESS_RESOURCE_TRACE_MAX_SAMPLES` the trace was marked truncated and
+    `trace_complete` became False, which disabled EVERY hang verdict for a
+    candidate that ran long (about 17 minutes of 1 s polls) -- including one
+    that went idle afterwards.
+
+    Now the trace is COMPACTED: rows are merged in place, the artifact stays
+    bounded, `trace_complete` stays True, and the hang verdict still fires --
+    asserted here at a far longer virtual run than the cap allows and with
+    `_valid_hung_resource_evidence` (the resume-time reader) still accepting
+    the stored evidence.
+    """
+    monkeypatch.setattr(liveness, "_LIVENESS_RESOURCE_TRACE_MAX_SAMPLES", 8)
     clock = _FakeClock()
     proc = _ScriptedProc(pid=4252)
     runner, cwd = _runner(
@@ -398,16 +453,20 @@ def test_truncated_resource_trace_cannot_certify_a_hang(
         proc=proc,
         clock=clock,
         cpu_reader=lambda pid: 3.0,
+        expect_next_event_within_s=15.0,
     )
 
-    with pytest.raises(subprocess.TimeoutExpired) as excinfo:
-        runner(("pytest", "-q"), env={}, cwd=cwd, timeout=8.0)
+    with pytest.raises(liveness.LivenessHungExpired) as excinfo:
+        runner(("pytest", "-q"), env={}, cwd=cwd, timeout=600.0)
 
-    assert type(excinfo.value) is subprocess.TimeoutExpired
-    evidence = excinfo.value.liveness_resource_evidence
-    assert evidence["trace_truncated"] is True
-    assert evidence["trace_complete"] is False
-    assert len(evidence["samples"]) == 3
+    evidence = excinfo.value.resource_evidence
+    # An idle hang at 30s with a 1s poll is 31 samples: far past the 8-row cap.
+    assert clock.t >= 30.0
+    assert evidence["trace_truncated"] is False
+    assert evidence["trace_complete"] is True
+    assert evidence["trace_compacted"] is True
+    assert len(evidence["samples"]) <= 8
+    assert mutation_store._valid_hung_resource_evidence(evidence)
 
 
 def test_counter_reset_starts_a_fresh_idle_evidence_window(tmp_path: Path) -> None:
@@ -1566,3 +1625,1978 @@ def test_o7_a_failing_sidecar_write_never_changes_the_outcome(
     outcome, _clock, runner, cwd = _row(tmp_path, row)
     assert outcome == _EXPECTED_OUTCOME[row]
     assert liveness.read_resource_sidecar(runner._events_path_for_cwd(cwd)) is None
+
+
+# --------------------------------------------------------------------------
+# P4/S1: CPU-without-progress -- the bound that replaces the per-candidate
+# wall budget as the stop for a candidate that BURNS CPU but completes
+# nothing. Progress here is a completed plugin event and NOTHING else.
+# --------------------------------------------------------------------------
+
+
+def _append_event(events_path: Path, record: dict) -> None:
+    events_path.parent.mkdir(parents=True, exist_ok=True)
+    with events_path.open("a", encoding="utf-8") as stream:
+        stream.write(json.dumps(record) + "\n")
+
+
+def test_a_spinning_silent_candidate_is_hung_on_cpu_not_on_budget(
+    tmp_path: Path,
+) -> None:
+    """P4/S1's first required test: a candidate that spins at full CPU and
+    writes NOTHING. Before P4 every verdict reachable here was
+    `budget_exceeded` (RW-33 was explicit that a CPU-spinning mutant is "not
+    hung"); after P4 it is `hung`, decided by the process-tree CPU it burned
+    since its (never arriving) first completed event.
+
+    Driven entirely by fakes (a virtual clock and a scripted CPU series), so
+    the 60 s bound costs no real seconds and no host load.
+    """
+    clock = _FakeClock()
+    proc = _ScriptedProc(pid=7001)
+    runner, cwd = _runner(
+        tmp_path,
+        proc=proc,
+        clock=clock,
+        cpu_reader=lambda pid: clock.t * 0.9,  # ~90% of one core, forever.
+        cpu_without_progress_bound_s=70.0,
+    )
+    with pytest.raises(liveness.LivenessHungExpired) as excinfo:
+        runner(("pytest", "-q"), env={}, cwd=cwd, timeout=600.0)
+
+    evidence = excinfo.value.resource_evidence
+    assert evidence["decision"] == "cpu-without-progress"
+    assert evidence["policy"] == liveness.CPU_PROGRESS_POLICY
+    assert evidence["candidate_cpu_source"] == liveness.CPU_PROGRESS_SOURCE
+    assert evidence["completed_events"] == 0
+    assert evidence["cpu_since_last_completed_event_s"] >= evidence["required_cpu_s"]
+    assert evidence["required_cpu_s"] == 70.0
+    assert mutation_store._valid_hung_resource_evidence(evidence)
+    # NOT the idle rule: the idle bound here is 15 s, and the CPU bound (70 s
+    # of CPU at 0.9 CPU-s per wall second) is the one that decided.
+    assert clock.t >= 70.0 / 0.9
+
+
+def test_output_growth_does_not_reset_the_cpu_without_progress_bound(
+    tmp_path: Path,
+) -> None:
+    """P4/S1's second required test, and the review's finding H1: a mutant
+    that loops while LOGGING must not defer this bound. Output growth still
+    defers the IDLE rule (that rule is unchanged) -- which is exactly why the
+    candidate is not ended by idleness and why the CPU bound has to catch it.
+    """
+    clock = _FakeClock()
+    proc = _ScriptedProc(pid=7002)
+    stdout_path = liveness.candidate_events_path(tmp_path / "candidates", tmp_path / "cand").with_suffix(".stdout")
+    written = {"n": 0}
+
+    def reader(pid: int) -> float:
+        stdout_path.parent.mkdir(parents=True, exist_ok=True)
+        with stdout_path.open("a", encoding="utf-8") as stream:
+            stream.write("spam\n")
+        written["n"] += 1
+        return clock.t * 0.9
+
+    runner, cwd = _runner(
+        tmp_path,
+        proc=proc,
+        clock=clock,
+        cpu_reader=reader,
+        cpu_without_progress_bound_s=70.0,
+    )
+    with pytest.raises(liveness.LivenessHungExpired) as excinfo:
+        runner(("pytest", "-q"), env={}, cwd=cwd, timeout=600.0)
+    evidence = excinfo.value.resource_evidence
+    assert evidence["decision"] == "cpu-without-progress"
+    assert evidence["completed_events"] == 0
+    assert written["n"] > 30  # it really did keep printing.
+
+
+def test_cpu_without_progress_ignores_never_clearing_pressure(
+    tmp_path: Path,
+) -> None:
+    """P4/S1's third required test (review finding H2): a paused clock never
+    fires under persistent pressure. This bound has NO pressure term at all,
+    so a candidate whose every resource sample reports pressure -- which keeps
+    the idle clock at zero forever -- is still ended when it burns the CPU.
+    """
+    clock = _FakeClock()
+    proc = _ScriptedProc(pid=7003)
+
+    def pressured(pid: int) -> dict:
+        sample = _clear_resource_snapshot()
+        sample["host_psi"]["memory"]["full"] = int((clock.t + 1) * 1_000_000)
+        return sample
+
+    runner, cwd = _runner(
+        tmp_path,
+        proc=proc,
+        clock=clock,
+        cpu_reader=lambda pid: clock.t * 2.0,
+        resource_reader=pressured,
+        cpu_without_progress_bound_s=70.0,
+        # A 600s idle bound: the idle rule cannot fire even if it wanted to.
+        expect_next_event_within_s=600.0,
+    )
+    with pytest.raises(liveness.LivenessHungExpired) as excinfo:
+        runner(("pytest", "-q"), env={}, cwd=cwd, timeout=600.0)
+    evidence = excinfo.value.resource_evidence
+    assert evidence["decision"] == "cpu-without-progress"
+    assert evidence["cpu_since_last_completed_event_s"] >= 35.0
+    # CPU evidence is its own policy, never validated against the idle trace:
+    # it names the numbers that killed the candidate, and the kill happened
+    # despite persistent pressure -- the point of a CPU-based bound.
+    assert evidence["policy"] == liveness.CPU_PROGRESS_POLICY
+    assert evidence["candidate_cpu_source"] == liveness.CPU_PROGRESS_SOURCE
+    assert evidence["required_cpu_s"] == 70.0
+    assert mutation_store._valid_hung_resource_evidence(evidence)
+
+
+def test_a_slow_test_below_the_cpu_bound_survives(tmp_path: Path) -> None:
+    """P4/S1's fourth required test: a genuinely slow but progressing test is
+    never mistaken for a hang -- and, because the CPU it burns is what the
+    bound measures, burning CPU on a test that COMPLETES resets the window."""
+    clock = _FakeClock()
+    proc = _ScriptedProc(pid=7004)
+    events_path = liveness.candidate_events_path(tmp_path / "candidates", tmp_path / "cand")
+
+    def reader(pid: int) -> float:
+        # One slowly progressing test: heavy CPU, but a completed `test`
+        # event every 40 virtual seconds -- well inside the 70 s bound.
+        if clock.t > 0 and clock.t % 40.0 == 0.0:
+            _append_event(
+                events_path,
+                {
+                    "event": "test",
+                    "nodeid": f"t{int(clock.t)}",
+                    "pid": pid,
+                    "duration_s": 39.0,
+                    "outcome": "passed",
+                },
+            )
+        return clock.t * 0.95
+
+    runner, cwd = _runner(
+        tmp_path,
+        proc=proc,
+        clock=clock,
+        cpu_reader=reader,
+        cpu_without_progress_bound_s=70.0,
+    )
+    result = None
+
+    def stop_at_200(dt: float) -> None:
+        clock.advance(dt)
+        if clock.t >= 200.0:
+            proc.finish(0)
+
+    runner._sleep = stop_at_200  # type: ignore[assignment]
+    result = runner(("pytest", "-q"), env={}, cwd=cwd, timeout=600.0)
+    assert result.returncode == 0
+    assert clock.t >= 200.0
+
+
+def test_child_exit_never_lowers_the_cpu_series(tmp_path: Path) -> None:
+    """P4/S1's fifth required test (design §7.1's own UNVERIFIED item).
+
+    `tree_cpu_seconds` sums the LIVE tree, so a busy descendant exiting
+    lowers the reading. If that were taken at face value a spinning candidate
+    would be handed a "it burned no CPU" verdict exactly when it burned the
+    most. The runner therefore banks the peak when the series dips: the same
+    virtual CPU history that dips below its own peak still reaches the bound.
+    """
+    clock = _FakeClock()
+    proc = _ScriptedProc(pid=7005)
+    # Rises to 40 CPU-s by t=20 (a child was doing the work), then the child
+    # exits and the tree's sum drops to 2 s and grows slowly from there.
+    def reader(pid: int) -> float:
+        if clock.t <= 20.0:
+            return clock.t * 2.0
+        return 2.0 + (clock.t - 20.0) * 0.5
+
+    runner, cwd = _runner(
+        tmp_path,
+        proc=proc,
+        clock=clock,
+        cpu_reader=reader,
+        cpu_without_progress_bound_s=70.0,
+        expect_next_event_within_s=600.0,
+    )
+    with pytest.raises(liveness.LivenessHungExpired) as excinfo:
+        runner(("pytest", "-q"), env={}, cwd=cwd, timeout=600.0)
+    evidence = excinfo.value.resource_evidence
+    assert evidence["decision"] == "cpu-without-progress"
+    # 40 banked at t=20 plus the slow growth after it, never 2.0 + something
+    # that would have to start over from the dip.
+    assert evidence["candidate_cpu_s"] >= 70.0
+    assert evidence["cpu_since_last_completed_event_s"] >= 70.0
+
+
+def test_the_runner_never_invents_a_cpu_bound_of_its_own() -> None:
+    """A hand-built runner (another module, a test) gets NO CPU bound: the
+    value is derived from a measured baseline and must be passed in, never
+    defaulted to something plausible."""
+    runner = liveness.LivenessRunner(
+        events_dir=Path("/tmp/assay-no-such-dir"), expect_next_event_within_s=1.0
+    )
+    assert runner.cpu_without_progress_bound_s is None
+
+
+def test_wall_backstop_stops_an_armed_candidate_without_completed_events(
+    tmp_path: Path,
+) -> None:
+    clock = _FakeClock()
+    proc = _ScriptedProc(pid=7006)
+    runner, cwd = _runner(
+        tmp_path,
+        proc=proc,
+        clock=clock,
+        cpu_reader=lambda _pid: 0.0,
+        cpu_without_progress_bound_s=2.0,
+        expect_next_event_within_s=600.0,
+    )
+    with pytest.raises(liveness.LivenessNoProgressWallExpired) as excinfo:
+        runner(("pytest", "-q"), env={}, cwd=cwd, timeout=30.0)
+    assert excinfo.value.wall_bound_s == 4 * 2.0
+    assert excinfo.value.wall_seconds >= excinfo.value.wall_bound_s
+    assert excinfo.value.eligible_seconds >= excinfo.value.wall_bound_s
+    assert excinfo.value.pressure_credit_active is True
+    assert clock.t >= excinfo.value.wall_bound_s
+    assert proc.waited
+
+
+@pytest.mark.parametrize(
+    "with_window", [False, True], ids=("no-window", "open-window")
+)
+def test_wall_backstop_closes_an_open_window_before_killing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, with_window: bool
+) -> None:
+    actions: list[str] = []
+
+    class Window:
+        def close(self) -> None:
+            actions.append("close")
+
+    window = Window() if with_window else None
+    monkeypatch.setattr(
+        liveness.observer_windows, "open_for_root", lambda _pid: window
+    )
+    monkeypatch.setattr(
+        liveness.observer_windows, "exited_unreaped", lambda _pid: False
+    )
+    clock = _FakeClock()
+    proc = _ScriptedProc(pid=7030)
+    runner, cwd = _runner(
+        tmp_path,
+        proc=proc,
+        clock=clock,
+        cpu_reader=lambda _pid: 0.0,
+        cpu_without_progress_bound_s=2.0,
+        expect_next_event_within_s=600.0,
+    )
+    runner._kill = lambda _proc: actions.append("kill")
+
+    with pytest.raises(liveness.LivenessNoProgressWallExpired):
+        runner(("pytest", "-q"), env={}, cwd=cwd, timeout=30.0)
+
+    if window is None:
+        assert actions == ["kill"]
+    else:
+        assert actions[:2] == ["close", "kill"]
+        assert actions[2:] == ["close"]
+
+
+def test_stalled_pressure_intervals_do_not_advance_the_no_progress_stop(
+    tmp_path: Path,
+) -> None:
+    clock = _FakeClock()
+    proc = _ScriptedProc(pid=7012)
+
+    def pressured_resources(_pid: int) -> dict:
+        sample = _clear_resource_snapshot()
+        if clock.t > 0:
+            sample["host_psi"]["memory"]["full"] = int(clock.t * 1_000_000)
+        return sample
+
+    runner, cwd = _runner(
+        tmp_path,
+        proc=proc,
+        clock=clock,
+        cpu_reader=lambda _pid: 0.0,
+        resource_reader=pressured_resources,
+        cpu_without_progress_bound_s=2.0,
+        expect_next_event_within_s=600.0,
+    )
+    with pytest.raises(subprocess.TimeoutExpired) as excinfo:
+        runner(("pytest", "-q"), env={}, cwd=cwd, timeout=20.0)
+
+    assert type(excinfo.value) is subprocess.TimeoutExpired
+    assert clock.t == 20.0  # wall time passed the 8s stop bound under pressure.
+    assert excinfo.value.liveness_resource_evidence["decision"] == "configured-budget-expired"
+    assert any(
+        sample["resource_interval"] == "stalled"
+        for sample in excinfo.value.liveness_resource_evidence["samples"]
+    )
+
+
+def test_no_comparable_pressure_data_keeps_the_wall_fallback(
+    tmp_path: Path,
+) -> None:
+    clock = _FakeClock()
+    proc = _ScriptedProc(pid=7013)
+    runner, cwd = _runner(
+        tmp_path,
+        proc=proc,
+        clock=clock,
+        cpu_reader=lambda _pid: 0.0,
+        resource_reader=lambda _pid: {
+            "schema_version": 1,
+            "status": "unavailable",
+            "reason": "scripted-unreadable-pressure",
+        },
+        cpu_without_progress_bound_s=2.0,
+        expect_next_event_within_s=600.0,
+    )
+
+    with pytest.raises(liveness.LivenessNoProgressWallExpired) as excinfo:
+        runner(("pytest", "-q"), env={}, cwd=cwd, timeout=30.0)
+
+    assert excinfo.value.pressure_credit_active is False
+    assert excinfo.value.wall_seconds >= 8.0
+    assert excinfo.value.eligible_seconds == 0.0
+    assert clock.t >= 8.0
+
+
+def test_unreadable_pressure_after_comparability_does_not_restore_wall_fallback(
+    tmp_path: Path,
+) -> None:
+    clock = _FakeClock()
+    proc = _ScriptedProc(pid=7014)
+
+    def resources(_pid: int) -> dict:
+        if clock.t <= 1.0:
+            return _clear_resource_snapshot()
+        return {
+            "schema_version": 1,
+            "status": "unavailable",
+            "reason": "pressure-became-unreadable",
+        }
+
+    runner, cwd = _runner(
+        tmp_path,
+        proc=proc,
+        clock=clock,
+        cpu_reader=lambda _pid: 0.0,
+        resource_reader=resources,
+        cpu_without_progress_bound_s=2.0,
+        expect_next_event_within_s=600.0,
+    )
+    with pytest.raises(subprocess.TimeoutExpired) as excinfo:
+        runner(("pytest", "-q"), env={}, cwd=cwd, timeout=12.0)
+
+    assert type(excinfo.value) is subprocess.TimeoutExpired
+    assert clock.t == 12.0  # the 8s wall bound did not reactivate after unknowns.
+    assert excinfo.value.liveness_resource_evidence["decision"] == "configured-budget-expired"
+    assert excinfo.value.liveness_resource_evidence["eligible_elapsed_s"] == 1.0
+
+
+def test_completed_event_during_stalls_redates_the_pressure_credited_window(
+    tmp_path: Path,
+) -> None:
+    clock = _FakeClock()
+    proc = _ScriptedProc(pid=7015)
+    events_path = liveness.candidate_events_path(tmp_path / "candidates", tmp_path / "cand")
+    cpu_reader = _scripted_events(
+        clock,
+        events_path,
+        [(10.0, {"event": "phase"})],
+        proc=proc,
+    )
+
+    def resources(_pid: int) -> dict:
+        sample = _clear_resource_snapshot()
+        if 8.0 <= clock.t <= 12.0:
+            sample["host_psi"]["memory"]["full"] = int(clock.t * 1_000_000)
+        elif clock.t > 12.0:
+            sample["host_psi"]["memory"]["full"] = 12_000_000
+        return sample
+
+    runner, cwd = _runner(
+        tmp_path,
+        proc=proc,
+        clock=clock,
+        cpu_reader=cpu_reader,
+        resource_reader=resources,
+        cpu_without_progress_bound_s=2.0,
+        expect_next_event_within_s=600.0,
+    )
+    with pytest.raises(liveness.LivenessNoProgressWallExpired) as excinfo:
+        runner(("pytest", "-q"), env={}, cwd=cwd, timeout=30.0)
+
+    assert excinfo.value.pressure_credit_active is True
+    assert excinfo.value.eligible_seconds == 8.0
+    assert excinfo.value.wall_seconds >= 8.0
+    assert clock.t == 20.0  # eight eligible seconds AFTER the stalled event.
+
+
+def test_completed_events_redate_the_wall_backstop(tmp_path: Path) -> None:
+    clock = _FakeClock()
+    proc = _ScriptedProc(pid=7007)
+    events_path = liveness.candidate_events_path(tmp_path / "candidates", tmp_path / "cand")
+    reader = _scripted_events(
+        clock,
+        events_path,
+        [(2.0, {"event": "phase"}), (7.0, {"event": "phase"}),
+         (12.0, {"event": "phase"}), (17.0, {"event": "phase"})],
+        proc=proc,
+        finish_at=(24.0, 0),
+    )
+    runner, cwd = _runner(
+        tmp_path,
+        proc=proc,
+        clock=clock,
+        cpu_reader=reader,
+        cpu_without_progress_bound_s=2.0,
+        expect_next_event_within_s=600.0,
+    )
+    result = runner(("pytest", "-q"), env={}, cwd=cwd, timeout=40.0)
+    assert result.returncode == 0
+    assert clock.t >= 24.0
+
+
+def test_replaced_stream_disarms_progress_bounds_but_candidate_budget_binds(
+    tmp_path: Path,
+) -> None:
+    """A replaced stream can keep making progress past every P4 bound.
+
+    Once the file changes after records were read, the CPU, per-test and
+    no-progress bounds are disarmed. Its candidate budget is binding again,
+    even though CPU remains readable.
+    """
+    clock = _FakeClock()
+    proc = _ScriptedProc(pid=7020)
+    events_path = liveness.candidate_events_path(
+        tmp_path / "candidates", tmp_path / "cand"
+    )
+    initialized = False
+    replaced = False
+
+    def cpu_reader(_pid: int) -> float:
+        nonlocal initialized, replaced
+        if not initialized:
+            events_path.parent.mkdir(parents=True, exist_ok=True)
+            _append_event(events_path, {"event": "test_start", "nodeid": "test::x"})
+            for _ in range(20):
+                _append_event(events_path, {"event": "phase"})
+            initialized = True
+        elif not replaced and clock.t >= 2.0:
+            replacement = events_path.with_suffix(".replacement")
+            _append_event(
+                replacement, {"event": "test_start", "nodeid": "test::x"}
+            )
+            replacement.replace(events_path)
+            replaced = True
+        elif replaced and 3.0 <= clock.t < 19.0:
+            _append_event(events_path, {"event": "phase"})
+        return clock.t * 10.0 if replaced and clock.t >= 3.0 else 0.0
+
+    runner, cwd = _runner(
+        tmp_path,
+        proc=proc,
+        clock=clock,
+        cpu_reader=cpu_reader,
+        cpu_without_progress_bound_s=2.0,
+        per_test_cpu_baseline_s={"test::x": 1.0},
+        advisory_budget_s=18.0,
+        expect_next_event_within_s=1000.0,
+    )
+
+    with pytest.raises(subprocess.TimeoutExpired) as excinfo:
+        runner(("pytest", "-q"), env={}, cwd=cwd, timeout=100.0)
+
+    assert type(excinfo.value) is subprocess.TimeoutExpired
+    assert replaced
+    assert clock.t == 18.0
+    assert excinfo.value.liveness_resource_evidence["decision"] == (
+        "budget-expired-watch-unarmed"
+    )
+    assert sum(1 for line in events_path.read_text(encoding="utf-8").splitlines()) >= 15
+
+
+def test_replacement_between_path_stat_and_open_disarms_bounds_in_that_poll(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The opened descriptor, not the earlier pathname stat, owns this poll."""
+    clock = _FakeClock()
+    proc = _ScriptedProc(pid=7029)
+    cpu_bound_s = 2.0
+    candidate_budget_s = 12.0
+    assert candidate_budget_s > liveness.NO_PROGRESS_WALL_FACTOR * cpu_bound_s
+    events_path = liveness.candidate_events_path(
+        tmp_path / "candidates", tmp_path / "cand"
+    )
+    initialized = False
+    replaced = False
+
+    def cpu_reader(_pid: int) -> float:
+        nonlocal initialized
+        if not initialized:
+            events_path.parent.mkdir(parents=True, exist_ok=True)
+            _append_event(
+                events_path, {"event": "test_start", "nodeid": "test::race"}
+            )
+            for _ in range(20):
+                _append_event(events_path, {"event": "phase"})
+            initialized = True
+        return 100.0 if clock.t >= 2.0 else 0.0
+
+    real_open = Path.open
+
+    def replace_at_open(path, mode="r", *args, **kwargs):
+        nonlocal replaced
+        if (
+            path == events_path
+            and mode == "rb"
+            and clock.t >= 2.0
+            and not replaced
+        ):
+            replacement = events_path.with_suffix(".replacement")
+            replacement.write_text('{"event":"phase"}\n', encoding="utf-8")
+            replacement.replace(events_path)
+            replaced = True
+        return real_open(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", replace_at_open)
+    runner, cwd = _runner(
+        tmp_path,
+        proc=proc,
+        clock=clock,
+        cpu_reader=cpu_reader,
+        cpu_without_progress_bound_s=cpu_bound_s,
+        per_test_cpu_baseline_s={"test::race": 0.1},
+        advisory_budget_s=candidate_budget_s,
+        expect_next_event_within_s=1000.0,
+    )
+
+    with pytest.raises(subprocess.TimeoutExpired) as excinfo:
+        runner(("pytest", "-q"), env={}, cwd=cwd, timeout=30.0)
+
+    assert replaced
+    assert clock.t == candidate_budget_s
+    assert type(excinfo.value) is subprocess.TimeoutExpired
+    evidence = excinfo.value.liveness_resource_evidence
+    assert evidence["decision"] == "budget-expired-watch-unarmed"
+    assert "test_nodeid" not in evidence
+
+
+def test_truncated_stream_disarms_progress_bounds_and_candidate_budget_binds(
+    tmp_path: Path,
+) -> None:
+    """An in-place truncation after a record read is a sticky stream break."""
+    clock = _FakeClock()
+    proc = _ScriptedProc(pid=7021)
+    events_path = liveness.candidate_events_path(
+        tmp_path / "candidates", tmp_path / "cand"
+    )
+    initialized = False
+    truncated = False
+
+    def cpu_reader(_pid: int) -> float:
+        nonlocal initialized, truncated
+        if not initialized:
+            events_path.parent.mkdir(parents=True, exist_ok=True)
+            for _ in range(20):
+                _append_event(events_path, {"event": "phase"})
+            initialized = True
+        elif not truncated and clock.t >= 2.0:
+            events_path.write_text("", encoding="utf-8")
+            truncated = True
+        elif truncated and 3.0 <= clock.t < 19.0:
+            _append_event(events_path, {"event": "phase"})
+        return clock.t * 10.0 if truncated and clock.t >= 3.0 else 0.0
+
+    runner, cwd = _runner(
+        tmp_path,
+        proc=proc,
+        clock=clock,
+        cpu_reader=cpu_reader,
+        cpu_without_progress_bound_s=2.0,
+        advisory_budget_s=18.0,
+        expect_next_event_within_s=1000.0,
+    )
+
+    with pytest.raises(subprocess.TimeoutExpired) as excinfo:
+        runner(("pytest", "-q"), env={}, cwd=cwd, timeout=100.0)
+
+    assert truncated
+    assert type(excinfo.value) is subprocess.TimeoutExpired
+    assert clock.t == 18.0
+    assert excinfo.value.liveness_resource_evidence["decision"] == (
+        "budget-expired-watch-unarmed"
+    )
+
+
+def test_stream_break_binds_a_candidate_budget_that_already_elapsed(
+    tmp_path: Path,
+) -> None:
+    clock = _FakeClock()
+    proc = _ScriptedProc(pid=7028)
+    events_path = liveness.candidate_events_path(
+        tmp_path / "candidates", tmp_path / "cand"
+    )
+    initialized = replaced = False
+
+    def cpu_reader(_pid: int) -> float:
+        nonlocal initialized, replaced
+        if not initialized:
+            _append_event(events_path, {"event": "phase"})
+            initialized = True
+        elif not replaced and clock.t >= 2.0:
+            replacement = events_path.with_suffix(".replacement")
+            replacement.write_text("", encoding="utf-8")
+            replacement.replace(events_path)
+            replaced = True
+        return 0.0
+
+    runner, cwd = _runner(
+        tmp_path,
+        proc=proc,
+        clock=clock,
+        cpu_reader=cpu_reader,
+        cpu_without_progress_bound_s=2.0,
+        advisory_budget_s=1.0,
+        expect_next_event_within_s=1000.0,
+    )
+
+    with pytest.raises(subprocess.TimeoutExpired) as excinfo:
+        runner(("pytest", "-q"), env={}, cwd=cwd, timeout=30.0)
+
+    assert replaced
+    assert clock.t == 3.0
+    assert runner.advisory_exceeded_at_s == 1.0
+    assert excinfo.value.liveness_resource_evidence["decision"] == (
+        "budget-expired-watch-unarmed"
+    )
+
+
+def test_identical_replacement_without_new_completion_cannot_renew_bounds(
+    tmp_path: Path,
+) -> None:
+    clock = _FakeClock()
+    proc = _ScriptedProc(pid=7022)
+    cpu_bound_s = 2.0
+    candidate_budget_s = 12.0
+    assert candidate_budget_s > liveness.NO_PROGRESS_WALL_FACTOR * cpu_bound_s
+    events_path = liveness.candidate_events_path(
+        tmp_path / "candidates", tmp_path / "cand"
+    )
+    initialized = False
+    replacements = 0
+
+    def cpu_reader(_pid: int) -> float:
+        nonlocal initialized, replacements
+        if not initialized:
+            _append_event(events_path, {"event": "phase"})
+            initialized = True
+        elif clock.t >= 1.0:
+            replacement = events_path.with_suffix(".replacement")
+            replacement.write_text(events_path.read_text(encoding="utf-8"), encoding="utf-8")
+            replacement.replace(events_path)
+            replacements += 1
+        return 0.0
+
+    runner, cwd = _runner(
+        tmp_path,
+        proc=proc,
+        clock=clock,
+        cpu_reader=cpu_reader,
+        cpu_without_progress_bound_s=cpu_bound_s,
+        advisory_budget_s=candidate_budget_s,
+        expect_next_event_within_s=1000.0,
+    )
+
+    with pytest.raises(subprocess.TimeoutExpired) as excinfo:
+        runner(("pytest", "-q"), env={}, cwd=cwd, timeout=100.0)
+
+    assert type(excinfo.value) is subprocess.TimeoutExpired
+    assert replacements >= 7
+    assert clock.t == candidate_budget_s
+    assert excinfo.value.liveness_resource_evidence["decision"] == (
+        "budget-expired-watch-unarmed"
+    )
+
+
+def test_vanish_and_empty_return_keep_the_origin_main_idle_verdict_and_evidence(
+    tmp_path: Path,
+) -> None:
+    clock = _FakeClock()
+    proc = _ScriptedProc(pid=7023)
+    events_path = liveness.candidate_events_path(
+        tmp_path / "candidates", tmp_path / "cand"
+    )
+    initialized = vanished = returned_empty = False
+
+    def cpu_reader(_pid: int) -> float:
+        nonlocal initialized, vanished, returned_empty
+        if not initialized:
+            _append_event(events_path, {"event": "phase"})
+            initialized = True
+        elif not vanished and clock.t >= 2.0:
+            events_path.unlink()
+            vanished = True
+        elif vanished and not returned_empty:
+            events_path.write_text("", encoding="utf-8")
+            returned_empty = True
+        return 0.0
+
+    runner, cwd = _runner(
+        tmp_path,
+        proc=proc,
+        clock=clock,
+        cpu_reader=cpu_reader,
+        cpu_window_s=30.0,
+        expect_next_event_within_s=20.0,
+        pre_first_event_within_s=32.0,
+    )
+
+    with pytest.raises(liveness.LivenessHungExpired) as excinfo:
+        runner(("pytest", "-q"), env={}, cwd=cwd, timeout=100.0)
+
+    evidence = excinfo.value.resource_evidence
+    assert vanished and returned_empty
+    assert evidence["decision"] == "idle-hang"
+    assert evidence["required_idle_eligible_s"] == 32.0
+    assert evidence["idle_eligible_s"] == 32.0
+    assert {
+        sample["wall_elapsed_s"]: sample["event_count"]
+        for sample in evidence["samples"]
+        if sample["wall_elapsed_s"] in {1.0, 2.0, 3.0, 4.0}
+    } == {1.0: 1, 2.0: 1, 3.0: 0, 4.0: 0}
+    assert mutation_store._valid_hung_resource_evidence(evidence)
+
+
+def test_vanish_and_content_return_leave_the_binding_candidate_budget(
+    tmp_path: Path,
+) -> None:
+    clock = _FakeClock()
+    proc = _ScriptedProc(pid=7024)
+    events_path = liveness.candidate_events_path(
+        tmp_path / "candidates", tmp_path / "cand"
+    )
+    initialized = vanished = returned_content = False
+
+    def cpu_reader(_pid: int) -> float:
+        nonlocal initialized, vanished, returned_content
+        if not initialized:
+            _append_event(events_path, {"event": "phase"})
+            initialized = True
+        elif not vanished and clock.t >= 2.0:
+            events_path.unlink()
+            vanished = True
+        elif vanished and not returned_content:
+            _append_event(events_path, {"event": "phase"})
+            returned_content = True
+        return 0.0
+
+    runner, cwd = _runner(
+        tmp_path,
+        proc=proc,
+        clock=clock,
+        cpu_reader=cpu_reader,
+        cpu_without_progress_bound_s=2.0,
+        advisory_budget_s=18.0,
+        expect_next_event_within_s=1000.0,
+    )
+
+    with pytest.raises(subprocess.TimeoutExpired) as excinfo:
+        runner(("pytest", "-q"), env={}, cwd=cwd, timeout=100.0)
+
+    assert vanished and returned_content
+    assert type(excinfo.value) is subprocess.TimeoutExpired
+    assert clock.t == 18.0
+    assert excinfo.value.liveness_resource_evidence["decision"] == (
+        "budget-expired-watch-unarmed"
+    )
+
+
+def test_read_error_after_records_makes_the_candidate_budget_bind(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = _FakeClock()
+    proc = _ScriptedProc(pid=7025)
+    cpu_bound_s = 2.0
+    candidate_budget_s = 12.0
+    assert candidate_budget_s > liveness.NO_PROGRESS_WALL_FACTOR * cpu_bound_s
+    events_path = liveness.candidate_events_path(
+        tmp_path / "candidates", tmp_path / "cand"
+    )
+    initialized = False
+    original_open = Path.open
+
+    def fail_event_reads_after_record(path, *args, **kwargs):
+        if path == events_path and clock.t >= 2.0:
+            raise PermissionError("scripted event read failure")
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", fail_event_reads_after_record)
+
+    def cpu_reader(_pid: int) -> float:
+        nonlocal initialized
+        if not initialized:
+            _append_event(events_path, {"event": "phase"})
+            initialized = True
+        return 0.0
+
+    runner, cwd = _runner(
+        tmp_path,
+        proc=proc,
+        clock=clock,
+        cpu_reader=cpu_reader,
+        cpu_without_progress_bound_s=cpu_bound_s,
+        advisory_budget_s=candidate_budget_s,
+        expect_next_event_within_s=1000.0,
+    )
+
+    with pytest.raises(subprocess.TimeoutExpired) as excinfo:
+        runner(("pytest", "-q"), env={}, cwd=cwd, timeout=100.0)
+
+    assert type(excinfo.value) is subprocess.TimeoutExpired
+    assert clock.t == candidate_budget_s
+    assert excinfo.value.liveness_resource_evidence["decision"] == (
+        "budget-expired-watch-unarmed"
+    )
+
+
+def test_stream_break_without_candidate_budget_leaves_only_lane_deadline(
+    tmp_path: Path,
+) -> None:
+    clock = _FakeClock()
+    proc = _ScriptedProc(pid=7026)
+    events_path = liveness.candidate_events_path(
+        tmp_path / "candidates", tmp_path / "cand"
+    )
+    initialized = truncated = False
+
+    def cpu_reader(_pid: int) -> float:
+        nonlocal initialized, truncated
+        if not initialized:
+            _append_event(events_path, {"event": "phase"})
+            initialized = True
+        elif not truncated and clock.t >= 2.0:
+            events_path.write_text("", encoding="utf-8")
+            truncated = True
+        return 0.0
+
+    runner, cwd = _runner(
+        tmp_path,
+        proc=proc,
+        clock=clock,
+        cpu_reader=cpu_reader,
+        cpu_without_progress_bound_s=2.0,
+        advisory_budget_s=None,
+        expect_next_event_within_s=1000.0,
+    )
+
+    with pytest.raises(subprocess.TimeoutExpired) as excinfo:
+        runner(("pytest", "-q"), env={}, cwd=cwd, timeout=10.0)
+
+    assert truncated
+    assert type(excinfo.value) is subprocess.TimeoutExpired
+    assert excinfo.value.liveness_resource_evidence["decision"] == (
+        "configured-budget-expired"
+    )
+    assert clock.t == 10.0
+
+
+def test_empty_file_replacement_before_any_record_keeps_bounds_armed(
+    tmp_path: Path,
+) -> None:
+    clock = _FakeClock()
+    proc = _ScriptedProc(pid=7027)
+    events_path = liveness.candidate_events_path(
+        tmp_path / "candidates", tmp_path / "cand"
+    )
+    initialized = replaced = False
+
+    def cpu_reader(_pid: int) -> float:
+        nonlocal initialized, replaced
+        if not initialized:
+            events_path.parent.mkdir(parents=True, exist_ok=True)
+            events_path.write_text("", encoding="utf-8")
+            initialized = True
+        elif not replaced:
+            replacement = events_path.with_suffix(".replacement")
+            replacement.write_text("", encoding="utf-8")
+            replacement.replace(events_path)
+            replaced = True
+        return 0.0
+
+    runner, cwd = _runner(
+        tmp_path,
+        proc=proc,
+        clock=clock,
+        cpu_reader=cpu_reader,
+        cpu_without_progress_bound_s=2.0,
+        advisory_budget_s=20.0,
+        expect_next_event_within_s=1000.0,
+    )
+
+    with pytest.raises(liveness.LivenessNoProgressWallExpired):
+        runner(("pytest", "-q"), env={}, cwd=cwd, timeout=30.0)
+
+    assert replaced
+    assert clock.t == 8.0
+
+
+def test_event_file_reset_disarms_the_same_nodeid_per_test_window(
+    tmp_path: Path,
+) -> None:
+    """A replacement cannot rearm an event-derived per-test bound."""
+    clock = _FakeClock()
+    proc = _ScriptedProc(pid=7023)
+    events_path = liveness.candidate_events_path(
+        tmp_path / "candidates", tmp_path / "cand"
+    )
+    initialized = False
+    replaced = False
+
+    def cpu_reader(_pid: int) -> float:
+        nonlocal initialized, replaced
+        if not initialized:
+            events_path.parent.mkdir(parents=True, exist_ok=True)
+            _append_event(
+                events_path, {"event": "test_start", "nodeid": "test::same"}
+            )
+            initialized = True
+        elif not replaced and clock.t >= 2.0:
+            replacement = events_path.with_suffix(".replacement")
+            _append_event(
+                replacement, {"event": "test_start", "nodeid": "test::same"}
+            )
+            replacement.replace(events_path)
+            replaced = True
+        if clock.t >= 8.0:
+            proc.finish(0)
+        return clock.t * 10.0
+
+    runner, cwd = _runner(
+        tmp_path,
+        proc=proc,
+        clock=clock,
+        cpu_reader=cpu_reader,
+        expect_next_event_within_s=1000.0,
+        per_test_cpu_baseline_s={"test::same": 1.0},
+    )
+
+    result = runner(("pytest", "-q"), env={}, cwd=cwd, timeout=1000.0)
+
+    assert result.returncode == 0
+    assert replaced
+    assert clock.t == 9.0  # CPU passes the per-test bound after the break.
+
+
+def test_session_finish_redates_the_wall_backstop_once(tmp_path: Path) -> None:
+    clock = _FakeClock()
+    proc = _ScriptedProc(pid=7011)
+    events_path = liveness.candidate_events_path(tmp_path / "candidates", tmp_path / "cand")
+    reader = _scripted_events(
+        clock,
+        events_path,
+        [(5.0, {"event": "session_finish"})],
+    )
+    runner, cwd = _runner(
+        tmp_path,
+        proc=proc,
+        clock=clock,
+        cpu_reader=reader,
+        cpu_without_progress_bound_s=2.0,
+        expect_next_event_within_s=600.0,
+    )
+    with pytest.raises(liveness.LivenessNoProgressWallExpired) as excinfo:
+        runner(("pytest", "-q"), env={}, cwd=cwd, timeout=30.0)
+    assert excinfo.value.wall_seconds >= 8.0
+    assert clock.t >= 13.0
+
+
+def test_wall_backstop_still_fires_after_cpu_becomes_unreadable(
+    tmp_path: Path,
+) -> None:
+    clock = _FakeClock()
+    proc = _ScriptedProc(pid=7008)
+    reads = {"count": 0}
+
+    def cpu_reader(_pid: int) -> float:
+        reads["count"] += 1
+        if reads["count"] == 1:
+            return 0.0
+        raise OSError("scripted CPU source became unreadable")
+
+    runner, cwd = _runner(
+        tmp_path,
+        proc=proc,
+        clock=clock,
+        cpu_reader=cpu_reader,
+        cpu_without_progress_bound_s=2.0,
+        expect_next_event_within_s=600.0,
+    )
+    with pytest.raises(liveness.LivenessNoProgressWallExpired) as excinfo:
+        runner(("pytest", "-q"), env={}, cwd=cwd, timeout=30.0)
+    assert excinfo.value.wall_seconds >= 8.0
+    assert reads["count"] > 1
+
+
+def test_readable_cpu_budget_warning_is_emitted_once_and_candidate_can_finish(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    clock = _FakeClock()
+    proc = _ScriptedProc(pid=7016)
+    events_path = liveness.candidate_events_path(tmp_path / "candidates", tmp_path / "cand")
+    reader = _scripted_events(
+        clock, events_path, [], proc=proc, finish_at=(4.0, 0), cpu=0.0
+    )
+    completed_polls: list[float] = []
+
+    def sleep(seconds: float) -> None:
+        completed_polls.append(clock.t)
+        clock.advance(seconds)
+
+    runner, cwd = _runner(
+        tmp_path,
+        proc=proc,
+        clock=clock,
+        sleep=sleep,
+        cpu_reader=reader,
+        advisory_budget_s=2.0,
+        expect_next_event_within_s=600.0,
+    )
+
+    result = runner(("pytest", "-q"), env={}, cwd=cwd, timeout=None)
+
+    assert result.returncode == 0
+    assert runner.advisory_exceeded_at_s == 2.0
+    # At least two consecutive polls ran over budget, and only the first warned.
+    assert len([t for t in completed_polls if t >= 2.0]) >= 2
+    warnings = [
+        line
+        for line in capsys.readouterr().err.splitlines()
+        if line.startswith("assay: WARN: candidate overran")
+    ]
+    assert len(warnings) == 1
+
+
+def test_unarmed_budget_expiry_closes_an_open_observer_window(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class Window:
+        closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    window = Window()
+    monkeypatch.setattr(
+        liveness.observer_windows, "open_for_root", lambda _pid: window
+    )
+    monkeypatch.setattr(
+        liveness.observer_windows, "exited_unreaped", lambda _pid: False
+    )
+    clock = _FakeClock()
+    proc = _ScriptedProc(pid=7017)
+
+    def unreadable_cpu(_pid: int) -> float:
+        raise OSError("scripted CPU source unavailable")
+
+    runner, cwd = _runner(
+        tmp_path,
+        proc=proc,
+        clock=clock,
+        cpu_reader=unreadable_cpu,
+        cpu_without_progress_bound_s=None,
+        advisory_budget_s=2.0,
+        expect_next_event_within_s=600.0,
+    )
+    with pytest.raises(subprocess.TimeoutExpired):
+        runner(("pytest", "-q"), env={}, cwd=cwd, timeout=30.0)
+
+    assert window.closed is True
+
+
+def test_wall_backstop_is_disabled_without_a_calibrated_cpu_bound(
+    tmp_path: Path,
+) -> None:
+    clock = _FakeClock()
+    proc = _ScriptedProc(pid=7009)
+    runner, cwd = _runner(
+        tmp_path,
+        proc=proc,
+        clock=clock,
+        cpu_reader=lambda _pid: 0.0,
+        cpu_without_progress_bound_s=None,
+        expect_next_event_within_s=600.0,
+    )
+    with pytest.raises(subprocess.TimeoutExpired) as excinfo:
+        runner(("pytest", "-q"), env={}, cwd=cwd, timeout=8.0)
+    assert type(excinfo.value) is subprocess.TimeoutExpired
+    assert clock.t == 8.0
+
+
+def test_lane_deadline_precedes_the_wall_backstop(tmp_path: Path) -> None:
+    clock = _FakeClock()
+    proc = _ScriptedProc(pid=7010)
+    runner, cwd = _runner(
+        tmp_path,
+        proc=proc,
+        clock=clock,
+        cpu_reader=lambda _pid: 0.0,
+        cpu_without_progress_bound_s=2.0,
+        expect_next_event_within_s=600.0,
+    )
+    with pytest.raises(subprocess.TimeoutExpired) as excinfo:
+        runner(("pytest", "-q"), env={}, cwd=cwd, timeout=5.0)
+    assert type(excinfo.value) is subprocess.TimeoutExpired
+    assert excinfo.value.timeout == 5.0
+    assert clock.t == 5.0
+
+
+# --------------------------------------------------------------------------
+# P4/S2: the per-test CPU bound. `pytest_runtest_logstart` dates each test's
+# own window; a candidate whose single in-flight test burns
+# `max(10 x its baseline duration, 60 s)` CPU seconds is killed as `hung`.
+# --------------------------------------------------------------------------
+
+
+def test_a_looping_test_is_caught_near_its_own_per_test_bound(
+    tmp_path: Path,
+) -> None:
+    """The operator's own item (A): a looping test is caught at about its
+    normal duration, not at a whole-suite budget. The baseline says this test
+    takes 3 s, so the bound is max(10 x 3, 60) = 60 CPU seconds; the candidate
+    loops at ~1 CPU-s per virtual second with the test still in flight.
+    """
+    clock = _FakeClock()
+    proc = _ScriptedProc(pid=7101)
+    events_path = liveness.candidate_events_path(tmp_path / "candidates", tmp_path / "cand")
+    started = {"done": False}
+
+    def reader(pid: int) -> float:
+        if not started["done"]:
+            _append_event(
+                events_path,
+                {"event": "test_start", "nodeid": "tests/test_x.py::test_slow", "pid": pid},
+            )
+            started["done"] = True
+        return clock.t
+
+    runner, cwd = _runner(
+        tmp_path,
+        proc=proc,
+        clock=clock,
+        cpu_reader=reader,
+        per_test_cpu_baseline_s={"tests/test_x.py::test_slow": 3.0},
+        expect_next_event_within_s=600.0,
+    )
+    with pytest.raises(liveness.LivenessHungExpired) as excinfo:
+        runner(("pytest", "-q"), env={}, cwd=cwd, timeout=600.0)
+
+    evidence = excinfo.value.resource_evidence
+    assert evidence["decision"] == "per-test-cpu-bound"
+    assert evidence["policy"] == liveness.CPU_PROGRESS_POLICY
+    assert evidence["test_nodeid"] == "tests/test_x.py::test_slow"
+    assert evidence["per_test_baseline_s"] == 3.0
+    assert evidence["required_cpu_s"] == 60.0  # the floor, not 30 s.
+    assert evidence["per_test_cpu_s"] >= 60.0
+    assert evidence["cpu_since_last_completed_event_s"] >= 60.0
+    assert mutation_store._valid_hung_resource_evidence(evidence)
+    # Caught at its own bound, not at any suite-length budget.
+    assert clock.t >= 60.0
+
+
+def test_a_slow_test_under_its_own_bound_survives(tmp_path: Path) -> None:
+    """The same shape, one CPU second per virtual second, but the test FINISHES
+    before its bound: it is not a hang, and the CPU it burned is then part of
+    a completed unit rather than a stall."""
+    clock = _FakeClock()
+    proc = _ScriptedProc(pid=7102)
+    events_path = liveness.candidate_events_path(tmp_path / "candidates", tmp_path / "cand")
+    wrote: dict[str, bool] = {"start": False}
+
+    def reader(pid: int) -> float:
+        if not wrote["start"]:
+            _append_event(
+                events_path,
+                {"event": "test_start", "nodeid": "t", "pid": pid},
+            )
+            wrote["start"] = True
+        # (P4 fix 1) The test COMPLETES at t=30, well inside the 60 s bound,
+        # and the records below are the real order a pytest item emits: the
+        # `call` report, then teardown, then the `test_finish` that closes the
+        # window (`call`/`teardown` alone must not -- see finding 1).
+        if clock.t == 30.0 and not wrote.get("finished"):
+            wrote["finished"] = True
+            _append_event(
+                events_path,
+                {"event": "test", "when": "call", "nodeid": "t", "outcome": "passed", "pid": pid},
+            )
+            _append_event(
+                events_path,
+                {"event": "phase", "when": "teardown", "nodeid": "t", "pid": pid},
+            )
+            _append_event(
+                events_path, {"event": "test_finish", "nodeid": "t", "pid": pid}
+            )
+        return clock.t
+
+    runner, cwd = _runner(
+        tmp_path,
+        proc=proc,
+        clock=clock,
+        cpu_reader=reader,
+        per_test_cpu_baseline_s={"t": 1.0},
+        expect_next_event_within_s=600.0,
+    )
+
+    def stop_at_120(dt: float) -> None:
+        clock.advance(dt)
+        if clock.t >= 120.0:
+            proc.finish(0)
+
+    runner._sleep = stop_at_120  # type: ignore[assignment]
+    result = runner(("pytest", "-q"), env={}, cwd=cwd, timeout=600.0)
+    assert result.returncode == 0
+
+
+def test_an_unknown_nodeid_gets_no_per_test_bound(tmp_path: Path) -> None:
+    """A nodeid the baseline never measured has no baseline duration to
+    multiply, so there is no per-test bound for it. Inventing one would be a
+    guessed bound; S1 is the backstop instead."""
+    clock = _FakeClock()
+    proc = _ScriptedProc(pid=7103)
+    events_path = liveness.candidate_events_path(tmp_path / "candidates", tmp_path / "cand")
+    wrote = {"n": 0}
+
+    def reader(pid: int) -> float:
+        if wrote["n"] == 0:
+            _append_event(
+                events_path,
+                {"event": "test_start", "nodeid": "not-in-baseline", "pid": pid},
+            )
+            wrote["n"] = 1
+        return clock.t
+
+    runner, cwd = _runner(
+        tmp_path,
+        proc=proc,
+        clock=clock,
+        cpu_reader=reader,
+        per_test_cpu_baseline_s={"some-other-test": 1.0},
+        cpu_without_progress_bound_s=100.0,
+        expect_next_event_within_s=600.0,
+    )
+    with pytest.raises(liveness.LivenessHungExpired) as excinfo:
+        runner(("pytest", "-q"), env={}, cwd=cwd, timeout=600.0)
+    evidence = excinfo.value.resource_evidence
+    # S1 decided it, NOT a fabricated per-test bound.
+    assert evidence["decision"] == "cpu-without-progress"
+    assert evidence["required_cpu_s"] == 100.0
+    assert evidence["test_nodeid"] is None
+    assert mutation_store._valid_hung_resource_evidence(evidence)
+
+
+def test_xdist_disables_the_per_test_bound(tmp_path: Path) -> None:
+    """Under `-n` several tests run concurrently in several processes, so
+    "exactly one test in flight" is false by construction: the per-test bound
+    is skipped entirely and S1 remains."""
+    clock = _FakeClock()
+    proc = _ScriptedProc(pid=7104)
+    events_path = liveness.candidate_events_path(tmp_path / "candidates", tmp_path / "cand")
+    wrote = {"n": 0}
+
+    def reader(pid: int) -> float:
+        if wrote["n"] == 0:
+            _append_event(
+                events_path,
+                {"event": "test_start", "nodeid": "t", "pid": pid},
+            )
+            wrote["n"] = 1
+        return clock.t
+
+    runner, cwd = _runner(
+        tmp_path,
+        proc=proc,
+        clock=clock,
+        cpu_reader=reader,
+        per_test_cpu_baseline_s={"t": 0.1},  # would bound at 60 CPU-s
+        per_test_xdist=True,
+        cpu_without_progress_bound_s=100.0,
+        expect_next_event_within_s=600.0,
+    )
+    with pytest.raises(liveness.LivenessHungExpired) as excinfo:
+        runner(("pytest", "-q"), env={}, cwd=cwd, timeout=600.0)
+    evidence = excinfo.value.resource_evidence
+    assert evidence["decision"] == "cpu-without-progress"
+    assert evidence["required_cpu_s"] == 100.0
+    assert verify_per_test_never_armed(evidence)
+    assert clock.t >= 100.0
+
+
+def verify_per_test_never_armed(evidence) -> bool:
+    """The per-test decision appears nowhere in an xdist run's evidence."""
+    return evidence["decision"] != liveness.per_test_cpu_bound_decision
+
+
+def test_the_per_test_bound_requires_exactly_one_in_flight_test(
+    tmp_path: Path,
+) -> None:
+    """A file that opened a second test before the first completed proves two
+    tests were in flight, so no single window can be attributed -- the
+    per-test bound disables itself for the rest of that file."""
+    clock = _FakeClock()
+    proc = _ScriptedProc(pid=7105)
+    events_path = liveness.candidate_events_path(tmp_path / "candidates", tmp_path / "cand")
+    wrote = {"n": 0}
+
+    def reader(pid: int) -> float:
+        if wrote["n"] == 0:
+            for nodeid in ("a", "b"):
+                _append_event(
+                    events_path, {"event": "test_start", "nodeid": nodeid, "pid": pid}
+                )
+            wrote["n"] = 1
+        return clock.t
+
+    runner, cwd = _runner(
+        tmp_path,
+        proc=proc,
+        clock=clock,
+        cpu_reader=reader,
+        per_test_cpu_baseline_s={"a": 0.1, "b": 0.1},
+        cpu_without_progress_bound_s=110.0,
+        expect_next_event_within_s=600.0,
+    )
+    with pytest.raises(liveness.LivenessHungExpired) as excinfo:
+        runner(("pytest", "-q"), env={}, cwd=cwd, timeout=600.0)
+    assert excinfo.value.resource_evidence["decision"] == "cpu-without-progress"
+    assert clock.t >= 110.0
+
+
+def test_the_plugin_writes_a_test_start_event_with_the_nodeid() -> None:
+    """The plugin source is the writer of this event, so the event's shape is
+    asserted from the SHIPPED source, not from a hand-built record."""
+    source = liveness._PLUGIN_SOURCE
+    assert "def pytest_runtest_logstart(nodeid, location):" in source
+    assert '{"event": "test_start", "nodeid": nodeid}' in source
+    # The hook body must stay exception-safe: a bug in the plugin may never
+    # change a test outcome.
+    block = source.split("def pytest_runtest_logstart(nodeid, location):", 1)[1]
+    block = block.split("def ", 1)[0]
+    assert "except Exception" in block
+
+
+# --------------------------------------------------------------------------
+# P4 fix round 1, finding 1: a test's own window is dated by `test_start` and
+# closed ONLY by that test's `test_finish`. Before this, the reader never
+# cleared `in_flight`, so (a) the `setup` report closed the window before the
+# test body ever ran (it is in `COMPLETED_EVENT_KINDS`) and (b) any suite with
+# two tests disabled the bound for the whole file. Every scripted record set
+# below is the REAL emission order of a pytest run -- logstart, setup, call,
+# teardown, logfinish -- never a hand-picked subset of it.
+# --------------------------------------------------------------------------
+
+
+def _real_runtest_records(
+    nodeid: str, *, t: float, finished: bool = True
+) -> list[tuple[float, dict]]:
+    """The five records one pytest item emits, in that order and at *t*."""
+    records = [
+        (t, {"event": "test_start", "nodeid": nodeid}),
+        (t, {"event": "phase", "when": "setup", "nodeid": nodeid}),
+        (t, {"event": "test", "when": "call", "nodeid": nodeid, "outcome": "passed"}),
+        (t, {"event": "phase", "when": "teardown", "nodeid": nodeid}),
+    ]
+    if finished:
+        records.append((t, {"event": "test_finish", "nodeid": nodeid}))
+    return records
+
+
+def test_a_real_two_test_emission_order_keeps_a_window_for_the_second_test(
+    tmp_path: Path,
+) -> None:
+    """The review's first fatal state: a suite with two tests must NOT disable
+    the bound. Test `a` runs to completion in the real order; test `b` then
+    spins inside its `call`. Only the SECOND test's own window may bound it,
+    and the first test's window must be gone by then."""
+    clock = _FakeClock()
+    proc = _ScriptedProc(pid=7110)
+    events_path = liveness.candidate_events_path(tmp_path / "candidates", tmp_path / "cand")
+    pending = [(1.0, {"event": "session_start"})]
+    pending.extend(_real_runtest_records("t::a", t=2.0))
+    pending.append((3.0, {"event": "test_start", "nodeid": "t::b"}))
+
+    def reader(pid: int) -> float:
+        while pending and pending[0][0] <= clock.t:
+            _append_event(events_path, {**pending.pop(0)[1], "pid": pid})
+        return clock.t
+
+    runner, cwd = _runner(
+        tmp_path,
+        proc=proc,
+        clock=clock,
+        cpu_reader=reader,
+        per_test_cpu_baseline_s={"t::a": 1.0, "t::b": 1.0},
+        cpu_without_progress_bound_s=1000.0,
+        expect_next_event_within_s=600.0,
+    )
+    with pytest.raises(liveness.LivenessHungExpired) as excinfo:
+        runner(("pytest", "-q"), env={}, cwd=cwd, timeout=600.0)
+    evidence = excinfo.value.resource_evidence
+    assert evidence["decision"] == "per-test-cpu-bound", (
+        "with the real emission order the per-test bound must stay armed for "
+        "a suite of two or more tests; got "
+        f"{evidence['decision']!r}"
+    )
+    assert evidence["test_nodeid"] == "t::b"
+    assert evidence["per_test_cpu_s"] >= 60.0
+    # b's window opens at t=3 (cpu=3) and bounds at 60 CPU-s: never before
+    # the first test has finished.
+    assert clock.t >= 63.0
+
+
+def test_the_window_stays_open_across_setup_and_a_slow_call(
+    tmp_path: Path,
+) -> None:
+    """The review's second fatal state: the `setup` report used to close the
+    window before the body ran. Here the fixture is tiny and the `call` body
+    spins: the window must still be open (and still be the one that fires)."""
+    clock = _FakeClock()
+    proc = _ScriptedProc(pid=7111)
+    events_path = liveness.candidate_events_path(tmp_path / "candidates", tmp_path / "cand")
+    pending = [(1.0, {"event": "session_start"})]
+    pending.extend(_real_runtest_records("t::slow", t=2.0, finished=False)[:2])
+
+    def reader(pid: int) -> float:
+        while pending and pending[0][0] <= clock.t:
+            _append_event(events_path, {**pending.pop(0)[1], "pid": pid})
+        # From here the test body spins: no further record until it is killed.
+        return clock.t
+
+    runner, cwd = _runner(
+        tmp_path,
+        proc=proc,
+        clock=clock,
+        cpu_reader=reader,
+        per_test_cpu_baseline_s={"t::slow": 1.0},
+        cpu_without_progress_bound_s=1000.0,
+        expect_next_event_within_s=600.0,
+    )
+    with pytest.raises(liveness.LivenessHungExpired) as excinfo:
+        runner(("pytest", "-q"), env={}, cwd=cwd, timeout=600.0)
+    evidence = excinfo.value.resource_evidence
+    assert evidence["decision"] == "per-test-cpu-bound", (
+        "a test that spins inside its own `call` must be bounded by its own "
+        f"window; got {evidence['decision']!r}"
+    )
+    assert evidence["test_nodeid"] == "t::slow"
+    assert clock.t >= 61.0
+
+
+def test_progress_reader_uses_session_owner_pid_and_ignores_nested_pytest(
+    tmp_path: Path,
+) -> None:
+    """A pytest wrapper can spawn the session-owning interpreter as a child.
+
+    Its stamped session pid owns progress even when it differs from the pid
+    Assay spawned. A nested pytest's records still do not close or overlap
+    that owner's per-test window.
+    """
+    clock = _FakeClock()
+    proc = _ScriptedProc(pid=7113)
+    events_path = liveness.candidate_events_path(
+        tmp_path / "candidates", tmp_path / "cand"
+    )
+    records = [
+        {"event": "session_start", "pid": 8110},
+        {"event": "test_start", "nodeid": "t::owned", "pid": 8110},
+        {"event": "phase", "when": "setup", "nodeid": "t::owned", "pid": 8110},
+        # The nested interpreter sees the same nodeid but cannot close the
+        # owning session's test window.
+        {"event": "test_finish", "nodeid": "t::owned", "pid": 8111},
+    ]
+    written = {"done": False}
+
+    def reader(_spawned_pid: int) -> float:
+        if not written["done"]:
+            for record in records:
+                _append_event(events_path, record)
+            written["done"] = True
+        return clock.t
+
+    runner, cwd = _runner(
+        tmp_path,
+        proc=proc,
+        clock=clock,
+        cpu_reader=reader,
+        per_test_cpu_baseline_s={"t::owned": 1.0},
+        cpu_without_progress_bound_s=1000.0,
+        expect_next_event_within_s=600.0,
+    )
+    with pytest.raises(liveness.LivenessHungExpired) as excinfo:
+        runner(("timeout", "3600", "python", "-m", "pytest", "-q"), env={}, cwd=cwd, timeout=90.0)
+    evidence = excinfo.value.resource_evidence
+    assert evidence["decision"] == "per-test-cpu-bound"
+    assert evidence["test_nodeid"] == "t::owned"
+    assert evidence["completed_events"] == 1
+    assert evidence["per_test_cpu_s"] >= 60.0
+    assert clock.t >= 60.0
+
+
+def test_a_rerun_of_one_nodeid_opens_a_new_window(tmp_path: Path) -> None:
+    """The window is keyed on the `test_start` RECORD, not on the nodeid: a
+    suite that runs one nodeid twice (a retry, a repeated parameter) must give
+    the second run its own window, counted from its own start, never from the
+    first run's."""
+    clock = _FakeClock()
+    proc = _ScriptedProc(pid=7112)
+    events_path = liveness.candidate_events_path(tmp_path / "candidates", tmp_path / "cand")
+    pending = [(1.0, {"event": "session_start"})]
+    pending.extend(_real_runtest_records("t::again", t=2.0))
+    # A rerun of the SAME nodeid, 50 CPU-s later, and it then spins alone.
+    pending.append((52.0, {"event": "test_start", "nodeid": "t::again"}))
+
+    def reader(pid: int) -> float:
+        while pending and pending[0][0] <= clock.t:
+            _append_event(events_path, {**pending.pop(0)[1], "pid": pid})
+        return clock.t
+
+    runner, cwd = _runner(
+        tmp_path,
+        proc=proc,
+        clock=clock,
+        cpu_reader=reader,
+        per_test_cpu_baseline_s={"t::again": 1.0},
+        cpu_without_progress_bound_s=1000.0,
+        expect_next_event_within_s=600.0,
+    )
+    with pytest.raises(liveness.LivenessHungExpired) as excinfo:
+        runner(("pytest", "-q"), env={}, cwd=cwd, timeout=600.0)
+    evidence = excinfo.value.resource_evidence
+    assert evidence["decision"] == "per-test-cpu-bound"
+    assert evidence["test_nodeid"] == "t::again"
+    # Restamped at 52 CPU-s, bounded 60 CPU-s later: NOT at 60 CPU-s total.
+    assert evidence["per_test_cpu_s"] >= 60.0
+    assert clock.t >= 112.0
+
+
+def test_per_test_window_starts_when_cpu_first_becomes_readable(
+    tmp_path: Path,
+) -> None:
+    """A start read while the process-tree CPU source is unavailable must not
+    leave that test permanently without its own bound. Date the window at the
+    first readable series value, then measure the full per-test CPU allowance
+    from there."""
+    clock = _FakeClock()
+    proc = _ScriptedProc(pid=7114)
+    events_path = liveness.candidate_events_path(tmp_path / "candidates", tmp_path / "cand")
+    reads = {"count": 0}
+
+    def reader(pid: int) -> float:
+        if reads["count"] == 0:
+            _append_event(
+                events_path,
+                {"event": "test_start", "nodeid": "t::late-cpu", "pid": pid},
+            )
+        reads["count"] += 1
+        if reads["count"] <= 2:
+            raise OSError("scripted CPU series not readable yet")
+        return clock.t
+
+    runner, cwd = _runner(
+        tmp_path,
+        proc=proc,
+        clock=clock,
+        cpu_reader=reader,
+        per_test_cpu_baseline_s={"t::late-cpu": 1.0},
+        cpu_without_progress_bound_s=1000.0,
+        expect_next_event_within_s=600.0,
+    )
+    with pytest.raises(liveness.LivenessHungExpired) as excinfo:
+        runner(("pytest", "-q"), env={}, cwd=cwd, timeout=600.0)
+    evidence = excinfo.value.resource_evidence
+    assert evidence["decision"] == "per-test-cpu-bound"
+    assert evidence["test_nodeid"] == "t::late-cpu"
+    assert evidence["per_test_cpu_s"] >= 60.0
+    # First readable CPU is at t=2; the full 60 CPU-s allowance starts there.
+    assert clock.t >= 62.0
+
+
+def _reader_with_session_finish_after_59_cpu_s(
+    clock: _FakeClock, events_path: Path
+) -> Callable[[int], float]:
+    written = {"start": False, "finish": False}
+
+    def reader(pid: int) -> float:
+        if not written["start"]:
+            _append_event(events_path, {"event": "session_start", "pid": pid})
+            _append_event(
+                events_path, {"event": "test_start", "nodeid": "t::late", "pid": pid}
+            )
+            written["start"] = True
+        if clock.t >= 59.0 and not written["finish"]:
+            _append_event(events_path, {"event": "session_finish", "pid": pid})
+            written["finish"] = True
+        return clock.t
+
+    return reader
+
+
+def test_session_finish_restarts_cpu_bound_and_closes_test_window_for_teardown(
+    tmp_path: Path,
+) -> None:
+    """Teardown work after `session_finish` receives one full CPU bound from
+    that event. The CPU and per-test windows were already almost exhausted;
+    both must be reset once when the finish first appears."""
+    clock = _FakeClock()
+    proc = _ScriptedProc(pid=7115)
+    events_path = liveness.candidate_events_path(tmp_path / "candidates", tmp_path / "cand")
+    runner, cwd = _runner(
+        tmp_path,
+        proc=proc,
+        clock=clock,
+        cpu_reader=_reader_with_session_finish_after_59_cpu_s(clock, events_path),
+        per_test_cpu_baseline_s={"t::late": 1.0},
+        cpu_without_progress_bound_s=60.0,
+        expect_next_event_within_s=600.0,
+    )
+
+    def finish_after_50_cpu_s_of_teardown(dt: float) -> None:
+        clock.advance(dt)
+        if clock.t >= 110.0:
+            proc.finish(0)
+
+    runner._sleep = finish_after_50_cpu_s_of_teardown  # type: ignore[assignment]
+    result = runner(("pytest", "-q"), env={}, cwd=cwd, timeout=600.0)
+    assert result.returncode == 0
+    # The finish is consumed at t=60; the candidate exits after 50 more CPU-s.
+    assert clock.t >= 110.0
+
+
+def test_session_finish_does_not_reopen_a_missing_test_finish_window(
+    tmp_path: Path,
+) -> None:
+    """A test that omitted `test_finish` must not regain its per-test cap
+    during session teardown. Teardown here exceeds the 60 CPU-s per-test
+    floor but remains under the full 180 CPU-s bound dated at session_finish.
+    """
+    clock = _FakeClock()
+    proc = _ScriptedProc(pid=7117)
+    events_path = liveness.candidate_events_path(tmp_path / "candidates", tmp_path / "cand")
+    runner, cwd = _runner(
+        tmp_path,
+        proc=proc,
+        clock=clock,
+        cpu_reader=_reader_with_session_finish_after_59_cpu_s(clock, events_path),
+        per_test_cpu_baseline_s={"t::late": 0.1},
+        cpu_without_progress_bound_s=180.0,
+        expect_next_event_within_s=600.0,
+    )
+
+    def finish_after_120_cpu_s_of_teardown(dt: float) -> None:
+        clock.advance(dt)
+        if clock.t >= 180.0:
+            proc.finish(0)
+
+    runner._sleep = finish_after_120_cpu_s_of_teardown  # type: ignore[assignment]
+    result = runner(("pytest", "-q"), env={}, cwd=cwd, timeout=300.0)
+    assert result.returncode == 0
+    assert clock.t >= 180.0
+
+
+def test_cpu_spin_after_session_finish_stops_after_a_full_new_bound(
+    tmp_path: Path,
+) -> None:
+    """The session-finish reset is one-shot: a post-finish spin still trips
+    the CPU-without-progress bound after one full allowance from the finish."""
+    clock = _FakeClock()
+    proc = _ScriptedProc(pid=7116)
+    events_path = liveness.candidate_events_path(tmp_path / "candidates", tmp_path / "cand")
+    runner, cwd = _runner(
+        tmp_path,
+        proc=proc,
+        clock=clock,
+        cpu_reader=_reader_with_session_finish_after_59_cpu_s(clock, events_path),
+        per_test_cpu_baseline_s={"t::late": 1.0},
+        cpu_without_progress_bound_s=60.0,
+        expect_next_event_within_s=600.0,
+    )
+    with pytest.raises(liveness.LivenessHungExpired) as excinfo:
+        runner(("pytest", "-q"), env={}, cwd=cwd, timeout=600.0)
+    evidence = excinfo.value.resource_evidence
+    assert evidence["decision"] == "cpu-without-progress"
+    assert evidence["test_nodeid"] is None
+    assert evidence["cpu_since_last_completed_event_s"] >= 60.0
+    # The finish is consumed at t=60 and the CPU bound fires 60 CPU-s later.
+    assert clock.t >= 120.0
+
+
+def test_a_test_start_without_a_finish_still_disables_the_per_test_bound(
+    tmp_path: Path,
+) -> None:
+    """The must-fail CONTROL for the fix: `a` runs its whole setup/call/
+    teardown in the real order but never emits `test_finish`, then `b` starts.
+    Two tests really were in flight (the file cannot prove otherwise), so the
+    per-test bound must stay OFF for that file -- a fix that cleared the
+    window on `teardown` instead of on `test_finish` would pass the tests
+    above and fail this one."""
+    clock = _FakeClock()
+    proc = _ScriptedProc(pid=7113)
+    events_path = liveness.candidate_events_path(tmp_path / "candidates", tmp_path / "cand")
+    pending = [(1.0, {"event": "session_start"})]
+    pending.extend(_real_runtest_records("t::a", t=2.0, finished=False))
+    pending.append((3.0, {"event": "test_start", "nodeid": "t::b"}))
+
+    def reader(pid: int) -> float:
+        while pending and pending[0][0] <= clock.t:
+            _append_event(events_path, {**pending.pop(0)[1], "pid": pid})
+        return clock.t
+
+    runner, cwd = _runner(
+        tmp_path,
+        proc=proc,
+        clock=clock,
+        cpu_reader=reader,
+        per_test_cpu_baseline_s={"t::a": 1.0, "t::b": 1.0},
+        cpu_without_progress_bound_s=110.0,
+        expect_next_event_within_s=600.0,
+    )
+    with pytest.raises(liveness.LivenessHungExpired) as excinfo:
+        runner(("pytest", "-q"), env={}, cwd=cwd, timeout=600.0)
+    evidence = excinfo.value.resource_evidence
+    assert evidence["decision"] == "cpu-without-progress"
+    assert evidence["test_nodeid"] is None
+    assert verify_per_test_never_armed(evidence)
+    assert clock.t >= 110.0
+
+
+def _write_stamped_records(
+    events_path: Path, records: list[dict], *, pid: int
+) -> None:
+    events_path.parent.mkdir(parents=True, exist_ok=True)
+    with events_path.open("a", encoding="utf-8") as stream:
+        for record in records:
+            stream.write(json.dumps({**record, "pid": pid}) + "\n")
+
+
+def test_the_reader_marks_a_second_unfinished_test_as_overlap(
+    tmp_path: Path,
+) -> None:
+    events_path = tmp_path / "reader-overlap.ndjson"
+    _write_stamped_records(
+        events_path,
+        [
+            {"event": "session_start"},
+            {"event": "test_start", "nodeid": "t::first"},
+            {"event": "test_start", "nodeid": "t::second"},
+        ],
+        pid=100,
+    )
+    reader = liveness._EventProgressReader(100)
+
+    reader.read(events_path)
+
+    assert reader.overlapping_tests is True
+    assert reader.in_flight is not None
+    assert reader.in_flight[0] == "t::second"
+
+
+def test_the_reader_clears_in_flight_only_on_the_matching_test_finish(
+    tmp_path: Path,
+) -> None:
+    """The reader half of finding 1: the window is closed by the matching
+    `test_finish` and by nothing else. Its setup/call/teardown reports are
+    COMPLETED events for the CPU bound but do not end the test, and a
+    `test_finish` for another nodeid must not clear the open window."""
+    events_path = tmp_path / "reader-finish.ndjson"
+    reader = liveness._EventProgressReader(100)
+
+    _write_stamped_records(
+        events_path,
+        [{"event": "session_start"}, {"event": "test_start", "nodeid": "t::a"}]
+        + [
+            {"event": "phase", "when": "setup", "nodeid": "t::a"},
+            {"event": "test", "when": "call", "nodeid": "t::a"},
+            {"event": "phase", "when": "teardown", "nodeid": "t::a"},
+        ],
+        pid=100,
+    )
+    reader.read(events_path)
+    assert reader.in_flight is not None, (
+        "setup, call and teardown reports must not close a test's window"
+    )
+    assert reader.completed_events == 3
+
+    _write_stamped_records(
+        events_path, [{"event": "test_finish", "nodeid": "t::a"}], pid=100
+    )
+    reader.read(events_path)
+    assert reader.in_flight is None
+    assert reader.overlapping_tests is False
+    # `test_finish` is NOT a completed event: the CPU bound's marker must not
+    # move on it.
+    assert reader.completed_events == 3
+
+    _write_stamped_records(
+        events_path,
+        [
+            {"event": "test_start", "nodeid": "t::b"},
+            {"event": "test_finish", "nodeid": "t::a"},
+        ],
+        pid=100,
+    )
+    reader.read(events_path)
+    assert reader.in_flight is not None, (
+        "a test_finish for a DIFFERENT nodeid must not close the open window"
+    )
+
+    _write_stamped_records(
+        events_path, [{"event": "test_finish", "nodeid": "t::b"}], pid=100
+    )
+    reader.read(events_path)
+    assert reader.in_flight is None
+
+
+def test_the_reader_tracks_two_real_tests_without_overlap(tmp_path: Path) -> None:
+    """The reader sees exactly the sequence a real two-test run writes; the
+    second test's start must NOT be reported as an overlap, and both windows
+    must be closed by their own finishes."""
+    events_path = tmp_path / "reader-two-tests.ndjson"
+    records: list[dict] = [{"event": "session_start"}]
+    for nodeid in ("t::a", "t::b"):
+        records.extend(
+            record for _t, record in _real_runtest_records(nodeid, t=1.0)
+        )
+    _write_stamped_records(events_path, records, pid=100)
+    reader = liveness._EventProgressReader(100)
+    count, saw_finish = reader.read(events_path)
+    assert (count, saw_finish) == (len(records), False)
+    assert reader.in_flight is None
+    assert reader.overlapping_tests is False
+    assert reader.completed_events == 6  # two tests x setup/call/teardown
+    # The forwarded baseline stream and `tests_completed` are unchanged by the
+    # extra records: exactly the two `call` events remain.
+    assert liveness.count_test_events(events_path) == 2
+    assert [record["nodeid"] for record in liveness.baseline_test_events(events_path)] == [
+        "t::a",
+        "t::b",
+    ]
+    # Every record is counted for the progress heartbeat, `test_finish`
+    # included: nothing here may look like a stall.
+    assert liveness._read_events_progress(events_path, 0)[0] == len(records)
+
+
+def test_a_rerun_of_one_nodeid_is_not_an_overlap_in_the_reader(
+    tmp_path: Path,
+) -> None:
+    """A nodeid the suite runs twice reports two `test_start`s, and neither
+    follows an unfinished one: that is a rerun, not two tests in flight."""
+    events_path = tmp_path / "reader-rerun.ndjson"
+    records: list[dict] = [{"event": "session_start"}]
+    for _t, record in _real_runtest_records("t::again", t=1.0):
+        records.append(record)
+    records.append({"event": "test_start", "nodeid": "t::again"})
+    _write_stamped_records(events_path, records, pid=100)
+    reader = liveness._EventProgressReader(100)
+    reader.read(events_path)
+    assert reader.overlapping_tests is False
+    assert reader.in_flight is not None, "the rerun's window is open"
+
+
+def test_the_plugin_writes_a_test_finish_event_in_the_real_hook() -> None:
+    """The plugin source is the writer of this event, and pytest calls
+    `pytest_runtest_logfinish` once per item after its whole runtest protocol
+    (teardown included) -- the identity the reader closes a window on."""
+    source = liveness._PLUGIN_SOURCE
+    assert liveness.TEST_FINISH_EVENT == "test_finish"
+    assert "def pytest_runtest_logfinish(nodeid, location):" in source
+    assert '{"event": "test_finish", "nodeid": nodeid}' in source
+    assert liveness.TEST_FINISH_EVENT not in liveness.COMPLETED_EVENT_KINDS
+    block = source.split("def pytest_runtest_logfinish(nodeid, location):", 1)[1]
+    block = block.split("def ", 1)[0]
+    assert "except Exception" in block
+
+
+def test_a_real_two_test_pytest_run_feeds_the_reader_a_finish_per_test(
+    tmp_path: Path,
+) -> None:
+    """The end-to-end proof a fake cannot give: a REAL pytest process runs two
+    tests with the MATERIALIZED plugin, writes its own events file, and the
+    reader must see one open-then-closed window per test (`in_flight` back to
+    ``None``, no overlap) whatever the plugin's own timing is."""
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "test_two.py").write_text(
+        "def test_one():\n    assert True\n\n"
+        "def test_two():\n    assert True\n",
+        encoding="utf-8",
+    )
+    liveness_dir = tmp_path / "liveness"
+    assert liveness.materialize_liveness_plugin(liveness_dir).is_file()
+    events_path = tmp_path / "events.ndjson"
+    child_env = dict(os.environ)
+    child_env[liveness.ASSAY_LIVENESS_EVENTS_ENV] = str(events_path)
+    child_env.pop(liveness.ASSAY_LIVENESS_EXIT_ENV, None)
+    child_env["PYTHONPATH"] = os.pathsep.join(
+        [str(liveness_dir), child_env.get("PYTHONPATH", "")]
+    ).rstrip(os.pathsep)
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-q",
+            "-p",
+            liveness.LIVENESS_PLUGIN_MODULE_NAME,
+            str(project / "test_two.py"),
+        ],
+        cwd=project,
+        env=child_env,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=600.0,
+    )
+    assert result.returncode == 0, result.stderr
+    records = [
+        json.loads(line) for line in events_path.read_text(encoding="utf-8").splitlines()
+    ]
+    kinds = [record["event"] for record in records]
+    assert kinds.count("test_start") == 2
+    assert kinds.count("test_finish") == 2
+    # The real per-test order, anchored on the two nodeids pytest reported.
+    nodeids = [record["nodeid"] for record in records if record.get("event") == "test"]
+    assert len(nodeids) == 2
+    for nodeid in nodeids:
+        own = [
+            (index, record)
+            for index, record in enumerate(records)
+            if record.get("nodeid") == nodeid
+            and record.get("event") in {"test_start", "phase", "test", "test_finish"}
+        ]
+        kinds = [record["event"] for _index, record in own]
+        # logstart, then setup (and teardown) phases, then call, then logfinish.
+        assert kinds[0] == "test_start"
+        assert kinds[-1] == "test_finish"
+        call_at = kinds.index("test")
+        assert any(
+            record.get("when") == "setup" for _index, record in own[:call_at]
+        )
+        assert any(
+            record.get("when") == "teardown" for _index, record in own[call_at:]
+        )
+    pid = records[0]["pid"]
+    reader = liveness._EventProgressReader(pid)
+    assert reader.read(events_path) == (len(records), True)
+    assert reader.in_flight is None, (
+        "the reader must close both windows on the two real test_finish records"
+    )
+    assert reader.overlapping_tests is False
+    assert reader.completed_events == 6
+    assert liveness.count_test_events(events_path) == 2

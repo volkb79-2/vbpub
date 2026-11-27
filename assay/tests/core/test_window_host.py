@@ -417,8 +417,20 @@ def test_the_host_request_shape_is_strict_but_the_profile_key_is_optional(tmp_pa
 
 
 def test_candidate_budget_kills_the_child_tree_inside_the_window_host(tmp_path):
-    child = "import subprocess,sys,time; subprocess.Popen([sys.executable,'-c','import time;time.sleep(60)']); time.sleep(60)"
-    plan = _plan((sys.executable, "-c", child))
+    # (P4) The parent is `/bin/sh`, not a second Python interpreter, and that
+    # is a FIX rather than cosmetic: a `python -c` parent must start (import
+    # something, allocate, fork) inside the 0.1 s budget this test sets, and
+    # under a loaded host that start-up alone can consume it. Measured here:
+    # a Python parent's child became visible in /proc after ~50 ms to 5 s,
+    # while `sh -c '... & ...'` forks in ~1 ms -- so the ONLY thing the 0.1 s
+    # budget can expire against is the sleep the test means it to expire
+    # against. A budget that races process START-UP is a load-dependent test,
+    # not a property of the kill path.
+    # `& wait` keeps exactly ONE descendant in flight while the leader waits
+    # on it: `sh -c 'sleep 60 & sleep 60'` would fork TWO (the background one
+    # and the foreground one), which is a different process-tree shape than
+    # this test is about.
+    plan = _plan(("/bin/sh", "-c", "sleep 60 & wait"))
 
     result = _window_host.run_window(
         plan,
@@ -998,6 +1010,13 @@ def test_worker_runner_rebuilds_both_builtin_runner_types(tmp_path):
             "expect_next_event_within_s": 1.0,
             "pre_first_event_within_s": None,
             "cpu_window_s": 0.1,
+            # (P4/S1,S2,S3) The progress bounds are execution policy, so a
+            # rebuilt runner must carry them (all `None`/empty = a run whose
+            # CPU watch is off, which is what a bare hand-built spec means).
+            "cpu_without_progress_bound_s": None,
+            "per_test_cpu_baseline_s": None,
+            "per_test_xdist": False,
+            "advisory_budget_s": None,
         },
         plan,
     )
@@ -1589,13 +1608,13 @@ def test_run_window_receipt_fd_and_worker_failure_records(monkeypatch, tmp_path)
         (None, 1),
         (b"not json", 0),
         (b'{"protocol":"wrong"}', 0),
-        (b'{"protocol":"assay-window-host/2","kind":"odd"}', 0),
-        (b'{"protocol":"assay-window-host/2","kind":"result","result":[]}', 0),
+        (b'{"protocol":"assay-window-host/3","kind":"odd"}', 0),
+        (b'{"protocol":"assay-window-host/3","kind":"result","result":[]}', 0),
         (
-            b'{"protocol":"assay-window-host/2","kind":"result","result":{}}',
+            b'{"protocol":"assay-window-host/3","kind":"result","result":{}}',
             0,
         ),
-        (b'{"protocol":"assay-window-host/2","kind":"result","result":{}}', 3),
+        (b'{"protocol":"assay-window-host/3","kind":"result","result":{}}', 3),
     ]
     for payload, code in cases:
         monkeypatch.setattr(_window_host, "_launch_host_process", mock_response(payload, code=code))
@@ -1612,7 +1631,7 @@ def test_run_window_receipt_fd_and_worker_failure_records(monkeypatch, tmp_path)
     monkeypatch.setattr(
         _window_host,
         "_launch_host_process",
-        mock_response(b'{"protocol":"assay-window-host/2","kind":"error","error_type":"WindowHostError","message":"raised"}'),
+        mock_response(b'{"protocol":"assay-window-host/3","kind":"error","error_type":"WindowHostError","message":"raised"}'),
     )
     with pytest.raises(_window_host.WindowHostError, match="raised"):
         _window_host.run_window(

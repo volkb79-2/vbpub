@@ -72,6 +72,7 @@ import json
 import os
 import signal
 import subprocess
+import sys
 import threading
 import time
 from collections import deque
@@ -335,6 +336,17 @@ def pytest_configure(config):
     _append({"event": "session_start"})
 
 
+def pytest_runtest_logstart(nodeid, location):
+    # (P4/S2) A test BEGAN. This is NOT progress for the CPU-without-progress
+    # bound (nothing has completed) but it IS a live sign for the idle rule
+    # and it is what dates the per-test bound's own window: `nodeid` is the
+    # only identity the per-test baseline timings are keyed by.
+    try:
+        _append({"event": "test_start", "nodeid": nodeid})
+    except Exception:
+        pass
+
+
 def pytest_runtest_logreport(report):
     # (B091 round-1 B2) EVERY phase, not just `call`. `report.duration` for
     # a `setup` report includes the fixture, and -- more to the point -- the
@@ -355,6 +367,22 @@ def pytest_runtest_logreport(report):
     except Exception:
         return
     _append(record)
+
+
+def pytest_runtest_logfinish(nodeid, location):
+    # (P4 fix 1, review finding 1) pytest calls this ONCE per item, after its
+    # whole runtest protocol -- `setup`, `call` AND `teardown` -- has run
+    # (pytest 9's `pytest_runtest_protocol` brackets the item with
+    # `pytest_runtest_logstart`/`pytest_runtest_logfinish`). It is the ONLY
+    # record that proves a test is no longer in flight: its `setup`/`call`/
+    # `teardown` reports arrive while it still runs, and `phase` is a
+    # COMPLETED event for the CPU-without-progress bound. Written under its
+    # own kind, deliberately NOT in `COMPLETED_EVENT_KINDS`, so it neither
+    # re-dates that bound nor changes `tests_completed`.
+    try:
+        _append({"event": "test_finish", "nodeid": nodeid})
+    except Exception:
+        pass
 
 
 def pytest_sessionfinish(session, exitstatus):
@@ -667,12 +695,42 @@ class LivenessHungExpired(subprocess.TimeoutExpired):
         self.resource_evidence = dict(resource_evidence)
 
 
+class LivenessNoProgressWallExpired(subprocess.TimeoutExpired):
+    """Raised when an armed candidate has no completed event for its stop cap.
+
+    This stops the run without classifying the attempt. `mutation.run_mutation`
+    converts it to the existing lane-timeout fatal path, so there is no
+    candidate bucket or stored result. The cap uses wall time until one
+    resource interval is comparable, then uses the same pressure-credited
+    clock as the idle rule.
+    """
+
+    def __init__(
+        self,
+        cmd: Sequence[str],
+        *,
+        timeout: float,
+        wall_seconds: float,
+        eligible_seconds: float,
+        wall_bound_s: float,
+        pressure_credit_active: bool,
+        output: bytes,
+        stderr: bytes,
+    ) -> None:
+        super().__init__(cmd, timeout=timeout, output=output, stderr=stderr)
+        self.wall_seconds = wall_seconds
+        self.eligible_seconds = eligible_seconds
+        self.wall_bound_s = wall_bound_s
+        self.pressure_credit_active = pressure_credit_active
+
+
 #: (B091/RW-33, P7 A3) The idle-stall thresholds, named once rather than as
 #: bare literals scattered through the monitoring loop below.
 _HUNG_CPU_WINDOW_S = 30.0
 _HUNG_CPU_GROWTH_FLOOR_S = 1.0
 _HUNG_CPU_GROWTH_FRACTION = 1.0 / 30.0
 _HUNG_SESSION_FINISH_GRACE_S = 30.0
+NO_PROGRESS_WALL_FACTOR = 4.0
 _LIVENESS_POLL_INTERVAL_S = 1.0
 _LIVENESS_RESOURCE_TRACE_MAX_SAMPLES = 1024
 
@@ -809,6 +867,90 @@ TEST_EVENT = "test"
 PHASE_EVENT = "phase"
 SESSION_START_EVENT = "session_start"
 SESSION_FINISH_EVENT = "session_finish"
+TEST_START_EVENT = "test_start"
+#: (P4 fix 1, review finding 1) `pytest_runtest_logfinish`: pytest calls it
+#: once per item, AFTER its whole runtest protocol (setup, call, teardown),
+#: so it is the only proof that a test is no longer in flight. It closes
+#: the per-test CPU window (see `_EventProgressReader.in_flight`) and is
+#: deliberately NOT a completed event: nothing new finished when it arrives.
+TEST_FINISH_EVENT = "test_finish"
+
+#: (P4/S1) What counts as a COMPLETED plugin event for the
+#: CPU-without-progress bound: a `test` (`call`) report or a `phase`
+#: (`setup`/`teardown`) report -- i.e. a unit of work the suite FINISHED.
+#: `session_start`/`session_finish` are deliberately NOT here (a session that
+#: started and then spun forever has still completed nothing), and neither are
+#: `test_start` (a report that a test BEGAN proves nothing finished) nor
+#: `test_finish` (the wrapper around those phases completes nothing itself --
+#: the `teardown` report just before it already did).
+COMPLETED_EVENT_KINDS = frozenset({TEST_EVENT, PHASE_EVENT})
+
+#: (P4/S1) The resource-evidence vocabulary of the CPU-without-progress
+#: bound. `mutation_store.valid_hang_resource_evidence` reads these names
+#: through this module, never as its own literals, so a resumed record can
+#: never be validated against a policy the writer does not produce.
+CPU_PROGRESS_POLICY = "cpu-since-completed-event-v1"
+CPU_PROGRESS_SOURCE = "process-tree-cpu-seconds-monotonic"
+cpu_without_progress_decision = "cpu-without-progress"
+
+#: (P4/S2) The per-test CPU bound's own vocabulary: ``max(10 x the baseline's
+#: setup+call+teardown duration for THIS nodeid, 60 s)`` CPU seconds. Ten
+#: suite-lengths of CPU for one test is the same generous multiple the
+#: derived bound uses for a whole suite, and the absolute 60 s floor keeps a
+#: sub-second test from deriving a bound too tight for one interpreter
+#: (deliberately NOT `baseline + 60`: that would scale the floor with the
+#: test's own trivial duration).
+PER_TEST_CPU_MULTIPLIER_S = 10.0
+PER_TEST_CPU_FLOOR_S = 60.0
+per_test_cpu_bound_decision = "per-test-cpu-bound"
+
+#: The closed set of resource-evidence decisions this module can produce for
+#: a `hung` kill. `mutation_store.valid_hang_resource_evidence` reads it here
+#: rather than keeping its own literal pair.
+CPU_HANG_DECISIONS = frozenset(
+    {cpu_without_progress_decision, per_test_cpu_bound_decision}
+)
+IDLE_HANG_DECISIONS = frozenset({"idle-hang", "session-finish-hang"})
+IDLE_HANG_POLICY = "pressure-adjusted-idle-v1"
+
+def per_test_cpu_bound_from_baseline(baseline_s: float) -> float:
+    """``max(10 x baseline_s, 60 s)`` -- the per-test bound, one formula.
+
+    Operator item (A), binding (`p4-operator-input-20261125.md`): "each test
+    gets a multiple of its own baseline duration ... so a looping test is
+    caught at about its normal duration". Ten suite-lengths of CPU for one
+    test is the same generous multiple the derived bound uses for a whole
+    suite; the 60 s floor is an ABSOLUTE one (not `baseline + 60`), because a
+    fast test's bound must not scale with its own trivial duration.
+    """
+    return max(PER_TEST_CPU_MULTIPLIER_S * baseline_s, PER_TEST_CPU_FLOOR_S)
+
+#: (P4/S1) The floor in the derived bound
+#: :func:`derived_bound_from_baseline` -- the `+60 s` half of
+#: ``max(3 x baseline, baseline + 60 s)``. Named once here because BOTH the
+#: per-candidate wall budget (`mutation.auto_budget_per_candidate_seconds`)
+#: and the CPU-without-progress bound derive from the SAME formula (design
+#: `docs/design/no-time-budgets/DESIGN.md` section 7.1: "the existing auto
+#: formula"); two literal `60.0`s would be two derivations of one number.
+DERIVED_BOUND_FLOOR_S = 60.0
+
+
+def derived_bound_from_baseline(baseline_wall_s: float) -> float:
+    """``max(3 x baseline_wall_s, baseline_wall_s + 60 s)`` -- the ONE
+    derived bound formula, in SECONDS of the unit it bounds.
+
+    It bounds a candidate's WALL time (the ``"auto"``
+    ``budget_per_candidate``) and, since P4, a candidate's process-tree CPU
+    seconds since its last completed plugin event. The two are the same
+    NUMBER because they are the same policy: three suite-lengths, with a
+    60 s floor so a near-instant baseline cannot derive a bound too tight for
+    interpreter start-up.
+
+    A negative *baseline_wall_s* (impossible upstream of a real
+    :class:`~assay.runner.CommandResult`, clamped at its source too) yields
+    the 60 s floor rather than a negative bound.
+    """
+    return max(3.0 * baseline_wall_s, baseline_wall_s + DERIVED_BOUND_FLOOR_S)
 
 #: (B091/RW-33) The floor under every measurement-derived idle bound -- no
 #: calibration, however fast the baseline, ever asks a candidate for a sign
@@ -1046,6 +1188,66 @@ def baseline_phase_durations(path: Path | None) -> list[dict[str, float | None]]
     return rows
 
 
+def plugin_events_observed(events_path: Path | None) -> bool:
+    """(P4/S3) Whether the BASELINE's events file carries at least one plugin
+    record -- the one precondition of arming the progress watch that only the
+    baseline can answer.
+
+    "Plugin injected" is the request; "the plugin actually ran and wrote
+    something" is the fact. A lane whose plugin was materialized but never
+    loaded (pytest could not import it, a `-p no:...` in addopts, an early
+    collection error) has no progress signal at all, and its per-candidate
+    budget must therefore keep binding rather than be demoted to advice.
+    `False` for a `None`, absent, unreadable or empty path.
+    """
+    return next(_iter_events(events_path), None) is not None
+
+
+def baseline_per_test_seconds(path: Path | None) -> dict[str, float]:
+    """(P4/S2) ``{nodeid: setup+call+teardown seconds}`` from the BASELINE's
+    own events file -- the per-test baseline the per-test CPU bound is
+    derived from.
+
+    Keep the LAST duration for each phase of a nodeid, then sum its setup,
+    call and teardown values. A repeated nodeid therefore replaces the prior
+    duration for the phase it reports, rather than adding another whole run
+    to the same baseline. A missing, non-numeric, bool, negative or
+    non-finite duration contributes nothing -- an under-measured baseline
+    can only make the bound TIGHTER, so callers that need a trustworthy
+    number must check the nodeid is present at all (an absent nodeid has no
+    bound; see the per-test window arming rule).
+
+    `{}` for a `None`, absent, unreadable or event-less path.
+    """
+    phases: dict[str, dict[str, float | None]] = {}
+    for record in _owner_stream(path):
+        nodeid = record.get("nodeid")
+        if not isinstance(nodeid, str) or not nodeid:
+            continue
+        kind = record.get("event")
+        if kind == TEST_EVENT:
+            phase = "call"
+        elif kind == PHASE_EVENT and record.get("when") in {
+            "setup",
+            "teardown",
+        }:
+            phase = str(record["when"])
+        else:
+            continue
+        # Assign even an invalid final duration as None so a repeated nodeid
+        # cannot silently fall back to an earlier run's value for that phase.
+        phases.setdefault(nodeid, {})[phase] = (
+            None
+            if (duration := _phase_duration(record)) is None
+            else float(duration)
+        )
+    return {
+        nodeid: sum(value for value in durations.values() if value is not None)
+        for nodeid, durations in phases.items()
+        if any(value is not None for value in durations.values())
+    }
+
+
 #: The per-candidate resource sidecar, written next to the events file by
 #: :meth:`LivenessRunner._monitor` on every exit path. Diagnostic only.
 RESOURCE_SIDECAR_SUFFIX = ".resources.json"
@@ -1162,6 +1364,17 @@ class LivenessCalibration(NamedTuple):
     slowest_test_s: float | None
     #: The declared/effective idle floor passed to this calibration.
     idle_floor_s: float
+    #: (P4/S1) ``max(3 x baseline_wall, baseline_wall + 60 s)`` PROCESS-TREE
+    #: CPU seconds -- the bound since the candidate's last COMPLETED plugin
+    #: event (or since its start). The same derived formula that bounds a
+    #: candidate's wall time, applied to the one series that cannot be paused
+    #: by host pressure.
+    cpu_without_progress_bound_s: float
+    #: (P4/S2) ``{nodeid: setup+call+teardown seconds}`` from the baseline --
+    #: the per-test bound's own input. `{}` when there is no baseline
+    #: measurement, which disables the per-test bound and leaves S1 as the
+    #: backstop.
+    per_test_baseline_s: Mapping[str, float]
 
 
 def baseline_event_gaps(
@@ -1181,6 +1394,14 @@ def baseline_event_gaps(
     first_event: Any = None
     timestamped: list[tuple[float, Any, int | None]] = []
     for record in records:
+        # (P4/S2) `test_start` is deliberately not a calibration stamp: a
+        # "this test began" report inside a quiet stretch would shorten a gap
+        # that never actually closed, silently tightening every lane's idle
+        # bound. `test_finish` is a real timestamp after teardown and can add
+        # an inter-event gap; only files differing by `test_start` records
+        # alone retain byte-identical calibration.
+        if record.get("event") == TEST_START_EVENT:
+            continue
         stamp = record.get("t")
         if not is_real(stamp):
             continue
@@ -1307,6 +1528,11 @@ def compute_liveness_calibration(
             worst_gap_s=None,
             slowest_test_s=slowest_test_s,
             idle_floor_s=effective_idle_floor_s,
+            cpu_without_progress_bound_s=derived_bound_from_baseline(baseline_s),
+            # No stamped plugin records means no per-test measurement either;
+            # an empty mapping disables the per-test bound rather than
+            # inventing timings from a file that carries none.
+            per_test_baseline_s={},
         )
     return LivenessCalibration(
         expect_next_event_within_s=max(
@@ -1318,6 +1544,12 @@ def compute_liveness_calibration(
         worst_gap_s=gaps.worst_gap_s,
         slowest_test_s=slowest_test_s,
         idle_floor_s=effective_idle_floor_s,
+        cpu_without_progress_bound_s=derived_bound_from_baseline(baseline_s),
+        # (P4/S2) The per-test bound's own baseline: the summed phase
+        # durations per nodeid. Read from the SAME file this call already
+        # parsed for the gaps, so the two can never describe different
+        # baselines.
+        per_test_baseline_s=baseline_per_test_seconds(baseline_events_path),
     )
 
 
@@ -1375,12 +1607,17 @@ class _EventProgressReader:
     partially written final record can be completed on a later tick.
 
     Candidate files are unlinked before launch and the pytest plugin appends
-    newline-terminated records. Device/inode changes and truncation reset the
-    reader so a replaced file is treated as a new stream.
+    newline-terminated records. Device/inode changes, truncation, disappearance
+    and read errors reset the file-local parser state, so the idle rule sees
+    the current file's counts as it did with the full-file reader. Once a file
+    with at least one record is disrupted, ``stream_broken`` stays true for
+    this candidate run; the monitor disarms the event-derived P4 bounds. The
+    counters and flags reset per file, while that fact alone survives reset.
     """
 
     def __init__(self, candidate_pid: int | None) -> None:
         self._candidate_pid = _valid_pid(candidate_pid)
+        self.stream_broken = False
         self._reset()
 
     def _reset(
@@ -1396,6 +1633,23 @@ class _EventProgressReader:
         self._has_finish = False
         self._all_finish_pids_valid = True
         self._candidate_finish_seen = False
+        #: The first stamped `session_start` identifies the process whose
+        #: pytest hooks own this stream. Before it arrives, use the spawned pid.
+        self._owner_pid: int | None = None
+        #: (P4/S1) Per-file count of completed plugin events on the candidate's
+        #: own timeline; a reset returns it to zero, like the valid-record count.
+        self.completed_events = 0
+        #: (P4/S2) ``(nodeid, completed_events_at_start, record_index)`` of the
+        #: test currently in flight, or ``None``. Both counters are per-file.
+        self.in_flight = None
+        #: Per-file overlap: after a reset a new stream starts this false again.
+        self.overlapping_tests = False
+
+    def _mark_broken_if_records_seen(self) -> None:
+        """Break only after a complete or valid unterminated record was read."""
+        valid_tail = self._parse_line(self._pending.decode("utf-8")) is not None
+        if self._count or valid_tail:
+            self.stream_broken = True
 
     @staticmethod
     def _parse_line(line: str) -> dict[str, Any] | None:
@@ -1413,14 +1667,73 @@ class _EventProgressReader:
         if record is None:
             return
         self._count += 1
+        self._track_progress(record)
         if record.get("event") != SESSION_FINISH_EVENT:
             return
         self._has_finish = True
         record_pid = _record_pid(record)
         if record_pid is None:
             self._all_finish_pids_valid = False
-        elif record_pid == self._candidate_pid:
+        elif record_pid == (self._owner_pid or self._candidate_pid):
             self._candidate_finish_seen = True
+
+    def _track_progress(self, record: Mapping[str, Any]) -> None:
+        """(P4/S1,S2) Date the two CPU bounds against THIS record.
+
+        The first stamped `session_start` identifies the pytest session
+        owner, which can be a child of the process Assay spawned (for example
+        `timeout ... python -m pytest`). Until that record arrives, the
+        spawned pid is the fallback. This is the same owner-selection rule as
+        :func:`_owner_stream`; records from a nested pytest or xdist worker do
+        not enter the owner's timeline. Unstamped records retain the merged
+        interpretation because they cannot be attributed to a process.
+        """
+        kind = record.get("event")
+        record_pid = _record_pid(record)
+        if kind == SESSION_START_EVENT and self._owner_pid is None:
+            self._owner_pid = _session_owner_pid((record,))
+        owner_pid = self._owner_pid or self._candidate_pid
+        if (
+            owner_pid is not None
+            and record_pid is not None
+            and record_pid != owner_pid
+        ):
+            # Another process's report (an xdist worker under the coordinator,
+            # a nested pytest). An UNSTAMPED record keeps the legacy merged
+            # interpretation, exactly like `_owner_stream`.
+            return
+        if kind in COMPLETED_EVENT_KINDS:
+            self.completed_events += 1
+        elif kind == TEST_START_EVENT:
+            nodeid = record.get("nodeid")
+            if isinstance(nodeid, str) and nodeid:
+                # (P4 fix 1, review finding 1) A start while a window is
+                # still open proves two tests really were in flight. Every
+                # start that follows a `test_finish` opens its OWN window --
+                # `_count` keys it, so a rerun of one nodeid gets a new one.
+                if self.in_flight is not None:
+                    self.overlapping_tests = True
+                self.in_flight = (nodeid, self.completed_events, self._count)
+        elif kind == TEST_FINISH_EVENT:
+            # (P4 fix 1, review finding 1) The MATCHING finish is the only
+            # thing that closes a test's window: its setup/call/teardown
+            # reports arrive while it still runs, and a finish for another
+            # nodeid belongs to a different test.
+            nodeid = record.get("nodeid")
+            if (
+                isinstance(nodeid, str)
+                and nodeid
+                and self.in_flight is not None
+                and self.in_flight[0] == nodeid
+            ):
+                self.in_flight = None
+        elif kind == SESSION_FINISH_EVENT:
+            # Pytest can omit `pytest_runtest_logfinish` when a test aborts
+            # with KeyboardInterrupt/pytest.exit. Once the owning session
+            # finishes, no item remains in flight; keeping this sticky in the
+            # reader prevents the monitor from reopening a per-test window on
+            # the next poll during session teardown.
+            self.in_flight = None
 
     def _summary(self) -> tuple[int, bool]:
         tail = self._parse_line(self._pending.decode("utf-8"))
@@ -1434,32 +1747,37 @@ class _EventProgressReader:
             tail_pid = _record_pid(tail)
             if tail_pid is None:
                 all_finish_pids_valid = False
-            elif tail_pid == self._candidate_pid:
+            elif tail_pid == (self._owner_pid or self._candidate_pid):
                 candidate_finish_seen = True
         saw_finish = has_finish
-        if self._candidate_pid is not None and has_finish and all_finish_pids_valid:
+        if (
+            (self._owner_pid is not None or self._candidate_pid is not None)
+            and has_finish
+            and all_finish_pids_valid
+        ):
             saw_finish = candidate_finish_seen
         return count, saw_finish
 
     def read(self, events_path: Path) -> tuple[int, bool]:
         """Return the current valid-record count and finish status."""
         try:
-            stat = events_path.stat()
-        except OSError:
-            self._reset()
-            return 0, False
-        identity = (stat.st_dev, stat.st_ino)
-        if (
-            events_path != self._path
-            or identity != self._identity
-            or stat.st_size < self._offset
-        ):
-            self._reset(events_path, identity)
-        try:
             with events_path.open("rb") as stream:
+                # The path may be replaced after opening. Only metadata from
+                # the descriptor whose bytes we will read can identify this
+                # poll's file and detect a truncation before using the offset.
+                stat = os.fstat(stream.fileno())
+                identity = (stat.st_dev, stat.st_ino)
+                if (
+                    events_path != self._path
+                    or identity != self._identity
+                    or stat.st_size < self._offset
+                ):
+                    self._mark_broken_if_records_seen()
+                    self._reset(events_path, identity)
                 stream.seek(self._offset)
                 appended = stream.read()
         except OSError:
+            self._mark_broken_if_records_seen()
             self._reset()
             return 0, False
         self._offset += len(appended)
@@ -1476,6 +1794,170 @@ class _EventProgressReader:
     def _has_line_ending(line: str) -> bool:
         """Match every boundary recognized by ``str.splitlines()``."""
         return bool(line) and line[-1] in "\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029"
+
+
+class _ResourceTrace:
+    """A bounded trace of resource samples that stays VALID at any length.
+
+    P4/S1: the retained trace used to be capped at
+    :data:`_LIVENESS_RESOURCE_TRACE_MAX_SAMPLES` and, once past it, marked
+    ``trace_truncated``/``trace_complete=False`` -- which silently disabled
+    EVERY hang verdict for a candidate that ran longer than about 17 minutes
+    of 1 s polls, including one that went idle afterwards. A cap must bound
+    the stored artifact, never the verdict.
+
+    Compaction MERGES adjacent known rows (oldest pair first), rather than
+    dropping rows: dropping one would break ``mutation_store``'s pairwise
+    re-validation of the stored evidence. A compacted `stalled` row can cover
+    clear time plus pressure deltas; its eligible interval remains the exact
+    difference between the retained endpoints.
+
+    * the merged row keeps the newer row's endpoints
+      (``wall_elapsed_s``/``eligible_elapsed_s``), CPU reading, progress
+      counters and resource snapshot, so every OTHER retained row's delta
+      arithmetic against its own predecessor is unchanged;
+    * ``eligible_interval_s`` is recomputed from the retained endpoints
+      (``newer.eligible - predecessor.eligible``), never as a sum of two
+      rounded intervals, so repeated merges cannot accumulate drift;
+    * two `clear` rows merge into a `clear` row whose (empty)
+      ``resource_deltas`` stay empty -- no counter moved, so the span's
+      endpoints compare clear too;
+    * any pair containing a `stalled` row merges into a `stalled` row whose
+      deltas are the SUM of the pair's positive deltas -- exactly what
+      ``compare_resource_snapshots(predecessor, newer_snapshot)`` returns for
+      monotone counters. When a clear interval is part of that span,
+      ``eligible_interval_s`` retains its clear-time contribution while the
+      resource deltas disclose that some pressure also occurred. The store
+      validator accepts that mixed summary only when ``trace_compacted`` is
+      true;
+    * an `unknown` row is never merged (it can only be the first row, and it
+      may carry ``previous_resources``), and **rows 0 and 1 are never merge
+      sources**, so the opening anchor and first post-anchor interval stay
+      byte-identical. Compaction always chooses the oldest middle pair, which
+      leaves the latest 1021 original samples intact at the 1024-row cap; those
+      rows contain the trailing
+      CPU window needed by the validator (row 1 is also the earliest CPU point
+      when that first interval is clear).
+
+    ``compacted``/``merged`` disclose that older rows are summaries. Once the
+    opening two anchors are present, every adjacent pair of known rows can be
+    merged, so the retained trace stays within its configured cap.
+    """
+
+    def __init__(self, max_samples: int | None = None) -> None:
+        self._samples: list[dict[str, Any]] = []
+        self.compacted = False
+        self.merged = 0
+        self.max_samples = max_samples
+
+    def _cap(self) -> int:
+        # Read the module global at CALL time so a test can monkeypatch it,
+        # exactly like the retired inline comparison did.
+        return (
+            _LIVENESS_RESOURCE_TRACE_MAX_SAMPLES
+            if self.max_samples is None
+            else self.max_samples
+        )
+
+    def reset(self, sample: dict[str, Any] | None = None) -> None:
+        self._samples = []
+        self.compacted = False
+        self.merged = 0
+        if sample is not None:
+            self._samples.append(sample)
+
+    @property
+    def samples(self) -> list[dict[str, Any]]:
+        return self._samples
+
+    def append(self, sample: dict[str, Any]) -> None:
+        self._samples.append(sample)
+        cap = self._cap()
+        while len(self._samples) > cap:
+            if not self._merge_one():
+                break
+
+    def _merge_one(self) -> bool:
+        # Rows 0 and 1 are NEVER merge sources: row 0 anchors the evidence
+        # window (`idle_eligible_s` and the first interval's
+        # `previous_resources` are read off it) and row 1 is the first
+        # post-anchor interval. Searching from index 2 compacts the oldest
+        # middle pair first and leaves the latest 1021 original rows intact
+        # at the 1024-row cap; those are the rows that prove the trailing CPU window
+        # really spans a full
+        # `_HUNG_CPU_WINDOW_S`.
+        for index in range(2, len(self._samples) - 1):
+            older = self._samples[index]
+            newer = self._samples[index + 1]
+            older_kind = older.get("resource_interval")
+            newer_kind = newer.get("resource_interval")
+            if older_kind not in ("clear", "stalled") or newer_kind not in (
+                "clear",
+                "stalled",
+            ):
+                continue
+            kind = (
+                "stalled"
+                if "stalled" in (older_kind, newer_kind)
+                else "clear"
+            )
+            merged: dict[str, Any] = dict(newer)
+            merged["resource_interval"] = kind
+            merged["eligible_interval_s"] = round(
+                float(newer["eligible_elapsed_s"])
+                - float(self._samples[index - 1]["eligible_elapsed_s"]),
+                6,
+            )
+            if kind == "clear":
+                merged["resource_deltas"] = {}
+            else:
+                merged["resource_deltas"] = {
+                    key: int(older.get("resource_deltas", {}).get(key, 0))
+                    + int(newer.get("resource_deltas", {}).get(key, 0))
+                    for key in set(older.get("resource_deltas", {}))
+                    | set(newer.get("resource_deltas", {}))
+                }
+            self._samples[index] = merged
+            del self._samples[index + 1]
+            self.compacted = True
+            self.merged += 1
+            return True
+        return False
+
+
+class _PerTestWindow(NamedTuple):
+    """(P4/S2) One in-flight test's own CPU window.
+
+    *started_cpu* is the MONOTONIC process-tree series at the instant the
+    candidate reported that it began this nodeid, so the bound measures that
+    test's own CPU and not the suite's; *baseline_s* is the sum of its
+    baseline setup+call+teardown durations. *start_index* is the reader's
+    record index of the `test_start` that OPENED this window, so a rerun of
+    one nodeid (a retry, a repeated parameter) opens a NEW window rather than
+    inheriting the first run's already-spent CPU.
+    """
+
+    nodeid: str
+    baseline_s: float
+    started_cpu: float | None
+    started_wall: float
+    start_index: int
+
+
+def per_test_bound_enabled(
+    *, per_test_xdist: bool, overlapping: bool = False
+) -> bool:
+    """Whether the per-test CPU bound may arm for this run.
+
+    Distribution makes "one test in flight" false: several workers run tests
+    concurrently, their plugin records are stamped with their OWN pids, and
+    this reader deliberately keeps only the candidate owner's timeline (see
+    :meth:`_EventProgressReader._track_progress`). So under xdist there is no
+    measurable in-flight test to bound and the process-tree bound (S1) is the
+    only one. A candidate whose file shows more than one in-flight test_start
+    before a completion is skipped for the same reason, at runtime.
+    """
+    return not per_test_xdist and not overlapping
 
 
 class _CpuSampleHistory:
@@ -1637,6 +2119,10 @@ class LivenessRunner:
         popen: Callable[..., Any] = subprocess.Popen,
         process_group_killer: Callable[[int, int], None] | None = None,
         cpu_window_s: float | None = None,
+        cpu_without_progress_bound_s: float | None = None,
+        per_test_cpu_baseline_s: Mapping[str, float] | None = None,
+        per_test_xdist: bool = False,
+        advisory_budget_s: float | None = None,
     ) -> None:
         self._events_dir = events_dir
         self._events_dir.mkdir(parents=True, exist_ok=True)
@@ -1658,6 +2144,28 @@ class LivenessRunner:
         # real process group on the host. Resolve the default at call time, so
         # existing syscall-level tests can still monkeypatch os.killpg.
         self._process_group_killer = process_group_killer
+        # (P4/S1) The CPU-without-progress bound, in process-tree CPU seconds
+        # since the candidate's last COMPLETED plugin event (or its start).
+        # `None` switches this bound OFF for every caller that does not have a
+        # derived value -- a hand-built runner in another module must not
+        # invent one, and the idle rule plus the wall budget are unchanged.
+        self.cpu_without_progress_bound_s = cpu_without_progress_bound_s
+        # (P4/S2) The per-test CPU bound's baseline: `{nodeid: seconds}` summed
+        # from setup+call+teardown durations. `None` (or an empty mapping)
+        # disables the per-test bound; an unknown nodeid is then governed by
+        # S1's process-tree bound alone.
+        self._per_test_cpu_baseline_s = dict(per_test_cpu_baseline_s or {})
+        self._per_test_xdist = per_test_xdist
+        # (P4/S3) `judge.mutation.budget_per_candidate`, when the no-progress
+        # watch is armed for this run: an ADVISORY wall bound. It is never a
+        # reason to end a candidate -- one WARN per runner (one lane run) when
+        # it is first exceeded, and the candidate continues. Where the watch
+        # is NOT armed (this argument is `None`), the caller passes the budget
+        # as the ordinary `timeout` instead and it binds exactly as before.
+        # If the FIRST CPU reading fails or the event stream later breaks, the
+        # watch cannot remain armed, so this bound falls back to binding.
+        self.advisory_budget_s = advisory_budget_s
+        self.advisory_exceeded_at_s: float | None = None
 
     def assay_window_host_spec(self) -> Mapping[str, object] | None:
         """Describe a production-configured runner for an isolated host.
@@ -1681,6 +2189,18 @@ class LivenessRunner:
             "expect_next_event_within_s": self._expect_next_event_within_s,
             "pre_first_event_within_s": self._pre_first_event_within_s,
             "cpu_window_s": self.cpu_window_s,
+            # (P4/S1,S2) The progress bounds travel with the runner: a worker
+            # that rebuilt this runner WITHOUT them would watch for idle only
+            # and let a spinning candidate run to the wall budget -- a
+            # silently different execution policy, which is exactly what the
+            # host protocol exists to avoid.
+            "cpu_without_progress_bound_s": self.cpu_without_progress_bound_s,
+            "per_test_cpu_baseline_s": dict(self._per_test_cpu_baseline_s),
+            "per_test_xdist": self._per_test_xdist,
+            # (P4/S3) The ADVISORY per-candidate wall bound travels with the
+            # runner for the same reason: an isolated worker that dropped it
+            # would enforce a budget this run decided to only warn about.
+            "advisory_budget_s": self.advisory_budget_s,
         }
 
     def _events_path_for_cwd(self, cwd: Path) -> Path:
@@ -1894,6 +2414,9 @@ class LivenessRunner:
         previous_poll_at = start
         liveness_clock = 0.0
         last_progress_at = 0.0
+        no_progress_wall_marker = start
+        no_progress_eligible_marker = 0.0
+        pressure_interval_seen = False
         last_event_count = 0
         session_finish_at: float | None = None
         last_stdout_size = 0
@@ -1901,9 +2424,31 @@ class LivenessRunner:
         event_reader = _EventProgressReader(proc.pid)
         cpu_samples = _CpuSampleHistory(self.cpu_window_s)
         previous_resources: Mapping[str, Any] | None = None
-        resource_trace: list[dict[str, Any]] = []
+        trace = _ResourceTrace()
         resource_trace_complete = False
-        resource_trace_truncated = False
+
+        # (P4/S1) The MONOTONIC process-tree CPU series. `tree_cpu_seconds`
+        # sums the LIVE tree, so a busy descendant exiting drops the total --
+        # which would otherwise hand a spinning candidate a "no CPU burned"
+        # verdict exactly when it burned the most. A drop is a discontinuity
+        # of the measurement, so the peak so far is banked into `cpu_offset`
+        # and subtracted again only by the next growth: the series never
+        # decreases, and `cpu_since_last_completed_event_s` can therefore only
+        # over-approximate a candidate's work, never erase it.
+        cpu_series: float | None = None
+        cpu_offset = 0.0
+        cpu_last: float | None = None
+        #: Series value at the last COMPLETED plugin event (or at start).
+        completed_marker_cpu: float | None = None
+        #: Which `event_reader.completed_events` count that marker reflects.
+        completed_marker_count = 0
+        completed_marker_wall: float | None = None
+        #: (P4/S2) the single in-flight test's own window.
+        per_test_window: _PerTestWindow | None = None
+        #: (P4/S3) Whether the candidate's CPU was readable at least once --
+        #: the CPU precondition for arming the watch. The stream-integrity
+        #: condition is tracked separately by `event_reader.stream_broken`.
+        cpu_readable = False
 
         def evidence(reason: str, *, required_idle_s: float) -> dict[str, Any]:
             return {
@@ -1923,8 +2468,56 @@ class LivenessRunner:
                     round(session_finish_at, 3) if session_finish_at is not None else None
                 ),
                 "trace_complete": resource_trace_complete,
-                "trace_truncated": resource_trace_truncated,
-                "samples": list(resource_trace),
+                # P4/S1: the trace is COMPACTED, never discarded, so the
+                # stored artifact is complete at any length.
+                "trace_truncated": False,
+                "trace_compacted": trace.compacted,
+                "trace_samples_merged": trace.merged,
+                "samples": list(trace.samples),
+            }
+
+        def cpu_evidence(
+            decision: str,
+            *,
+            now: float,
+            cpu_series: float,
+            since: float,
+            required: float,
+            per_test: "_PerTestWindow | None" = None,
+        ) -> dict[str, Any]:
+            """(P4/S1,S2) Evidence for a CPU-without-progress kill.
+
+            Deliberately a DIFFERENT policy name from the idle one: this
+            verdict never depended on pressure evidence, so it is never
+            validated against the idle trace's snapshot rules -- it only has
+            to name the numbers that killed the candidate.
+            """
+            return {
+                "schema_version": 1,
+                "policy": CPU_PROGRESS_POLICY,
+                "decision": decision,
+                "candidate_pid": proc.pid,
+                "candidate_cpu_source": CPU_PROGRESS_SOURCE,
+                "wall_elapsed_s": round(max(0.0, now - start), 3),
+                "candidate_cpu_s": round(cpu_series, 6),
+                "cpu_since_last_completed_event_s": round(max(0.0, since), 6),
+                "required_cpu_s": round(required, 6),
+                "completed_events": event_reader.completed_events,
+                "event_count": event_count,
+                "wall_since_last_completed_event_s": (
+                    None
+                    if completed_marker_wall is None
+                    else round(max(0.0, now - completed_marker_wall), 3)
+                ),
+                "test_nodeid": None if per_test is None else per_test.nodeid,
+                "per_test_baseline_s": (
+                    None if per_test is None else round(per_test.baseline_s, 6)
+                ),
+                "per_test_cpu_s": (
+                    None if per_test is None else round(max(0.0, since), 6)
+                ),
+                "resources": dict(resources),
+                "trace_compacted": trace.compacted,
             }
 
         while True:
@@ -1944,6 +2537,7 @@ class LivenessRunner:
                 )
 
             event_count, saw_session_finish = event_reader.read(events_path)
+            stream_broken = event_reader.stream_broken
             stdout_size = _safe_size(stdout_path)
             stderr_size = _safe_size(stderr_path)
             try:
@@ -1966,6 +2560,12 @@ class LivenessRunner:
             resource_status, resource_deltas = compare_resource_snapshots(
                 prior_resources, resources
             )
+            if resource_status in ("clear", "stalled"):
+                # These are the comparator's only comparable outcomes. Keep
+                # this sticky for the run: once pressure credit is established,
+                # later unknown intervals pause the clock rather than restoring
+                # the wall fallback.
+                pressure_interval_seen = True
             resources_complete = (
                 resources.get("status") == "available"
                 and compare_resource_snapshots(resources, resources)[0] == "clear"
@@ -2009,22 +2609,15 @@ class LivenessRunner:
                 # An available current sample is a trustworthy new baseline;
                 # no time before it is credited, and the retained trace starts
                 # there. An unavailable sample keeps evidence incomplete.
-                resource_trace = [sample]
+                trace.reset(sample)
                 resource_trace_complete = resources_complete
-                resource_trace_truncated = False
                 last_progress_at = liveness_clock
-            elif resource_trace_truncated:
-                # Keep the bounded prefix and preserve the explicit
-                # incompleteness until progress or a fresh baseline.
-                pass
-            elif len(resource_trace) >= _LIVENESS_RESOURCE_TRACE_MAX_SAMPLES:
-                # Retain bounded artifacts. Once the supporting interval is
-                # truncated, never certify a hang from an incomplete trace;
-                # progress or a new trustworthy baseline starts a new one.
-                resource_trace_truncated = True
-                resource_trace_complete = False
             else:
-                resource_trace.append(sample)
+                # P4/S1: the trace is never truncated. Past
+                # `_LIVENESS_RESOURCE_TRACE_MAX_SAMPLES` rows are merged in
+                # place, so the artifact stays bounded and VALID and no hang
+                # verdict is ever lost to a long run.
+                trace.append(sample)
 
             made_progress = (
                 event_count > last_event_count
@@ -2034,17 +2627,90 @@ class LivenessRunner:
             if made_progress:
                 last_progress_at = liveness_clock
                 cpu_samples.reset()
-                resource_trace = [sample]
+                trace.reset(sample)
                 resource_trace_complete = resources_complete
-                resource_trace_truncated = False
                 # This trace starts at the current sample, so retain the
                 # preceding snapshot needed to verify its first interval.
                 if resource_status != "unknown" and prior_resources is not None:
                     sample["previous_resources"] = dict(prior_resources)
             last_event_count = event_count
             last_stdout_size, last_stderr_size = stdout_size, stderr_size
-            if saw_session_finish and session_finish_at is None:
+            session_finish_first_seen = (
+                saw_session_finish and session_finish_at is None
+            )
+            if session_finish_first_seen:
                 session_finish_at = liveness_clock
+
+            # (P4/S1) The MONOTONIC series, updated BEFORE any bound reads it.
+            if cpu_now is not None:
+                cpu_readable = True
+                if cpu_last is not None and cpu_now < cpu_last:
+                    # A descendant exited. Bank the peak so the series cannot
+                    # fall; from here on, growth is measured from the banked
+                    # peak until the live sum passes it again.
+                    cpu_offset += cpu_last - cpu_now
+                cpu_series = cpu_now + cpu_offset
+                cpu_last = cpu_now
+            # (P4/S2) Track the single in-flight test (never under xdist, never
+            # with more than one in flight -- see `_PerTestWindow`).
+            #
+            # (P4 fix 1, review finding 1) The window is OPEN from
+            # `test_start` to the matching `test_finish` -- across `setup`,
+            # `call` and `teardown` -- and keyed on the START RECORD, so a
+            # rerun of one nodeid opens its own window. Before this it was
+            # closed by the first COMPLETED event (`setup` is one), which
+            # meant the body of every test ran unbounded.
+            in_flight = event_reader.in_flight
+            if stream_broken:
+                # A replaced, truncated, vanished or unreadable stream cannot
+                # support an event-derived per-test CPU window for this run.
+                per_test_window = None
+            elif in_flight is None:
+                per_test_window = None
+            else:
+                nodeid, _started_after, start_index = in_flight
+                if (
+                    per_test_window is None
+                    or per_test_window.start_index != start_index
+                    or (
+                        per_test_window.started_cpu is None
+                        and cpu_series is not None
+                    )
+                ):
+                    baseline_s = self._per_test_cpu_baseline_s.get(nodeid)
+                    if baseline_s is None or not per_test_bound_enabled(
+                        per_test_xdist=self._per_test_xdist,
+                        overlapping=event_reader.overlapping_tests,
+                    ):
+                        per_test_window = None
+                    else:
+                        per_test_window = _PerTestWindow(
+                            nodeid=nodeid,
+                            baseline_s=baseline_s,
+                            started_cpu=cpu_series,
+                            started_wall=now,
+                            start_index=start_index,
+                        )
+            # (P4/S1) A completed event re-dates the process-tree window.
+            if event_reader.completed_events > completed_marker_count:
+                completed_marker_count = event_reader.completed_events
+                completed_marker_cpu = cpu_series
+                completed_marker_wall = now
+                no_progress_wall_marker = now
+                no_progress_eligible_marker = liveness_clock
+            if session_finish_first_seen:
+                # `session_finish` is not a completed test/phase event, but
+                # teardown after it gets one full CPU-without-progress bound
+                # measured from the finish itself. It also closes any stale
+                # per-test window: no item remains in flight once the session
+                # has reported its finish. This is one-shot, guarded by the
+                # first assignment to `session_finish_at` above.
+                per_test_window = None
+                completed_marker_count = event_reader.completed_events
+                completed_marker_cpu = cpu_series
+                completed_marker_wall = now
+                no_progress_wall_marker = now
+                no_progress_eligible_marker = liveness_clock
 
             cpu_growing = True
             if resource_status == "clear" and cpu_now is not None:
@@ -2077,22 +2743,126 @@ class LivenessRunner:
                 and idle_for >= _HUNG_SESSION_FINISH_GRACE_S
                 and not cpu_growing
             )
-            hung = resource_trace_complete and (idle_hang or finish_hang)
+            # (P4/S1) CPU-without-progress. PROGRESS here is a COMPLETED plugin
+            # event and nothing else: output growth and `test_start` do NOT
+            # reset it, and it has no pressure term -- CPU accrues only while
+            # the candidate runs, so a paused clock would only hide the one
+            # signal this bound exists to read. Pressure therefore neither
+            # pauses it nor makes it ineligible. (The idle rule above keeps
+            # its own pressure-adjusted clock, unchanged.)
+            cpu_since_completed_s = 0.0
+            cpu_without_progress = False
+            if (
+                not stream_broken
+                and self.cpu_without_progress_bound_s is not None
+                and cpu_series is not None
+            ):
+                if completed_marker_cpu is None:
+                    # Nothing completed yet: the window starts at the spawn.
+                    completed_marker_cpu = cpu_series
+                    completed_marker_wall = now
+                cpu_since_completed_s = max(0.0, cpu_series - completed_marker_cpu)
+                cpu_without_progress = (
+                    cpu_since_completed_s >= self.cpu_without_progress_bound_s
+                )
+            # (P4/S2) The per-test bound. It needs a readable CPU series, an
+            # open single-test window, and that test's own baseline; an
+            # unknown nodeid has no baseline, so S1 is the only bound for it.
+            per_test_hit = False
+            per_test_cpu_s = 0.0
+            per_test_required = 0.0
+            if (
+                not stream_broken
+                and per_test_window is not None
+                and cpu_series is not None
+                and per_test_window.started_cpu is not None
+            ):
+                per_test_cpu_s = max(0.0, cpu_series - per_test_window.started_cpu)
+                per_test_required = per_test_cpu_bound_from_baseline(
+                    per_test_window.baseline_s
+                )
+                per_test_hit = per_test_cpu_s >= per_test_required
+
+            hung = (resource_trace_complete and (idle_hang or finish_hang)) or (
+                cpu_without_progress or per_test_hit
+            )
             if hung:
-                required_idle_s = bound if idle_hang else _HUNG_SESSION_FINISH_GRACE_S
                 if window is not None:
                     window.close()
                 self._kill(proc)
+                if per_test_hit:
+                    # The per-test bound is the narrower statement ("this
+                    # TEST overran its own window"), so it names the kill
+                    # whenever it is the one that fired.
+                    resource_evidence = cpu_evidence(
+                        per_test_cpu_bound_decision,
+                        now=now,
+                        cpu_series=cpu_series if cpu_series is not None else 0.0,
+                        since=per_test_cpu_s,
+                        required=per_test_required,
+                        per_test=per_test_window,
+                    )
+                elif cpu_without_progress:
+                    resource_evidence = cpu_evidence(
+                        cpu_without_progress_decision,
+                        now=now,
+                        cpu_series=cpu_series if cpu_series is not None else 0.0,
+                        since=cpu_since_completed_s,
+                        required=float(self.cpu_without_progress_bound_s),
+                    )
+                else:
+                    required_idle_s = (
+                        bound if idle_hang else _HUNG_SESSION_FINISH_GRACE_S
+                    )
+                    resource_evidence = evidence(
+                        "idle-hang" if idle_hang else "session-finish-hang",
+                        required_idle_s=required_idle_s,
+                    )
                 raise LivenessHungExpired(
                     cmd=list(argv),
                     timeout=timeout,
                     output=_read_bytes(stdout_path),
                     stderr=_read_bytes(stderr_path),
-                    resource_evidence=evidence(
-                        "idle-hang" if idle_hang else "session-finish-hang",
-                        required_idle_s=required_idle_s,
-                    ),
+                    resource_evidence=resource_evidence,
                 )
+
+            # (P4/S3) `budget_per_candidate` as an ADVISORY bound: one WARN
+            # when it is first exceeded, and the candidate continues. It ends
+            # the candidate when the CPU series was never readable or a
+            # previously observed event stream broke, which are the cases
+            # where the progress watch is unavailable and the budget binds.
+            if self.advisory_budget_s is not None:
+                elapsed_wall = max(0.0, now - start)
+                if elapsed_wall >= self.advisory_budget_s:
+                    if cpu_readable and not stream_broken:
+                        if self.advisory_exceeded_at_s is None:
+                            self.advisory_exceeded_at_s = elapsed_wall
+                            print(
+                                f"assay: WARN: candidate overran "
+                                f"judge.mutation.budget_per_candidate "
+                                f"({self.advisory_budget_s:.1f}s) but is "
+                                f"still watched for progress: the "
+                                f"budget is ADVISORY for this run (a "
+                                f"hang is caught by the "
+                                f"CPU-without-progress and per-test "
+                                f"bounds, bucket 'hung')",
+                                file=sys.stderr,
+                            )
+                    else:
+                        if window is not None:
+                            window.close()
+                        self._kill(proc)
+                        exc = subprocess.TimeoutExpired(
+                            cmd=list(argv),
+                            timeout=self.advisory_budget_s,
+                            output=_read_bytes(stdout_path),
+                            stderr=_read_bytes(stderr_path),
+                        )
+                        exc.liveness_resource_evidence = evidence(
+                            "budget-expired-watch-unarmed",
+                            required_idle_s=bound,
+                        )
+                        raise exc
 
             if timeout is not None and (now - start) >= timeout:
                 if window is not None:
@@ -2108,6 +2878,45 @@ class LivenessRunner:
                     "configured-budget-expired", required_idle_s=bound
                 )
                 raise exc
+
+            # (P4/M2) A no-progress backstop for candidates that keep burning
+            # a little CPU, or whose CPU source later becomes unreadable. It is
+            # armed only with the calibrated CPU bound and an intact stream.
+            # Until the first comparable interval, it uses wall time when
+            # pressure has not been classified, so missing data cannot disable
+            # the stop. After that it uses the idle rule's existing
+            # pressure-credited liveness clock. Completed events and the first
+            # session_finish re-date both windows above.
+            # CPU and per-test hung bounds run first; the lane timeout above
+            # also wins when it reaches its deadline first.
+            if (
+                self.cpu_without_progress_bound_s is not None
+                and not stream_broken
+            ):
+                wall_bound_s = (
+                    NO_PROGRESS_WALL_FACTOR * self.cpu_without_progress_bound_s
+                )
+                wall_seconds = max(0.0, now - no_progress_wall_marker)
+                eligible_seconds = max(
+                    0.0, liveness_clock - no_progress_eligible_marker
+                )
+                window_seconds = (
+                    eligible_seconds if pressure_interval_seen else wall_seconds
+                )
+                if window_seconds >= wall_bound_s:
+                    if window is not None:
+                        window.close()
+                    self._kill(proc)
+                    raise LivenessNoProgressWallExpired(
+                        cmd=list(argv),
+                        timeout=wall_bound_s,
+                        wall_seconds=wall_seconds,
+                        eligible_seconds=eligible_seconds,
+                        wall_bound_s=wall_bound_s,
+                        pressure_credit_active=pressure_interval_seen,
+                        output=_read_bytes(stdout_path),
+                        stderr=_read_bytes(stderr_path),
+                    )
 
             self._sleep(self._poll_interval_s)
 

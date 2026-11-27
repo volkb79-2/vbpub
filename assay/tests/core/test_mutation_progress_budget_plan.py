@@ -2307,3 +2307,583 @@ def test_plan_estimates_with_the_60s_fallback_for_every_non_duration_spelling(
     # 1 candidate x 60s fallback, / 1 native-R2 worker for the wall estimate.
     assert payload["estimated_serial_seconds"] == 60.0
     assert payload["estimated_wall_seconds"] == 60.0
+
+
+# --- (P4/S3) the `plan` record discloses which budget regime applied ------
+
+
+def _plan_event_for(tmp_path, *, armed: bool) -> dict:
+    """One sweep's `plan` progress record, with the caller's arming decision
+    (the runner's own, passed through) and its two derived figures."""
+    repo = _repo(tmp_path)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    progress_path = tmp_path / ".assay" / "lane.progress.jsonl"
+
+    def decide(argv, *, env, cwd, timeout):
+        return completed_process(list(argv), returncode=0)
+
+    lane = make_lane(argv=("pytest", "-q"))
+    baseline = execute_command(lane, cwd=repo.path, process_runner=decide)
+    with prepared_snapshot(repo, scratch_root=scratch) as prepared:
+        result = run_mutation(
+            baseline=baseline,
+            prepared=prepared,
+            plan=make_plan(lane),
+            deadline=make_deadline(),
+            targets=_TARGETS,
+            adapter=PythonAdapter(),
+            jobs=1,
+            max_mutants=10,
+            operators=("python:bool-const-flip",),
+            process_runner=decide,
+            clock=lambda: datetime.now(timezone.utc),
+            progress_artifact=progress_path,
+            liveness_watch_armed=armed,
+            liveness_watch_reason=(
+                "armed" if armed else "baseline-produced-no-plugin-events"
+            ),
+            liveness_cpu_without_progress_bound_s=70.0 if armed else None,
+            liveness_per_test_baseline_s={"t": 1.0} if armed else None,
+            budget_per_candidate_seconds=30.0,
+        )
+    assert result is not None and not isinstance(result, str)
+    events = [
+        json.loads(line)
+        for line in progress_path.read_text(encoding="utf-8").splitlines()
+    ]
+    return next(event for event in events if event["event"] == "plan")
+
+
+def test_plan_discloses_an_armed_advisory_budget(tmp_path):
+    """ARMED: the stream states the role in so many words, names the reason,
+    and carries the two bounds the candidate was actually watched by -- a
+    reader of ONLY this stream learns how the run was judged, before the
+    first candidate line arrives.
+    """
+    plan = _plan_event_for(tmp_path, armed=True)
+    bound = plan["progress_bound"]
+    assert bound["armed"] is True
+    assert bound["reason"] == "armed"
+    assert bound["budget_per_candidate_role"] == "advisory"
+    assert bound["cpu_without_progress_s"] == 70.0
+    assert bound["per_test_baseline_tests"] == 1
+    # The budget is still DISCLOSED (it exists, it is merely advisory): the
+    # number is not hidden just because it no longer stops anything.
+    assert plan["budget_per_candidate_s"] == 30.0
+
+
+def test_plan_discloses_a_binding_budget_with_its_reason(tmp_path):
+    """NOT ARMED: the same record says the budget binds, names WHY the watch
+    could not be armed, and never fabricates the two figures it did not use."""
+    plan = _plan_event_for(tmp_path, armed=False)
+    bound = plan["progress_bound"]
+    assert bound["armed"] is False
+    assert bound["reason"] == "baseline-produced-no-plugin-events"
+    assert bound["budget_per_candidate_role"] == "binding"
+    assert bound["cpu_without_progress_s"] is None
+    assert bound["per_test_baseline_tests"] is None
+    assert plan["budget_per_candidate_s"] == 30.0
+
+
+@pytest.mark.parametrize(
+    "pressure_credit_active",
+    [True, False],
+    ids=("comparable-pressure", "wall-fallback"),
+)
+def test_no_progress_wall_stop_is_unclassified_and_retried_on_resume(
+    tmp_path, pressure_credit_active
+):
+    repo = _repo(tmp_path)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    state_root = tmp_path / "state-root"
+    state_root.mkdir()
+    progress_path = tmp_path / ".assay" / "lane.progress.jsonl"
+    calls = []
+
+    def stop_without_progress(argv, *, env, cwd, timeout):
+        calls.append(timeout)
+        raise liveness.LivenessNoProgressWallExpired(
+            argv,
+            timeout=timeout,
+            wall_seconds=48.25,
+            eligible_seconds=12.75 if pressure_credit_active else 0.0,
+            wall_bound_s=48.0,
+            pressure_credit_active=pressure_credit_active,
+            output=b"",
+            stderr=b"",
+        )
+
+    lane = make_lane(argv=("pytest", "-q"))
+    baseline = execute_command(
+        lane,
+        cwd=repo.path,
+        process_runner=lambda argv, *, env, cwd, timeout: completed_process(
+            list(argv), returncode=0
+        ),
+    )
+    for resume in (False, True):
+        with prepared_snapshot(repo, scratch_root=scratch) as prepared:
+            with pytest.raises(AssayError) as excinfo:
+                run_mutation(
+                    baseline=baseline,
+                    prepared=prepared,
+                    plan=make_plan(lane),
+                    deadline=make_deadline(budget_seconds=180.0),
+                    targets=_TARGETS,
+                    adapter=PythonAdapter(),
+                    jobs=1,
+                    max_mutants=10,
+                    operators=("python:bool-const-flip",),
+                    process_runner=stop_without_progress,
+                    clock=lambda: datetime.now(timezone.utc),
+                    budget_per_candidate_seconds=12.0,
+                    liveness_watch_armed=True,
+                    liveness_cpu_without_progress_bound_s=12.0,
+                    liveness_per_test_baseline_s={},
+                    progress_artifact=progress_path,
+                    state_root=state_root,
+                    resume=resume,
+                )
+        error = excinfo.value
+        assert error.outcome is Outcome.BUDGET_EXCEEDED
+        assert error.reason_code is ReasonCode.LANE_TIMEOUT
+        assert "candidate " in str(error)
+        assert "48.2 wall seconds" in str(error)
+        assert (
+            "12.8 eligible seconds" if pressure_credit_active else "0.0 eligible seconds"
+        ) in str(error)
+        assert "48.0s" in str(error)
+        assert (
+            "pressure-credited eligible time"
+            if pressure_credit_active
+            else "wall time before comparable pressure data"
+        ) in str(error)
+        assert "attempt is unclassified" in str(error)
+        assert "retried on resume" in str(error)
+        # A second resume reaches the same command because the interrupted
+        # attempt wrote no candidate result or budget/hung bucket.
+        assert not list(state_root.rglob("*.json"))
+
+    assert len(calls) == 2
+    progress = [
+        json.loads(line)
+        for line in progress_path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert not any(event.get("event") == "candidate" for event in progress)
+
+
+def test_real_liveness_stop_drains_parallel_peer_and_resume_retries_missing_identity(
+    tmp_path, monkeypatch
+):
+    """The real execute_plan path maps a liveness stop and drains jobs=2.
+
+    Synthetic process handles and a virtual clock make both candidates' run
+    order deterministic. The first candidate reaches LivenessRunner's wall
+    stop; the already-dispatched peer then completes and persists before the
+    fatal result is raised. Resume dispatches the stopped identity again.
+    """
+    from assay import _window_host, runner as runner_module
+
+    repo = _three_site_repo(tmp_path)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    state_root = tmp_path / "state-root"
+    state_root.mkdir()
+    progress_path = tmp_path / ".assay" / "lane.progress.jsonl"
+    events_dir = tmp_path / "liveness-candidates"
+    lane = make_lane(argv=("pytest", "-q"))
+    baseline = execute_command(
+        lane,
+        cwd=repo.path,
+        process_runner=lambda argv, *, env, cwd, timeout: completed_process(
+            list(argv), returncode=0
+        ),
+    )
+    all_jobs = mutation_module.collect_mutation_sites(
+        _THREE_TARGETS,
+        adapter=PythonAdapter(),
+        operators=("python:bool-const-flip",),
+        limit=10,
+    )
+    assert isinstance(all_jobs, tuple) and len(all_jobs) == 3
+    candidate_ids = [mutation_module.candidate_id(job) for job in all_jobs]
+
+    class _Clock:
+        def __init__(self):
+            self.t = 0.0
+
+        def now(self):
+            return self.t
+
+        def advance(self, duration):
+            self.t += duration
+
+    class _Proc:
+        def __init__(self, pid):
+            self.pid = pid
+            self.returncode = None
+
+        def finish(self, returncode):
+            self.returncode = returncode
+
+        def poll(self):
+            return self.returncode
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+    active = {"state": None, "pass": 1}
+    candidate_states = {}
+    next_pid = 8100
+    timeline = []
+
+    def window_clock():
+        state = active["state"]
+        assert state is not None
+        return state["clock"].now()
+
+    def window_sleep(duration):
+        state = active["state"]
+        assert state is not None
+        state["clock"].advance(duration)
+
+    def fake_popen(argv, *, env, cwd, stdout, stderr, start_new_session, **_kwargs):
+        nonlocal next_pid
+        next_pid += 1
+        state = active["state"]
+        assert state is not None
+        state["proc"] = _Proc(next_pid)
+        return state["proc"]
+
+    def cpu_reader(_pid):
+        state = active["state"]
+        assert state is not None
+        clock = state["clock"]
+        proc = state["proc"]
+        assert proc is not None
+        if not (state["candidate"] == "stopped" and state["pass"] == 1):
+            if clock.t >= 3.0 and proc.returncode is None:
+                proc.finish(0)
+                timeline.append((state["pass"], state["candidate"], "peer-complete"))
+        return 0.0
+
+    def unavailable_resources(_pid):
+        return {
+            "schema_version": 1,
+            "status": "unavailable",
+            "reason": "scripted-unreadable-pressure",
+        }
+
+    liveness_runner = liveness.LivenessRunner(
+        events_dir=events_dir,
+        expect_next_event_within_s=1000.0,
+        pre_first_event_within_s=1000.0,
+        monotonic=window_clock,
+        sleep=window_sleep,
+        cpu_reader=cpu_reader,
+        resource_reader=unavailable_resources,
+        popen=fake_popen,
+        process_group_killer=lambda _pgid, _sig: None,
+        cpu_without_progress_bound_s=2.0,
+        advisory_budget_s=50.0,
+    )
+
+    def direct_window_run(
+        plan, *, cwd, timeout, process_runner, clock, **_kwargs
+    ):
+        source = (Path(cwd) / "pkg" / "flags.py").read_text(encoding="utf-8")
+        if "a = False" in source:
+            candidate = "stopped"
+        elif "b = False" in source:
+            candidate = "peer"
+        elif "c = False" in source:
+            candidate = "third"
+        else:
+            raise AssertionError(f"unexpected mutation source: {source!r}")
+        state = {
+            "clock": _Clock(),
+            "candidate": candidate,
+            "pass": active["pass"],
+            "proc": None,
+        }
+        candidate_states[(state["pass"], candidate)] = state
+        active["state"] = state
+        return runner_module.execute_plan(
+            plan,
+            cwd=cwd,
+            timeout=timeout,
+            process_runner=process_runner,
+            clock=clock,
+        )
+
+    class _ControlledExecutor:
+        def __init__(self, requested_jobs):
+            assert requested_jobs == 2
+            self.pending = []
+            self.submitted = []
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def submit(self, function, position):
+            future = Future()
+            self.pending.append((future, function, position))
+            self.submitted.append(position)
+            return future
+
+    executors = []
+
+    def executor_factory(requested_jobs):
+        executor = _ControlledExecutor(requested_jobs)
+        executors.append(executor)
+        return executor
+
+    wait_stages = []
+    wait_count_by_pass = {}
+
+    def controlled_wait(futures, *, return_when, timeout=None):
+        selected = set(futures)
+        pending = [
+            entry for entry in executors[-1].pending if entry[0] in selected
+        ]
+        assert pending
+        pass_number = active["pass"]
+        wait_number = wait_count_by_pass.get(pass_number, 0)
+        wait_count_by_pass[pass_number] = wait_number + 1
+        if wait_number == 0:
+            # Return only the fatal first candidate; the submitted peer stays
+            # pending until the scheduler's next wait call.
+            pending = [min(pending, key=lambda entry: entry[2])]
+        done = set()
+        for future, function, position in pending:
+            assert future.set_running_or_notify_cancel()
+            try:
+                result = function(position)
+            except BaseException as exc:
+                future.set_exception(exc)
+                if isinstance(exc, mutation_module.AssayError):
+                    state = active["state"]
+                    assert state is not None
+                    timeline.append((state["pass"], state["candidate"], "stop"))
+            else:
+                future.set_result(result)
+            done.add(future)
+        not_done = selected - done
+        wait_stages.append(
+            (
+                pass_number,
+                tuple(sorted(entry[2] for entry in pending)),
+                tuple(
+                    sorted(
+                        entry[2]
+                        for entry in executors[-1].pending
+                        if entry[0] in done
+                    )
+                ),
+                tuple(
+                    sorted(
+                        entry[2]
+                        for entry in executors[-1].pending
+                        if entry[0] in not_done
+                    )
+                ),
+            )
+        )
+        return done, not_done
+
+    def safe_synthetic_pgid(_pid):
+        raise ProcessLookupError
+
+    monkeypatch.setattr(
+        mutation_module.SnapshotRepository,
+        "cheap_clone",
+        property(lambda _self: True),
+    )
+    monkeypatch.setattr(_window_host, "can_host", lambda _runner, _clock: True)
+    monkeypatch.setattr(_window_host, "run_window", direct_window_run)
+    monkeypatch.setattr(mutation_module, "wait", controlled_wait)
+    monkeypatch.setattr(
+        mutation_module, "_read_candidate_resource_counters", lambda: None
+    )
+    monkeypatch.setattr(
+        mutation_module,
+        "_read_candidate_resource_counters_during_campaign",
+        lambda: (None, "scripted unobserved limit counters"),
+    )
+    real_write_state_record = (
+        mutation_module.mutation_store._write_mutation_state_record
+    )
+    persist_order = []
+
+    def record_peer_persistence(state_path, payload, **kwargs):
+        real_write_state_record(state_path, payload, **kwargs)
+        if payload["candidate_id"] == candidate_ids[1]:
+            persist_order.append("peer-persisted")
+
+    monkeypatch.setattr(
+        mutation_module.mutation_store,
+        "_write_mutation_state_record",
+        record_peer_persistence,
+    )
+    monkeypatch.setattr(liveness.os, "getpgid", safe_synthetic_pgid)
+    monkeypatch.setattr(liveness, "terminate_live_window_hosts", lambda: None)
+
+    with prepared_snapshot(repo, scratch_root=scratch) as prepared:
+        with pytest.raises(AssayError) as excinfo:
+            run_mutation(
+                baseline=baseline,
+                prepared=prepared,
+                plan=make_plan(lane),
+                deadline=make_deadline(budget_seconds=None),
+                targets=_THREE_TARGETS,
+                adapter=PythonAdapter(),
+                jobs=2,
+                max_mutants=10,
+                operators=("python:bool-const-flip",),
+                process_runner=liveness_runner,
+                clock=lambda: datetime.now(timezone.utc),
+                executor_factory=executor_factory,
+                budget_per_candidate_seconds=50.0,
+                liveness_watch_armed=True,
+                liveness_cpu_without_progress_bound_s=2.0,
+                liveness_per_test_baseline_s={},
+                liveness_events_dir=events_dir,
+                progress_artifact=progress_path,
+                state_root=state_root,
+                resume=True,
+            )
+        assert excinfo.value.outcome is Outcome.BUDGET_EXCEEDED
+        assert excinfo.value.reason_code is ReasonCode.LANE_TIMEOUT
+        assert "attempt is unclassified" in str(excinfo.value)
+        persist_order.append("fatal-observed")
+
+        assert executors[0].submitted == [0, 1]
+        assert wait_stages[:2] == [
+            (1, (0,), (0,), (1,)),
+            (1, (1,), (1,), ()),
+        ]
+        assert persist_order == ["peer-persisted", "fatal-observed"]
+        assert timeline[:2] == [
+            (1, "stopped", "stop"),
+            (1, "peer", "peer-complete"),
+        ]
+        assert (
+            candidate_states[(1, "stopped")]["clock"]
+            is not candidate_states[(1, "peer")]["clock"]
+        )
+        assert (state_root / f"{candidate_ids[1]}.json").is_file()
+        assert not (state_root / f"{candidate_ids[0]}.json").exists()
+        assert not (state_root / f"{candidate_ids[2]}.json").exists()
+        peer_record = json.loads(
+            (state_root / f"{candidate_ids[1]}.json").read_text(encoding="utf-8")
+        )
+        assert peer_record["candidate_id"] == candidate_ids[1]
+        assert peer_record["outcome_bucket"] == "survived"
+
+        active["pass"] = 2
+        resumed = run_mutation(
+            baseline=baseline,
+            prepared=prepared,
+            plan=make_plan(lane),
+            deadline=make_deadline(budget_seconds=None),
+            targets=_THREE_TARGETS,
+            adapter=PythonAdapter(),
+            jobs=2,
+            max_mutants=10,
+            operators=("python:bool-const-flip",),
+            process_runner=liveness_runner,
+            clock=lambda: datetime.now(timezone.utc),
+            executor_factory=executor_factory,
+            budget_per_candidate_seconds=50.0,
+            liveness_watch_armed=True,
+            liveness_cpu_without_progress_bound_s=2.0,
+            liveness_per_test_baseline_s={},
+            liveness_events_dir=events_dir,
+            progress_artifact=progress_path,
+            state_root=state_root,
+            resume=True,
+        )
+
+    assert resumed is not None and not isinstance(resumed, str)
+    assert wait_stages[2:] == [
+        (2, (0,), (0,), (1,)),
+        (2, (1,), (1,), ()),
+    ]
+    # The resumed pending list is [the missing first identity, the untouched
+    # third candidate], so its local positions are 0 and 1 again.
+    assert executors[1].submitted == [0, 1]
+    assert timeline[2:] == [
+        (2, "stopped", "peer-complete"),
+        (2, "third", "peer-complete"),
+    ]
+    assert {path.stem for path in state_root.glob("*.json")} == set(candidate_ids)
+
+
+@pytest.mark.parametrize(
+    ("armed", "first_timeout", "attempt_count"),
+    [(True, 60.0, 2), (False, 10.0, 1)],
+    ids=("armed-lane-remainder-and-retry", "unarmed-budget-and-gate"),
+)
+def test_mutation_timeout_and_tail_retry_follow_the_watch_regime(
+    tmp_path, armed, first_timeout, attempt_count
+):
+    repo = _repo(tmp_path)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    now = [0.0]
+    deadline = make_deadline(budget_seconds=60.0, monotonic=lambda: now[0])
+    timeouts = []
+
+    def process_runner(argv, *, env, cwd, timeout):
+        timeouts.append(timeout)
+        if len(timeouts) == 1:
+            # Leave less than the candidate budget so the unarmed retry gate
+            # closes, while the armed run must still make its tail retry.
+            now[0] = 56.0
+            raise timeout_expired(list(argv), timeout=timeout, output=b"partial")
+        return completed_process(list(argv), returncode=0, stdout="", stderr="")
+
+    lane = make_lane(argv=("pytest", "-q"))
+    baseline = execute_command(
+        lane,
+        cwd=repo.path,
+        process_runner=lambda argv, *, env, cwd, timeout: completed_process(
+            list(argv), returncode=0
+        ),
+    )
+    target = (
+        MutationTarget(path="pkg/flags.py", text=_TEXT, lines=frozenset({2})),
+    )
+    with prepared_snapshot(repo, scratch_root=scratch) as prepared:
+        result = run_mutation(
+            baseline=baseline,
+            prepared=prepared,
+            plan=make_plan(lane),
+            deadline=deadline,
+            targets=target,
+            adapter=PythonAdapter(),
+            jobs=1,
+            max_mutants=10,
+            operators=("python:bool-const-flip",),
+            process_runner=process_runner,
+            clock=lambda: datetime.now(timezone.utc),
+            budget_per_candidate_seconds=10.0,
+            liveness_watch_armed=armed,
+            liveness_cpu_without_progress_bound_s=10.0 if armed else None,
+            liveness_per_test_baseline_s={} if armed else None,
+        )
+
+    assert result is not None and not isinstance(result, str)
+    assert timeouts[0] == first_timeout
+    assert len(timeouts) == attempt_count
+    if armed:
+        assert timeouts[1] == 4.0
+        assert len(result.survived) == 1
+        assert not result.budget_exceeded
+    else:
+        assert len(result.budget_exceeded) == 1
