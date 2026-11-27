@@ -3646,8 +3646,8 @@ def _run_reserved(
                 )
                 if mutation_store.carried_survivor_count(store):
                     print(
-                        "note: carried survivors stay carried until "
-                        "--rejudge-carried (or a WP4 replay) runs",
+                        "note: carried survivors stay carried; re-run them with "
+                        "assay run <lane> --resume --rejudge-outcome survived",
                         file=out,
                     )
         return verdict.exit_code

@@ -782,6 +782,7 @@ impl Store {
     ///
     /// # Errors
     ///
+    /// [`StoreError::JobTooLarge`] when the event cannot fit the RAM ring,
     /// [`StoreError::PayloadFrameType`] for a payload that is not an EVT frame, and every
     /// append refusal.
     pub fn record_event(
@@ -1613,7 +1614,7 @@ mod tests {
         let begin = crate::events::Event::new(EventKind::Begin, "run", Some("run"), "u1", 5, None)
             .expect("begin");
         spans.begin(&begin).expect("open");
-        let inferred = spans.abandon_issuer("u1", 50);
+        let inferred = spans.abandon_issuer("u1", 50, 60);
         assert_eq!(inferred.len(), 1);
         assert_eq!(inferred[0].outcome, Some(Outcome::Abandoned));
         assert!(inferred[0].inferred);

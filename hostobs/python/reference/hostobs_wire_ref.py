@@ -1420,7 +1420,9 @@ def normalise(frame: dict) -> dict:
 def load_cases(fixtures_dir: Path) -> list[tuple[Path, dict, bytes]]:
     cases = []
     for spec_path in sorted(fixtures_dir.glob("*.json")):
-        if spec_path.name == "quality.json":
+        # Not wire cases: event-names.json is the registered event-name list that serve's
+        # Rust test (verbs.rs) pins its constant against.
+        if spec_path.name in ("quality.json", "event-names.json"):
             continue
         spec = json.loads(spec_path.read_text(encoding="utf-8"))
         data_path = spec_path.with_suffix(".bin")

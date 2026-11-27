@@ -1,6 +1,6 @@
 # hostobs probe: process and thread model
 
-Status: implemented by P-hostobs-09 and P-hostobs-10, 2026-11-24. It decides how the
+Status: implemented by P-hostobs-09, P-hostobs-10 and M3 B5, 2026-11-26. It decides how the
 `hostobs-probe` process runs the sans-IO serving core (`crates/serve/src/{server,conn}.rs`) and
 the `kernel` readers: threads, the backend rule, wakeup, syscalls, socket activation, shutdown,
 config and the test harness. WIRE.md stays the protocol, this file is the process around it.
@@ -14,10 +14,16 @@ and why it lost.
 |---|---|---|
 | **server loop** (the main thread after start-up) | the one `Server<ProbeBackend>` (and with it the one `SendHub`), the listeners, every accepted `UnixStream`, the read end of the wake fd | block: every socket is non-blocking, every call into the core is bounded (§(b), P-09 rule 4) |
 | **sampler** (`hostobs-sampler`) | the `kernel` readers over `RealFs`, the `IncarnationRegistry`, the clocks; builds one immutable `Tick` per `tick_ms` and publishes it as `Arc<Tick>` | touch a socket, the `Server` or the hub; wait for the server |
-| **store writer** (`hostobs-writer`) | `crates/store` and its existing bounded writer queue (`writer_queue_bytes`, drops counted); later publishes an immutable `Arc` read index (P-15) | run on the sampler or server thread. **Placed, not spawned**: the live slice (P-09/P-10/P-11) starts no writer; P-16 spawns it |
 
-The probe opens one store during startup, before the sampler is spawned, and keeps it alive
-until `driver::run` returns. It records nothing yet.
+`ProbeBackend` owns the `Store` and `Annotator`; annotate requests and connection-close ends append
+to the events ring on the server thread during that request or close turn. There is no writer
+thread. The probe opens the store before the sampler starts and keeps it alive until `driver::run`
+returns. Record appends do not fsync; an append that seals a segment (and may evict one) does fsync
+inside the server turn. The probe measures each append with an injected monotonic clock, logs one
+line when a segment is sealed, and logs only the transition into and out of append failures.
+
+P-16 adds a writer thread only when measured seal stalls exceed one tick interval in practice.
+Until then, the events ring and span table stay on the server thread, and HOB-92 lands first.
 
 - **Publication.** `Published` is a `Mutex<Arc<Tick>>`. The sampler swaps the `Arc` under the
   lock (`mem::replace`) and drops the old one after unlocking; the server loop clones the `Arc`
@@ -47,18 +53,24 @@ archive: `Arc` publish, the sampler's deadline schedule and the stall evidence (
 
 ## (b) The backend rule
 
-1. A `Backend` (and later `QueryBackend`) method reads **only the turn's published immutable
-   state**: the `Arc<Tick>` (and later the store's `Arc` read index) plus the turn's `now_ns`,
-   which the driver sets before the turn's first core call (`Turn::begin_turn`, §(b) seam).
-2. It makes **no syscall, no file read and no lock acquisition**, and takes no time beyond
-   O(rows it resolves). `current` stops at `max_rows + 1` rows (`TooManyRows`), as it does now.
-   The single lock the server thread ever takes is `begin_turn`'s bounded pointer swap on
-   `Published`: clone the `Arc` under the lock, drop the previous turn's `Arc` after unlocking. It
-   runs before the turn's core calls, never inside one.
-3. It never answers "not yet". Before the first tick it answers `Unavailable`. A history verb is
+1. Read verbs use **only the turn's published immutable state**: the `Arc<Tick>` and the turn's
+   `now_ns`, which the driver sets before the turn's first core call (`Turn::begin_turn`, §(b)
+   seam). `current` stops at `max_rows + 1` rows (`TooManyRows`), as it does now.
+2. `annotate` is the one backend exception: it synchronously calls `Store::record_event` on the
+   server thread and may perform filesystem I/O. It does not fsync for an ordinary append; sealing
+   a segment and any eviction done by that append can fsync. The injected monotonic clock measures
+   around each append; a seal emits `hostobs-probe: events segment <name> sealed, the append
+   stalled the server turn <ms> ms`. Append errors produce one line when failures begin and one
+   when appends succeed again; requests do not log client strings.
+3. The sampler publishes the newest `Arc<Tick>` under `Published`'s short mutex, and `begin_turn`
+   clones that pointer before the turn's core calls. A seal stall blocks the server loop, including
+   every client's reply and subscription tick. A stall shorter than a tick interval delays that
+   tick; a longer stall lets the sampler publish several ticks, then the next `begin_turn` loads
+   only the newest sequence and the server delivers that tick once. Eventfd wakeups coalesce.
+4. A read verb never answers "not yet". Before the first tick it answers `Unavailable`. A history verb is
    answered from an in-RAM published index or refused; until P-16 the history verbs stay unserved
    (`unknown-verb`, design R11).
-4. With D5 every request therefore finishes in the turn that parsed it: there is no completion to
+5. With D5 every request therefore finishes in the turn that parsed it: there is no completion to
    route back, so there is no request record.
 
 **The P-09/P-10 seam** (as merged from P-09 and P-10; this text is binding):
@@ -81,7 +93,8 @@ pub trait Turn: Backend {
   adds the five-line `impl Turn for ProbeBackend` delegation at the end of `live.rs`.
 - `Published::new(started_mono_ns, started_real_ns)`; `store(Arc<Tick>)` does `mem::replace`
   under the lock and drops the old `Arc` outside it; `load() -> Arc<Tick>` clones under the lock.
-- `ProbeBackend::new(identity, Arc<Published>)`; its inherent `begin_turn` calls `load`.
+- `ProbeBackend::new(identity, Arc<Published>, Store, Annotator, append_clock)`; its inherent
+  `begin_turn` calls `load`.
 - `sampler::spawn(cfg, Arc<Published>, wake: OwnedFd, stop: Arc<AtomicBool>) ->
   Result<JoinHandle<()>, SamplerError>`, where `cfg` carries `boot_id`, `epoch`, `tick_ms`,
   `cgroup_root` and `max_rows`. `Sampler::new` is also fallible: a missing compiled metric
@@ -218,20 +231,23 @@ reverse, silently.
   closes every socket and clients see EOF, or `ECONNRESET` when the probe held unread request
   bytes; the client treats both as connection loss. The listening sockets belong to systemd's
   `.socket` units, so connections made during a restart wait in the backlog for the next probe.
-  There is no store writer to drain. Wiring `SIGTERM` to the graceful stop path is required
-  before P-16 spawns the writer and is a filed backlog item, not part of P-09.
+  No inferred span ends are written: open spans disappear with the process, as they do after a
+  crash. HOB-92 tracks graceful `SIGTERM` handling; it is not part of this package.
 - **The internal stop path:** the sampler thread holds a drop guard that sets the shared stop
   flag and signals the wake fd, so a sampler panic (`panic = "unwind"`) or return reaches the
   loop. At the top of a turn with the flag set, the loop calls `Server::shutdown()`, makes one
   non-blocking write of each connection's final bytes (`closing shutting-down`), `finish`es every
-  connection and returns; `main` exits 1 (`Restart=on-failure`). Tests stop the loop the same way.
+  connection and returns; `finish` calls `connection_closed` and writes inferred abandoned ends
+  for spans that connection left open. This is the only shutdown path that writes those ends;
+  `main` exits 1 (`Restart=on-failure`). Tests stop the loop the same way.
 - A sampler that is stuck (say, in a D-state read) is not a stop: the published tick stops
   advancing, which `status.tick.seq`/`last_mono_ns` show.
 
 **Alternative: graceful `SIGTERM` handling with `closing shutting-down` for every client.** Lost for
 the slice: it needs an `unsafe` signal-mask call or another crate (a new audited surface or an
-image rebuild), and it buys only a politer close reason. The package that spawns the store writer
-(P-16) must add it, because the writer has queued data to drain.
+image rebuild), and it buys only a politer close reason. P-16 adds a writer thread only if measured
+segment-seal stalls exceed one tick interval in practice; HOB-92 must land first. The events ring
+and span table remain on the server thread.
 
 ## (g) Config
 
@@ -250,6 +266,8 @@ cgroup_root = "/sys/fs/cgroup"     # absolute, no `..`; the sampler walks under 
 
 [limits]
 max_rows = 1024                    # D8; probe-wide; 1..=4096
+annotate_rate_per_s = 50           # required; 1..=1000; probe-wide per uid
+annotate_burst = 64                # required; 1..=1024; probe-wide per uid
 
 [store]
 dir = "/var/lib/hostobs/probe"     # durable cold and events root
@@ -267,7 +285,7 @@ events_ring_bytes = 4194304        # 4096..=1 GiB
 - `events_cap_bytes` is checked against the configured events segment file bound, and
   `events_ring_bytes` is large enough for the largest valid event/1 record.
 - **Store startup limit (M3 B4).** The probe opens the store before `sampler::spawn` and before
-  recording anything. A durable-directory failure (including a full disk or directory fsync
+  recording events. A durable-directory failure (including a full disk or directory fsync
   error), a symlinked root, or a tier directory over its entry bound stops startup with exit 2;
   no samples or events have been recorded. `RestartPreventExitStatus=2` prevents an automatic
   service restart. A non-tmpfs path, unreadable mount table, or missing mount entry for
@@ -426,7 +444,8 @@ R27); only the hub.rs module doc was stale, and this package fixes it.
    truthful bounded refusal; every omitted cgroup or refused directory listing is counted by
    the root row's `probe.cgroups_skipped` gauge. `probe.ticks_skipped` is the root row's
    counter for missed sampler deadlines.
-6. `ProbeBackend::new(identity, Arc<Published>)` holds the turn's `Arc<Tick>` and `now_ns`. Its
+6. `ProbeBackend::new(identity, Arc<Published>, Store, Annotator, append_clock)` holds the turn's
+   `Arc<Tick>`, `now_ns` and the annotation append state. Its
    inherent `begin_turn(&mut self, now_ns) -> bool` calls `Published::load` (the server thread's
    only lock, §(b) 2), sets `now_ns`, and is `true` when the loaded `seq` is newer than the
    previous turn's. P-09's `Turn` impl delegates to it.

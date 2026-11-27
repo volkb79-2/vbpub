@@ -253,7 +253,7 @@ impl Counts {
 /// took it out of the map for the call, see `Server::drive`); it is open and counts as one of
 /// level `mine`.
 struct StatusView<'a, B> {
-    backend: &'a B,
+    backend: &'a mut B,
     others: &'a BTreeMap<ConnId, Conn>,
     mine: Level,
 }
@@ -288,6 +288,19 @@ impl<B: Backend> Backend for StatusView<'_, B> {
 
     fn current(&self, selection: &Selection, max_rows: u32) -> Result<TickData, BackendError> {
         self.backend.current(selection, max_rows)
+    }
+
+    fn annotate(
+        &mut self,
+        conn: ConnId,
+        peer: &Peer,
+        args: &crate::backend::AnnotateArgs,
+    ) -> Result<crate::backend::AnnotateReply, crate::backend::AnnotateRefusal> {
+        self.backend.annotate(conn, peer, args)
+    }
+
+    fn connection_closed(&mut self, conn: ConnId) {
+        self.backend.connection_closed(conn);
     }
 }
 
@@ -429,6 +442,7 @@ impl<B: Backend> Server<B> {
         let Some(conn) = self.conns.remove(&id) else {
             return;
         };
+        self.backend.connection_closed(id);
         self.counts.release(conn.level(), conn.peer().uid);
         self.streams.release_conn(id);
         self.hub.remove(id);
@@ -517,17 +531,18 @@ impl<B: Backend> Server<B> {
     /// others; an unknown id does nothing.
     fn drive<F>(&mut self, id: ConnId, act: F)
     where
-        F: FnOnce(&mut Conn, &mut SendHub, &dyn Backend, &mut SelectionStreams),
+        F: FnOnce(&mut Conn, &mut SendHub, &mut dyn Backend, &mut SelectionStreams),
     {
         let Some(mut conn) = self.conns.remove(&id) else {
             return;
         };
         let view = StatusView {
-            backend: &self.backend,
+            backend: &mut self.backend,
             others: &self.conns,
             mine: conn.level(),
         };
-        let backend: &dyn Backend = &view;
+        let mut view = view;
+        let backend: &mut dyn Backend = &mut view;
         act(&mut conn, &mut self.hub, backend, &mut self.streams);
         self.conns.insert(id, conn);
         self.enforce_control(id);
@@ -568,7 +583,7 @@ impl<B: Backend> Server<B> {
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
 
     use crate::hub::{Close, ConnId, LiveOutcome, Pools, QueryOutcome, TickForms};
     use hostobs_proto::dict::Entry;
@@ -577,7 +592,10 @@ mod tests {
     use hostobs_proto::stream_dicts::StreamDicts;
 
     use super::{Accept, Server, ServerLimits, SERVED};
-    use crate::backend::{BackendError, FixedBackend, TickData, TickInfo, TierInfo};
+    use crate::backend::{
+        AnnotateArgs, AnnotateKind, AnnotateRefusal, AnnotateReply, Backend, BackendError,
+        FixedBackend, Identity, StatusInfo, TickData, TickInfo, TierInfo,
+    };
     use crate::codes::{Code, Detail};
     use crate::conn::{Peer, State, SERVER_MINOR};
     use crate::encode::{control_frame, error_line, server_prefix};
@@ -588,6 +606,14 @@ mod tests {
 
     const MS: u64 = 1_000_000;
     const HELLO_ARGS: &str = r#"{"client":"t","proto":{"major":1,"minor":2}}"#;
+    const BEGIN_ARGS: &str = concat!(
+        r#"{"kind":"begin","name":"run","key":null,"ctx":{},"#,
+        r#""outcome":null,"code":null,"attrs":{}}"#,
+    );
+    const POINT_ARGS: &str = concat!(
+        r#"{"kind":"point","name":"run","key":null,"ctx":{},"#,
+        r#""outcome":null,"code":null,"attrs":{}}"#,
+    );
     const CURRENT_ARGS: &str = r#"{"selection":{"entities":[{"inc":1}],"metrics":["m"]}}"#;
 
     fn req(corr: u32, verb: &str) -> Vec<u8> {
@@ -760,6 +786,61 @@ mod tests {
         out: BTreeMap<ConnId, Vec<u8>>,
         opened: Vec<ConnId>,
         uids: Vec<u32>,
+    }
+
+    struct CloseRecordingBackend {
+        fixed: FixedBackend,
+        closed: Arc<Mutex<Vec<(ConnId, u64)>>>,
+        now_ns: u64,
+    }
+
+    impl Backend for CloseRecordingBackend {
+        fn identity(&self) -> Identity {
+            self.fixed.identity()
+        }
+
+        fn status(&self) -> StatusInfo {
+            self.fixed.status()
+        }
+
+        fn current(&self, selection: &Selection, max_rows: u32) -> Result<TickData, BackendError> {
+            self.fixed.current(selection, max_rows)
+        }
+
+        fn annotate(
+            &mut self,
+            _conn: ConnId,
+            _peer: &Peer,
+            args: &AnnotateArgs,
+        ) -> Result<AnnotateReply, AnnotateRefusal> {
+            let span = match args.kind {
+                AnnotateKind::Begin | AnnotateKind::End => Some(1),
+                AnnotateKind::Point => None,
+            };
+            Ok(AnnotateReply {
+                t_mono_ns: self.now_ns,
+                span,
+            })
+        }
+
+        fn connection_closed(&mut self, conn: ConnId) {
+            self.closed
+                .lock()
+                .expect("close-recording lock")
+                .push((conn, self.now_ns));
+        }
+    }
+
+    fn drain_output<B: Backend>(server: &mut Server<B>, id: ConnId, now_ns: u64) {
+        while let Some(written) = server
+            .output(id, now_ns)
+            .map(|[first, second]| first.len().saturating_add(second.len()))
+        {
+            if written == 0 {
+                break;
+            }
+            server.wrote(id, written, now_ns);
+        }
     }
 
     impl Driver {
@@ -1680,6 +1761,77 @@ mod tests {
         assert_clean(&d, "shutdown");
     }
 
+    #[test]
+    fn shutdown_finishes_each_removed_connection_through_the_close_hook_once() {
+        let closed = Arc::new(Mutex::new(Vec::new()));
+        let backend = CloseRecordingBackend {
+            fixed: FixedBackend::new(),
+            closed: Arc::clone(&closed),
+            now_ns: 0,
+        };
+        let mut server = Server::new(ServerLimits::new(), backend);
+        let id = match server.accept(
+            Level::Observer,
+            Some(Peer {
+                uid: 31,
+                pid: None,
+                comm: None,
+                cgroup: None,
+            }),
+            0,
+        ) {
+            Accept::Accepted(id) => id,
+            Accept::Refused => panic!("observer connection should be accepted"),
+        };
+
+        assert_eq!(server.shutdown(), vec![id]);
+        server.finish(id);
+        assert_eq!(*closed.lock().expect("close-recording lock"), vec![(id, 0)]);
+    }
+
+    #[test]
+    fn conn_open_span_survives_idle_until_peer_eof_and_closes_at_that_turn() {
+        let closed = Arc::new(Mutex::new(Vec::new()));
+        let backend = CloseRecordingBackend {
+            fixed: FixedBackend::new(),
+            closed: Arc::clone(&closed),
+            now_ns: 0,
+        };
+        let mut server = Server::new(ServerLimits::new(), backend);
+        let id = match server.accept(
+            Level::Observer,
+            Some(Peer {
+                uid: 31,
+                pid: None,
+                comm: None,
+                cgroup: None,
+            }),
+            0,
+        ) {
+            Accept::Accepted(id) => id,
+            Accept::Refused => panic!("observer connection should be accepted"),
+        };
+
+        server.on_bytes(id, &line(1, "hello", HELLO_ARGS), 0);
+        drain_output(&mut server, id, 0);
+        server.on_bytes(id, &line(2, "annotate", BEGIN_ARGS), 0);
+        drain_output(&mut server, id, 0);
+        server.on_bytes(id, &line(3, "annotate", POINT_ARGS), 0);
+        drain_output(&mut server, id, 0);
+
+        let close_ns = 400_000 * MS;
+        assert!(server.poll(close_ns - 1).is_empty());
+        assert!(server.conn(id).is_some());
+        server.backend_mut().now_ns = close_ns;
+        server.on_eof(id, close_ns);
+        assert_eq!(server.poll(close_ns), vec![id]);
+        assert!(server.conn(id).is_none());
+        assert_eq!(
+            *closed.lock().expect("close-recording lock"),
+            vec![(id, close_ns)]
+        );
+    }
+
     // ---- interleaving, status, control cap ----
 
     fn binary_script() -> Vec<u8> {
@@ -2254,7 +2406,7 @@ mod tests {
             let expected = if level.serves_blocks() {
                 "\"verbs\":[\"hello\",\"status\",\"current\",\"subscribe\",\"unsubscribe\"]"
             } else {
-                "\"verbs\":[\"hello\"]"
+                "\"verbs\":[\"hello\",\"annotate\"]"
             };
             assert!(out.contains(expected), "{level:?}: {out}");
         }

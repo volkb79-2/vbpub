@@ -7,6 +7,9 @@ set -uo pipefail
 # same defect into the operator's shell, where it read as a product bug.
 unset CONTROLLER_HOME CONTROLLER_RUNS_DIR CONTROLLER_LOGS_DIR CONTROLLER_REPO CONTROLLER_HOSTS_FILE
 unset PI_ROUTE PI_MODEL PI_THINKING PI_SESSION_DIR OPENDESIGN_API_KEY_VOLKER OPENDESIGN_API_KEY_GITHUB2
+# The run mode (PI_RUN_MODE) must not be decided by an ambient value: every check
+# here names the contract it launches under.
+unset PI_RUN_MODE
 # The pi seams pi-review.sh exports for its own child, and the review budget: an
 # ambient PI_EXTRA_ARGS (which is exactly what a review launcher leaves in a
 # controller shell) would refuse or widen every launch this check makes.
@@ -48,6 +51,7 @@ WORKTREE=$ROOT/worktree
 PROMPT=$ROOT/brief.md
 STATE=$ROOT/opendesign-state.json
 PI_ARGV_LOG=$ROOT/pi-argv.log
+PI_ARGV0_LOG=$ROOT/pi-argv0.log
 PI_ENV_LOG=$ROOT/pi-env.log
 PI_PROMPT_LOG=$ROOT/pi-prompt.log
 mkdir -p "$HOME_ROOT" "$ROOT/bin" "$CONTROLLER_ROOT" "$WORKTREE"
@@ -76,10 +80,23 @@ export OPENDESIGN_API_KEY_VOLKER=test-key
 export OPENDESIGN_API_KEY_GITHUB2=test-key
 ENV
 
+# General resume fixtures intentionally seed an exact implementer session
+# record. Focused tests that exercise unknown or legacy state invoke the wrapper
+# directly and build only the records their scenario allows.
+seed_resume_session() {
+  local session=$1 records=$CONTROLLER_ROOT/runs/session-modes
+  mkdir -p "$records"
+  [[ -e $records/$session || -L $records/$session ]] || printf 'implementer\n' > "$records/$session"
+}
+
 cat > "$ROOT/bin/pi" <<'SH'
 #!/usr/bin/env bash
 set -uo pipefail
 printf '%s\n' "$*" >> "$PI_ARGV_LOG"
+# One argv element per NUL-terminated record, for the checks that must tell an
+# ELEMENT from a substring anywhere in the line: the prompt is an argv element
+# too, so a space-joined log cannot answer "is this element exactly this?".
+for arg in "$@"; do printf '%s\0' "$arg"; done >> "$PI_ARGV0_LOG"
 printf '%s' "${!#}" > "$PI_PROMPT_LOG"
 printf 'VOLKER_PRESENT=%s GITHUB2_PRESENT=%s\n' \
   "${OPENDESIGN_API_KEY_VOLKER:+yes}" "${OPENDESIGN_API_KEY_GITHUB2:+yes}" >> "$PI_ENV_LOG"
@@ -204,13 +221,16 @@ chmod +x "$ROOT/bin/pi"
 
 export CONTROLLER_HOME=$CONTROLLER_ROOT CONTROLLER_REPO=$WORKTREE
 export CONTROLLER_OD_STATE=$STATE
-export PI_ARGV_LOG PI_ENV_LOG PI_PROMPT_LOG
+export PI_ARGV_LOG PI_ARGV0_LOG PI_ENV_LOG PI_PROMPT_LOG
 
 launch() {
   local run=$1 route=$2 fixture=$3 input=$4
   shift 4
   local fake_session_id="${run}-session"
-  if [[ ${1:-} == resume && -n ${2:-} ]]; then fake_session_id=$2; fi
+  if [[ ${1:-} == resume && -n ${2:-} ]]; then
+    fake_session_id=$2
+    seed_resume_session "$fake_session_id"
+  fi
   PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE="$route" \
     FAKE_FIXTURE_DIR="$SCRIPT_DIR/fixtures" \
     FAKE_PI_STREAM="$SCRIPT_DIR/fixtures/$fixture.jsonl" FAKE_PI_SESSION_ID="$fake_session_id" FAKE_PI_RC=0 \
@@ -224,6 +244,7 @@ launch() {
 launch_sequence() {
   local run=$1 route=$2 sequence=$3
   shift 3
+  if [[ ${1:-} == resume && -n ${2:-} ]]; then seed_resume_session "$2"; fi
   PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE="$route" \
     CONTROLLER_OD_STATE="${SEQUENCE_OD_STATE:-$STATE}" \
     FAKE_FIXTURE_DIR="$SCRIPT_DIR/fixtures" FAKE_PI_SEQUENCE="$sequence" \
@@ -276,6 +297,125 @@ expect_rc() {
     local actual=$?
     [[ $actual == "$expected" ]] || fail "command exit was $actual, expected $expected"
   fi
+}
+
+# The fake pi's argv, one ELEMENT per record: the checks that must know an argv
+# element from a substring (the prompt the wrapper appends a rule paragraph to)
+# read this, and an empty argv file means pi never ran.
+argv_elements() {
+  [[ -s $PI_ARGV0_LOG ]] || fail "pi never ran (no argv log at $PI_ARGV0_LOG)"
+  local i last_start=-1
+  local -a all=()
+  mapfile -d '' -t all < "$PI_ARGV0_LOG"
+  for (( i = 0; i < ${#all[@]}; i++ )); do
+    [[ ${all[i]} == -p ]] && last_start=$i
+  done
+  (( last_start >= 0 )) || fail 'pi argv log has no invocation boundary'
+  ARGV=("${all[@]:last_start}")
+}
+last_prompt_element() {
+  argv_elements
+  printf '%s' "${ARGV[${#ARGV[@]}-1]}"
+}
+# The wrapper APPENDS its fixed rule paragraph to the caller's brief, so the
+# launched prompt must START with the brief byte for byte (a prompt file's own
+# trailing newline is part of that) and then carry the paragraph -- never a
+# rewritten or re-wrapped brief.
+prompt_starts_with() {
+  local prompt_file=$1 description=$2 text brief=''
+  argv_elements
+  text=${ARGV[${#ARGV[@]}-1]}
+  # `read -d ''` keeps the file's trailing newlines (`$(<file)` strips them);
+  # the quoted operand is compared literally, so only the final `*` is a pattern.
+  IFS= read -r -d '' brief < "$prompt_file" || :
+  if [[ -z $brief || $text != "$brief"$'\n'* ]]; then
+    fail "$description (prompt did not start with the brief: $(printf '%s' "$text" | head -c 120))"
+  fi
+}
+prompt_ends_with() {
+  local rules_file=$1 description=$2 text
+  argv_elements
+  text=${ARGV[${#ARGV[@]}-1]}
+  if [[ $text != *$'\n'"$(<"$rules_file")"$'\n' ]]; then fail "$description"; fi
+}
+
+# --- the run mode (P-plat-26c) ----------------------------------------------
+# The read-only set has ONE production definition. The independent test
+# allow-list below makes added argv elements visible instead of trusting that
+# definition to certify itself.
+REVIEW_ARGV_FILE=$SCRIPT_DIR/../pi-review-argv
+IMPLEMENTER_RULES=$SCRIPT_DIR/../implementer-prompt-rules.md
+REVIEW_RULES=$SCRIPT_DIR/../review-prompt-rules.md
+argv_reset() { : > "$PI_ARGV0_LOG"; }
+argv_absent() {
+  local element
+  argv_elements
+  for element in "${ARGV[@]}"; do [[ $element == "$1" ]] && fail "$2 (argv: ${ARGV[*]})"; done
+  return 0
+}
+# Assert the LAST invocation has exactly the allowed review argv elements.
+# The explicit allow-list is independent of pi-review-argv, so a new flag in
+# that file or in base_pi_args cannot certify itself by appearing in both.
+assert_review_argv() {
+  local prefix=$1 i model thinking session_dir prompt_arg delimiter_index
+  local -a file_argv=() permitted_review=(--tools 'read,grep,find,ls' --exclude-tools 'mcp__*' --no-extensions --no-mcp) expected=()
+  mapfile -t file_argv < "$REVIEW_ARGV_FILE"
+  if (( ${#file_argv[@]} != ${#permitted_review[@]} )); then
+    fail "$prefix: pi-review-argv has ${#file_argv[@]} elements, expected ${#permitted_review[@]}"
+  fi
+  for (( i = 0; i < ${#permitted_review[@]}; i++ )); do
+    [[ ${file_argv[i]} == "${permitted_review[i]}" ]] \
+      || fail "$prefix: pi-review-argv element $i is not permitted (${file_argv[i]})"
+  done
+  argv_elements
+  if (( ${#ARGV[@]} != 17 && ${#ARGV[@]} != 19 )); then
+    fail "$prefix: review argv has ${#ARGV[@]} elements, expected 17 or 19 (${ARGV[*]})"
+  fi
+  [[ ${ARGV[0]} == -p && ${ARGV[1]} == --mode && ${ARGV[2]} == json && ${ARGV[3]} == --model \
+    && ${ARGV[5]} == --thinking && ${ARGV[7]} == --session-dir ]] \
+    || fail "$prefix: the review argv base flags are not in the permitted positions (${ARGV[*]})"
+  model=${ARGV[4]}
+  thinking=${ARGV[6]}
+  session_dir=${ARGV[8]}
+  expected=(-p --mode json --model "$model" --thinking "$thinking" --session-dir "$session_dir" "${permitted_review[@]}")
+  if (( ${#ARGV[@]} == 19 )); then
+    [[ ${ARGV[15]} == --session && -n ${ARGV[16]} ]] \
+      || fail "$prefix: the resume suffix is not the permitted --session pair (${ARGV[*]})"
+    expected+=(--session "${ARGV[16]}")
+  fi
+  delimiter_index=$((${#ARGV[@]} - 2))
+  [[ ${ARGV[delimiter_index]} == -- ]] \
+    || fail "$prefix: the prompt separator is not the last flag (${ARGV[*]})"
+  prompt_arg=${ARGV[${#ARGV[@]}-1]}
+  expected+=(-- "$prompt_arg")
+  if (( ${#ARGV[@]} != ${#expected[@]} )); then
+    fail "$prefix: review argv has an unexpected element (${ARGV[*]})"
+  fi
+  for (( i = 0; i < ${#expected[@]}; i++ )); do
+    [[ ${ARGV[i]} == "${expected[i]}" ]] \
+      || fail "$prefix: review argv element $i is not permitted (${ARGV[i]})"
+  done
+}
+# The prompt pi received must be the caller's brief PLUS the mode's rule
+# paragraph: never rewritten in the middle, never launched without the rule.
+assert_mode_prompt() {
+  local mode=$1 prefix=$2 rules=$IMPLEMENTER_RULES
+  [[ $mode != review ]] || rules=$REVIEW_RULES
+  prompt_starts_with "$PROMPT" "$prefix: the brief is launched unchanged at the front"
+  prompt_ends_with "$rules" "$prefix: the $mode rule paragraph is the last text pi reads"
+}
+# An EMPTY-COMPLETION continuation does not resend the brief: pi receives the
+# canonical continue prompt, one newline, then the mode's rule paragraph, and
+# nothing else. Compared whole and byte for byte.
+assert_continuation_prompt() {
+  local mode=$1 prefix=$2 rules=$IMPLEMENTER_RULES continue_text='' rules_text=''
+  [[ $mode != review ]] || rules=$REVIEW_RULES
+  IFS= read -r -d '' continue_text < "$SCRIPT_DIR/../continue-empty-completion.md" || :
+  IFS= read -r -d '' rules_text < "$rules" || :
+  [[ -n $continue_text && -n $rules_text ]] || fail "$prefix: the continue prompt or the $mode rule file is empty"
+  argv_elements
+  [[ ${ARGV[${#ARGV[@]}-1]} == "$continue_text"$'\n'"$rules_text" ]] \
+    || fail "$prefix: the prompt is not exactly the continue prompt plus the $mode rule paragraph"
 }
 
 check_pi_default_thinking_max() {
@@ -1606,6 +1746,7 @@ guard_launch() {
   # $1 run name, $2 fixture, $3 guard log; rest = extra wrapper arguments.
   local run=$1 fixture=$2 guard=$3
   shift 3
+  if [[ ${1:-} == resume && -n ${2:-} ]]; then seed_resume_session "$2"; fi
   # PI_CODING_AGENT_DIR is set EMPTY here on purpose: the caller's ambient value
   # must not decide this check (pi's own default applies to an empty value, and
   # so does the wrapper's), exactly as the check's own bin dir is used below.
@@ -1940,6 +2081,784 @@ check_retry_count_config() {
   contains "$CONTROLLER_ROOT/runs/retry-limit.done" 'RETRIES=1' 'the configured continuation count is recorded'
 }
 
+# --- the run mode (P-plat-26c): review mode is the wrapper's own switch -----
+
+# A review launched through pi-impl.sh ITSELF (not through pi-review.sh) gets the
+# read-only set, and the automatic continuation gets it too: the selection lives
+# in the wrapper's own argv, so no path -- first run, continue, resume -- can
+# lose it. The run's mode is also recorded beside its other records.
+check_review_mode_argv() {
+  local before after
+  clean_worktree
+  argv_reset
+  PI_RUN_MODE=review PI_LIVE=0 \
+    wait_launch_sequence review-mode deepseek-pi-volker pi-success
+  assert_review_argv 'first run'
+  assert_mode_prompt review 'first run'
+  [[ $(cat "$CONTROLLER_ROOT/runs/review-mode.mode") == review ]] \
+    || fail 'a review launch did not record its mode beside the run records'
+  contains "$ROOT/review-mode.launch.log" 'run mode review' 'the launch announces the mode it runs under'
+  # The automatic EMPTY-COMPLETION continuation is a launch of the same session,
+  # so it carries the same read-only set and the same rule paragraph.
+  clean_worktree
+  before=$(pi_invocations)
+  PI_RUN_MODE=review PI_LIVE=0 \
+    wait_launch_sequence review-mode-continue deepseek-pi-github2 'pi-empty-completion pi-success'
+  after=$(pi_invocations)
+  [[ $(( after - before )) == 2 ]] || fail "a review continuation used $(( after - before )) pi invocations, expected 2"
+  assert_review_argv 'continuation'
+  assert_continuation_prompt review 'continuation'
+  [[ $(head -n 1 "$CONTROLLER_ROOT/runs/review-mode-continue.done") == 'EXIT=0 OUTCOME=SUCCESS' ]] \
+    || fail 'a review that recovered on its continuation is not SUCCESS'
+}
+
+# The implementer side is unchanged: the same launch without the mode carries NO
+# review argument, and gets the implementer rule paragraph instead.
+check_implementer_mode_unchanged() {
+  local argv
+  clean_worktree
+  argv_reset
+  PI_LIVE=0 wait_launch_sequence implementer-mode deepseek-pi-volker pi-success
+  argv_absent '--no-extensions' 'an implementer launch does not carry the review extension switch'
+  argv_absent '--no-mcp' 'an implementer launch does not carry the review MCP switch'
+  argv_absent 'read,grep,find,ls' 'an implementer launch does not carry the review tool list'
+  assert_mode_prompt implementer 'implementer launch'
+  [[ $(cat "$CONTROLLER_ROOT/runs/implementer-mode.mode") == implementer ]] \
+    || fail 'an implementer launch did not record its mode'
+}
+
+# The read-only set has ONE definition and the launcher never carries a second
+# copy of it: pi-review.sh sets the mode, it does not export the list.
+check_review_argv_single_definition() {
+  local review_source=$SCRIPT_DIR/../pi-review.sh
+  [[ -r $REVIEW_ARGV_FILE ]] || fail 'the review argv file is missing'
+  contains "$REVIEW_ARGV_FILE" 'read,grep,find,ls' 'the one review argv definition names the read-only set'
+  if sed 's/#.*$//' "$review_source" | grep -F -- '--tools read,grep,find,ls' >/dev/null; then
+    fail 'pi-review.sh carries a second copy of the review tool list instead of setting the mode'
+  fi
+  contains "$review_source" 'PI_RUN_MODE=review' 'pi-review.sh launches in review mode'
+}
+
+# The mode value is a closed vocabulary: a typo must be refused, not read as
+# "implementer" (a default that substitutes for a fact).
+check_mode_value_refused() {
+  expect_rc 2 env PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
+    FAKE_FIXTURE_DIR="$SCRIPT_DIR/fixtures" FAKE_PI_STREAM="$SCRIPT_DIR/fixtures/pi-success.jsonl" \
+    FAKE_PI_SESSION_ID=mode-value-session FAKE_PI_RC=0 \
+    PI_RUN_MODE=reviewe "$SRC" "$WORKTREE" "$PROMPT" mode-typo
+  contains "$ROOT/focused-command.out" "PI_RUN_MODE must be 'implementer' or 'review'" \
+    'an unknown run mode is refused by name'
+  expect_rc 2 env PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
+    FAKE_FIXTURE_DIR="$SCRIPT_DIR/fixtures" FAKE_PI_STREAM="$SCRIPT_DIR/fixtures/pi-success.jsonl" \
+    FAKE_PI_SESSION_ID=mode-value-session FAKE_PI_RC=0 \
+    PI_RUN_MODE='' "$SRC" "$WORKTREE" "$PROMPT" mode-empty
+  contains "$ROOT/focused-command.out" "PI_RUN_MODE must be 'implementer' or 'review'" \
+    'a set-but-empty run mode is refused rather than read as unset'
+}
+
+# In review mode the seam may not add ANYTHING: adding a tool is a widening, and
+# a vocabulary of allowed additions is the kind of rule that does not hold.
+check_mode_extra_args_refused() {
+  local before line attempt=0
+  before=$(pi_invocations)
+  while IFS= read -r line; do
+    [[ -n $line ]] || continue
+    attempt=$(( attempt + 1 ))
+    expect_rc 2 env PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
+      FAKE_FIXTURE_DIR="$SCRIPT_DIR/fixtures" FAKE_PI_STREAM="$SCRIPT_DIR/fixtures/pi-success.jsonl" \
+      FAKE_PI_SESSION_ID=review-extra-session FAKE_PI_RC=0 \
+      PI_RUN_MODE=review PI_EXTRA_ARGS="$line" \
+      "$SRC" "$WORKTREE" "$PROMPT" "review-extra-$attempt"
+    contains "$ROOT/focused-command.out" \
+      "PI_EXTRA_ARGS may not set '$line' in review mode" \
+      "review mode refuses the widening spelling '$line'"
+  done <<'CASES'
+--tools
+--tools=read,bash
+-t
+--exclude-tools
+--exclude-tools=read
+-xt
+--no-tools
+-nt
+--no-builtin-tools
+-nbt
+--extension
+-e
+--extension=/tmp/x.js
+--no-extensions
+-ne
+--no-mcp
+--skill
+--skill=/tmp/skill.md
+--no-skills
+-ns
+--prompt-template
+--prompt-template=/tmp/t.md
+--no-prompt-templates
+-np
+--approve
+-a
+--no-approve
+-na
+CASES
+  [[ $(pi_invocations) == "$before" ]] || fail 'a review launched with a widened PI_EXTRA_ARGS'
+  # An argument outside that list is refused too, and by the general rule.
+  expect_rc 2 env PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
+    FAKE_FIXTURE_DIR="$SCRIPT_DIR/fixtures" FAKE_PI_STREAM="$SCRIPT_DIR/fixtures/pi-success.jsonl" \
+    FAKE_PI_SESSION_ID=review-extra-session FAKE_PI_RC=0 \
+    PI_RUN_MODE=review PI_EXTRA_ARGS='--verbose' \
+    "$SRC" "$WORKTREE" "$PROMPT" review-extra-verbose
+  contains "$ROOT/focused-command.out" 'may not add anything in review mode' \
+    'an argument the list does not name is refused by the same edit'
+  [[ $(pi_invocations) == "$before" ]] || fail 'a review launched with an unclassified PI_EXTRA_ARGS'
+}
+
+# A resume ALWAYS takes the recorded mode: the name was started as a review, so
+# it is still a review. That has to hold when the caller says nothing, and an
+# explicit implementer request is refused instead of obeyed.
+check_mode_sticky_resume() {
+  local runs=$CONTROLLER_ROOT/runs
+  clean_worktree
+  argv_reset
+  PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
+    CONTROLLER_OD_STATE="$ROOT/mode-sticky-state.json" PI_LIVE=0 \
+    PI_RUN_MODE=review FAKE_FIXTURE_DIR="$SCRIPT_DIR/fixtures" \
+    FAKE_PI_STREAM="$SCRIPT_DIR/fixtures/pi-success.jsonl" \
+    FAKE_PI_SESSION_ID=mode-sticky-session FAKE_PI_RC=0 \
+    "$SRC" "$WORKTREE" "$PROMPT" mode-sticky > "$ROOT/mode-sticky.launch.log" 2>&1 < /dev/null \
+    || fail 'the review launch recorded no mode to resume from'
+  [[ $(cat "$runs/mode-sticky.mode") == review ]] || fail 'the review launch recorded the wrong mode'
+  # (a) A resume that asks for nothing is forced into review.
+  # Keep this arm isolated to the run-name record: old runs have no session-mode
+  # file, and the run-name sticky refusal/selection must still work for them.
+  rm -f -- "$runs/session-modes/mode-sticky-session"
+  argv_reset
+  PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
+    CONTROLLER_OD_STATE="$ROOT/mode-sticky-resume-state.json" PI_LIVE=0 \
+    FAKE_FIXTURE_DIR="$SCRIPT_DIR/fixtures" FAKE_PI_STREAM="$SCRIPT_DIR/fixtures/pi-success.jsonl" \
+    FAKE_PI_SESSION_ID=mode-sticky-session FAKE_PI_RC=0 \
+    "$SRC" "$WORKTREE" "$PROMPT" mode-sticky resume mode-sticky-session \
+    > "$ROOT/mode-sticky-resume.launch.log" 2>&1 < /dev/null \
+    || fail 'a resume of a review was not accepted'
+  assert_review_argv 'resume'
+  assert_mode_prompt review 'resume'
+  contains "$ROOT/mode-sticky-resume.launch.log" 'run mode review (record)' \
+    'the resume says where its mode came from'
+  # (b) An explicit implementer request on that name is refused, and nothing
+  # launches: the previous records are byte-identical afterwards.
+  local before after
+  before=$(pi_invocations)
+  expect_rc 2 env PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
+    FAKE_FIXTURE_DIR="$SCRIPT_DIR/fixtures" FAKE_PI_STREAM="$SCRIPT_DIR/fixtures/pi-success.jsonl" \
+    FAKE_PI_SESSION_ID=mode-sticky-session FAKE_PI_RC=0 \
+    PI_RUN_MODE=implementer "$SRC" "$WORKTREE" "$PROMPT" mode-sticky resume mode-sticky-session
+  contains "$ROOT/focused-command.out" 'was started as a REVIEW and cannot be resumed in implementer mode' \
+    'an implementer resume of a review is refused by name'
+  after=$(pi_invocations)
+  [[ $after == "$before" ]] || fail 'a refused implementer resume of a review still launched pi'
+  rm -f -- "$runs/session-modes/mode-sticky-session"
+  # (c) The reverse direction is allowed: an implementer name may be launched
+  # STRICTER, and its record says so afterwards.
+  PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
+    CONTROLLER_OD_STATE="$ROOT/mode-sticky-narrow-state.json" PI_LIVE=0 \
+    FAKE_FIXTURE_DIR="$SCRIPT_DIR/fixtures" FAKE_PI_STREAM="$SCRIPT_DIR/fixtures/pi-success.jsonl" \
+    FAKE_PI_SESSION_ID=mode-sticky-narrow-session FAKE_PI_RC=0 \
+    "$SRC" "$WORKTREE" "$PROMPT" mode-sticky-narrow > "$ROOT/mode-sticky-narrow.launch.log" 2>&1 < /dev/null \
+    || fail 'the implementer launch for the narrowing case failed'
+  [[ $(cat "$runs/mode-sticky-narrow.mode") == implementer ]] || fail 'the implementer launch recorded the wrong mode'
+  argv_reset
+  PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
+    CONTROLLER_OD_STATE="$ROOT/mode-sticky-narrow-state.json" PI_LIVE=0 \
+    PI_RUN_MODE=review FAKE_FIXTURE_DIR="$SCRIPT_DIR/fixtures" FAKE_PI_STREAM="$SCRIPT_DIR/fixtures/pi-success.jsonl" \
+    FAKE_PI_SESSION_ID=mode-sticky-narrow-session FAKE_PI_RC=0 \
+    "$SRC" "$WORKTREE" "$PROMPT" mode-sticky-narrow resume mode-sticky-narrow-session \
+    > "$ROOT/mode-sticky-narrow-resume.launch.log" 2>&1 < /dev/null \
+    || fail 'a stricter resume of an implementer name was refused'
+  assert_review_argv 'narrowed resume'
+  contains "$ROOT/mode-sticky-narrow-resume.launch.log" 'the stricter mode wins' \
+    'the narrowing resume says why it runs as a review'
+  [[ $(cat "$runs/mode-sticky-narrow.mode") == review ]] \
+    || fail 'a narrowing resume did not rewrite the mode record'
+  # (d) A record that is neither word is refused: no correct writer produces
+  # one, so it is not a fact to guess from.
+  printf 'reviewer\n' > "$runs/mode-garbled.mode"
+  printf 'mode-garbled-session\n' > "$runs/mode-garbled.thread"
+  before=$(pi_invocations)
+  expect_rc 2 env PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
+    FAKE_FIXTURE_DIR="$SCRIPT_DIR/fixtures" FAKE_PI_STREAM="$SCRIPT_DIR/fixtures/pi-success.jsonl" \
+    FAKE_PI_SESSION_ID=mode-garbled-session FAKE_PI_RC=0 \
+    "$SRC" "$WORKTREE" "$PROMPT" mode-garbled resume mode-garbled-session
+  contains "$ROOT/focused-command.out" 'cannot establish the run mode of mode-garbled' \
+    'an unreadable mode record is refused instead of guessed'
+  after=$(pi_invocations)
+  [[ $after == "$before" ]] || fail 'a launch ran with a mode record nobody wrote'
+}
+
+# A pi resume argument must name one exact, previously recorded session id.
+# pi itself accepts a prefix, so the wrapper cannot delegate this decision to
+# pi and discover later that a different session opened.
+check_mode_resume_exact_id() {
+  local runs=$CONTROLLER_ROOT/runs full=mode-prefix-session-full short=mode-prefix-session before
+  clean_worktree
+  mkdir -p "$runs"
+  printf '%s\n' "$full" > "$runs/prefix-source.thread"
+  argv_reset
+  PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
+    CONTROLLER_OD_STATE="$ROOT/prefix-full-state.json" PI_LIVE=0 \
+    FAKE_FIXTURE_DIR="$SCRIPT_DIR/fixtures" FAKE_PI_STREAM="$SCRIPT_DIR/fixtures/pi-success.jsonl" \
+    FAKE_PI_SESSION_ID="$full" FAKE_PI_RC=0 \
+    "$SRC" "$WORKTREE" "$PROMPT" prefix-full-resume resume "$full" \
+    > "$ROOT/prefix-full-resume.launch.log" 2>&1 < /dev/null \
+    || fail 'a resume using the exact recorded session id was refused'
+  [[ $(cat "$runs/prefix-full-resume.thread") == "$full" ]] \
+    || fail 'the full recorded session id was not retained by its resume'
+
+  before=$(pi_invocations)
+  expect_rc 2 env PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
+    CONTROLLER_OD_STATE="$ROOT/prefix-short-state.json" PI_LIVE=0 \
+    FAKE_FIXTURE_DIR="$SCRIPT_DIR/fixtures" FAKE_PI_STREAM="$SCRIPT_DIR/fixtures/pi-success.jsonl" \
+    FAKE_PI_SESSION_ID="$short" FAKE_PI_RC=0 \
+    "$SRC" "$WORKTREE" "$PROMPT" prefix-short-resume resume "$short"
+  contains "$ROOT/focused-command.out" 'no record names this exact id' \
+    'a prefix of a recorded session id is refused before pi can resolve it'
+  [[ $(pi_invocations) == "$before" ]] || fail 'an unrecorded session prefix launched pi'
+  [[ ! -e $runs/prefix-short-resume.lock ]] || fail 'an unrecorded session prefix claimed its run name'
+}
+
+check_mode_resume_stream_mismatch() {
+  local runs=$CONTROLLER_ROOT/runs requested=mode-mismatch-requested before rc
+  clean_worktree
+  mkdir -p "$runs"
+  printf '%s\n' "$requested" > "$runs/mismatch-source.thread"
+  before=$(pi_invocations)
+  if PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
+    CONTROLLER_OD_STATE="$ROOT/mismatch-state.json" PI_LIVE=0 \
+    FAKE_FIXTURE_DIR="$SCRIPT_DIR/fixtures" FAKE_PI_STREAM="$SCRIPT_DIR/fixtures/pi-success.jsonl" \
+    FAKE_PI_SESSION_ID=mode-mismatch-other FAKE_PI_RC=0 \
+    "$SRC" "$WORKTREE" "$PROMPT" mismatch-resume resume "$requested" \
+    > "$ROOT/mismatch-resume.launch.log" 2>&1 < /dev/null; then
+    fail 'a resume accepted a stream that reported a different session id'
+  else
+    rc=$?
+    [[ $rc == 2 ]] || fail "a mismatched session stream exited $rc, expected 2"
+  fi
+  contains "$ROOT/mismatch-resume.launch.log" 'produced stream session mode-mismatch-other' \
+    'the mismatched session stream is reported by name'
+  [[ $(cat "$runs/mismatch-resume.done") == 'EXIT=2 OUTCOME=ERROR' ]] \
+    || fail 'the mismatched stream was not recorded as a failed run'
+  [[ $(cat "$runs/mismatch-resume.thread") == "$requested" ]] \
+    || fail 'a mismatched stream replaced the requested session thread'
+  [[ ! -e $runs/session-modes/mode-mismatch-other ]] \
+    || fail 'a mismatched stream wrote a mode record for the other session'
+  [[ $(pi_invocations) == $((before + 1)) ]] || fail 'the mismatch case did not exercise one pi launch'
+}
+
+# Inject a same-name writer at the successful end of controller_run_claim: the
+# pre-claim read saw an implementer session, and the claim now makes a review
+# mode visible. The launcher must re-read before it builds the pi argv.
+check_mode_claimed_name_reread() {
+  local runs=$CONTROLLER_ROOT/runs race_dir=$ROOT/claim-mode-race race_src src_dir session=claim-race-session
+  clean_worktree
+  mkdir -p "$race_dir" "$runs/session-modes"
+  src_dir=$(dirname -- "$SRC")
+  for sibling in lib.sh opendesign-accounts.py continue-empty-completion.md \
+    implementer-prompt-rules.md review-prompt-rules.md pi-review-argv; do
+    cp -- "$src_dir/$sibling" "$race_dir/$sibling"
+  done
+  cp -a -- "$src_dir/pi-shims" "$race_dir/pi-shims"
+  cp -- "$SRC" "$race_dir/pi-impl.sh"
+  race_src=$race_dir/pi-impl.sh
+  python3 - "$race_dir/lib.sh" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+source = path.read_text(encoding="utf-8")
+before = "  CONTROLLER_RUN_LOCK_PATH=$lock\n  return 0\n"
+after = "  CONTROLLER_RUN_LOCK_PATH=$lock\n  printf 'review\\n' > \"$CONTROLLER_RUNS_DIR/$name.mode\"\n  return 0\n"
+if source.count(before) != 1:
+    raise SystemExit("claim-mode race fixture could not find one successful claim return")
+path.write_text(source.replace(before, after, 1), encoding="utf-8")
+PY
+  printf 'implementer\n' > "$runs/session-modes/$session"
+  argv_reset
+  PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
+    CONTROLLER_HOME="$CONTROLLER_ROOT" CONTROLLER_RUNS_DIR="$runs" \
+    CONTROLLER_OD_STATE="$ROOT/claim-race-state.json" PI_LIVE=0 \
+    FAKE_FIXTURE_DIR="$SCRIPT_DIR/fixtures" FAKE_PI_STREAM="$SCRIPT_DIR/fixtures/pi-success.jsonl" \
+    FAKE_PI_SESSION_ID="$session" FAKE_PI_RC=0 \
+    "$race_src" "$WORKTREE" "$PROMPT" claim-mode-race resume "$session" \
+    > "$ROOT/claim-mode-race.launch.log" 2>&1 < /dev/null \
+    || fail 'a resume did not safely handle a review mode written during its claim'
+  assert_review_argv 'post-claim mode re-read'
+  contains "$ROOT/claim-mode-race.launch.log" 'run mode review (claimed-name-record)' \
+    'the post-claim name mode governs the constructed argv'
+  [[ $(cat "$runs/claim-mode-race.mode") == review ]] \
+    || fail 'the post-claim review mode was overwritten by the stale implementer read'
+}
+
+# A session can be resumed under a different run name. Legacy sessions are
+# recovered by exact .thread matches; current sessions also have a session-mode
+# record. In both cases a review stays review, while an implementer session does
+# not become a review just because another id contains its text.
+check_mode_session_thread_resume() {
+  local runs=$CONTROLLER_ROOT/runs session=mode-session-thread-only bad_session=mode-session-thread-invalid \
+    legacy_material_session=mode-session-thread-review-material before after
+  clean_worktree
+  mkdir -p "$runs/session-modes"
+  rm -f -- "$runs/session-modes/$session" "$runs/session-modes/$session.lock"
+  printf 'review\n' > "$runs/legacy-review.mode"
+  printf '%s\n' "$session" > "$runs/legacy-review.thread"
+
+  # A matching legacy name whose mode record is malformed also refuses; the
+  # wrapper cannot ignore an invalid fact just because the session record is
+  # missing.
+  printf 'reviewer\n' > "$runs/legacy-invalid.mode"
+  printf '%s\n' "$bad_session" > "$runs/legacy-invalid.thread"
+  before=$(pi_invocations)
+  expect_rc 2 env PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
+    CONTROLLER_OD_STATE="$ROOT/invalid-thread-state.json" PI_LIVE=0 \
+    FAKE_FIXTURE_DIR="$SCRIPT_DIR/fixtures" FAKE_PI_STREAM="$SCRIPT_DIR/fixtures/pi-success.jsonl" \
+    FAKE_PI_SESSION_ID="$bad_session" FAKE_PI_RC=0 \
+    "$SRC" "$WORKTREE" "$PROMPT" fresh-invalid-thread-record resume "$bad_session"
+  contains "$ROOT/focused-command.out" 'legacy-invalid.mode is not' \
+    'an invalid matching-name mode record refuses the resume'
+  after=$(pi_invocations)
+  [[ $after == "$before" ]] || fail 'an invalid matching-name mode record launched pi'
+  [[ ! -e $runs/fresh-invalid-thread-record.lock ]] \
+    || fail 'an invalid matching-name mode record claimed its run name'
+
+  # The review is known only through the old run's .thread + .mode records. An
+  # explicit implementer request refuses before the new run name is claimed.
+  before=$(pi_invocations)
+  expect_rc 2 env PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
+    PI_RUN_MODE=implementer PI_LIVE=0 CONTROLLER_OD_STATE="$ROOT/thread-implementer-state.json" \
+    FAKE_FIXTURE_DIR="$SCRIPT_DIR/fixtures" FAKE_PI_STREAM="$SCRIPT_DIR/fixtures/pi-success.jsonl" \
+    FAKE_PI_SESSION_ID="$session" FAKE_PI_RC=0 \
+    "$SRC" "$WORKTREE" "$PROMPT" fresh-thread-implementer resume "$session"
+  contains "$ROOT/focused-command.out" 'is recorded as a REVIEW and cannot be resumed in implementer mode' \
+    'a fresh name cannot resume a thread-recorded review as implementer'
+  after=$(pi_invocations)
+  [[ $after == "$before" ]] || fail 'a refused fresh-name implementer resume launched pi'
+  [[ ! -e $runs/fresh-thread-implementer.lock ]] || fail 'a refused fresh-name implementer resume claimed its name'
+  [[ ! -e $runs/session-modes/$session ]] || fail 'a refused resume wrote a session mode record'
+
+  # With no explicit mode, the same fresh name is forced into review. Once it
+  # has learned the session, the wrapper stores the mode under that session id.
+  argv_reset
+  PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
+    CONTROLLER_OD_STATE="$ROOT/session-thread-state.json" PI_LIVE=0 \
+    FAKE_FIXTURE_DIR="$SCRIPT_DIR/fixtures" FAKE_PI_STREAM="$SCRIPT_DIR/fixtures/pi-success.jsonl" \
+    FAKE_PI_SESSION_ID="$session" FAKE_PI_RC=0 \
+    "$SRC" "$WORKTREE" "$PROMPT" fresh-thread-review resume "$session" \
+    > "$ROOT/fresh-thread-review.launch.log" 2>&1 < /dev/null \
+    || fail 'a fresh-name resume found only through .thread did not launch as review'
+  assert_review_argv 'thread-record resume'
+  assert_mode_prompt review 'thread-record resume'
+  contains "$ROOT/fresh-thread-review.launch.log" 'run mode review (thread-record)' \
+    'the fresh-name resume reports that the matching .thread supplied review mode'
+  [[ $(cat "$runs/fresh-thread-review.mode") == review ]] || fail 'the fresh-name thread resume recorded implementer mode'
+  [[ $(cat "$runs/session-modes/$session") == review ]] || fail 'the learned session mode was not recorded as review'
+
+  # A pre-session-record review from before `.mode` existed is represented by
+  # exactly its old `.thread` and pi-review's before-state material.
+  mkdir -p "$runs/legacy-review-material.review"
+  printf 'head=legacy\n' > "$runs/legacy-review-material.review/before-state.txt"
+  printf '%s\n' "$legacy_material_session" > "$runs/legacy-review-material.thread"
+  argv_reset
+  PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
+    CONTROLLER_OD_STATE="$ROOT/thread-review-material-state.json" PI_LIVE=0 \
+    FAKE_FIXTURE_DIR="$SCRIPT_DIR/fixtures" FAKE_PI_STREAM="$SCRIPT_DIR/fixtures/pi-success.jsonl" \
+    FAKE_PI_SESSION_ID="$legacy_material_session" FAKE_PI_RC=0 \
+    "$SRC" "$WORKTREE" "$PROMPT" fresh-thread-review-material resume "$legacy_material_session" \
+    > "$ROOT/fresh-thread-review-material.launch.log" 2>&1 < /dev/null \
+    || fail 'a legacy thread plus before-state review without a mode record was refused'
+  assert_review_argv 'legacy thread review material resume'
+  contains "$ROOT/fresh-thread-review-material.launch.log" 'run mode review (thread-review-material)' \
+    'legacy before-state material beside a matching thread supplies review mode'
+  [[ $(cat "$runs/fresh-thread-review-material.mode") == review ]] \
+    || fail 'a legacy thread plus review material was resumed as implementer'
+}
+
+check_mode_stream_review_resume() {
+  local runs=$CONTROLLER_ROOT/runs killed=mode-killed-review-session old=mode-retired-review-session before
+  clean_worktree
+  mkdir -p "$runs"
+
+  # A wrapper killed after pi writes its session event has no `.thread` or
+  # session-mode record yet. The name mode and bounded JSONL head still identify
+  # the active review.
+  printf 'review\n' > "$runs/killed-review.mode"
+  printf '{"type":"session","id":"%s"}\n' "$killed" > "$runs/killed-review.jsonl"
+  argv_reset
+  PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
+    CONTROLLER_OD_STATE="$ROOT/killed-review-state.json" PI_LIVE=0 \
+    FAKE_FIXTURE_DIR="$SCRIPT_DIR/fixtures" FAKE_PI_STREAM="$SCRIPT_DIR/fixtures/pi-success.jsonl" \
+    FAKE_PI_SESSION_ID="$killed" FAKE_PI_RC=0 \
+    "$SRC" "$WORKTREE" "$PROMPT" killed-review-resume resume "$killed" \
+    > "$ROOT/killed-review-resume.launch.log" 2>&1 < /dev/null \
+    || fail 'a review found through its running stream head was refused'
+  assert_review_argv 'killed first review stream resume'
+  # shellcheck disable=SC2016 # the backticks are the message's literal text
+  contains "$ROOT/killed-review-resume.launch.log" 'run mode review (stream-record)' \
+    'a session event without `.thread` or session-mode state finds its run mode'
+
+  # Forced reuse retires the old `.jsonl` link, with no `.thread` sidecar. It first
+  # copies the old mode to the monotonic session record, which then remains the
+  # sole exact record that permits a fresh-name resume as review.
+  printf 'review\n' > "$runs/retired-review.mode"
+  printf '{"type":"session","id":"%s"}\n' "$old" > "$runs/retired-review.jsonl"
+  argv_reset
+  PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
+    CONTROLLER_OD_STATE="$ROOT/retired-review-force-state.json" PI_LIVE=0 CONTROLLER_RUN_FORCE=1 \
+    FAKE_FIXTURE_DIR="$SCRIPT_DIR/fixtures" FAKE_PI_STREAM="$SCRIPT_DIR/fixtures/pi-success.jsonl" \
+    FAKE_PI_SESSION_ID=retired-review-replacement-session FAKE_PI_RC=0 \
+    "$SRC" "$WORKTREE" "$PROMPT" retired-review \
+    > "$ROOT/retired-review-force.launch.log" 2>&1 < /dev/null \
+    || fail 'a forced reuse of the old review name failed'
+  [[ $(cat "$runs/session-modes/$old") == review ]] \
+    || fail 'forced name reuse did not preserve the old session mode as review'
+  [[ $(cat "$runs/retired-review.mode") == implementer ]] \
+    || fail 'forced name reuse did not record the replacement run mode'
+  [[ -n $(find "$runs/retired/retired-review" -type f -name 'retired-review.jsonl' -print -quit) ]] \
+    || fail 'forced reuse did not archive the old session stream'
+
+  argv_reset
+  PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
+    CONTROLLER_OD_STATE="$ROOT/retired-review-resume-state.json" PI_LIVE=0 \
+    FAKE_FIXTURE_DIR="$SCRIPT_DIR/fixtures" FAKE_PI_STREAM="$SCRIPT_DIR/fixtures/pi-success.jsonl" \
+    FAKE_PI_SESSION_ID="$old" FAKE_PI_RC=0 \
+    "$SRC" "$WORKTREE" "$PROMPT" retired-review-fresh resume "$old" \
+    > "$ROOT/retired-review-fresh.launch.log" 2>&1 < /dev/null \
+    || fail 'the retired review session could not be resumed under a fresh name'
+  assert_review_argv 'retired review session resume'
+  contains "$ROOT/retired-review-fresh.launch.log" 'run mode review (session-record)' \
+    'the preserved session-mode record is the sole review source after retirement'
+
+  # If a session id exists but neither its name nor session records establish
+  # a mode, forced reuse cannot safely retire the only identity evidence.
+  printf '{"type":"session","id":"mode-retired-unclassified-session"}\n' \
+    > "$runs/unclassified-retired.jsonl"
+  argv_reset
+  before=$(pi_invocations)
+  expect_rc 2 env PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
+    CONTROLLER_OD_STATE="$ROOT/unclassified-retired-state.json" PI_LIVE=0 CONTROLLER_RUN_FORCE=1 \
+    FAKE_FIXTURE_DIR="$SCRIPT_DIR/fixtures" FAKE_PI_STREAM="$SCRIPT_DIR/fixtures/pi-success.jsonl" \
+    FAKE_PI_SESSION_ID=unclassified-retired-replacement-session FAKE_PI_RC=0 \
+    "$SRC" "$WORKTREE" "$PROMPT" unclassified-retired
+  contains "$ROOT/focused-command.out" 'has a session id but no recorded mode or review evidence' \
+    'forced reuse refuses to retire a session whose mode cannot be established'
+  [[ -e $runs/unclassified-retired.jsonl && ! -e $runs/retired/unclassified-retired ]] \
+    || fail 'an unclassified session stream was retired without preserving its mode'
+  [[ $(pi_invocations) == "$before" ]] || fail 'pi launched while an unclassified session was being retired'
+}
+
+check_mode_session_record_resume() {
+  local runs=$CONTROLLER_ROOT/runs session=mode-session-record-only bad_session=mode-session-invalid-record before after
+  clean_worktree
+  mkdir -p "$runs/session-modes"
+  printf 'review\n' > "$runs/session-modes/$session"
+  argv_reset
+  PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
+    CONTROLLER_OD_STATE="$ROOT/session-record-state.json" PI_LIVE=0 \
+    FAKE_FIXTURE_DIR="$SCRIPT_DIR/fixtures" FAKE_PI_STREAM="$SCRIPT_DIR/fixtures/pi-success.jsonl" \
+    FAKE_PI_SESSION_ID="$session" FAKE_PI_RC=0 \
+    "$SRC" "$WORKTREE" "$PROMPT" fresh-session-record-review resume "$session" \
+    > "$ROOT/fresh-session-record-review.launch.log" 2>&1 < /dev/null \
+    || fail 'a fresh-name resume found only through the session record did not launch as review'
+  assert_review_argv 'session-record resume'
+  assert_mode_prompt review 'session-record resume'
+  contains "$ROOT/fresh-session-record-review.launch.log" 'run mode review (session-record)' \
+    'the fresh-name resume reports that the session record supplied review mode'
+  [[ $(cat "$runs/fresh-session-record-review.mode") == review ]] \
+    || fail 'a session-record review resume recorded the wrong name mode'
+  [[ $(cat "$runs/session-modes/$session") == review ]] \
+    || fail 'a session-record review was overwritten by the resumed launch'
+
+  # Simulate a stale writer that reaches the recording helper with implementer
+  # mode after review is already stored. The shared session record must remain
+  # review even if a run-name record says implementer.
+  PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
+    CONTROLLER_OD_STATE="$ROOT/session-stale-writer-state.json" PI_LIVE=0 \
+    FAKE_FIXTURE_DIR="$SCRIPT_DIR/fixtures" FAKE_PI_STREAM="$SCRIPT_DIR/fixtures/pi-success.jsonl" \
+    FAKE_PI_SESSION_ID="$session" FAKE_PI_RC=0 \
+    "$SRC" "$WORKTREE" "$PROMPT" stale-implementer-writer \
+    > "$ROOT/stale-implementer-writer.launch.log" 2>&1 < /dev/null \
+    || fail 'the stale implementer writer fixture did not complete'
+  [[ $(cat "$runs/stale-implementer-writer.mode") == implementer ]] \
+    || fail 'the stale writer did not exercise an implementer run-name record'
+  [[ $(cat "$runs/session-modes/$session") == review ]] \
+    || fail 'a stale implementer writer changed the session mode back to implementer'
+
+  before=$(pi_invocations)
+  expect_rc 2 env PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
+    FAKE_FIXTURE_DIR="$SCRIPT_DIR/fixtures" FAKE_PI_STREAM="$SCRIPT_DIR/fixtures/pi-success.jsonl" \
+    FAKE_PI_SESSION_ID="$session" FAKE_PI_RC=0 PI_RUN_MODE=implementer \
+    "$SRC" "$WORKTREE" "$PROMPT" fresh-session-record-implementer resume "$session"
+  contains "$ROOT/focused-command.out" 'is recorded as a REVIEW and cannot be resumed in implementer mode' \
+    'a session-recorded review refuses an implementer request under a fresh name'
+  after=$(pi_invocations)
+  [[ $after == "$before" ]] || fail 'a refused session-record implementer resume launched pi'
+  [[ ! -e $runs/fresh-session-record-implementer.lock ]] \
+    || fail 'a refused session-record implementer resume claimed its name'
+
+  # An invalid session record is not an absent one and cannot authorize a
+  # default implementer launch.
+  printf 'reviewer\n' > "$runs/session-modes/$bad_session"
+  before=$(pi_invocations)
+  expect_rc 2 env PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
+    CONTROLLER_OD_STATE="$ROOT/invalid-session-state.json" PI_LIVE=0 \
+    FAKE_FIXTURE_DIR="$SCRIPT_DIR/fixtures" FAKE_PI_STREAM="$SCRIPT_DIR/fixtures/pi-success.jsonl" \
+    FAKE_PI_SESSION_ID="$bad_session" FAKE_PI_RC=0 \
+    "$SRC" "$WORKTREE" "$PROMPT" fresh-invalid-session-record resume "$bad_session"
+  contains "$ROOT/focused-command.out" "cannot establish the run mode of pi session $bad_session" \
+    'an invalid session mode record refuses the resume'
+  after=$(pi_invocations)
+  [[ $after == "$before" ]] || fail 'an invalid session mode record launched pi'
+  [[ ! -e $runs/fresh-invalid-session-record.lock ]] \
+    || fail 'an invalid session mode record claimed its run name'
+}
+
+check_mode_session_implementer_unchanged() {
+  local runs=$CONTROLLER_ROOT/runs session=mode-session-implementer-only
+  clean_worktree
+  mkdir -p "$runs/session-modes"
+  printf 'implementer\n' > "$runs/session-modes/$session"
+  # A longer, unrelated thread id has review mode; matching must be exact.
+  printf 'review\n' > "$runs/unrelated-session-review.mode"
+  printf '%s-suffix\n' "$session" > "$runs/unrelated-session-review.thread"
+  argv_reset
+  PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
+    CONTROLLER_OD_STATE="$ROOT/session-implementer-state.json" PI_LIVE=0 \
+    FAKE_FIXTURE_DIR="$SCRIPT_DIR/fixtures" FAKE_PI_STREAM="$SCRIPT_DIR/fixtures/pi-success.jsonl" \
+    FAKE_PI_SESSION_ID="$session" FAKE_PI_RC=0 \
+    "$SRC" "$WORKTREE" "$PROMPT" fresh-session-implementer resume "$session" \
+    > "$ROOT/fresh-session-implementer.launch.log" 2>&1 < /dev/null \
+    || fail 'a pre-existing implementer session was changed into a review'
+  argv_absent '--no-extensions' 'an implementer session does not acquire the review extension switch'
+  argv_absent '--no-mcp' 'an implementer session does not acquire the review MCP switch'
+  argv_absent 'read,grep,find,ls' 'an implementer session does not acquire the review tool set'
+  assert_mode_prompt implementer 'session implementer resume'
+  [[ $(cat "$runs/fresh-session-implementer.mode") == implementer ]] \
+    || fail 'a pre-existing implementer session recorded review mode'
+  [[ $(cat "$runs/session-modes/$session") == implementer ]] \
+    || fail 'a pre-existing implementer session record was changed'
+
+  # The caller may narrow that session by resuming it in review mode under a
+  # second fresh name; the session record then moves once to review.
+  argv_reset
+  PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
+    CONTROLLER_OD_STATE="$ROOT/session-implementer-narrow-state.json" PI_LIVE=0 PI_RUN_MODE=review \
+    FAKE_FIXTURE_DIR="$SCRIPT_DIR/fixtures" FAKE_PI_STREAM="$SCRIPT_DIR/fixtures/pi-success.jsonl" \
+    FAKE_PI_SESSION_ID="$session" FAKE_PI_RC=0 \
+    "$SRC" "$WORKTREE" "$PROMPT" fresh-session-implementer-narrow resume "$session" \
+    > "$ROOT/fresh-session-implementer-narrow.launch.log" 2>&1 < /dev/null \
+    || fail 'an explicit review request could not narrow an implementer session'
+  assert_review_argv 'narrowed session resume'
+  [[ $(cat "$runs/fresh-session-implementer-narrow.mode") == review ]] \
+    || fail 'the narrowed fresh-name run did not record review mode'
+  [[ $(cat "$runs/session-modes/$session") == review ]] \
+    || fail 'the narrowed session record did not become review'
+}
+
+# A resume of a name that carries review MATERIAL but no mode record is a review:
+# the session is known to be one, and the safe direction is failing closed. A
+# pre-existing implementer session (no record, no material) resumes unchanged.
+check_mode_record_missing_reads_review_evidence() {
+  local runs=$CONTROLLER_ROOT/runs before after
+  clean_worktree
+  mkdir -p "$runs/review-material-only.review"
+  printf 'head=abc\n' > "$runs/review-material-only.review/before-state.txt"
+  printf 'review-material-session\n' > "$runs/review-material-only.thread"
+  before=$(pi_invocations)
+  expect_rc 2 env PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
+    PI_RUN_MODE=implementer PI_LIVE=0 CONTROLLER_OD_STATE="$ROOT/evidence-implementer-state.json" \
+    FAKE_FIXTURE_DIR="$SCRIPT_DIR/fixtures" FAKE_PI_STREAM="$SCRIPT_DIR/fixtures/pi-success.jsonl" \
+    FAKE_PI_SESSION_ID=review-material-session FAKE_PI_RC=0 \
+    "$SRC" "$WORKTREE" "$PROMPT" review-material-only resume review-material-session
+  contains "$ROOT/focused-command.out" 'has review material and cannot be resumed in implementer mode' \
+    'review material refuses an explicit implementer request'
+  after=$(pi_invocations)
+  [[ $after == "$before" ]] || fail 'an implementer request on review material launched pi'
+  [[ ! -e $runs/review-material-only.lock ]] || fail 'an implementer request on review material claimed the run name'
+  [[ ! -e $runs/session-modes/review-material-session ]] \
+    || fail 'a refused evidence-based resume wrote a session mode record'
+  argv_reset
+  PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
+    CONTROLLER_OD_STATE="$ROOT/review-material-state.json" PI_LIVE=0 \
+    FAKE_FIXTURE_DIR="$SCRIPT_DIR/fixtures" FAKE_PI_STREAM="$SCRIPT_DIR/fixtures/pi-success.jsonl" \
+    FAKE_PI_SESSION_ID=review-material-session FAKE_PI_RC=0 \
+    "$SRC" "$WORKTREE" "$PROMPT" review-material-only resume review-material-session \
+    > "$ROOT/review-material-only.launch.log" 2>&1 < /dev/null \
+    || fail 'a resume of review material without a mode record was refused'
+  assert_review_argv 'evidence resume'
+  contains "$ROOT/review-material-only.launch.log" 'has review material but no mode record' \
+    'the evidence-based review resume says why it is a review'
+  [[ $(cat "$runs/review-material-only.mode") == review ]] \
+    || fail 'an evidence-based review resume recorded the wrong mode'
+  # A pre-existing implementer session: no mode record, no review material.
+  printf 'mode-pre-existing-session\n' > "$runs/mode-pre-existing.thread"
+  argv_reset
+  PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
+    CONTROLLER_OD_STATE="$ROOT/mode-pre-existing-state.json" PI_LIVE=0 \
+    FAKE_FIXTURE_DIR="$SCRIPT_DIR/fixtures" FAKE_PI_STREAM="$SCRIPT_DIR/fixtures/pi-success.jsonl" \
+    FAKE_PI_SESSION_ID=mode-pre-existing-session FAKE_PI_RC=0 \
+    "$SRC" "$WORKTREE" "$PROMPT" mode-pre-existing resume mode-pre-existing-session \
+    > "$ROOT/mode-pre-existing.launch.log" 2>&1 < /dev/null \
+    || fail 'a resume of a pre-existing implementer session was refused'
+  argv_absent 'read,grep,find,ls' 'a pre-existing implementer session is NOT silently turned into a review'
+  assert_mode_prompt implementer 'pre-existing resume'
+}
+
+check_mode_review_material_unreadable() {
+  local runs=$CONTROLLER_ROOT/runs session=unreadable-review-material-session before
+  clean_worktree
+  mkdir -p "$runs"
+  printf '%s\n' "$session" > "$runs/unreadable-review-material.thread"
+  printf 'not a directory\n' > "$runs/unreadable-review-material.review"
+  before=$(pi_invocations)
+  expect_rc 2 env PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
+    CONTROLLER_OD_STATE="$ROOT/unreadable-review-material-state.json" PI_LIVE=0 \
+    FAKE_FIXTURE_DIR="$SCRIPT_DIR/fixtures" FAKE_PI_STREAM="$SCRIPT_DIR/fixtures/pi-success.jsonl" \
+    FAKE_PI_SESSION_ID="$session" FAKE_PI_RC=0 \
+    "$SRC" "$WORKTREE" "$PROMPT" unreadable-review-material resume "$session"
+  contains "$ROOT/focused-command.out" 'review material directory is unreadable or not searchable' \
+    'a review-material path that cannot be searched is refused as unreadable state'
+  [[ $(pi_invocations) == "$before" ]] || fail 'an unreadable review-material path launched pi'
+  [[ ! -e $runs/unreadable-review-material.lock ]] \
+    || fail 'an unreadable review-material path claimed the run name'
+}
+
+# Every launch appends its mode's fixed rule paragraph, and a launch that cannot
+# read it is refused: the rule is part of the contract, not a suggestion.
+check_rule_file_missing_refused() {
+  local rules=$IMPLEMENTER_RULES
+  [[ -r $rules ]] || fail 'the implementer rule paragraph file is missing'
+  contains "$rules" 'private PID namespace' 'the implementer rule names the container the signal tests belong in'
+  contains "$rules" 'Never kill by pattern' 'the implementer rule refuses pattern kills'
+  contains "$rules" 'no shell experiment' 'the implementer rule refuses shell experiments in the devcontainer'
+  [[ -r $REVIEW_RULES ]] || fail 'the review rule paragraph file is missing'
+  contains "$REVIEW_RULES" 'execute nothing' 'the review rule refuses every execution'
+  local mode mutilated
+  for mode in implementer review; do
+    mutilated=$ROOT/rules-missing-$mode
+    rm -rf "$mutilated"; mkdir -p "$mutilated"
+    ln -s "$(dirname -- "$SRC")"/* "$mutilated"/
+    rm -f "$mutilated/implementer-prompt-rules.md" "$mutilated/review-prompt-rules.md"
+    rm -f "$mutilated/pi-shims"
+    cp -a -- "$SHIM_DIR" "$mutilated/pi-shims"
+    expect_rc 2 env PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
+      FAKE_FIXTURE_DIR="$SCRIPT_DIR/fixtures" FAKE_PI_STREAM="$SCRIPT_DIR/fixtures/pi-success.jsonl" \
+      FAKE_PI_SESSION_ID=rules-missing-session FAKE_PI_RC=0 \
+      PI_RUN_MODE=$mode "$mutilated/$(basename -- "$SRC")" "$WORKTREE" "$PROMPT" "rules-missing-$mode"
+    contains "$ROOT/focused-command.out" "pi $mode prompt rule file is missing or unreadable" \
+      "a $mode launch without its rule paragraph is refused"
+    [[ ! -e $CONTROLLER_ROOT/runs/rules-missing-$mode.lock ]] \
+      || fail "a refused $mode launch claimed the run name"
+  done
+}
+
+check_mode_not_written_on_refusal() {
+  local runs=$CONTROLLER_ROOT/runs home=$ROOT/mode-refusal-home
+  clean_worktree
+  rm -rf -- "$home"
+  mkdir -p "$home" "$runs"
+  rm -f -- "$runs/mode-refusal".*
+  printf 'review\n' > "$runs/mode-refusal.mode"
+  printf 'previous-session\n' > "$runs/mode-refusal.thread"
+  expect_rc 2 env PATH="$ROOT/bin:$PATH" HOME="$home" PI_ROUTE=deepseek-pi-volker \
+    PI_RUN_MODE=implementer CONTROLLER_RUN_FORCE=1 \
+    "$SRC" "$WORKTREE" "$PROMPT" mode-refusal
+  contains "$ROOT/focused-command.out" 'requires the local' \
+    'the missing credential file is what refused the forced reuse'
+  grep -qx review "$runs/mode-refusal.mode" \
+    || fail 'a refused forced reuse overwrote the previous review mode record'
+  [[ ! -e $runs/retired/mode-refusal ]] \
+    || fail 'a forced reuse refused at credentials retired the previous review records'
+}
+
+check_mode_rule_paragraph() {
+  # The paragraph every implementer prompt carries must say the three things
+  # an agent can otherwise only be asked politely: the pattern ban, the capped
+  # container with a private PID namespace, and "no shell experiments".
+  # shellcheck disable=SC2016 # the backticks are the DOCUMENT's literal text
+  contains "$IMPLEMENTER_RULES" 'no `pkill`' 'the implementer rule names the pattern kill'
+  contains "$IMPLEMENTER_RULES" 'killall' 'the implementer rule names killall'
+  contains "$IMPLEMENTER_RULES" 'recorded itself' 'the implementer rule pins the kill to recorded pids'
+  contains "$IMPLEMENTER_RULES" 'TERM-trap' 'the implementer rule names the trap tests'
+  contains "$REVIEW_RULES" 'The review is read from' 'the review rule names what the review is read from'
+  contains "$REVIEW_RULES" 'say that it is unknown' 'the review rule names the honest report of an unreadable fact'
+}
+
+# A controller.local.env that names a mode must not survive a caller who named
+# the other one: lib.sh sources that file with `set -a`, so this is the seam a
+# host setting would otherwise use to flip a review back to a shell. And on a
+# RESUME the record decides: a value only the host file supplied is a default
+# for launches that name none, so it is announced and not obeyed.
+check_mode_local_env_not_weaker() {
+  local home=$ROOT/mode-env-home rc=0
+  rm -rf "$home"; mkdir -p "$home"
+  printf 'PI_RUN_MODE="implementer"\n' > "$home/controller.local.env"
+  clean_worktree
+  argv_reset
+  PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker CONTROLLER_HOME="$home" \
+    CONTROLLER_RUNS_DIR="$CONTROLLER_ROOT/runs" \
+    CONTROLLER_OD_STATE="$ROOT/mode-env-state.json" PI_LIVE=0 PI_RUN_MODE=review \
+    FAKE_FIXTURE_DIR="$SCRIPT_DIR/fixtures" FAKE_PI_STREAM="$SCRIPT_DIR/fixtures/pi-success.jsonl" \
+    FAKE_PI_SESSION_ID=mode-env-session FAKE_PI_RC=0 \
+    "$SRC" "$WORKTREE" "$PROMPT" mode-env > "$ROOT/mode-env.launch.log" 2>&1 < /dev/null || rc=$?
+  [[ $rc == 0 ]] || { cat "$ROOT/mode-env.launch.log" >&2; fail 'the caller-named review mode failed to launch'; }
+  assert_review_argv 'local env'
+  contains "$ROOT/mode-env.launch.log" 'run mode review (caller)' \
+    'the launch says the CALLER named the mode, not the host file'
+  [[ $(cat "$CONTROLLER_ROOT/runs/mode-env.mode") == review ]] \
+    || fail 'a local environment file flipped a caller-named review to implementer'
+  # The other direction, on a RESUME: a host file that asks for implementer mode
+  # cannot undo the record of a review. The launch stays a review and SAYS so.
+  printf 'review\n' > "$CONTROLLER_ROOT/runs/mode-env-resume.mode"
+  printf 'mode-env-resume-session\n' > "$CONTROLLER_ROOT/runs/mode-env-resume.thread"
+  argv_reset
+  PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker CONTROLLER_HOME="$home" \
+    CONTROLLER_RUNS_DIR="$CONTROLLER_ROOT/runs" \
+    CONTROLLER_OD_STATE="$ROOT/mode-env-resume-state.json" PI_LIVE=0 \
+    FAKE_FIXTURE_DIR="$SCRIPT_DIR/fixtures" FAKE_PI_STREAM="$SCRIPT_DIR/fixtures/pi-success.jsonl" \
+    FAKE_PI_SESSION_ID=mode-env-resume-session FAKE_PI_RC=0 \
+    "$SRC" "$WORKTREE" "$PROMPT" mode-env-resume resume mode-env-resume-session \
+    > "$ROOT/mode-env-resume.launch.log" 2>&1 < /dev/null || rc=$?
+  [[ $rc == 0 ]] || { cat "$ROOT/mode-env-resume.launch.log" >&2; fail 'a local environment file refused a review resume'; }
+  assert_review_argv 'local env resume'
+  contains "$ROOT/mode-env-resume.launch.log" 'is a recorded review run; the record decides' \
+    'a host-file mode request against the record is announced, not obeyed'
+  contains "$ROOT/mode-env-resume.launch.log" 'run mode review (record)' \
+    'the resumed launch takes its mode from the record'
+}
+
+# Every check of the run mode in one place for the full run. The focused names
+# above call the same functions one at a time, so a mutant is judged by the single
+# case that covers the guard it weakened.
+check_run_mode() {
+  check_review_argv_single_definition
+  check_mode_value_refused
+  check_mode_extra_args_refused
+  check_rule_file_missing_refused
+  check_mode_not_written_on_refusal
+  check_mode_rule_paragraph
+  check_review_mode_argv
+  check_mode_local_env_not_weaker
+  check_mode_sticky_resume
+  check_mode_resume_exact_id
+  check_mode_resume_stream_mismatch
+  check_mode_claimed_name_reread
+  check_mode_session_thread_resume
+  check_mode_stream_review_resume
+  check_mode_session_record_resume
+  check_mode_session_implementer_unchanged
+  check_mode_record_missing_reads_review_evidence
+  check_mode_review_material_unreadable
+  check_implementer_mode_unchanged
+}
+
 check_input_validation() {
   expect_rc 2 env PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
     "$SRC" "$WORKTREE" "$PROMPT" report-validation --report relative-report.md
@@ -1977,6 +2896,7 @@ start_owned_run() {
   # second argument is retained so a caller's shape is unchanged).
   local run=$1
   shift 2
+  if [[ ${1:-} == resume && -n ${2:-} ]]; then seed_resume_session "$2"; fi
   PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
     CONTROLLER_OD_STATE="$ROOT/ownership-$run-state.json" PI_LIVE=0 \
     FAKE_FIXTURE_DIR="$SCRIPT_DIR/fixtures" \
@@ -2555,8 +3475,11 @@ PY
       ;;
     session-id)
       expect_rc 2 env PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi \
-        "$SRC" "$WORKTREE" "$PROMPT" focused-session resume 'invalid session id'
+        "$SRC" "$WORKTREE" "$PROMPT" focused-session resume '../invalid-session'
       contains "$ROOT/focused-command.out" 'usage: ' 'invalid resume session id is refused'
+      expect_rc 2 env PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi \
+        "$SRC" "$WORKTREE" "$PROMPT" focused-jsonl-session resume 'session.jsonl'
+      contains "$ROOT/focused-command.out" 'usage: ' 'a resume id ending in .jsonl is refused'
       ;;
     mode)
       expect_rc 2 env PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi \
@@ -2581,6 +3504,103 @@ PY
     accepted-resume-records) check_accepted_resume_records ;;
     ownership-force) check_run_name_ownership ;;
     ownership-release) check_run_name_ownership ;;
+    # --- the run mode (P-plat-26c): one focused name per refusal ---
+    review-argv) clean_worktree; check_review_mode_argv ;;
+    implementer-mode) check_implementer_mode_unchanged ;;
+    review-argv-definition) check_review_argv_single_definition ;;
+    mode-value) check_mode_value_refused ;;
+    mode-extra-args) check_mode_extra_args_refused ;;
+    mode-sticky) clean_worktree; check_mode_sticky_resume ;;
+    mode-resume-exact) clean_worktree; check_mode_resume_exact_id ;;
+    mode-resume-mismatch) clean_worktree; check_mode_resume_stream_mismatch ;;
+    mode-claimed-name-reread) clean_worktree; check_mode_claimed_name_reread ;;
+    mode-session-thread) clean_worktree; check_mode_session_thread_resume ;;
+    mode-stream-review) clean_worktree; check_mode_stream_review_resume ;;
+    mode-session-record) clean_worktree; check_mode_session_record_resume ;;
+    mode-session-implementer) clean_worktree; check_mode_session_implementer_unchanged ;;
+    mode-evidence) clean_worktree; check_mode_record_missing_reads_review_evidence ;;
+    mode-review-material-unreadable) clean_worktree; check_mode_review_material_unreadable ;;
+    mode-rules-file) check_rule_file_missing_refused ;;
+    mode-local-env) check_mode_local_env_not_weaker ;;
+    mode-prompt|mode-prompt-review)
+      # The rule paragraph is appended to EVERY prompt of the mode, and the review
+      # one says the opposite of the implementer one among things an agent may do.
+      clean_worktree
+      argv_reset
+      PI_LIVE=0 wait_launch_sequence mode-prompt-review deepseek-pi-volker pi-success
+      assert_mode_prompt implementer 'implementer prompt'
+      clean_worktree
+      argv_reset
+      PI_RUN_MODE=review PI_LIVE=0 \
+        wait_launch_sequence mode-prompt-review-run deepseek-pi-github2 pi-success
+      assert_mode_prompt review 'review prompt'
+      ;;
+    mode-record)
+      # The mode is a name-owned record like the route: written by a launch that
+      # is real, retired with the other records on a forced reuse, never inherited
+      # by a new run of the same name.
+      clean_worktree
+      PI_RUN_MODE=review PI_LIVE=0 \
+        wait_launch_sequence mode-record deepseek-pi-volker pi-success
+      [[ $(cat "$CONTROLLER_ROOT/runs/mode-record.mode") == review ]] \
+        || fail 'a review launch wrote no review mode record'
+      CONTROLLER_RUN_FORCE=1 PI_RUN_MODE=implementer PI_LIVE=0 \
+        wait_launch_sequence mode-record deepseek-pi-volker pi-success
+      [[ $(cat "$CONTROLLER_ROOT/runs/mode-record.mode") == implementer ]] \
+        || fail 'a forced reuse inherited the retired run mode'
+      retired_mode=''
+      retired_mode=$(find "$CONTROLLER_ROOT/runs/retired/mode-record" -mindepth 2 -maxdepth 2 \
+        -name 'mode-record.mode' -print -quit)
+      [[ -n $retired_mode ]] || fail 'a forced reuse did not retire the previous mode record'
+      grep -qx review "$retired_mode" || fail 'the retired mode record is not the previous review'
+      ;;
+    mode-not-written-on-refusal)
+      check_mode_not_written_on_refusal
+      ;;
+    mode-no-argv-file)
+      # A review that cannot read its one definition is refused before the name
+      # is claimed, instead of launching with a tool set nobody defined.
+      before=$(pi_invocations)
+      mutilated=$ROOT/mode-no-argv-tree
+      rm -rf "$mutilated"; mkdir -p "$mutilated"
+      ln -s "$(dirname -- "$SRC")"/* "$mutilated"/
+      rm -f "$mutilated/pi-review-argv"
+      rm -f "$mutilated/pi-shims"
+      cp -a -- "$SHIM_DIR" "$mutilated/pi-shims"
+      expect_rc 2 env PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
+        PI_RUN_MODE=review PI_LIVE=0 CONTROLLER_OD_STATE="$ROOT/mode-no-argv-state.json" \
+        FAKE_FIXTURE_DIR="$SCRIPT_DIR/fixtures" FAKE_PI_STREAM="$SCRIPT_DIR/fixtures/pi-success.jsonl" \
+        FAKE_PI_SESSION_ID=mode-no-argv-session FAKE_PI_RC=0 \
+        "$mutilated/$(basename -- "$SRC")" "$WORKTREE" "$PROMPT" mode-no-argv
+      contains "$ROOT/focused-command.out" 'the review argv file is missing or unreadable' \
+        'a review launch without its argv definition is refused'
+      [[ $(pi_invocations) == "$before" ]] || fail 'a review launched without its argv definition'
+      [[ ! -e $CONTROLLER_ROOT/runs/mode-no-argv.lock ]] || fail 'a refused review claimed the run name'
+      ;;
+    mode-empty-argv|mode-lists-retired)
+      # The review argv definition is emptied: that is refused too, because an
+      # empty file would leave pi with its own default (bash, edit, write) tools.
+      before=$(pi_invocations)
+      mutilated=$ROOT/mode-empty-argv-tree
+      rm -rf "$mutilated"; mkdir -p "$mutilated"
+      ln -s "$(dirname -- "$SRC")"/* "$mutilated"/
+      rm -f "$mutilated/pi-review-argv"; : > "$mutilated/pi-review-argv"
+      rm -f "$mutilated/pi-shims"
+      cp -a -- "$SHIM_DIR" "$mutilated/pi-shims"
+      expect_rc 2 env PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
+        PI_RUN_MODE=review PI_LIVE=0 CONTROLLER_OD_STATE="$ROOT/mode-empty-argv-state.json" \
+        FAKE_FIXTURE_DIR="$SCRIPT_DIR/fixtures" FAKE_PI_STREAM="$SCRIPT_DIR/fixtures/pi-success.jsonl" \
+        FAKE_PI_SESSION_ID=mode-empty-argv-session FAKE_PI_RC=0 \
+        "$mutilated/$(basename -- "$SRC")" "$WORKTREE" "$PROMPT" mode-empty-argv
+      contains "$ROOT/focused-command.out" 'the review argv file is empty' \
+        'an empty review argv definition is refused'
+      [[ $(pi_invocations) == "$before" ]] || fail 'a review launched with an empty argv definition'
+      [[ ! -e $CONTROLLER_ROOT/runs/mode-empty-argv.lock ]] \
+        || fail 'a refused empty review argv claimed the run name'
+      ;;
+    mode-rule-paragraph)
+      check_mode_rule_paragraph
+      ;;
     auth-file)
       local_home=$ROOT/focused-no-env
       mkdir -p "$local_home"
@@ -2616,7 +3636,7 @@ ENV
     prompt-newline)
       printf 'brief\n' > "$ROOT/focused-prompt.md"
       wait_launch focused-newline deepseek-pi-volker pi-success /dev/null
-      cmp -s "$PI_PROMPT_LOG" "$ROOT/focused-prompt.md" || fail 'prompt file trailing newline was lost'
+      prompt_starts_with "$ROOT/focused-prompt.md" 'prompt file trailing newline was lost'
       ;;
     volker-key-missing|github2-key-missing)
       local_home=$ROOT/focused-no-key
@@ -2777,6 +3797,7 @@ json.dump({
     "threads": {"recorded-session": "volker"},
 }, open(sys.argv[1], "w", encoding="utf-8"))
 PY
+      printf 'recorded-session\n' > "$CONTROLLER_ROOT/runs/focused-both-blocked.thread"
       expect_rc 3 env PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi \
         "$SRC" "$WORKTREE" "$PROMPT" focused-both-blocked resume recorded-session
       [[ ! -e $PI_ARGV_LOG ]] || [[ ! -s $PI_ARGV_LOG ]] || fail 'Pi ran while both accounts were blocked'
@@ -2897,8 +3918,8 @@ PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
   FAKE_PI_STREAM="$SCRIPT_DIR/fixtures/pi-success.jsonl" FAKE_PI_SESSION_ID=prompt-newline-session \
   FAKE_PI_RC=0 "$SRC" "$WORKTREE" "$ROOT/prompt-with-newline.md" prompt-newline \
   > "$ROOT/prompt-newline.launch.log" 2>&1 < /dev/null || fail 'pi wrapper rejected a prompt file ending in a newline'
-cmp -s "$PI_PROMPT_LOG" "$ROOT/prompt-with-newline.md" \
-  || fail 'pi prompt argument lost the prompt file trailing newline'
+prompt_starts_with "$ROOT/prompt-with-newline.md" \
+  'pi prompt argument lost the prompt file trailing newline'
 contains "$PI_ENV_LOG" 'VOLKER_PRESENT=yes GITHUB2_PRESENT=' 'pi receives only the selected Volker API-key variable'
 contains "$PI_ENV_LOG" 'VOLKER_PRESENT= GITHUB2_PRESENT=yes' 'pi receives only the selected github2 API-key variable'
 python3 - "$STATE" <<'PY'
@@ -3142,6 +4163,7 @@ check_job_status_validation
 check_run_name_ownership
 check_refusal_keeps_records
 check_accepted_resume_records
+check_run_mode
 
 not_contains test-key 'run evidence contains no key material' "$CONTROLLER_ROOT/runs"
 not_contains test-key 'account state contains no key material' "$STATE"

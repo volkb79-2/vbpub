@@ -19,8 +19,15 @@ shutil.copy2(repo / "scripts/controller/pi-live.py", controller / "pi-live.py")
 shutil.copy2(repo / "scripts/controller/job-status.sh", controller / "job-status.sh")
 
 # A mutant wrapper must be judged on the change it carries, not on a missing
-# sibling file: the continuation prompt is read from SCRIPT_DIR.
-shutil.copy2(repo / "scripts/controller/continue-empty-completion.md", controller / "continue-empty-completion.md")
+# sibling file: the continuation prompt and the run-mode rule files are read from
+# SCRIPT_DIR, and review mode reads the one read-only argv definition.
+for _sibling in (
+    "continue-empty-completion.md",
+    "implementer-prompt-rules.md",
+    "review-prompt-rules.md",
+    "pi-review-argv",
+):
+    shutil.copy2(repo / "scripts/controller" / _sibling, controller / _sibling)
 
 
 def account_helper_mutant(name: str, before: str, after: str) -> Path:
@@ -31,7 +38,8 @@ def account_helper_mutant(name: str, before: str, after: str) -> Path:
         raise SystemExit(f"{source}: expected one mutation target, found {count}: {before!r}")
     variant = controller / name
     variant.mkdir(parents=True)
-    for filename in ("lib.sh", "codex-impl.sh", "pi-impl.sh", "resume-usage-limited.sh", "finisher-generic.md"):
+    for filename in ("lib.sh", "codex-impl.sh", "pi-impl.sh", "resume-usage-limited.sh", "finisher-generic.md",
+                     "continue-empty-completion.md", "implementer-prompt-rules.md"):
         shutil.copy2(repo / "scripts/controller" / filename, variant / filename)
     target = variant / "opendesign-accounts.py"
     target.write_text(original.replace(before, after, 1), encoding="utf-8")
@@ -59,7 +67,9 @@ def pi_review_mutant(name: str, before: str, after: str) -> Path:
         raise SystemExit(f"{source}: expected one mutation target, found {original.count(before)}: {before!r}")
     variant = controller / name
     variant.mkdir(parents=True)
-    for filename in ("lib.sh", "pi-impl.sh", "pi-live.py", "opendesign-accounts.py", "continue-empty-completion.md"):
+    for filename in ("lib.sh", "pi-impl.sh", "pi-live.py", "opendesign-accounts.py",
+                     "continue-empty-completion.md", "review-prompt-rules.md",
+                     "implementer-prompt-rules.md", "pi-review-argv"):
         shutil.copy2(repo / "scripts/controller" / filename, variant / filename)
     # pi-impl.sh refuses to launch without its signal-guard shims beside it.
     shutil.copytree(repo / "scripts/controller/pi-shims", variant / "pi-shims")
@@ -87,9 +97,27 @@ pi_review_mutant("pi-review-untracked-content-only",
 pi_review_mutant("pi-review-diff-only",
        '  [[ $TREE_DIFF == "$before_diff" ]] || changed="${changed:+$changed, }diff"',
        '  :')
-pi_review_mutant("pi-review-tools-wide",
-       "printf '%s|n' --tools read,grep,find,ls --exclude-tools".replace("|", chr(92)),
-       "printf '%s|n' --tools read,grep,find,ls,bash --exclude-tools".replace("|", chr(92)))
+# One definition of the review's read-only set, in its own file: the mutant
+# widens it, and a review launched through pi-impl.sh's review mode must then
+# carry a shell -- so the check that asserts the tool list kills it.
+def pi_review_argv_mutant(name: str, before: str, after: str) -> Path:
+    variant = controller / name
+    variant.mkdir(parents=True)
+    for filename in ("lib.sh", "pi-impl.sh", "pi-live.py", "opendesign-accounts.py",
+                     "continue-empty-completion.md", "pi-review.sh",
+                     "review-prompt-rules.md", "implementer-prompt-rules.md"):
+        shutil.copy2(repo / "scripts/controller" / filename, variant / filename)
+    shutil.copytree(repo / "scripts/controller/pi-shims", variant / "pi-shims")
+    original = (repo / "scripts/controller/pi-review-argv").read_text(encoding="utf-8")
+    if original.count(before) != 1:
+        raise SystemExit(f"pi-review-argv: expected one mutation target, found {original.count(before)}: {before!r}")
+    (variant / "pi-review-argv").write_text(original.replace(before, after, 1), encoding="utf-8")
+    return variant / "pi-review.sh"
+
+
+pi_review_argv_mutant("pi-review-tools-wide",
+                     "read,grep,find,ls",
+                     "read,grep,find,ls,bash")
 pi_review_mutant("pi-review-status-no-uall",
        '  status=$(git -C "$wt" --no-optional-locks status --porcelain=v1 -uall 2>/dev/null) || return 1',
        '  status=$(git -C "$wt" --no-optional-locks status --porcelain=v1 2>/dev/null) || return 1')
@@ -333,6 +361,7 @@ def codex_wrapper_with_lib_mutant(name: str, before: str, after: str) -> Path:
         if source.is_file():
             shutil.copy2(source, variant / sibling)
     shutil.copy2(repo / "scripts/controller/continue-empty-completion.md", variant / "continue-empty-completion.md")
+    shutil.copy2(repo / "scripts/controller/implementer-prompt-rules.md", variant / "implementer-prompt-rules.md")
     mutant("scripts/controller/lib.sh", "lib.sh", before, after, variant)
     return variant / "codex-impl.sh"
 
@@ -518,7 +547,8 @@ for _name, _before, _after in (
      'labels_text+=" and ${slot_label[slot]}"'),
     ("exit-code", '    nice -n 10 run-gate "$@"\n    return $?\n  else\n    rc=$?\n  fi\n  [[ $rc == 75 ]]', '    nice -n 10 run-gate "$@"\n    return 0\n  else\n    rc=$?\n  fi\n  [[ $rc == 75 ]]'),
     # CTL-57: the memory-PSI admission after a slot is held
-    ("psi-threshold", 'BEGIN { exit !(m + 0 >= 3) }', 'BEGIN { exit !(m + 0 > 3) }'),
+    ("psi-threshold", 'BEGIN { exit !(m + 0 >= 10) }', 'BEGIN { exit !(m + 0 > 10) }'),
+    ("psi-window", 'sub("avg60=", "", $3); print $3', 'sub("avg10=", "", $2); print $2'),
     ("psi-unreadable-quiet", "    ''|*[!0-9.]*|.*|*.|*.*.*) return 2 ;;", "    ''|*[!0-9.]*|.*|*.|*.*.*) return 1 ;;"),
     ("psi-unreadable-waits", '(( state != 2 )) || memory_refuse_unreadable\n  (( state == 0 )) || return 0',
      '(( state != 2 )) || state=0\n  (( state == 0 )) || return 0'),
@@ -705,8 +735,8 @@ mutant("scripts/controller/pi-impl.sh", "pi-prompt-absolute.sh",
 mutant("scripts/controller/pi-impl.sh", "pi-worktree-exists.sh",
        'worktree=$(realpath -e -- "$1") || usage', 'worktree=$1')
 mutant("scripts/controller/pi-impl.sh", "pi-session-id-guard.sh",
-       '[[ -n $session_id && $session_id =~ ^[A-Za-z0-9._-]+$ && $session_id != *..* ]] || usage',
-       '[[ -n $session_id ]] || usage')
+       '  [[ $1 =~ ^[A-Za-z0-9._-]+$ && $1 != *..* && $1 != . && $1 != *.jsonl ]]',
+       '  return 0')
 mutant("scripts/controller/pi-impl.sh", "pi-mode-guard.sh",
        'elif [[ $mode != new || $# -gt 4 ]]; then', 'elif [[ $mode != new ]]; then')
 mutant("scripts/controller/pi-impl.sh", "pi-run-name-guard.sh",
@@ -739,7 +769,8 @@ mutant("scripts/controller/pi-impl.sh", "pi-default-thinking.sh",
 def pi_wrapper_with_lib_mutant(name: str, before: str, after: str) -> Path:
     variant = controller / name
     variant.mkdir(parents=True, exist_ok=True)
-    for sibling in ("pi-impl.sh", "continue-empty-completion.md", "opendesign-accounts.py", "pi-live.py"):
+    for sibling in ("pi-impl.sh", "continue-empty-completion.md", "opendesign-accounts.py", "pi-live.py",
+                    "implementer-prompt-rules.md", "review-prompt-rules.md", "pi-review-argv"):
         shutil.copy2(repo / "scripts/controller" / sibling, variant / sibling)
     mutant("scripts/controller/lib.sh", "lib.sh", before, after, variant)
     return variant / "pi-impl.sh"
@@ -785,14 +816,161 @@ mutant("scripts/controller/pi-impl.sh", "pi-record-owner-new-only.sh",
 # A forced launch retires the previous records only once it is real: restoring
 # the early retirement moves them aside on a refusal that follows.
 mutant("scripts/controller/pi-impl.sh", "pi-force-retire-early.sh",
-       'controller_run_claim "$name" || exit 2\nretire_existing=0',
-       'controller_run_claim "$name" || exit 2\n'
+       'recheck_claimed_resume_mode || exit 2\nretire_existing=0',
+       'recheck_claimed_resume_mode || exit 2\n'
        '[[ $mode != new || ${CONTROLLER_RUN_FORCE:-0} != 1 ]] || controller_run_retire_records "$name" >/dev/null\n'
        'retire_existing=0')
 mutant("scripts/controller/pi-impl.sh", "pi-force-retire-before-credentials.sh",
        'if [[ ! -r $HOME/.env.ai ]]; then',
        'if [[ $retire_existing == 1 ]]; then controller_run_retire_records "$name" >/dev/null; fi\n'
        'if [[ ! -r $HOME/.env.ai ]]; then')
+# P-plat-26c: the run mode (review/implementer), its sticky record and the rule
+# paragraph. Each mutant turns one refusal or one record into its nearest
+# neighbour; the mode checks in test-pi-impl.sh are the only ones that can see
+# them, so each is judged by the focused name that covers the guard it weakened.
+mutant("scripts/controller/pi-impl.sh", "pi-mode-value-guard.sh",
+       "      echo \"PI_RUN_MODE must be 'implementer' or 'review' (got '$requested_mode')\" >&2\n      exit 2\n",
+       "      : # unknown mode accepted\n")
+mutant("scripts/controller/pi-impl.sh", "pi-mode-jsonl-session-id-allowed.sh",
+       " && $1 != *.jsonl ]]", " ]]")
+mutant("scripts/controller/pi-impl.sh", "pi-mode-unknown-session-allowed.sh",
+       "(( session_id_found == 1 )) || {", "true || {")
+mutant("scripts/controller/pi-impl.sh", "pi-mode-stream-session-mismatch-allowed.sh",
+       'if [[ $mode == resume && -n $stream_session && $stream_session != "$session_id" ]]; then',
+       "if false; then")
+mutant("scripts/controller/pi-impl.sh", "pi-mode-claimed-name-reread-dropped.sh",
+       'recheck_claimed_resume_mode || exit 2', ': # claim-time mode is not re-read')
+mutant("scripts/controller/pi-impl.sh", "pi-mode-argv-append-dropped.sh",
+       '  base_pi_args+=("${review_argv[@]}")',
+       '  : # review argv left out of the launch')
+mutant("scripts/controller/pi-impl.sh", "pi-mode-argv-missing-guard.sh",
+       '  if [[ ! -r $review_argv_file ]]; then\n'
+       '    echo "the review argv file is missing or unreadable: $review_argv_file" >&2\n'
+       "    echo '  the read-only tool set is defined once there; a review cannot launch without it' >&2\n"
+       '    exit 2\n'
+       '  fi\n'
+       '  review_argv=()\n'
+       '  mapfile -t review_argv < "$review_argv_file" || exit 2',
+       '  if [[ -r $review_argv_file ]]; then\n'
+       '    review_argv=()\n'
+       '    mapfile -t review_argv < "$review_argv_file" || exit 2\n'
+       '  else\n'
+       "    review_argv=(--tools 'read,grep,find,ls' --exclude-tools 'mcp__*' --no-extensions --no-mcp)\n"
+       '  fi')
+mutant("scripts/controller/pi-impl.sh", "pi-mode-argv-empty-guard.sh",
+       '  (( ${#review_argv[@]} > 0 )) || { echo "the review argv file is empty: $review_argv_file" >&2; exit 2; }',
+       '  : # empty review argv accepted')
+mutant("scripts/controller/pi-impl.sh", "pi-mode-record-not-written.sh",
+       'printf \'%s\\n\' "$run_mode" > "$out/$name.mode"',
+       ': # mode record not written')
+mutant("scripts/controller/pi-impl.sh", "pi-mode-record-written-before-refusal.sh",
+       'controller_run_claim "$name" || exit 2',
+       'controller_run_claim "$name" || exit 2\n'
+       'printf \'%s\\n\' "$run_mode" > "$out/$name.mode"')
+# A resume of a review must refuse a CALLER that asks for implementer mode, and
+# must otherwise take the record: dropping the refusal widens a review, dropping
+# the record reading loses the stickiness.
+mutant("scripts/controller/pi-impl.sh", "pi-mode-sticky-refusal-dropped.sh",
+       '      if [[ $record_mode == review && $request_origin == caller && $requested_mode == implementer ]]; then',
+       '      if false; then')
+mutant("scripts/controller/pi-impl.sh", "pi-mode-record-ignored.sh",
+       '      run_mode=$record_mode\n      mode_source=record',
+       '      run_mode=$requested_mode\n      mode_source=record')
+mutant("scripts/controller/pi-impl.sh", "pi-mode-narrow-dropped.sh",
+       '      if [[ $record_mode == implementer && $request_origin == caller && $requested_mode == review ]]; then',
+       '      if false; then')
+# A record that says neither word is not a fact to guess from.
+mutant("scripts/controller/pi-impl.sh", "pi-mode-invalid-record-guessed.sh",
+       'mode_record_state=invalid; fi',
+       'mode_record_state=absent; fi')
+# Review EVIDENCE beside a name with no mode record: the session is known to be
+# a review, so the missing record must not license the implementer tool set.
+mutant("scripts/controller/pi-impl.sh", "pi-mode-evidence-dropped.sh",
+       '    review_material_present=1',
+       '    review_material_present=0')
+mutant("scripts/controller/pi-impl.sh", "pi-mode-thread-evidence-dropped.sh",
+       '    if (( thread_has_review_material == 1 )); then',
+       '      if false; then')
+mutant("scripts/controller/pi-impl.sh", "pi-mode-stream-review-ignored.sh",
+       '    if read_mode_record_if_present "$stream_mode_path"; then\n'
+       '      if [[ $mode_record_value == review ]]; then',
+       '    if read_mode_record_if_present "$stream_mode_path"; then\n'
+       '      if false; then')
+mutant("scripts/controller/pi-impl.sh", "pi-mode-review-material-unreadable-allowed.sh",
+       '  if [[ -L $directory || ( -e $directory && ( ! -d $directory || ! -r $directory || ! -x $directory ) ) ]]; then',
+       '  if false; then')
+mutant("scripts/controller/pi-impl.sh", "pi-mode-retired-session-not-preserved.sh",
+       '  if ! persist_retired_run_session_mode "$name"; then',
+       '  if false; then')
+# A session sticks across caller-selected run names. These mutants each remove
+# one source or consequence of that rule; their focused arms also verify that an
+# implementer session is not broadened into a review by an unrelated match.
+mutant("scripts/controller/pi-impl.sh", "pi-mode-session-thread-ignored.sh",
+       '      if [[ $mode_record_value == review ]]; then\n'
+       '        session_review_found=1\n'
+       '        session_review_source=thread-record',
+       '      if false; then\n'
+       '        session_review_found=1\n'
+       '        session_review_source=thread-record')
+mutant("scripts/controller/pi-impl.sh", "pi-mode-session-record-ignored.sh",
+       '  if [[ $session_mode_state == valid && $session_mode_record_value == review ]]; then',
+       '  if false; then')
+mutant("scripts/controller/pi-impl.sh", "pi-mode-session-thread-invalid-record-guessed.sh",
+       '    else\n'
+       '      record_rc=$?\n'
+       '      (( record_rc == 1 )) || exit 2\n'
+       '    fi\n'
+       '    if (( thread_has_review_material == 1 )); then',
+       '    else\n'
+       '      record_rc=$?\n'
+       '      : # invalid matching-name mode record ignored\n'
+       '    fi\n'
+       '    if (( thread_has_review_material == 1 )); then')
+mutant("scripts/controller/pi-impl.sh", "pi-mode-session-write-dropped.sh",
+       '  if ! printf \'%s\\n\' "$write_mode" > "$path"; then',
+       '  if false; then')
+mutant("scripts/controller/pi-impl.sh", "pi-mode-session-monotonic-dropped.sh",
+       '  if [[ $stored_mode == review || $requested_mode == review ]]; then write_mode=review; fi',
+       '  if [[ $requested_mode == review ]]; then write_mode=review; fi')
+mutant("scripts/controller/pi-impl.sh", "pi-mode-session-implementer-as-review.sh",
+       '  if [[ $session_mode_state == valid && $session_mode_record_value == review ]]; then',
+       '  if [[ $session_mode_state == valid ]]; then')
+mutant("scripts/controller/pi-impl.sh", "pi-mode-session-implementer-refusal-dropped.sh",
+       '    if [[ $request_origin == caller && $requested_mode == implementer ]]; then\n'
+       '      if [[ $session_review_source == review-material ]]; then',
+       '    if false; then\n'
+       '      if [[ $session_review_source == review-material ]]; then')
+mutant("scripts/controller/pi-impl.sh", "pi-mode-session-invalid-record-guessed.sh",
+       '  [[ $session_mode_state != invalid ]] || {',
+       '  true || {')
+# In review mode the seam adds nothing at all -- the general refusal is the one
+# that holds for a spelling this wrapper never classified.
+mutant("scripts/controller/pi-impl.sh", "pi-mode-extra-args-allowed.sh",
+       'if [[ $run_mode == review ]] && (( ${#extra_pi_args[@]} > 0 )); then',
+       'if false; then')
+mutant("scripts/controller/pi-impl.sh", "pi-mode-extra-args-list-dropped.sh",
+       '    if [[ $run_mode == review ]]; then\n      # Review mode owns what the reviewer may DO',
+       '    if false; then\n      # Review mode owns what the reviewer may DO')
+# The rule paragraph is part of the contract: a launch that cannot read it is
+# refused, and the paragraph is what pi actually receives.
+mutant("scripts/controller/pi-impl.sh", "pi-mode-rules-file-refusal-dropped.sh",
+       'if [[ ! -r $rules_file ]]; then\n'
+       '  echo "pi $run_mode prompt rule file is missing or unreadable: $rules_file" >&2\n'
+       "  echo '  every launch appends its fixed rule paragraph; a prompt without it is not the contract this wrapper promises' >&2\n"
+       '  exit 2\n'
+       'fi',
+       'if false; then\n'
+       '  echo "pi $run_mode prompt rule file is missing or unreadable: $rules_file" >&2\n'
+       "  echo '  every launch appends its fixed rule paragraph; a prompt without it is not the contract this wrapper promises' >&2\n"
+       '  exit 2\n'
+       'fi')
+mutant("scripts/controller/pi-impl.sh", "pi-mode-prompt-dropped.sh",
+       "printf -v prompt_text '%s\\n%s' \"$prompt_text\" \"$rules_text\"",
+       ': # the rule paragraph is not appended')
+# A host's controller.local.env may default a launch, never flip a caller's mode.
+mutant("scripts/controller/pi-impl.sh", "pi-mode-local-env-flip.sh",
+       'if (( caller_pi_run_mode_set == 1 )); then PI_RUN_MODE=$caller_pi_run_mode; fi',
+       ': # the local environment file decides the mode')
 mutant("scripts/controller/codex-impl.sh", "codex-force-retire-early.sh",
        'controller_run_claim "$name" || exit 2\nretire_existing=0',
        'controller_run_claim "$name" || exit 2\n'

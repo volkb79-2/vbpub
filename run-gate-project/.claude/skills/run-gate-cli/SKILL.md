@@ -42,10 +42,16 @@ run-gate <lane> --base <ref>                      # only a lane that DELEGATES i
 run-gate <lane> --dry-run                         # print the full plan (docker argv, mounts, slice, inner cmd)
 run-gate <lane> --check-env                       # env-reference drift sweep (advisory) + assay toolchain fitness (FAIL=exit 2)
 run-gate <lane> --fresh                           # RG-35: drop a previous client's container and run anew
+run-gate <lane> --event-file /host/path/events.jsonl --job-id ID # host-owned start/verdict events; both flags required
 run-gate <lane> --ksm | --no-ksm                  # per-run KSM override (see below)
 run-gate <command-lane> -- path/to/file            # accepts_args = true appends argv after --
 run-gate <command-lane> --workers N|auto          # RG-146 xdist workers (lane must declare workers + {workers})
 ```
+
+The event path must be absolute, outside the judged checkout and every
+host path mounted into the lane container; it has no environment fallback.
+See the [consumer contract](../../../CONSUMERS.md#host-owned-job-event-file)
+before using the event as a host-side result.
 
 ## Judging a worktree (the one thing an agent gets wrong)
 

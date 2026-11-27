@@ -411,6 +411,7 @@ def config_text(cgroup_root: Path, store_dir: Path, tmpfs_dir: Path) -> str:
     return (
         '[probe]\nlevels = ["observe", "operator"]\ntick_ms = 1000\n'
         f"cgroup_root = {json.dumps(str(cgroup_root))}\n\n[limits]\nmax_rows = 1024\n"
+        "annotate_rate_per_s = 50\nannotate_burst = 64\n"
         "\n[store]\n"
         f"dir = {json.dumps(str(store_dir))}\n"
         f"tmpfs_dir = {json.dumps(str(tmpfs_dir))}\n"

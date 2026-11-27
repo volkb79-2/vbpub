@@ -24,9 +24,11 @@
 
 use core::ops::Range;
 use core::str::Chars;
+use std::collections::BTreeMap;
 
 use hostobs_proto::envelope::{members_up_to, EnvelopeError, Kind, Member};
 
+use crate::backend::{AnnotateArgs, AnnotateCtxKey, AnnotateKind, AnnotateOutcome};
 use crate::limits::IntervalRule;
 use crate::selection::{
     Sel, Selection, SelectionError, MAX_ENTITIES, MAX_METRICS, MAX_NAME_BYTES, MAX_PATH_BYTES,
@@ -155,6 +157,13 @@ impl<'a> Obj<'a> {
 
     fn raw(&self, member: &Member) -> &'a [u8] {
         self.text.get(member.value.clone()).unwrap_or_default()
+    }
+
+    fn required(&self, name: &str) -> Result<&Member, ArgError> {
+        self.members
+            .iter()
+            .find(|member| self.key_of(member) == name.as_bytes())
+            .ok_or_else(|| fail(&join(&self.path, name)))
     }
 
     /// Every member's key must be one of `allowed`.
@@ -496,6 +505,192 @@ fn is_control(c: char) -> bool {
     u32::from(c) < 0x20 || u32::from(c) == 0x7F
 }
 
+fn has_control(text: &str) -> bool {
+    text.chars().any(is_control)
+}
+
+fn is_event_name(name: &str) -> bool {
+    let mut bytes = name.bytes();
+    matches!(bytes.next(), Some(b'a'..=b'z'))
+        && bytes.all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'.' | b'_' | b'-')
+        })
+}
+
+fn event_string(
+    object: &Obj<'_>,
+    name: &str,
+    max: usize,
+    nonempty: bool,
+) -> Result<String, ArgError> {
+    let value = object.string(name, max)?;
+    if (nonempty && value.is_empty()) || has_control(&value) {
+        return Err(fail(&join(&object.path, name)));
+    }
+    Ok(value)
+}
+
+fn nullable_event_string(
+    object: &Obj<'_>,
+    name: &str,
+    max: usize,
+    nonempty: bool,
+) -> Result<Option<String>, ArgError> {
+    let member = object.required(name)?;
+    if member.kind == Kind::Null {
+        return Ok(None);
+    }
+    if member.kind != Kind::Str {
+        return Err(fail(&join(&object.path, name)));
+    }
+    let value = match unescape(object.raw(member), max) {
+        Some(value) => value,
+        None => return Err(fail(&join(&object.path, name))),
+    };
+    if (nonempty && value.is_empty()) || has_control(&value) {
+        return Err(fail(&join(&object.path, name)));
+    }
+    Ok(Some(value))
+}
+
+fn annotate_kind(object: &Obj<'_>) -> Result<AnnotateKind, ArgError> {
+    match event_string(object, "kind", 5, true)?.as_str() {
+        "begin" => Ok(AnnotateKind::Begin),
+        "end" => Ok(AnnotateKind::End),
+        "point" => Ok(AnnotateKind::Point),
+        _ => Err(fail("kind")),
+    }
+}
+
+fn annotate_ctx(object: &Obj<'_>) -> Result<BTreeMap<AnnotateCtxKey, String>, ArgError> {
+    let ctx = object.object("ctx")?;
+    ctx.only(&["run", "lane", "candidate", "txn", "session"])?;
+    let mut values = BTreeMap::new();
+    for member in &ctx.members {
+        let key = ctx.key_of(member);
+        let name = core::str::from_utf8(key).unwrap_or_default();
+        let key = match name {
+            "run" => AnnotateCtxKey::Run,
+            "lane" => AnnotateCtxKey::Lane,
+            "candidate" => AnnotateCtxKey::Candidate,
+            "txn" => AnnotateCtxKey::Txn,
+            "session" => AnnotateCtxKey::Session,
+            _ => return Err(fail(&key_path("ctx", key))),
+        };
+        if member.kind != Kind::Str {
+            return Err(fail(&join("ctx", name)));
+        }
+        let value = match unescape(ctx.raw(member), 128) {
+            Some(value) if !value.is_empty() && !has_control(&value) => value,
+            _ => return Err(fail(&join("ctx", name))),
+        };
+        values.insert(key, value);
+    }
+    Ok(values)
+}
+
+/// The accepted attributes and, for a keyed point event, its `(boot_id, seq)` identity.
+type AnnotateAttrs = (BTreeMap<String, String>, Option<(String, u64)>);
+
+fn annotate_attrs(object: &Obj<'_>, kind: AnnotateKind) -> Result<AnnotateAttrs, ArgError> {
+    let attrs = object.object("attrs")?;
+    if attrs.len() > 8 {
+        return Err(fail("attrs"));
+    }
+    let mut values = BTreeMap::new();
+    for member in &attrs.members {
+        let raw_key = attrs.key_of(member);
+        let path = key_path("attrs", raw_key);
+        let Some(key) = core::str::from_utf8(raw_key).ok() else {
+            return Err(fail("attrs"));
+        };
+        if key.len() > 64 || !is_event_name(key) {
+            return Err(fail(&path));
+        }
+        if matches!(key, "uid" | "gid" | "pid" | "comm" | "peer" | "issuer") {
+            return Err(fail(&path));
+        }
+        if member.kind != Kind::Str {
+            return Err(fail(&path));
+        }
+        let value = match unescape(attrs.raw(member), 256) {
+            Some(value) if !has_control(&value) => value,
+            _ => return Err(fail(&path)),
+        };
+        values.insert(key.to_string(), value);
+    }
+
+    let boot_id = values.get("boot_id").cloned();
+    let seq = values.get("seq").cloned();
+    if kind != AnnotateKind::Point && (boot_id.is_some() || seq.is_some()) {
+        return Err(fail("attrs.boot_id"));
+    }
+    let idempotency = match (boot_id, seq) {
+        (None, None) => None,
+        (Some(_), None) => return Err(fail("attrs.seq")),
+        (None, Some(_)) => return Err(fail("attrs.boot_id")),
+        (Some(boot_id), Some(seq)) => {
+            if !(1..=128).contains(&boot_id.len()) {
+                return Err(fail("attrs.boot_id"));
+            }
+            let seq = parse_uint(seq.as_bytes()).ok_or_else(|| fail("attrs.seq"))?;
+            Some((boot_id, seq))
+        }
+    };
+    Ok((values, idempotency))
+}
+
+/// Read the complete `annotate` schema from WIRE.md section 4.12.
+///
+/// # Errors
+///
+/// An [`ArgError`] naming the first malformed or unknown argument.
+pub fn annotate(args: &[u8]) -> Result<AnnotateArgs, ArgError> {
+    let object = Obj::parse(args, "")?;
+    object.only(&["kind", "name", "key", "ctx", "outcome", "code", "attrs"])?;
+    let kind = annotate_kind(&object)?;
+    let name = event_string(&object, "name", 64, true)?;
+    if !is_event_name(&name)
+        || (name.starts_with("thrashguard.")
+            && !matches!(name.as_str(), "thrashguard.freeze" | "thrashguard.thaw"))
+    {
+        return Err(fail("name"));
+    }
+    let key = nullable_event_string(&object, "key", 64, true)?;
+    let ctx = annotate_ctx(&object)?;
+    let outcome_text = nullable_event_string(&object, "outcome", 16, true)?;
+    let outcome = match outcome_text.as_deref() {
+        None if kind != AnnotateKind::End => None,
+        None => return Err(fail("outcome")),
+        Some("ok") => Some(AnnotateOutcome::Ok),
+        Some("fail") => Some(AnnotateOutcome::Fail),
+        Some("error") => Some(AnnotateOutcome::Error),
+        Some("skipped") => Some(AnnotateOutcome::Skipped),
+        Some("cancelled") => Some(AnnotateOutcome::Cancelled),
+        Some("timeout") => Some(AnnotateOutcome::Timeout),
+        Some("abandoned") => Some(AnnotateOutcome::Abandoned),
+        Some(_) => return Err(fail("outcome")),
+    };
+    if kind == AnnotateKind::End && outcome.is_none() {
+        return Err(fail("outcome"));
+    }
+    if kind != AnnotateKind::End && outcome.is_some() {
+        return Err(fail("outcome"));
+    }
+    let code = nullable_event_string(&object, "code", 64, true)?;
+    let (attrs, idempotency) = annotate_attrs(&object, kind)?;
+    Ok(AnnotateArgs {
+        kind,
+        name,
+        key,
+        ctx,
+        outcome,
+        code,
+        attrs,
+        idempotency,
+    })
+}
+
 /// Read the `hello` arguments `{"client": str, "proto": {"major": u16, "minor": u16}}`: both
 /// members required, `client` 0 to 64 decoded bytes without a control character below 0x20 or
 /// 0x7F (R17).
@@ -736,6 +931,20 @@ mod tests {
             Ok(args) => panic!("accepted {args:?}"),
             Err(error) => error.key,
         }
+    }
+
+    fn annotate_refused(raw: &str) -> String {
+        let text = bs(raw);
+        match super::annotate(text.as_bytes()) {
+            Ok(args) => panic!("accepted {args:?}"),
+            Err(error) => error.key,
+        }
+    }
+
+    fn point_args(attrs: &str, ctx: &str) -> String {
+        format!(
+            r#"{{"kind":"point","name":"run","key":null,"ctx":{ctx},"outcome":null,"code":null,"attrs":{attrs}}}"#
+        )
     }
 
     fn minor_of(raw: &str) -> Result<u16, ArgError> {
@@ -1194,6 +1403,286 @@ mod tests {
                 b"null".as_slice(),
             ]
         );
+    }
+
+    #[test]
+    fn annotate_requires_all_seven_members_and_rejects_unknown_or_duplicate_members() {
+        let point = point_args("{}", "{}");
+        let accepted = super::annotate(point.as_bytes()).expect("valid point");
+        assert_eq!(accepted.name, "run");
+        assert_eq!(accepted.key, None);
+        assert_eq!(accepted.outcome, None);
+        assert_eq!(accepted.code, None);
+
+        for (member, key) in [
+            ("\"kind\":\"point\",", "kind"),
+            ("\"name\":\"run\",", "name"),
+            ("\"key\":null,", "key"),
+            ("\"ctx\":{},", "ctx"),
+            ("\"outcome\":null,", "outcome"),
+            ("\"code\":null,", "code"),
+            (",\"attrs\":{}", "attrs"),
+        ] {
+            assert_eq!(
+                annotate_refused(&point.replace(member, "")),
+                key,
+                "{member}"
+            );
+        }
+
+        let unknown = point.replace("\"attrs\":{}}", "\"attrs\":{},\"t_mono_ns\":1}");
+        assert_eq!(annotate_refused(&unknown), "t_mono_ns");
+        let duplicate = point.replace("\"attrs\":{}}", "\"attrs\":{},\"kind\":\"point\"}");
+        assert_eq!(annotate_refused(&duplicate), "kind");
+        let duplicate_attr = point.replace("\"attrs\":{}", "\"attrs\":{\"a\":\"x\",\"a\":\"y\"}");
+        assert_eq!(annotate_refused(&duplicate_attr), "attrs.a");
+    }
+
+    #[test]
+    fn annotate_schema_refusals_report_names_and_field_paths() {
+        for (name, key) in [
+            ("Bad", "name"),
+            ("1run", "name"),
+            ("thrashguard.other", "name"),
+        ] {
+            let text =
+                point_args("{}", "{}").replace("\"name\":\"run\"", &format!("\"name\":\"{name}\""));
+            assert_eq!(annotate_refused(&text), key, "{name}");
+        }
+        let long_name = format!("\"name\":\"{}\"", "n".repeat(65));
+        let text = point_args("{}", "{}").replace("\"name\":\"run\"", &long_name);
+        assert_eq!(annotate_refused(&text), "name");
+
+        let invalid_strings = [
+            ("key", String::from("\"\""), "key"),
+            ("key", format!("\"{}\"", "k".repeat(65)), "key"),
+            ("key", String::from("\"~u0000\""), "key"),
+            ("key", String::from("\"~u001f\""), "key"),
+            ("key", String::from("\"~u007f\""), "key"),
+            ("code", String::from("\"\""), "code"),
+            ("code", format!("\"{}\"", "c".repeat(65)), "code"),
+            ("code", String::from("\"~u0000\""), "code"),
+            ("code", String::from("\"x~u001f\""), "code"),
+            ("code", String::from("\"x~u007f\""), "code"),
+        ];
+        for (member, value, key) in invalid_strings {
+            let needle = format!("\"{member}\":null");
+            let text = point_args("{}", "{}").replace(&needle, &format!("\"{member}\":{value}"));
+            assert_eq!(annotate_refused(&text), key, "{member}={value}");
+        }
+        for control in (0_u32..=0x1f).chain([0x7f]) {
+            let escaped = format!("~u{control:04x}");
+            for member in ["key", "code"] {
+                let text = point_args("{}", "{}").replace(
+                    &format!("\"{member}\":null"),
+                    &format!("\"{member}\":\"{escaped}\""),
+                );
+                assert_eq!(
+                    annotate_refused(&text),
+                    member,
+                    "U+{control:04X} in {member}"
+                );
+            }
+            let ctx = format!("{{\"run\":\"{escaped}\"}}");
+            assert_eq!(
+                annotate_refused(&point_args("{}", &ctx)),
+                "ctx.run",
+                "U+{control:04X} in ctx"
+            );
+            let attrs = format!("{{\"a\":\"{escaped}\"}}");
+            assert_eq!(
+                annotate_refused(&point_args(&attrs, "{}")),
+                "attrs.a",
+                "U+{control:04X} in attrs"
+            );
+            let name = point_args("{}", "{}")
+                .replace("\"name\":\"run\"", &format!("\"name\":\"run{escaped}\""));
+            assert_eq!(annotate_refused(&name), "name", "U+{control:04X} in name");
+        }
+        let key64 = "k".repeat(64);
+        let code64 = "c".repeat(64);
+        let bounded = point_args("{}", "{}")
+            .replace("\"key\":null", &format!("\"key\":\"{key64}\""))
+            .replace("\"code\":null", &format!("\"code\":\"{code64}\""));
+        assert!(super::annotate(bounded.as_bytes()).is_ok());
+
+        let invalid_ctx = vec![
+            (String::from("{\"bad\":\"x\"}"), "ctx.bad"),
+            (String::from("{\"run\":\"\"}"), "ctx.run"),
+            (String::from("{\"run\":\"~u001f\"}"), "ctx.run"),
+            (format!("{{\"run\":\"{}\"}}", "x".repeat(129)), "ctx.run"),
+        ];
+        for (ctx, key) in invalid_ctx {
+            assert_eq!(annotate_refused(&point_args("{}", &ctx)), key, "{ctx}");
+        }
+
+        let nine = (0..9)
+            .map(|index| format!("\"a{index}\":\"v\""))
+            .collect::<Vec<_>>()
+            .join(",");
+        assert_eq!(
+            annotate_refused(&point_args(&format!("{{{nine}}}"), "{}")),
+            "attrs"
+        );
+        assert_eq!(annotate_refused(&point_args("[]", "{}")), "attrs");
+        for name in ["uid", "gid", "pid", "comm", "peer", "issuer"] {
+            let attrs = format!("{{\"{name}\":\"x\"}}");
+            assert_eq!(
+                annotate_refused(&point_args(&attrs, "{}")),
+                format!("attrs.{name}"),
+                "{name}"
+            );
+        }
+
+        let long_key = "k".repeat(65);
+        assert_eq!(
+            annotate_refused(&point_args(&format!("{{\"{long_key}\":\"x\"}}"), "{}")),
+            "attrs"
+        );
+        let long_value = "v".repeat(257);
+        assert_eq!(
+            annotate_refused(&point_args(&format!("{{\"a\":\"{long_value}\"}}"), "{}")),
+            "attrs.a"
+        );
+        for escaped in ["~u0000", "~u001f", "~u007f"] {
+            assert_eq!(
+                annotate_refused(&point_args(&format!("{{\"a\":\"{escaped}\"}}"), "{}")),
+                "attrs.a",
+                "{escaped}"
+            );
+            assert_eq!(
+                annotate_refused(&point_args("{}", &format!("{{\"run\":\"{escaped}\"}}"))),
+                "ctx.run",
+                "{escaped}"
+            );
+        }
+
+        let empty_attr = super::annotate(point_args("{\"a\":\"\"}", "{}").as_bytes())
+            .expect("empty attrs value");
+        assert_eq!(empty_attr.attrs.get("a").map(String::as_str), Some(""));
+        let quoted = point_args(r#"{"a":"quote: ~u0022 slash: ~u005c"}"#, "{}");
+        assert!(super::annotate(quoted.as_bytes()).is_ok());
+    }
+
+    #[test]
+    fn annotate_keeps_every_context_key_and_names_a_member_of_the_wrong_type() {
+        use crate::backend::AnnotateCtxKey;
+
+        let ctx = r#"{"run":"r","lane":"l","candidate":"c","txn":"t","session":"s"}"#;
+        let accepted = super::annotate(point_args("{}", ctx).as_bytes()).expect("full context");
+        let kept: Vec<(AnnotateCtxKey, &str)> = accepted
+            .ctx
+            .iter()
+            .map(|(key, value)| (*key, value.as_str()))
+            .collect();
+        assert_eq!(
+            kept,
+            vec![
+                (AnnotateCtxKey::Run, "r"),
+                (AnnotateCtxKey::Lane, "l"),
+                (AnnotateCtxKey::Candidate, "c"),
+                (AnnotateCtxKey::Txn, "t"),
+                (AnnotateCtxKey::Session, "s"),
+            ]
+        );
+
+        let point = point_args("{}", "{}");
+        for (member, value, key) in [
+            ("\"kind\":\"point\"", "\"kind\":\"mark\"", "kind"),
+            ("\"key\":null", "\"key\":1", "key"),
+            ("\"code\":null", "\"code\":false", "code"),
+            ("\"outcome\":null", "\"outcome\":[]", "outcome"),
+        ] {
+            let text = point.replace(member, value);
+            assert_eq!(annotate_refused(&text), key, "{value}");
+        }
+        assert_eq!(
+            annotate_refused(&point_args("{}", "{\"lane\":1}")),
+            "ctx.lane"
+        );
+        assert_eq!(annotate_refused(&point_args("{\"a\":1}", "{}")), "attrs.a");
+        assert_eq!(
+            annotate_refused(&point_args("{\"A\":\"x\"}", "{}")),
+            "attrs.A"
+        );
+    }
+
+    #[test]
+    fn annotate_outcome_and_point_idempotency_rules_are_exact() {
+        let end = r#"{"kind":"end","name":"run","key":null,"ctx":{},"outcome":"ok","code":null,"attrs":{}}"#;
+        assert_eq!(
+            super::annotate(end.as_bytes()).expect("end").outcome,
+            Some(crate::backend::AnnotateOutcome::Ok)
+        );
+        for outcome in [
+            "fail",
+            "error",
+            "skipped",
+            "cancelled",
+            "timeout",
+            "abandoned",
+        ] {
+            let text = end.replace("\"ok\"", &format!("\"{outcome}\""));
+            assert!(super::annotate(text.as_bytes()).is_ok(), "{outcome}");
+        }
+        assert_eq!(
+            annotate_refused(&end.replace("\"outcome\":\"ok\"", "\"outcome\":null")),
+            "outcome"
+        );
+        assert_eq!(
+            annotate_refused(&end.replace("\"outcome\":\"ok\"", "\"outcome\":\"success\"")),
+            "outcome"
+        );
+        assert_eq!(
+            annotate_refused(
+                &point_args("{}", "{}").replace("\"outcome\":null", "\"outcome\":\"ok\"")
+            ),
+            "outcome"
+        );
+
+        let attrs = "{\"boot_id\":\"boot\",\"seq\":\"7\"}";
+        let point = super::annotate(point_args(attrs, "{}").as_bytes()).expect("keyed point");
+        assert_eq!(point.idempotency, Some((String::from("boot"), 7)));
+        let max_boot = "b".repeat(128);
+        let max_pair = format!("{{\"boot_id\":\"{max_boot}\",\"seq\":\"18446744073709551615\"}}");
+        assert!(super::annotate(point_args(&max_pair, "{}").as_bytes()).is_ok());
+        let oversized_boot = format!("{{\"boot_id\":\"{}\",\"seq\":\"7\"}}", "b".repeat(129));
+        assert_eq!(
+            annotate_refused(&point_args(&oversized_boot, "{}")),
+            "attrs.boot_id"
+        );
+        assert_eq!(
+            annotate_refused(&point_args("{\"boot_id\":\"boot\"}", "{}")),
+            "attrs.seq"
+        );
+        assert_eq!(
+            annotate_refused(&point_args("{\"seq\":\"7\"}", "{}")),
+            "attrs.boot_id"
+        );
+        assert_eq!(
+            annotate_refused(&point_args("{\"boot_id\":\"\",\"seq\":\"7\"}", "{}")),
+            "attrs.boot_id"
+        );
+        assert_eq!(
+            annotate_refused(&point_args("{\"boot_id\":\"boot\",\"seq\":\"07\"}", "{}")),
+            "attrs.seq"
+        );
+        assert_eq!(
+            annotate_refused(&point_args(
+                "{\"boot_id\":\"boot\",\"seq\":\"18446744073709551616\"}",
+                "{}"
+            )),
+            "attrs.seq"
+        );
+        for kind in ["begin", "end"] {
+            let text = point_args(attrs, "{}").replace("\"point\"", &format!("\"{kind}\""));
+            let text = if kind == "end" {
+                text.replace("\"outcome\":null", "\"outcome\":\"ok\"")
+            } else {
+                text
+            };
+            assert_eq!(annotate_refused(&text), "attrs.boot_id", "{kind}");
+        }
     }
 
     #[test]

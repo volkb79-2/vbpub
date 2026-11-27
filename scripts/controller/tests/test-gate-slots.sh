@@ -428,32 +428,33 @@ gate "$CASE/out" "${env_lines[@]}" FAKE_RUN_GATE_RC=9 FAKE_RELEASE_FIFO="$CASE/r
 reap_holder 1
 release_all
 
-# 12. CTL-57: a held slot is not an admission: memory PSI full avg10 >= 3 (or unreadable) holds the gate back
+# 12. CTL-57: a held slot is not an admission: memory PSI full avg60 >= 10 (or unreadable) holds the gate back
 psi_case() {
-  # psi_case <name> <full avg10 text or '-' for no file>: a fresh case with that PSI file; sets PSI
+  # psi_case <name> <full avg60 text or '-' for no file> [<full avg10 text>]: a fresh case with that PSI file; sets PSI.
+  # avg10 (default 0.00) and the `some` line (always above the threshold) must decide nothing.
   new_case "$1"
   PSI=$CASE/psi
-  if [[ $2 == - ]]; then rm -f -- "$PSI"; else printf 'some avg10=9.99 avg60=0.00 avg300=0.00 total=0\nfull avg10=%s avg60=0.00 avg300=0.00 total=0\n' "$2" > "$PSI"; fi
+  if [[ $2 == - ]]; then rm -f -- "$PSI"; else printf 'some avg10=99.00 avg60=99.00 avg300=0.00 total=0\nfull avg10=%s avg60=%s avg300=0.00 total=0\n' "${3:-0.00}" "$2" > "$PSI"; fi
 }
 psi_lines() { grep -c 'gate-run: waiting for host admission' "$CASE/out" || true; }
-# quiet (and just below the threshold): starts at once, no wait
-for quiet_value in 0.00 2.99; do
-  psi_case "psi-quiet-$quiet_value" "$quiet_value"
+# quiet (and just below the threshold): starts at once, no wait, even during an avg10 spike
+for quiet_value in 0.00 9.99; do
+  psi_case "psi-quiet-$quiet_value" "$quiet_value" 99.00
   mapfile -t env_lines < <(slot_env "$CASE" 2)
   gate "$CASE/out" "${env_lines[@]}" CONTROLLER_GATE_PSI_FILE="$PSI" || fail "quiet memory PSI $quiet_value: gate-run failed"
   [[ $(log_lines) == 1 ]] || fail "quiet memory PSI $quiet_value: the gate did not start"
   [[ ! -e $FAKE_PSI_SLEEP_COUNT ]] || fail "quiet memory PSI $quiet_value: gate-run waited"
 done
 # busy (exactly at the threshold) then quiet: starts after, and says why it waited
-psi_case psi-busy-then-quiet 3.00
-printf 'full avg10=0.50 avg60=0.00 avg300=0.00 total=0\n' > "$CASE/psi-later"
+psi_case psi-busy-then-quiet 10.00
+printf 'full avg10=99.00 avg60=0.50 avg300=0.00 total=0\n' > "$CASE/psi-later"
 mapfile -t env_lines < <(slot_env "$CASE" 2)
 gate "$CASE/out" "${env_lines[@]}" CONTROLLER_GATE_PSI_FILE="$PSI" FAKE_PSI_QUIET_AT=2 FAKE_PSI_QUIET_FILE="$CASE/psi-later" || fail 'busy then quiet: gate-run failed'
 [[ $(log_lines) == 1 ]] || fail 'busy then quiet: the gate did not start after the host went quiet'
 [[ $(cat "$FAKE_PSI_SLEEP_COUNT") == 2 ]] || fail "busy then quiet: expected 2 wait rounds, got $(cat "$FAKE_PSI_SLEEP_COUNT")"
-contains "$CASE/out" 'gate-run: waiting for host admission: memory PSI full avg10=3.00 >= 3, 0s of 1800s' 'the wait names the value and the bound'
+contains "$CASE/out" 'gate-run: waiting for host admission: memory PSI full avg60=10.00 >= 10, 0s of 1800s' 'the wait names the value and the bound'
 # the second place a slot is taken: the poll loop (both slots busy, then one released) waits as well
-psi_case psi-poll-path 4.50
+psi_case psi-poll-path 14.50
 printf 'full avg10=0.00 avg60=0.00 avg300=0.00 total=0\n' > "$CASE/psi-later"
 hold_slots 1 2
 mapfile -t env_lines < <(slot_env "$CASE" 2)
@@ -461,17 +462,17 @@ gate "$CASE/out" "${env_lines[@]}" CONTROLLER_GATE_PSI_FILE="$PSI" FAKE_RELEASE_
   || fail 'the poll path did not wait for memory PSI and then start'
 reap_holder 1
 release_all
-contains "$CASE/out" 'waiting for host admission: memory PSI full avg10=4.50 >= 3' 'a gate taken from the poll loop waits for memory PSI too'
+contains "$CASE/out" 'waiting for host admission: memory PSI full avg60=14.50 >= 10' 'a gate taken from the poll loop waits for memory PSI too'
 [[ $(log_lines) == 1 ]] || fail 'poll path: the gate did not start'
 # busy until the bound: exit 75, one line a minute, nothing ran, and never a lane verdict
-psi_case psi-timeout 5.25
+psi_case psi-timeout 15.25
 mapfile -t env_lines < <(slot_env "$CASE" 2)
 rc=0
 gate "$CASE/out" "${env_lines[@]}" CONTROLLER_GATE_PSI_FILE="$PSI" CONTROLLER_GATE_PSI_WAIT_S=130 FAKE_RUN_GATE_RC=1 || rc=$?
 [[ $rc == 75 ]] || fail "busy memory PSI past the bound must exit 75, got $rc"
 [[ $(log_lines) == 0 ]] || fail 'busy memory PSI past the bound: run-gate ran'
 [[ $(psi_lines) == 3 ]] || fail "expected one wait line a minute (0s, 60s, 120s), got $(psi_lines)"
-contains "$CASE/out" 'gate-run: not admitted (memory PSI full avg10=5.25 >= 3 for 130s); nothing ran' 'the refusal says nothing ran'
+contains "$CASE/out" 'gate-run: not admitted (memory PSI full avg60=15.25 >= 10 for 130s); nothing ran' 'the refusal says nothing ran'
 # an unreadable file is refused at once (no wait), like dev host-admission/1
 psi_case psi-unreadable -
 mapfile -t env_lines < <(slot_env "$CASE" 2)
@@ -489,8 +490,8 @@ gate "$CASE/out" "${env_lines[@]}" CONTROLLER_GATE_PSI_FILE="$PSI" CONTROLLER_GA
 [[ $rc == 75 ]] || fail "a malformed memory PSI value must exit 75, got $rc"
 [[ ! -e $FAKE_PSI_SLEEP_COUNT ]] || fail 'a malformed memory PSI value was waited on'
 # the file turning unreadable while waiting is refused at once as well
-psi_case psi-vanishes 4.00
-printf 'full avg10=garbled\n' > "$CASE/psi-later"
+psi_case psi-vanishes 14.00
+printf 'full avg10=0.00 avg60=garbled\n' > "$CASE/psi-later"
 mapfile -t env_lines < <(slot_env "$CASE" 2)
 rc=0
 gate "$CASE/out" "${env_lines[@]}" CONTROLLER_GATE_PSI_FILE="$PSI" FAKE_PSI_QUIET_AT=1 FAKE_PSI_QUIET_FILE="$CASE/psi-later" || rc=$?
