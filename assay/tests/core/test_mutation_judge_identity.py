@@ -388,6 +388,18 @@ def test_surrogateescaped_passthrough_bytes_have_a_stable_judge_identity():
     assert digest != judge_sha256(tree_sha256="a" * 64, plan=other)
 
 
+def test_component_digests_accept_surrogateescaped_passthrough_values():
+    """Component metadata hashes the same original POSIX bytes as the judge."""
+    lane = make_lane(argv=("pytest",), env={}, env_passthrough=("DSN",))
+    plan = make_plan(lane, passthrough_source={"DSN": "dsn-\udcff-value"})
+    components = {}
+
+    judge_sha256(tree_sha256="a" * 64, plan=plan, _component_digests=components)
+
+    assert components["passthrough_names"] == ["DSN"]
+    assert len(components["passthrough_other_values_sha256"]) == 64
+
+
 def test_an_identical_passthrough_value_still_resumes_across_plans():
     first = _plan(passthrough=("SCHEMA_GATE_DSN",))
     second = make_plan(
