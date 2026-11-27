@@ -651,6 +651,27 @@ def test_terminal_submit_replay_after_restart_uses_only_the_durable_record(tmp_p
     assert restarted.status("ops-run-1", identity, None) == replay
 
 
+def test_terminal_status_returns_persisted_executor_details_and_keeps_old_records_unknown():
+    details = {
+        "verdict": "PASS",
+        "exit_code": 0,
+        "lane": "r0-r1",
+        "api": "fleet-host-agent/1",
+        "collected_at": "2026-11-27T00:00:00Z",
+        "result_sha256": "a" * 64,
+        "result_size": 1234,
+    }
+    record = {"state": "completed", "completed_at": 123.5, **details}
+
+    assert AgentAdmission._terminal_state("ops-run-2", record) == {
+        "job_id": "ops-run-2", "state": "completed", "completed_at": 123.5, **details,
+    }
+    old_record = {"state": "completed", "completed_at": 123.5}
+    assert AgentAdmission._terminal_state("ops-run-1", old_record) == {
+        "job_id": "ops-run-1", "state": "completed", "completed_at": 123.5,
+    }
+
+
 def test_submit_validates_admission_handles_and_preserves_charge_when_start_fails(tmp_path, monkeypatch):
     policy, _checkout = _policy(tmp_path)
     identity = policy.resolve_peer(1000, 100)

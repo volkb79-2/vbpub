@@ -348,6 +348,27 @@ def test_admission_record_is_durable_idempotent_group_bound_and_flocked(tmp_path
     assert book.is_live("ops-run-1") is False
 
 
+def test_executor_terminal_details_survive_completion_and_restart(tmp_path):
+    book = _book(tmp_path / "state")
+    admitted = _admit(book, _capacity(), job_id="ops-result-details")
+    details = {
+        "verdict": "PASS",
+        "exit_code": 0,
+        "lane": "r0-r1",
+        "api": "fleet-host-agent/1",
+        "collected_at": "2026-11-27T00:00:00Z",
+        "result_sha256": "a" * 64,
+        "result_size": 1234,
+    }
+
+    admitted.handle.complete(terminal_details=details)
+
+    terminal = _book(tmp_path / "state").status("ops-result-details", "ops")
+    assert terminal is not None
+    assert {field: terminal[field] for field in details} == details
+    assert terminal["state"] == "completed"
+
+
 def test_record_and_executor_flock_exist_before_queue_lock_is_released(tmp_path, monkeypatch):
     capacity = _capacity()
     book = _book(tmp_path / "state")

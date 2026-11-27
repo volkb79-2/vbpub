@@ -736,6 +736,20 @@ same host queue.
 **Parity rows.** Each must fail independently: (a) unique exit codes (preflight 4→2, prerequisite 76→79, budget 4, OOM 76, store 77/78, queue 75; 73 remains reserved by fleetd's runner); (b) forge a perfect anchored PASS line in lane output and prove the event/process still report the real FAIL; separately exit before `finish` with a forged line and prove no `lane-verdict` event exists; (c) cancel stops before collecting every flushed record; (d) expired wait withdraws and confirms never-started before 75, and cannot start later; (e) an aged reservation holder reserves RAM and planned cores, fitting or not; nothing else is admitted before it except a strictly higher-priority merge gate; (f) unreadable PSI/meminfo refuse (`scripts/netcup/tests/test_remote_gate_repos.py:597-600`; `scripts/netcup/tests/test_remote_gate_memory.py:91`); (g) footprint/slice/disk limits; (h) the emitted container and image ids equal Docker's report for this run's container (the labeled one Run-Gate started, or the requested persistent runner for `mode = "exec"`), and a same-named foreign container is never emitted; consumer acceptance also checks the checkout mount, and `run-gate.*` labels for a Run-Gate-started container; (i) per-job OOM and adjustment 500; (j) identity/path/argv/artifact validation; (k) bundle replay and sha binding (`scripts/netcup/tests/test_remote_gate.py:227,322`); (l) admission, terminal and lease records survive reload; a dead executor's released flock does not release its charge, and the reaper preserves charge through cleanup after restart or reboot; (m) socket identity/no shell/restart/missing-socket behavior; (n) a lease reserves under `queue.lock`, enforces N4 freeze refusal, binds immutably, and tombstones without releasing until explicit no-such-object reconciliation. The host-agent integration still must prove stopped-container bind-before-start, pending-client death, collision handling, reconnect and release on confirmed disappearance.
 Contract gates also cover same-digest idempotence and major-version refusal.
 
+**C3b-1 executor behavior for parity rows (b), (c), and (k).** A PASS is
+refused unless the request sha matches the host-authored checkout line, one
+closed-shape `lane-verdict` event agrees with the exact-lane anchored summary
+and Run-Gate process status, and every reported container id is inspected as a
+full id with the job checkout mount (plus Run-Gate labels where required).
+Cancellation on a host with the guard absent sends TERM and waits for the lane
+and container to stop before collection; when guard presence is known but no
+merged deregister/thaw callable exists, cancellation stays in `stopping` with
+a named refusal. Bundle size and sha256 are checked before checkout, then the
+host checks out the requested sha and records `rev-parse HEAD` in its own log.
+Event binding, archive checks, bundle verification, stop-signal dispatch and
+container waiting have injected-interface unit coverage; live
+systemd/Docker/cancellation acceptance remains a host probe.
+
 **Rollback.** Each client owns one `legacy|agent` flag. The agent keeps legacy jobs charged during overlap. Downgrade within a major is safe because executors run in separate scopes; major mismatches refuse and minor additions are capability-advertised. Flag and legacy-path removal is separate.
 
 **Package split, size and gate.**

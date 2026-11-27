@@ -5,14 +5,15 @@
 The package contains strict versioned contracts, an injectable read-only facts
 collector, a deterministic RAM-first planner, and a one-shot lite campaign
 controller. The campaign controller uses the existing identity-checked hx
-wrapper and runner jobs; the separate P-fd-05 C3a host-agent entry point serves
-the host protocol described below.
+wrapper and runner jobs; the P-fd-05 C3a host-agent entry point and C3b-1
+executor serve the host protocol described below.
 
 ## Host admission core (P-fd-05 C2)
 
-`fleetd.admission` is a standard-library-only host admission library. Package
-C3a wires its book to the host protocol, but does not create containers or ship
-a real executor. The current planner and runners do not call it yet.
+`fleetd.admission` is a standard-library-only host admission library. C3a wires
+its book to the host protocol; C3b-1 adds a scoped lane executor. The current
+planner and runners do not call it yet. C3b-2 still owns recovery, legacy-job
+and Docker inspector providers, and upload garbage collection.
 
 `HostCapacity` is the typed projection of the admission-relevant `host-facts/2`
 fields. Each input is a `Fact[T]`: a known value has no reason; an unavailable
@@ -97,14 +98,17 @@ The textual group-prefix check would be ambiguous if group `ops` and group
 with overlapping `-`-separated group prefixes (FD-053).
 
 `complete` writes a durable terminal record containing `job_id`, group, digest,
-and completed state, with no charge, before removing the admitted record. If a
+and completed state, with no charge, before removing the admitted record. C3b-1
+also persists `verdict`, `exit_code`, `lane`, `api`, `collected_at`,
+`result_sha256`, and `result_size` in that same atomic terminal record. If a
 crash occurs between those writes, the terminal record wins and the job is
 completed. Replaying the same id and digest returns that terminal state without
 a handle; another digest or group is refusal (2), and an unreadable terminal
-record returns 75 for that id. An admission decision reads a terminal record
-only while the same id still has an active record, so unrelated finished history
-cannot block admission. This package does not prune terminal records; package C's
-host agent owns their retention policy.
+record returns 75 for that id. An older C2 record remains readable; its
+executor detail fields are unknown. An admission decision reads a terminal
+record only while the same id still has an active record, so unrelated finished
+history cannot block admission. This package does not prune terminal records;
+package C's host agent owns their retention policy.
 
 Lease records use the same queue and capacity charges. They persist pending and
 bound state and bind once to an immutable container id. The caller supplies the
@@ -140,16 +144,20 @@ The closed exit-code table assigns 79 to prerequisite-missing; 73 is reserved
 by fleetd's runner. Code 75 is a missing required fact, a held admission, or a
 wait withdrawn before start; code 2 is a request or static-eligibility refusal.
 
-## Host agent protocol (P-fd-05 C3a)
+## Host agent protocol and executor (P-fd-05 C3a, C3b-1)
 
 `fleetd.agent_policy`, `fleetd.agent_protocol`, `fleetd.agent_verbs`,
 `fleetd.agent_admission`, `fleetd.agent_server`, `fleetd.agent_client` and
 `fleetd.agent_entry` use the Python standard library only. The `fleetd-agent`
 entry point reads the closed host-owned `agent.toml` policy and serves a Unix
 socket path, an inherited listening descriptor, or one ssh forced-command
-request on stdin/stdout. It
-does not execute a shell command. C3a does not install a systemd unit or socket
-group, and does not include the C3b executor or C3c service setup.
+request on stdin/stdout. It does not execute a shell command. C3b-1 adds the
+standard-library `executor.py` and `executor_worker.py` modules. A confirmed
+submit starts one transient systemd scope per job and hands its admission flock
+to that worker. Repository content steps run as the required non-root
+`agent.toml.runner_user`; the supervisor remains root. C3b-1 does not install a
+systemd unit or socket group (C3c), recover after executor/host loss, or wire
+the C3b-2 legacy-job and Docker inspector providers.
 
 Local socket peers are authenticated from `SO_PEERCRED`'s UID and primary GID;
 the configured supplementary socket group only grants connect permission. The
@@ -197,9 +205,11 @@ file but never removes the directory. `fleetd-agent forced-command --group
 GROUP` applies the identical framing to ssh-provided stdin/stdout.
 
 The CLI omits `lease` from `probe` unless exact-object inspection, the
-legacy-job list and container-identity inspection are configured. C3b wires
-those runtime providers; the C3a CLI has none. A direct C3a service call to
-`lease` without them refuses with exit 2.
+legacy-job list and container-identity inspection are configured. Those
+providers remain unwired in C3b-1 and belong to C3b-2. A direct service call to
+`lease` without them refuses with exit 2. The legacy-job provider also remains
+unwired for `submit`, so a real submit currently refuses before admission with
+the named missing-provider reason; executor unit tests inject the provider.
 
 The closed verbs are `probe`, `facts`, `have`, `put`, `fetch`, `progress`,
 `submit`, `status`, `cancel`, and controller-socket-only `lease`. Every field,
@@ -252,13 +262,20 @@ the configured idle deadline after each successful write progress, not a total
 transfer limit. A held lease connection and a submit waiting for admission do
 not use that deadline.
 
-The executor is an injected `AgentExecutor` Protocol (`start`, `request_stop`,
-`read_state`), not a C3a implementation. With no executor, `submit` refuses
-with exit 2 and a named `executor unavailable` reason before writing
-`request.json` or entering the admission book. The admission and lease verbs
-still use the durable C2 book. A live lease connection holds its lease flock
-until disconnect; bind/reconnect verify the immutable container ID and
-host-inspected lease label. No run or lane wall-clock limit is added.
+`HostJobExecutor` implements the `AgentExecutor` Protocol (`start`,
+`request_stop`, `read_state`) and is wired by `fleetd-agent`. A lane's PASS is
+accepted only when the request sha, host-authored checkout line, one exact
+`lane-verdict` event, exact-lane anchored summary, Run-Gate process status, and
+inspected container identity/mount all agree. It writes `result.json` from
+those host-observed facts and collects the closed artifact set plus one
+`assay-store.tgz` and checksum. The admission and lease verbs still use the
+durable C2 book. A live lease connection holds its lease flock until disconnect;
+bind/reconnect verify the immutable container ID and host-inspected lease label.
+No run or lane wall-clock limit is added. On cancellation, a host with the guard
+absent records that fact and sends TERM. If guard presence is true or unknown,
+the executor refuses cancellation with a named reason because the merged
+thrashguard deregister/thaw callable is not available; it leaves the job in
+`stopping` with its checkout and charge retained.
 
 Submits for the same job ID serialize the `request.json` write, admission,
 failure cleanup, and executor start under `jobs/<job_id>/submit.lock`. The lock
@@ -266,10 +283,10 @@ is a private regular file opened without following symlinks. Status and cancel
 do not acquire it, so an admission waiter cannot block those verbs behind the
 submit transaction.
 
-Status of a durable `fleet-admission-terminal/1` record returns only its
-recorded `job_id`, `state: completed` and `completed_at`; it does not invent a
-verdict, exit code or other executor result. Cancel of a finished job refuses
-with exit 2. Executor-backed terminal details remain for C3b (FD-061).
+Status of a durable `fleet-admission-terminal/1` record returns its recorded
+`job_id`, state and completion time, plus C3b-1's seven executor result fields
+when present. C2 terminal records remain readable without those fields, which
+are unknown. Cancel of a finished job refuses with exit 2.
 
 ## Contracts
 

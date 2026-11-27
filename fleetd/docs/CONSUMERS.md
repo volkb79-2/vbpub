@@ -77,23 +77,31 @@ wrapper, which must sit beside a repository checkout. A facts-only host needs
 neither the wrapper nor a checkout (FD-023 tracks the installed-wheel path for
 the wrapper).
 
-### Host agent package C3a
+### Host agent package C3a and executor C3b-1
 
 `fleetd-agent serve --socket-path /run/fleetd-agent/agent.sock` binds a local
 Unix socket, while `fleetd-agent serve --listen-fd 3` accepts an inherited
 listening descriptor. The direct path form requires an existing real runtime
 directory and never creates or removes that directory. `fleetd-agent
 forced-command --group GROUP` serves one framed request on the ssh forced
-command's stdin/stdout. Package C3a supplies the protocol, admission wiring and
-CLI only; the systemd units, socket group and host mounts belong to C3c, and
-the executor belongs to C3b.
+command's stdin/stdout. C3a supplies the protocol, admission wiring and CLI.
+C3b-1 adds the standard-library host executor and worker. After scope start is
+confirmed, the worker owns the admission flock in one transient systemd scope
+per job. The root supervisor runs checkout, seed unpack, lane, collection and
+other repository-content operations as the required non-root `runner_user`.
+C3b-1 does not install or enable host services; the systemd units, socket group
+and mounts belong to C3c. Restart/reboot recovery, the legacy-job and Docker
+inspector providers, and upload garbage collection remain C3b-2.
 
 `/etc/fleetd/agent.toml` is a closed host-owned config. It requires
-`schema_version`, `idle_connection_s`, `query_timeout_s`,
+`schema_version`, `idle_connection_s`, `query_timeout_s`, `runner_user`,
 `lease_reconcile_interval_s`, `lease_bind_timeout_s`, `max_connections`, `identities`,
 `repo_roots`, `requested_by_clients`, `extra_argv`, `dev_argv`, and
 `env_values`; none has a consumer-invented fallback. All four time values are
-positive. `lease_reconcile_interval_s` sets the exact-lease reconciliation
+positive. `runner_user` is required and must resolve to a known non-root host
+account; a missing key, unknown name or uid 0 refuses execution. The root
+supervisor stays root and drops privileges for every step that touches checkout
+content. `lease_reconcile_interval_s` sets the exact-lease reconciliation
 period; there is no default. `lease_bind_timeout_s` is also positive with no
 default; it bounds the whole bind frame from grant on the monotonic clock, so
 trickling bytes cannot extend it. It has no effect after bind. `max_connections`
@@ -123,17 +131,18 @@ top-level `exit_code` or `reason`; success omits `error`. The client looks only
 for `error`, so a status `exit_code` is returned as job data. A malformed
 `error` maps to exit 70. See the [response schema](agent-response.schema.json).
 A probe includes `lease` only when exact-object inspection, the legacy-job
-list, and container-identity inspection are configured. C3b wires these
-providers; the shipped C3a CLI has none and refuses lease with exit 2.
+list, and container-identity inspection are configured. Those providers are
+not wired in C3b-1 and remain C3b-2 work. The real `submit` path also refuses
+before admission while the legacy-job provider is absent; tests inject it.
 A configured inspector reconciles pending and bound leases at startup and at
 the configured interval. Pre-bind disconnect tombstones before checking the
 exact name; bound leases are checked by immutable ID. Only a confirmed absence
 releases a charge. The granted-but-never-bound live-connection case has no
 deadline in §4.5; its held flock prevents pending reconciliation, so it remains
 charged until disconnect and exact-name reconciliation confirms absence.
-A missing or refusing local socket returns 3 with no fallback transport. The
-C3a wheel has no executor: submit refuses with exit 2 and a named reason before
-admission or a durable request write.
+A missing or refusing local socket returns 3 with no fallback transport.
+C3b-1 wires the executor, but a real submit still refuses with the named
+missing legacy-job provider reason before admission; that provider is C3b-2.
 
 Lane declarations and progress files are opened from trusted directory
 descriptors with no-follow traversal of every component. Progress replies cap
@@ -142,10 +151,16 @@ larger response body. The host counts Assay candidates only when the opened
 progress file is at most 8 MiB; larger files return `done: null` and a
 non-empty `done_reason`, while smaller files omit `done_reason`. The scan is
 bounded to the opened-size snapshot. Incremental counting remains FD-063.
-Terminal status reads only `fleet-admission-terminal/1`
-and returns `completed` plus its recorded completion time, without fabricating
-executor results. Cancel of a terminal job refuses with exit 2. C3b owns the
-durable executor result details (FD-061).
+Terminal status reads only `fleet-admission-terminal/1` and returns the
+recorded completion time plus C3b-1's `verdict`, `exit_code`, `lane`, `api`,
+`collected_at`, `result_sha256` and `result_size` when present. Older C2 records
+remain readable; absent executor fields are unknown. Cancel of a terminal job
+refuses with exit 2. For an executed lane, PASS requires agreement among the
+request sha, host checkout line, Run-Gate event, exact-lane summary, process
+status, and inspected container identity and checkout mount.
+Cancellation records an absent guard before sending TERM. When guard presence
+is true or unknown, C3b-1 reports the missing merged deregister/thaw callable
+and keeps the job in `stopping` with its charge and checkout.
 
 ### Agent skills
 

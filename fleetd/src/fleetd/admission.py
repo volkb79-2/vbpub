@@ -28,6 +28,11 @@ JOB_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\Z")
 GROUP_RE = JOB_ID_RE
 PSI_MEMORY_FULL_REFUSE_AVG10_PCT = 3.0
 QUEUE_RECHECK_S = 0.25
+TERMINAL_RESULT_FIELDS = (
+    "verdict", "exit_code", "lane", "api", "collected_at", "result_sha256", "result_size",
+)
+_TERMINAL_VERDICTS = {"PASS", "FAIL", "ERROR", "NOT_RUN", "BUDGET_EXCEEDED", "CANCELLED"}
+_TERMINAL_EXIT_CODES = {0, 1, 2, 3, 4, 70, 71, 72, 75, 76, 77, 78, 79, 143}
 
 
 class ExitCode:
@@ -615,7 +620,7 @@ def _read_terminal_record(path: Path, *, expected_id: str) -> dict[str, object]:
     except AdmissionError as exc:
         raise AdmissionError(ExitCode.QUEUED_WITHDRAWN,
                              f"terminal record {path.name!r} is invalid: {exc.reason}") from exc
-    return {
+    record: dict[str, object] = {
         "schema": "fleet-admission-terminal/1",
         "job_id": expected_id,
         "group": group,
@@ -623,6 +628,36 @@ def _read_terminal_record(path: Path, *, expected_id: str) -> dict[str, object]:
         "state": "completed",
         "completed_at": completed_at,
     }
+    present_details = set(value).intersection(TERMINAL_RESULT_FIELDS)
+    if present_details and present_details != set(TERMINAL_RESULT_FIELDS):
+        raise AdmissionError(
+            ExitCode.QUEUED_WITHDRAWN,
+            f"terminal record {path.name!r} has incomplete executor result details",
+        )
+    if present_details:
+        verdict = value.get("verdict")
+        exit_code = value.get("exit_code")
+        lane = value.get("lane")
+        api = value.get("api")
+        collected_at = value.get("collected_at")
+        result_sha256 = value.get("result_sha256")
+        result_size = value.get("result_size")
+        if not isinstance(verdict, str) or verdict not in _TERMINAL_VERDICTS:
+            raise AdmissionError(ExitCode.QUEUED_WITHDRAWN, "terminal record has an invalid executor verdict")
+        if type(exit_code) is not int or exit_code not in _TERMINAL_EXIT_CODES:
+            raise AdmissionError(ExitCode.QUEUED_WITHDRAWN, "terminal record has an invalid executor exit code")
+        if not isinstance(lane, str) or not lane or not isinstance(api, str) or api != "fleet-host-agent/1":
+            raise AdmissionError(ExitCode.QUEUED_WITHDRAWN, "terminal record has invalid executor identity details")
+        if not isinstance(collected_at, str) or re.fullmatch(
+            r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)?Z", collected_at,
+        ) is None:
+            raise AdmissionError(ExitCode.QUEUED_WITHDRAWN, "terminal record has an invalid collected_at")
+        if not isinstance(result_sha256, str) or re.fullmatch(r"[0-9a-f]{64}", result_sha256) is None:
+            raise AdmissionError(ExitCode.QUEUED_WITHDRAWN, "terminal record has an invalid result sha256")
+        if type(result_size) is not int or result_size < 0:
+            raise AdmissionError(ExitCode.QUEUED_WITHDRAWN, "terminal record has an invalid result size")
+        record.update({field: value[field] for field in TERMINAL_RESULT_FIELDS})
+    return record
 
 
 def _open_lock(path: Path, *, blocking: bool) -> int | None:
@@ -732,8 +767,8 @@ class AdmissionHandle:
             fd, self._lock_fd = self._lock_fd, None
             _unlock_close(fd)
 
-    def complete(self) -> None:
-        self._book.complete(self)
+    def complete(self, terminal_details: Mapping[str, object] | None = None) -> None:
+        self._book.complete(self, terminal_details=terminal_details)
 
 class LeaseHandle:
     """A pending/bound lease flock; close never releases its durable accounting record."""
@@ -1956,11 +1991,37 @@ class AdmissionBook:
         finally:
             _unlock_close(queue_fd)
 
-    def complete(self, handle: AdmissionHandle) -> None:
+    def complete(
+        self, handle: AdmissionHandle, *, terminal_details: Mapping[str, object] | None = None,
+    ) -> None:
         """Persist completion before removing the charge-bearing admission record."""
 
         if handle._book is not self or not handle.live:
             raise AdmissionError(ExitCode.REFUSAL, "completion requires this book's live job handle")
+        if terminal_details is not None:
+            if set(terminal_details) != set(TERMINAL_RESULT_FIELDS):
+                raise AdmissionError(ExitCode.REFUSAL, "executor terminal details do not match the closed field set")
+            verdict = terminal_details.get("verdict")
+            exit_code = terminal_details.get("exit_code")
+            lane = terminal_details.get("lane")
+            api = terminal_details.get("api")
+            collected_at = terminal_details.get("collected_at")
+            result_sha256 = terminal_details.get("result_sha256")
+            result_size = terminal_details.get("result_size")
+            if not isinstance(verdict, str) or verdict not in _TERMINAL_VERDICTS:
+                raise AdmissionError(ExitCode.REFUSAL, "executor terminal verdict is invalid")
+            if type(exit_code) is not int or exit_code not in _TERMINAL_EXIT_CODES:
+                raise AdmissionError(ExitCode.REFUSAL, "executor terminal exit code is invalid")
+            if not isinstance(lane, str) or not lane or api != "fleet-host-agent/1":
+                raise AdmissionError(ExitCode.REFUSAL, "executor terminal identity details are invalid")
+            if not isinstance(collected_at, str) or re.fullmatch(
+                r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)?Z", collected_at,
+            ) is None:
+                raise AdmissionError(ExitCode.REFUSAL, "executor terminal collected_at is invalid")
+            if not isinstance(result_sha256, str) or re.fullmatch(r"[0-9a-f]{64}", result_sha256) is None:
+                raise AdmissionError(ExitCode.REFUSAL, "executor terminal result sha256 is invalid")
+            if type(result_size) is not int or result_size < 0:
+                raise AdmissionError(ExitCode.REFUSAL, "executor terminal result size is invalid")
         job_id = str(handle.record["job_id"])
         queue_fd = self._queue_lock()
         try:
@@ -1982,6 +2043,8 @@ class AdmissionBook:
                     "state": "completed",
                     "completed_at": _nonnegative_number(self.clock(), "clock"),
                 }
+                if terminal_details is not None:
+                    terminal.update(terminal_details)
                 _atomic_new_json(terminal_path, terminal)
             try:
                 path.unlink()

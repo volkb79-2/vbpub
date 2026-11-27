@@ -435,11 +435,15 @@ class AgentAdmission:
 
     @staticmethod
     def _terminal_state(job_id: str, record: Mapping[str, object]) -> Mapping[str, object]:
-        return {
+        result: dict[str, object] = {
             "job_id": job_id,
             "state": record["state"],
             "completed_at": record["completed_at"],
         }
+        for key in ("verdict", "exit_code", "lane", "api", "collected_at", "result_sha256", "result_size"):
+            if key in record:
+                result[key] = record[key]
+        return result
 
     def cancel(
         self, job_id: str, reason: str, identity: AgentIdentity, executor: AgentExecutor | None,

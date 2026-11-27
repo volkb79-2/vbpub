@@ -7,13 +7,14 @@ import importlib.metadata
 import re
 import sys
 from pathlib import Path
-from typing import Sequence
+from typing import Mapping, Sequence
 
 from .admission import AdmissionError, ExitCode
 from .agent_policy import AgentPolicy, DEFAULT_AGENT_POLICY_PATH, load_agent_policy
 from .agent_server import AgentServer, serve_forced_command
 from .agent_verbs import AgentVerbService
 from .contracts import ContractError
+from .executor import HostJobExecutor
 from .facts import collect_host_facts
 
 DEFAULT_AGENT_STATE_DIR = Path("/var/lib/fleetd-agent")
@@ -77,12 +78,31 @@ def _parser() -> argparse.ArgumentParser:
 
 def _service(policy_path: Path, state_dir: Path) -> tuple[AgentVerbService, AgentPolicy]:
     policy = load_agent_policy(policy_path)
+
+    def guard_presence() -> bool | None:
+        try:
+            facts = collect_host_facts()
+        except Exception:
+            return None
+        guard = facts.get("guard") if isinstance(facts, Mapping) else None
+        present = guard.get("guard_present") if isinstance(guard, Mapping) else None
+        value = present.get("v") if isinstance(present, Mapping) else None
+        return value if isinstance(value, bool) else None
+
+    executor = HostJobExecutor(
+        state_dir,
+        policy,
+        policy_path=policy_path,
+        guard_presence=guard_presence,
+    )
     service = AgentVerbService(
         state_dir,
         policy,
         collect_host_facts,
         agent_version=installed_agent_version(),
     )
+    if hasattr(service, "__dict__"):
+        service.executor = executor
     return service, policy
 
 
