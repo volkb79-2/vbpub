@@ -14,6 +14,9 @@ argv = [
 ]
 clean_tree = false
 budget = "20m"
+# RG-320/RG-326: SILENT BY CONSTRUCTION during quiet package installs and the
+# coverage pytest suite; no <=300s output cadence is guaranteed; see RG-326.
+stall_timeout = "20m"
 artifacts = ["coverage.json"]
 
 [lanes.r0-r1.resources]
@@ -28,6 +31,9 @@ argv = [
 ]
 clean_tree = false
 budget = "10m"
+# RG-320/RG-326: SILENT BY CONSTRUCTION during quiet package installs and the
+# focused pytest suite; no <=300s output cadence is guaranteed; see RG-326.
+stall_timeout = "10m"
 
 [lanes.ux-focused.resources]
 memory = "1g"
@@ -56,6 +62,13 @@ argv = [
 ]
 clean_tree = true
 budget = "25h"
+stall_timeout = "25h"
+# RG-320/H1: SILENT BY CONSTRUCTION — `assay.cli run tnt` writes candidate
+# progress to .assay/progress-r2.jsonl (a FILE only an assay-kind lane reads),
+# so stdout stays empty until the summary; a single candidate can run far
+# longer than 300 s with no progress record (R-40i / RG-326). Declared EQUAL
+# to the lane budget, so P1 cannot fail a healthy candidate. No silence bound
+# has been measured yet.
 artifacts = [".assay/verdict-r2.json", ".assay/progress-r2.jsonl"]
 
 [lanes.r2.resources]

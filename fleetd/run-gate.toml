@@ -10,6 +10,9 @@ argv = [
 ]
 clean_tree = false
 budget = "30m"
+# RG-320/RG-326: SILENT BY CONSTRUCTION during the pytest suite; no 300s
+# output cadence is guaranteed by each test; no bound is measured; see RG-326.
+stall_timeout = "30m"
 artifacts = ["coverage.json"]
 
 [lanes.r0-r1.resources]
@@ -28,6 +31,9 @@ argv = [
 ]
 clean_tree = false
 budget = "5m"
+# RG-320/RG-326: SILENT BY CONSTRUCTION during the campaign pytest; a test
+# may run without output for 300s; no bound is measured; see RG-326.
+stall_timeout = "5m"
 
 [lanes.campaign-contract.resources]
 memory = "1g"

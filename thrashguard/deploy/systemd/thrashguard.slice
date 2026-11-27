@@ -1,0 +1,12 @@
+[Unit]
+Description=thrashguard's own slice, outside dev.slice
+# Design §5, D8: thrashguard must keep running while the tiers it parks are
+# starved, so it cannot live in `dev.slice` (the psi-guard's placement precedent,
+# `units/mdt-psi-guard.service:2-3`).
+Documentation=file:///etc/thrashguard/thrashguard.toml
+
+[Slice]
+# No limits are declared here on purpose: the host owns resource limits
+# (AGENTS.md "Resource limits belong to the host, not to repository files"). This
+# slice exists so the placement is a fact the host can cap, not a promise in a
+# repository file.

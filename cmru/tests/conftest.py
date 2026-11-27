@@ -109,13 +109,15 @@ def process_run_seam(monkeypatch):
 
 #: Keep the known integration/install/e2e cost centers out of a fail-fast kill's
 #: prefix. The env gate keeps every lane except the first-release R2 lane on
-#: pytest's normal collection order.
+#: pytest's normal collection order. Every name must be a file of this directory:
+#: `test_r2_heavy_last_order.py::test_heavy_last_files_all_exist` fails on a stale
+#: entry, which is why the tester-unified image suite left this set with the suite
+#: itself (P-core-12).
 HEAVY_LAST_ORDER_ENV = "CMRU_TEST_ORDER"
 HEAVY_LAST_ORDER_VALUE = "heavy-last"
 HEAVY_LAST_FILES = frozenset(
     {
         "test_release_end_to_end_real_git.py",
-        "test_tester_unified_image.py",
         "test_installer_w1_round1.py",
         "test_installer_inst62.py",
         "test_installer_w1.py",

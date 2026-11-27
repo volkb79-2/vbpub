@@ -28,6 +28,9 @@ services:
     environment:
       CONTAINERS: 1   # read container inspect/list
       NETWORKS:   1   # read network info for service discovery
+      EVENTS:     1   # read the event stream Traefik's Docker provider `watch: true` needs;
+                      # the image default is already 1 (TE-14), made explicit so a pin change
+                      # cannot silently stop new containers from being routed
       SERVICES:   1   # read swarm service info (no-op on standalone Docker)
       TASKS:      1   # read swarm task info (no-op on standalone Docker)
       POST:       0   # DENY all mutating/write calls to the Docker API

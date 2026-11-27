@@ -11,6 +11,118 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 <!-- cmru: release history -->
 
+## [25.10.0] - 2026-11-26
+<!-- cmru: generated -->
+<!-- cmru: source-end=be24e4ecca48cccf29b71c6ebd6a117d5afb154d -->
+
+### Added
+- feat(run-gate): a stall watch on every watchable lane kind (RG-320, no-time-budgets P1) (b81c6c2ab)
+
+### Fixed
+- fix(run-gate): close the RG-320 delta review findings (controller fix-forward) (5ea5145d6)
+- fix(run-gate): bound silent command lanes across estate (18b12369d)
+- fix(run-gate): close RG-320 P1 review findings (3b2076056)
+- fix(run-gate): arm container stall watch by runner (2e84cedaf)
+- fix(run-gate): H1 second pass: the seven canary-runner lanes are silent by construction (RG-326, RG-328) (7d2b98142)
+- fix(run-gate): M6/L1-L4/FOLLOW-UP 1 of the RG-320 fix round — correct the toml comment, the STALLED survivor sentence and the docs (cbe231d91)
+- fix(run-gate): M4/M5/L5 of the RG-320 fix round — observe the pressure-pause cap, judge a chatty lane on arrivals, bound the output drain (973d17e60)
+- fix(run-gate): M1/M2/M3 of the RG-320 fix round — one bound per lane, an honest unknown signal, an explicit derived-key set (3cfc12352)
+- fix(run-gate): H1 — declare an explicit silence bound on lanes that are silent by construction (RG-320 fix round 1) (ed9a28248)
+- fix(run-gate): keep run -d --name at the head of the lane argv (ff706061b)
+- fix(run-gate): prefer lane OOM victims and close RG-297 lows (6319d0388)
+
+### Changed
+- docs+test(run-gate): close rg-oom review r1: wall-stop and inventory filings match Assay's decided contract, SPEC argv and refusal quotes complete, tests read the container name by flag (RG-321, RG-322, RG-324, RG-325) (5cb80ae2f)
+- wip(run-gate): no-time-budgets P1, interrupted (ntb-p1-y2) (35d42d535)
+- wip(run-gate): RG-297 fix round 2, interrupted (rg297fix2) (0ecc29f65)
+- run-gate: fix RG-297 review r1 (relative path base, duplicate flags, assay 12.3.0 floor) (1a8217fe9)
+- run-gate: let Assay own carry-over pairing, candidate files and rejudge-outcome (RG-297) (5ae3954f8)
+- run-gate: forward assay lane flags after -- (RG-297) (d42cb0c4a)
+
+### Documentation
+- docs(run-gate): point the RG-320 revision comments at the merged rev 77 (4243f179b)
+- docs(run-gate): RG-297 fix round 2 -- backlog names the duplicate-flag remedy (d81147163)
+- docs(run-gate): RG-297 review r1 docs, RG-317/318 status, RG-319 filed (be4edd980)
+- docs(run-gate): assay flag forwarding (RG-297) and RG-315..318 (b732b8370)
+- docs(run-gate-project): file RG-314 (a {worktree} env value also passed through to Assay breaks seeded resumes; lanes --check lint wanted) (da4e6e616)
+- docs(run-gate): RG-263 addendum, docs-only diff reports FAIL NO_MUTANTS (P-plat-docs2) (d83a34e31)
+
+### Testing
+- test(run-gate): assert exec stream disclosure reliably (8b9f69c55)
+- test(run-gate): accept command_signal in the dry-run print_lane_bounds stub (e2101e00a)
+- test(run-gate): cover the exec lane's output-stream watch arm and the bare-host no-watch wait (92f3f4391)
+- test(run-gate): cover LogStreamWatch's pressure pause and print_lane_bounds' inert/unknown-signal lines (8161238b9)
+- test(run-gate): cover the retained inert-reason helper, the environment stamp guard and OutputTee's on_chunk/join timeout (77a9a1654)
+- test(run-gate): let the print_lane_bounds stubs accept command_signal (RG-320 controller fix-forward) (9fd8c5d0d)
+
+<!-- cmru: pending release notes begin -->
+### Added
+- run-gate: a stall watch on every watchable lane kind (RG-320, P1 of
+  `docs/design/no-time-budgets/DESIGN.md`) — a COMMAND lane declaring no
+  `stall_timeout` is armed with a 300 s bound, and the exec/bare-host command
+  runners get their first liveness signal (`StreamWatch` over their own output
+  stream). An ASSAY lane keeps the auto bound it has had since RG-7
+  (`max(300s, 3x its published cadence)`, 600 s post-command); for it P1 changed
+  what is disclosed and recorded, not the number enforced. The bound, its source
+  (`declared`/`auto`/`auto-derived`) and the signal it judges are disclosed on
+  the line and recorded as `stall_bound`; an AUTO bound (only) pauses when host
+  memory `full avg10` PSI exceeds 5; CPU contention and IO PSI alone never pause
+  the clock. No cap is removed and `budget = "unbounded"` is still
+  refused (that is P2).
+
+### Changed
+- run-gate: a container command lane is watched by `LogStreamWatch` whether or
+  not it declares `stall_timeout` (RG-320); the container runner arms from its
+  known `docker logs -f` path and explicitly discloses and records that signal
+  on start and re-attach, and discloses it to followers, even when
+  environment-mode stamping is absent.
+- run-gate: annotate five additional silent-by-construction command lanes with
+  `stall_timeout` equal to their own budget (`assay` Rust R1/R2 and replay-pilot;
+  `cmru` installed-wheel and installed-wheel-live), following RG-326 pending a
+  real progress signal.
+- run-gate: `cmru` `release-gate` and seven `assay` wrapper lanes now declare
+  budget-length `stall_timeout` values because their nested/captured `assay run`
+  or `installed-wheel-live` steps can be silent; no silence bound is measured
+  yet (RG-320/H1, tracked by RG-326).
+- estate: every `kind = "command"` lane that had no demonstrated output now declares a `stall_timeout` (as a rule its own
+  `budget`) across the estate's `run-gate.toml` files; a new estate-lint check
+  (`estate-lint/tests/test_command_liveness_inventory.py`) fails a command lane that has neither a bound nor progress
+  evidence in `estate-lint/stall-progress-inventory.toml`, a stale evidence entry, a wrapper whose bound is shorter
+  than a member's, and a wrapper whose members cannot be derived or named (RG-320/RG-326; limits: RG-330).
+- run-gate: `OutputTee.join()` now waits at most `OUTPUT_DRAIN_TIMEOUT_SECONDS`
+  (5 s) and DISCLOSES an incomplete drain, instead of blocking until EOF on a
+  lane's output pipe — a grandchild that outlived the terminated process group
+  could hold that pipe open and hang the lane past both its budget and its stall
+  stop (RG-320 fix round 1, L5).
+- run-gate: a `stall_timeout` on a NON-sequence lane can no longer be spelled
+  with an `_`-prefixed key: derived keys are an explicit set
+  (`DERIVED_LANE_KEYS`), accepted only on a lane Run-Gate itself has stamped, so
+  `_stall_timeout` / `_budget` / `_x` in a config are refused BY NAME again
+  (RG-320 fix round 1, M3) — the accepted-and-inert shape RG-32 exists to stop.
+- run-gate: an exec lane's STALLED message now says the in-container command may
+  still be running after the client is stopped (RG-327 tracks ending it); a
+  lane whose liveness signal cannot be resolved is disclosed as UNKNOWN rather
+  than named (`signal not resolvable for this lane`, RG-320 fix round 1, M2).
+- run-gate: RG-58's bare-host "`stall_timeout` is inert" load-time WARN and its
+  matching `doctor` 2d line are RETIRED, not reworded — the bare-host runner has
+  a watch now, so the message had outlived the fact it asserted.
+- run-gate: ephemeral gate lane containers use `--oom-score-adj 500` so host
+  OOM selection favors disposable gate work over the interactive controller
+  (RG-321, rev 76).
+- run-gate: unreadable Assay inventory refusals for forwarded flags give the
+  RG-318 reason and remedy before selective-R2 refusals (RG-322, rev 76).
+
+### Documentation
+- docs(run-gate): README/SPEC/CONSUMERS/LANE-AUTHORING describe the per-kind
+  signal table, the 300 s auto bound with its disclosed source, and the
+  buffered-child caveat (RG-320, rev 77: new `R-40i`, `R-40f` extended).
+- docs(run-gate): reconcile RG-320/RG-326 lane counts, cite stable stall-watch
+  symbols in the no-time-budgets design, and distinguish `auto` from
+  `auto-derived` by lane kind.
+- docs(run-gate): correct the RG-318 refusal quote and file RG-323–RG-325
+  follow-ups for effective CPU-time support.
+<!-- cmru: pending release notes end -->
+
 ## [25.9.0] - 2026-11-24
 <!-- cmru: generated -->
 <!-- cmru: source-end=b31dc08c84a7766bd032b025ac4a55b40117d519 -->

@@ -44,6 +44,14 @@ know when upgrading; it is not generated.
   prove descendant cleanup with `estate_test_policy` TP-12 rather than
   `procio`. The stdlib-only import guard now rejects relative and
   `cli_extended` imports as well as non-stdlib imports.
+- **R2 lane contract, tests only (CLI-EXT-45).** `tests/test_r2_lane_contract.py`
+  no longer restates the shard-instance shape, `merge_shards` acceptance and
+  the outer-budget margin: `run-gate lanes --check --all --strict` runs in the
+  new `estate-lint` lane and decides them. The remaining tests cover what that
+  check does not: the lane resolves as a native Assay lane, the shard artifact
+  lane name, `--carry-over`, the command-lane refusal, `select_r2_jobs`,
+  `candidate_ram` and the observer/clean-tree/pids declarations. No
+  runtime-visible change.
 
 ### Unreleased — `cli_extended.procio`: one bounded subprocess reader
 

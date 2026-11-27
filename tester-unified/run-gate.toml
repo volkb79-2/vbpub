@@ -1,0 +1,31 @@
+# =============================================================================
+# tester-unified's own gate lane: the image's test suite judges the image, not
+# cmru. It lived in cmru/tests/ until P-core-12 (KI-194), which turned cmru red
+# whenever a project joined `tester-unified/gen-requirements.py` PROJECTS.
+#
+# The image bakes a copy of cmru; the lane must judge the WORKTREE's cmru and
+# `worktree` library (the suite imports `cmru.config` and loads the real
+# `cmru.orchestration.toml`), so both source trees are on PYTHONPATH.
+# See run-gate-project/CONSUMERS.md and tester-unified/docs/DESIGN-GUIDE.md.
+# =============================================================================
+schema_version = 1
+
+[lanes.suite]
+kind = "command"
+environment = "tester-unified"
+argv = [
+  "bash", "-c",
+  "cd {worktree}/tester-unified && PYTHONPATH={worktree}/cmru/src:{worktree}/libraries/worktree/src${PYTHONPATH:+:$PYTHONPATH} PYTHONDONTWRITEBYTECODE=1 /opt/tester-venv/bin/python3 -m pytest tests -q",
+]
+clean_tree = false
+# Unmeasured at first release: the suite has 189 tests and reads the repository
+# tree, the Dockerfile and the generator, but runs no container. The controller
+# measures it on the first gate and adjusts this bound.
+budget = "20m"
+# RG-320/RG-326: SILENT BY CONSTRUCTION during pytest -q; no <=300s output
+# cadence is guaranteed by each test; no bound is measured; see RG-326.
+stall_timeout = "20m"
+
+[lanes.suite.resources]
+memory = "1g"
+io_sync = "durable"

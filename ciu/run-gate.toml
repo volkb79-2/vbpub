@@ -12,9 +12,13 @@ schema_version = 1
 # LANE DISTINCTION (CIU-190):
 #   `ciu`      = the ASYNC R2 mutation lane (R0-R3, native mutation + liveness). It is
 #                NOT a release gate; run it only on the latest release, as a campaign.
-#                Native R2 with liveness needs the cgroup observer, hence
+#                Native R2 needs the cgroup observer because EVERY candidate is judged
+#                against observed candidate resource-limit counters (assay
+#                `_read_candidate_resource_counters`, `observation_required=True`), hence
 #                resource_observer = "cgprofile" and resources.pids below; without them
 #                the verdict is always NO_MEASUREMENT/CGROUP_OBSERVATION_UNAVAILABLE.
+#                (Liveness itself reads its own procfs sources; the observer is not its
+#                dependency, and `liveness = true` is a separate declaration.)
 #   `ciu-gate` = the RELEASE gate (R0+R1+R3, no mutation, no observer needed).
 # Same observer pattern as pwmcp/run-gate.toml [lanes.r2] and
 # run-gate-project/run-gate.toml [lanes.assay-r2].
@@ -77,6 +81,15 @@ required_env = ["DOCKER_HOST", "CGROUP_PARENT_DEV_GATES"]
 profile = false
 argv = ["bash", "-c", "cd {worktree}/ciu && exec env CIU_ENROLL_REQUIRED=1 PYTHONPATH=src:../cmru/src:../libraries/worktree/src PYTHONDONTWRITEBYTECODE=1 python3 -m pytest tests/tests/test_getpy_enroll.py -k 'TestEnrollAgainstRealSystem or registered_enroll_lane' -q --cli-case-partial"]
 budget = "20m"
+stall_timeout = "20m"
+# RG-320/H1: SILENT BY CONSTRUCTION. The session fixture this lane's selectors
+# reach builds its fixture image with subprocess.run(["docker", "build", …],
+# capture_output=True, timeout=900) (tests/tests/test_getpy_enroll.py:768-772):
+# buildkit's own progress is captured inside the python child, so this lane's
+# stdout is empty for the WHOLE build (up to 900 s, three times the 300 s
+# auto bound). Declared EQUAL to this lane's own budget above, so a slow
+# fixture build can never be reported STALLED. No silence bound has been
+# measured yet; RG-326 tracks a real progress signal for it.
 
 # Real Compose acceptance for CIU-141. CMRU's registered tester-gate launches
 # this command inside tester-unified with an isolated DinD sidecar; the lane
@@ -89,3 +102,12 @@ required_env = ["DOCKER_HOST", "CGROUP_PARENT_DEV_GATES"]
 profile = false
 argv = ["bash", "-c", "cd {worktree}/ciu && exec env CIU_RUN_OS_INTEGRATION=1 PYTHONPATH=src:../cmru/src:../libraries/worktree/src PYTHONDONTWRITEBYTECODE=1 nice -n 10 /opt/tester-venv/bin/python -m pytest -p no:cacheprovider -m os_integration tests/os_integration/test_ciu_run_real_docker.py -q --cli-case-partial"]
 budget = "20m"
+stall_timeout = "20m"
+# RG-320/H1: SILENT BY CONSTRUCTION. This suite's docker work is captured
+# inside the python child: the fixture image build is subprocess.run(["docker",
+# "build", …], capture_output=True, timeout=900) (test_ciu_run_real_docker.py:401)
+# and every compose call is run with `--progress quiet` captured the same way
+# (:476-482). Neither docker's build progress nor compose's status reaches this
+# lane's stdout. Declared EQUAL to this lane's own budget above, so a slow
+# build or compose up cannot be reported STALLED. No silence bound has been
+# measured yet; RG-326 tracks a real progress signal for it.

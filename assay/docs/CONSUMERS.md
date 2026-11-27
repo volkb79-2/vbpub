@@ -673,6 +673,69 @@ The controller keeps its SSH credentials and verifies the collected
 verdict from `result.json`. A failed lane returns its lane exit code. The
 remote run ID includes the candidate commit, lane and compact UTC timestamp.
 
+**Release gate environment.** Besides the required host selector, the wrapper
+needs a remote-gate host table and an output directory. It resolves each from
+the first source that supplies it:
+
+1. `REMOTE_GATE_HOSTS` and `REMOTE_GATE_OUT` when you export them;
+2. the controller's own configuration, read read-only through
+   `scripts/controller/lib.sh`: `CONTROLLER_REMOTE_HOSTS_FILE`, else
+   `CONTROLLER_HOSTS_FILE` (made absolute against `CONTROLLER_HOME`), and
+   `CONTROLLER_REMOTE_OUT`, else `$CONTROLLER_HOME/remote-gates`;
+3. `remote-gate.py`'s own defaults, unchanged from before.
+
+A value you set is never silently replaced when it is unusable: the wrapper
+refuses. A `controller.local.env` it cannot read is likewise a refusal, not a
+fall-through, and the refusal quotes that file's own last error line. The
+controller configuration is read only while one of `REMOTE_GATE_HOSTS` and
+`REMOTE_GATE_OUT` is unset, so an explicit pair still runs on a machine whose
+controller file is broken.
+
+Before any remote work the wrapper checks every setting and, if anything is
+missing or unusable, refuses once (exit 2) with one `  - <problem>` line per
+finding, so a single run names everything that has to be fixed. Every problem
+names its source -- `REMOTE_GATE_HOSTS`, `CONTROLLER_REMOTE_HOSTS_FILE`,
+`CONTROLLER_HOSTS_FILE`, `CONTROLLER_REMOTE_OUT`, `CONTROLLER_HOME/remote-gates`,
+`remote-gate.py DEFAULT_HOSTS`, `remote-gate.py DEFAULT_OUT` -- as in
+`host table from remote-gate.py DEFAULT_HOSTS is missing: <path>`. `HOME` must
+be set because `remote-gate.py` reads `~/.ssh` and its own default host table.
+`ASSAY_RELEASE_GATE_HOST` keeps no default at all: which host takes the load is
+a decision, not a fallback.
+
+The combined refusal covers the remote host's settings only: the host selector,
+`ASSAY_RELEASE_GATE_HEARTBEAT_S`, the host table, the output directory and
+`HOME`. A local host (`ASSAY_RELEASE_GATE_HOST=local`) execs the ordinary local
+lane and never reads or validates any of them. Two checks stay separate refusals
+with their own exit codes, and they are judged at different points: a missing
+`remote-gate.py` is checked BEFORE the settings (exit 3 -- the wrapper cannot
+locate the module whose defaults it would import), while the CMRU binding
+(`CMRU_RELEASE_GATE_COMMIT` unset or malformed, and a commit that does not
+match the worktree `HEAD`) is judged AFTER them, so a run outside CMRU hears
+what is wrong with its settings first.
+
+One cause reaches two exit codes, and deliberately so: if `mktemp` cannot create
+its temporary file, the controller-configuration reader deliberately stops at
+once with exit 3 (`cannot create a temporary file to read the controller
+configuration`), because it cannot resolve a source the run may depend on; the
+`remote-gate.py` defaults loader instead adds
+`cannot create a temporary file for the remote-gate.py defaults import` to the
+combined refusal (exit 2), because it supplies only a fallback and the run can
+still report every other unusable setting in the same attempt. Read the message,
+not only the number: both name the temporary file, and neither reports a path
+nothing supplied. A broken `TMPDIR` therefore costs one exit 3 attempt when the
+controller configuration is needed and one exit 2 attempt when only the module
+defaults are left, and an operator who fixes `TMPDIR` fixes both.
+
+While a remote lane runs, the wrapper prints one progress line per interval to
+stderr,
+`assay release-gate: waiting for remote run <run> on <host> (<elapsed>s)`.
+`ASSAY_RELEASE_GATE_HEARTBEAT_S` sets the interval (an integer from 30 to 1500,
+unset meaning 300); anything else is refused with exit 2, and the interval is
+refused in the same combined message as the other settings. The lines keep the
+CMRU step's own no-progress watchdog (1800 s by default) from ending a lane that
+is merely quiet, without changing the lane's exit status: the wrapper still
+returns the remote lane's code and still cancels the remote run on `INT`/`TERM`.
+
 After R0/R1, B148/A-494 applies the same local-first observation rule before
 any selected native candidate starts: a configured observer can satisfy it
 only when the local reader specifically proves ancestors hidden. Without a

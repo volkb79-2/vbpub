@@ -741,6 +741,77 @@ def test_tgt_12_real_marker_pwrite_uses_the_claim_descriptor(monkeypatch):
     assert real.closed == [71]
 
 
+def test_tgt_12_real_marker_needs_both_a_held_descriptor_and_its_matching_target(monkeypatch):
+    """S3 (host.py:742 ``or``->``and``): the check is a conjunction of two facts, so EITHER fact alone must refuse."""
+    real = RealClaim(monkeypatch)
+    assert real.claim() == 71
+    writes: list[tuple[int, int]] = []
+
+    def pwritev(fd, _buf, offset):  # a marker write through no descriptor is an assertion failure, not a raw-device write
+        assert isinstance(fd, int), f"marker written through {fd!r}"
+        writes.append((fd, offset))
+
+    monkeypatch.setattr(host_mod.os, "pwritev", pwritev)
+    monkeypatch.setattr(host_mod.os, "fsync", lambda _fd: None)
+    try:
+        # Fact 1 alone: the descriptor is gone while the claim's identity record still names this target.
+        real.host._claim_fd = None
+        with pytest.raises(HostError, match="held O_EXCL claim"):
+            real.host.write_marker(real.ref, "{}")
+        assert writes == []
+        # Fact 2 alone: the descriptor is held, but its record names a different target.
+        real.host._claim_fd, real.host._claim_target = 71, dataclasses.replace(real.ref, partuuid="another-partuuid")
+        with pytest.raises(HostError, match="held O_EXCL claim"):
+            real.host.write_marker(real.ref, "{}")
+        assert writes == []
+        # Both facts: the marker is written through the held descriptor.
+        real.host._claim_target = real.ref
+        real.host.write_marker(real.ref, "{}")
+        assert writes == [(71, R1002_SIZE - host_mod.TAIL_BYTES)]
+    finally:
+        real.host._claim_fd, real.host._claim_target = 71, real.ref
+    assert real.host.release_claim() is None
+    assert real.closed == [71]
+
+
+def test_tgt_12_real_discard_message_names_the_os_error_text(monkeypatch):
+    """S4 (host.py:846 ``exc.strerror or exc`` -> ``and``): the message must keep the error text in both shapes."""
+    real = RealClaim(monkeypatch)
+    assert real.claim() == 71
+    # (the strerror text, the tail the message must end with) -- an empty or absent strerror must not erase the text
+    cases = ((OSError(errno.EIO, "synthetic medium error"), "synthetic medium error"), (OSError(errno.EIO), "5"))
+    for raised, expected in cases:
+        size_ioctl = real.ioctl_size
+
+        def ioctl(fd: int, request: int, argument, *args):
+            if request == host_mod.BLKGETSIZE64:
+                return size_ioctl(fd, request, argument, True)
+            raise raised
+
+        monkeypatch.setattr(host_mod.fcntl, "ioctl", ioctl)
+        with pytest.raises(HostError) as error:
+            real.host.discard_range(devio.blkdiscard_argv(DEV, 0, GIB), real.ref, 0, GIB)
+        assert str(error.value) == f"BLKDISCARD failed at [0, {GIB}) on {DEV}: {expected}"
+    assert real.host.release_claim() is None
+
+
+def test_tgt_12_real_discard_still_reports_unsupported_as_a_plain_result(monkeypatch):
+    """The unsupported-error branch is independent of the message: it is still ``RunResult(1, "", ...)``."""
+    real = RealClaim(monkeypatch)
+    assert real.claim() == 71
+    size_ioctl = real.ioctl_size
+
+    def ioctl(fd: int, request: int, argument, *args):
+        if request == host_mod.BLKGETSIZE64:
+            return size_ioctl(fd, request, argument, True)
+        raise OSError(errno.EOPNOTSUPP, os.strerror(errno.EOPNOTSUPP))
+
+    monkeypatch.setattr(host_mod.fcntl, "ioctl", ioctl)
+    out = real.host.discard_range(devio.blkdiscard_argv(DEV, 0, GIB), real.ref, 0, GIB)
+    assert out == host_mod.RunResult(1, "", "Operation not supported")
+    assert real.host.release_claim() is None
+
+
 def test_tgt_12_real_discard_chunks_at_one_gib_through_the_claim(monkeypatch):
     real = RealClaim(monkeypatch)
     assert real.claim() == 71
@@ -1090,19 +1161,30 @@ def test_tgt_12_supervisor_reports_an_adopted_grandchild_on_every_exit_path(monk
         seen.extend(real.host._unreaped_children)
         assert seen
     finally:
-        handle.kill()
+        # Cleanup must not depend on the handle's own health. If a mutant leaves the handle unclosed, ``kill`` raises
+        # ValueError on a file it just closed; the child kill below must still run, or the grandchild is leaked and the
+        # candidate ends as a process-tree crash instead of a plain test failure.
         if grandchild is None and pid_file.exists():
             grandchild = int(pid_file.read_text(encoding="ascii"))
-        if grandchild is not None:
+
+        def end_grandchild(*, blocking: bool) -> None:
+            if grandchild is None:
+                return
             try:
                 os.kill(grandchild, signal.SIGKILL)
             except ProcessLookupError:
                 pass
             try:
-                os.waitpid(grandchild, 0)
+                os.waitpid(grandchild, 0 if blocking else os.WNOHANG)
             except ChildProcessError:
                 pass
-        real.host._unreaped_children.clear()
+
+        end_grandchild(blocking=False)  # stop it before the handle's own health can matter
+        try:
+            handle.kill()
+        finally:
+            end_grandchild(blocking=True)  # reap it now that the supervisor (its parent) has exited
+            real.host._unreaped_children.clear()
         if real.host._claim_fd is not None:
             real.host.release_claim()
         os.close(ready_read)
@@ -1249,6 +1331,52 @@ def test_tgt_12_cli_flag_reaches_config_for_every_run_verb():
         without = registry.command_parsers[verb].parse_args(["--target", DEV])
         assert cli._config(with_flag, "0.1.0").raw_write is True
         assert cli._config(without, "0.1.0").raw_write is False
+
+
+def test_tgt_12_config_without_the_opt_in_defaults_raw_write_to_false():
+    """S1 (stages.py:54 False->True): with only the required fields named, the dataclass default alone decides."""
+    assert stages.Config(target=DEV, tool_version="0.1.0").raw_write is False
+
+
+def test_tgt_12_a_default_config_refuses_the_raw_writer_and_the_raw_discard():
+    """S1 behaviourally: a Config that never passed --allow-raw-write can neither write nor discard a raw device."""
+    host = make_host(cache=INVERSION)
+    cfg = stages.Config(target=DEV, tool_version="0.1.0", work_dir="/bench/w", confirm_quiet_window=True,
+                        protect_cgroup="game-server.slice", abort_psi=40.0)  # raw_write stays at its dataclass default
+    runner = calibrate.Calibrator(host, cfg)
+    runner.s0(need_workdir=False)
+    runner.allowed_writes.add(0, 1 << 20)
+    writer = runner.job("default-config", "randwrite", 4096, 1, 1, 0, 1 << 20, io_size=4096)
+    try:
+        with pytest.raises(Refusal) as write_error:
+            runner.spawn(writer)
+        assert write_error.value.condition == "raw_device_write_unsupported"
+        with pytest.raises(Refusal) as discard_error:
+            runner.discard((0, 1 << 20))
+        assert discard_error.value.condition == "raw_device_write_unsupported"
+        assert host.claims == {}
+    finally:
+        runner.cleanup("complete", "", 0)
+    cleaned(host)
+
+
+def test_tgt_12_cli_without_the_flag_stays_false_because_the_option_is_always_parsed():
+    """S2 (cli.py:116 getattr default False->True): the fallback is unreachable, because every verb that builds a
+    Config declares --allow-raw-write, so `_config` always reads the parsed attribute (False) instead of the default."""
+    from cli_extended import CliIdentity
+
+    registry = cli.build_cli(CliIdentity("iobench", "0.1.0", "cache-proof disk benchmark", "iobench"))
+    for verb in ("calibrate", "matrix", "run"):
+        without = registry.command_parsers[verb].parse_args(["--target", DEV, "--confirm-quiet-window",
+                                                            "--protect-cgroup", "game-server.slice", "--abort-psi", "40"])
+        assert without.allow_raw_write is False  # the parser always supplies the option ...
+        assert cli._config(without, "0.1.0").raw_write is False  # ... so the getattr default is never consulted
+        # The getattr fallback only decides for an args namespace that does not declare the option (a future verb that
+        # builds a Config without offering the opt-in). Removing the attribute is exactly that boundary: it must still
+        # yield False, because an absent option is an absent consent, never an implicit raw-device write.
+        undeclared = registry.command_parsers[verb].parse_args(["--target", DEV])
+        del undeclared.allow_raw_write
+        assert cli._config(undeclared, "0.1.0").raw_write is False
 
 
 def test_tgt_12_a_full_fake_raw_calibration_completes_and_leaves_no_claim():

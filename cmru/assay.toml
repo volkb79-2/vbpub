@@ -42,7 +42,8 @@ env_passthrough = ["PATH"]
 # snapshot) and the canary did not finish inside the remaining time. One canary attempt = control run of the
 # FULL suite + the transformed fast-fail run, ~1020 s, so the lane needs ~1930 s (~32 min) at the observed
 # load; 50m is ~1.5x that. The budget is a hang bound, not a speed target. run-gate.toml's outer budget must
-# stay >= this + 10m (tests/test_gate_budgets.py enforces >= +5m).
+# stay >= this + 5m; the estate-lint lane enforces that with `run-gate lanes --check --all --strict`,
+# and tests/test_gate_budgets.py keeps only the exact lane pairing the check does not decide.
 budget = "50m"
 allow_argv_append = false
 
@@ -288,7 +289,7 @@ artifact = "coverage.json"
 # stops at its first failing test; the R0/R1 baseline keeps full coverage and
 # survivors still run the full suite. Nov-8 shard lanes measured ~570 s -> ~288 s
 # per candidate over 1712 candidates, with kill outcomes unchanged (WP1).
-# With CMRU_TEST_ORDER=heavy-last, tests/conftest.py stably moves the eight
+# With CMRU_TEST_ORDER=heavy-last, tests/conftest.py stably moves the seven
 # known slow install/e2e/image-integration files (59% of the measured suite time)
 # after the fast unit files in BOTH baseline and candidate collection. A fail-fast
 # kill can therefore land in seconds instead of paying for a heavy file first;

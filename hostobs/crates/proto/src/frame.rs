@@ -90,7 +90,7 @@ pub const MAGIC: [u8; 4] = *b"HOB\x01";
 /// The protocol major this codec speaks.
 pub const PROTO_MAJOR: u16 = 1;
 /// The protocol minor this codec speaks; an additive change raises it.
-pub const PROTO_MINOR: u16 = 1;
+pub const PROTO_MINOR: u16 = 2;
 /// The frame header size in bytes.
 pub const FRAME_HEADER_LEN: usize = 12;
 /// The section directory entry size in bytes.
@@ -542,7 +542,7 @@ impl FrameHeader {
         }
         let reserved = cursor.u16()?;
         if reserved != 0 {
-            return Err(ProtoError::NonZeroReserved(reserved));
+            return Err(ProtoError::NonZeroReserved(u32::from(reserved)));
         }
         let corr = cursor.u32()?;
         if enforce_declared_bounds {
@@ -3380,6 +3380,11 @@ mod tests {
             assert_eq!(kind.is_single(), kind != SectionKind::Column);
             assert!(!kind.name().is_empty());
         }
+        assert_eq!(
+            SectionKind::from_code(7),
+            None,
+            "event/1 is not a BLOCK section"
+        );
         assert_eq!(SectionKind::from_code(9), None);
         let section = Section::new(SectionKind::Rows, vec![0; 8]);
         assert_eq!(section.kind_code(), 2);
@@ -3703,9 +3708,9 @@ mod tests {
     }
 
     #[test]
-    fn the_hello_announces_minor_one_and_a_minor_zero_hello_is_still_accepted() {
-        assert_eq!(PROTO_MINOR, 1);
-        assert_eq!(hello(), vec![b'H', b'O', b'B', 1, 1, 0, 1, 0]);
+    fn the_hello_announces_minor_two_and_a_minor_zero_hello_is_still_accepted() {
+        assert_eq!(PROTO_MINOR, 2);
+        assert_eq!(hello(), vec![b'H', b'O', b'B', 1, 1, 0, 2, 0]);
         assert_eq!(
             detect_mode(b"HOB\x01\x01\x00\x00\x00"),
             Ok(Mode::Binary { major: 1, minor: 0 })

@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# shellcheck disable=SC2016 # fixture text carries literal $ and backticks
+# shellcheck disable=SC1091,SC2016 # fixture text carries literal $ and backticks; the shared frame lib is sourced
 set -uo pipefail
 # ctl-keepalive.sh --once against a STUB tmux first on PATH, fake ~/.claude/sessions + projects JSONL, a fake /proc and a
 # fixed clock (KEEPALIVE_NOW). The stub records every call and serves capture-pane frames per phase (pre = before the
 # ping was typed, typed = after send-keys -l), advancing one frame per call (the last repeats). No real tmux, no sleep.
 #
-# The pane frames below are FIXTURES of the UNVERIFIED markers (dialog cursor/footer, prompt-box rule): replace them with
-# real captured panes (menu, idle box with a dim suggestion, typed text) when the operator has them; the checks follow.
+# The synthetic frames cover the dialog cursor/footer, dim suggestions, drafts and read-back states. The sanitized real
+# captures in fixtures/keepalive cover the idle box with an IDE-switch notice and an agents panel below the mode line.
 for v in $(compgen -v | grep -E '^(KEEPALIVE_|KA_RESUME_|CLEAR_RESUME_|COMPACT_RESUME_)'); do unset "$v"; done
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 KA=${KEEPALIVE_SCRIPT:-$SCRIPT_DIR/../ctl-keepalive.sh}
@@ -19,6 +19,10 @@ not_contains() { ! grep -qF -- "$2" "$1" || fail "$3 (unexpected: $2)"; }
 T0=1800000000   # the fixed "now"
 TEXT='[keepalive] cache refresh only: reply ok, no tools'
 RULE=$(printf '─%.0s' {1..40})
+# The frames built from the sanitized REAL agents-panel capture (PANELFIX, panel_frame, typed_row, draft_row, menu_frame) are
+# shared with the resume-helper tests: they must measure the same pane view.
+# shellcheck source=pane-frame-lib.sh
+source "$SCRIPT_DIR/pane-frame-lib.sh"
 
 mkdir -p "$ROOT/bin"
 cat > "$ROOT/bin/tmux" <<'SH'
@@ -49,7 +53,6 @@ chmod +x "$ROOT/bin/tmux"
 # box <row> [footer]: an idle prompt box, `%b` expands \xc2\xa0 (NBSP) and \e escapes in the row
 box() { printf 'output\n%s\n%b\n%s\n%b\n' "$RULE" "$1" "$RULE" "${2:-  ctx 41%}"; }
 BUSYL='  * Thinking (12s . esc to interrupt)'
-MENU=' Do you want to proceed?\n ❯ 1. Yes\n   2. No\n\n Esc to cancel'
 # frame <dir> <phase> <n> <kind>
 frame() {
   local f; f=$(printf '%s/frames/%s.%03d' "$1" "$2" "$3")
@@ -66,6 +69,14 @@ frame() {
     ROK) box "❯\xc2\xa0$TEXT" >"$f" ;;                                    # read-back: exactly our text, NBSP as the separator
     ROK2) box "❯ $TEXT" >"$f" ;;                                          # ... plain space
     ROK3) box "❯\xc2\xa0\xc2\xa0$TEXT\xc2\xa0 " >"$f" ;;                  # ... NBSP gap doubled, trailing NBSP
+    LID) panel_frame "$f" 3 0 1 ;;                                        # the REAL idle agents panel plus 3 rows: pingable
+    LRID) panel_frame "$f" 3 0 1; typed_row "$f" "$TEXT" ;;                # L-a: the read-back ON that real panel: trimmed view ends in Enter
+    LB) panel_frame "$f" 6 1 1 ;;                                         # H1: real frame, `esc to interrupt` in the mode line, 9 panel rows
+    LRB) panel_frame "$f" 6 1 1; typed_row "$f" "$TEXT" ;;                # H1: the read-back of the ping on such a pane
+    LMB) menu_frame "$f" 12 ;;                                            # H1: a menu above the box, then the real mode line, then a 15-row panel
+    LMLP) panel_frame "$f" 6 0 1; draft_row "$f" ;;                       # H1: a draft line under the live row, mode line and panel below
+    DRAFT_FIX|DRAFT_VERIFY) draft_frame "$f" "$4" ;;                      # dash continuation in a box-rule position
+    LFOC) panel_frame "$f" 0 0 0 ;;                                       # M1: the real frame WITHOUT the unfocused-panel hint (focused panel)
     RPF) box '❯ [keepalive] cache ref' >"$f" ;;                           # only a prefix of our text
     RFO) box "❯ hello $TEXT" >"$f" ;;                                     # foreign text typed by the operator
     RBUSY) { printf '%s\n' "$BUSYL"; box "❯ $TEXT"; } >"$f" ;;            # a turn started: our text, busy
@@ -107,7 +118,7 @@ prep() { echo pre >"$D/phase"; rm -f "$D"/idx.*; find "$D/projects" -name '*.jso
 run() { # the watcher once; sets RC
   prep
   STUB_DIR=$D PATH=$ROOT/bin:$PATH KEEPALIVE_HOME=$D/home KEEPALIVE_SESSIONS_DIR=$D/sessions KEEPALIVE_PROJECTS_DIR=$D/projects \
-    KEEPALIVE_PROC=$D/proc KEEPALIVE_NOW=$T0 KEEPALIVE_READBACK_WAIT=0.01 bash "$KA" --once 2>"$D/stderr"; RC=$?
+    KEEPALIVE_PROC=$D/proc KEEPALIVE_NOW=$T0 KEEPALIVE_READBACK_WAIT=0.01 bash "$KA" --once </dev/null 2>"$D/stderr"; RC=$?
 }
 calls() { cat -- "$D/calls.log" 2>/dev/null; }
 klog() { cat -- "$D/home/logs/keepalive.log"; }
@@ -115,6 +126,18 @@ klog() { cat -- "$D/home/logs/keepalive.log"; }
 called() { grep -qF -- "$1" "$D/calls.log" 2>/dev/null; }
 logged() { grep -qF -- "$1" "$D/home/logs/keepalive.log" 2>/dev/null; }
 sent_keys() { calls | grep -c '^send-keys'; }
+capture_functions() { # $1 = sanitized real capture; prints "<pane_state rc> <box_ok rc> <dialog_open rc>" of the TRIMMED view
+  KEEPALIVE_SOURCE_ONLY=1 bash -c '
+    set -uo pipefail
+    source "$1"
+    capture=$(<"$2")
+    capture=$(pane_view "$capture")
+    pane_state_of "$capture"; pane=$?
+    box_ok "$capture"; box=$?
+    dialog_open "$capture"; dialog=$?
+    printf "%s %s %s\n" "$pane" "$box" "$dialog"
+  ' _ "$KA" "$1"
+}
 # 1. the happy path; the text has no digit; the log line; the pid file is gone; Enter only after the read-back
 scenario happy 3400 "I" "ROK"
 run; [[ $RC -eq 0 ]] || fail "happy path exit $RC"
@@ -132,6 +155,14 @@ for kind in ROK ROK2 ROK3; do
 done
 # 1c. the dim suggestion and an older non-empty row in the scrollback are an empty prompt; both ping
 for kind in G O; do scenario "dim-$kind" 3400 "$kind" "ROK"; run; called 'send-keys %1 Enter' || fail "pane $kind must be pingable"; done
+# 1d. both sanitized real captures are ready, their prompt box is intact, and no dialog is visible
+for capture in idle-ide-notice.ansi idle-agents-panel.ansi; do
+  result=$(capture_functions "$SCRIPT_DIR/fixtures/keepalive/$capture") || fail "cannot source the watcher for $capture"
+  [[ $result == '0 0 1' ]] || fail "$capture: pane_state_of/box_ok/dialog_open returned $result, wanted 0 0 1"
+  echo "PASS real capture $capture: pane_state_of=0 box_ok=true dialog_open=false"
+done
+# 1e. H1 on the REAL frame: the trimmed view keeps the real idle agents panel pingable (its panel rows are not the box).
+scenario h1-real-panel 3400 "LID" "ROK"; run; called 'send-keys %1 Enter' || fail "the real idle agents panel must stay pingable"
 
 # 2. R2-2: the read-back re-runs the busy and dialog checks
 scenario rb-busy 3400 "I" "RBUSY"; run
@@ -166,6 +197,35 @@ for kind in T B M MB NB FAR MLP; do
 done
 scenario pane-narrow 3400 "I" "ROK"; echo "%1 main 70" >"$D/panes.txt"; run
 [[ $(sent_keys) -eq 0 ]] || fail "a pane narrower than 80 columns must not be pinged"; logged 'pane-narrow (70)' || fail "narrow logged"
+
+# 4a. H1: on a frame built from the REAL agents-panel capture the trim is the only reason a busy pane whose mode line sits
+#     above a tall panel is recognised. Each case would type (and submit) the ping at 3539714d1 (h1-draft only pins the
+#     existing draft refusal).
+scenario h1-busy-panel 3400 "LB" "ROK"; run
+[[ $(sent_keys) -eq 0 ]] || { calls >&2; fail "H1: a busy pane with 9 panel rows must not be pinged (esc to interrupt is 10 lines up)"; }
+logged 'skip busy' || fail "H1: the pane must be skipped as busy, not as an unknown box layout"
+scenario h1-readback 3400 "LID" "LRB"; run
+called 'send-keys %1 C-u' || { calls >&2; fail "H1: a busy read-back over a panel must be cleared with C-u"; }
+! called 'send-keys %1 Enter' || fail "H1: Enter was sent into a busy pane whose mode line sits above a panel"
+logged 'abort-busy' || fail "H1: abort-busy logged for the panel read-back"
+scenario h1-dialog 3400 "LMB" "ROK"; run
+[[ $(sent_keys) -eq 0 ]] || { calls >&2; fail "H1: a menu above the box, a mode line and a 15-row panel must not be pinged"; }
+logged 'skip dialog' || fail "H1: the dialog must be found below a tall panel too"
+scenario h1-draft 3400 "LMLP" "ROK"; run
+[[ $(sent_keys) -eq 0 ]] || { calls >&2; fail "H1: a draft line under the live row must never be typed into"; }
+logged 'skip input-box-layout' || fail "H1: a draft is refused by the box geometry"
+for kind in DRAFT_FIX DRAFT_VERIFY; do
+  scenario "dash-draft-$kind" 3400 "$kind" "ROK"; run
+  [[ $(sent_keys) -eq 0 ]] || fail "dash draft $kind must never be pinged"
+  logged 'skip input-box-layout' || fail "dash draft $kind is refused by the box geometry"
+done
+# 4a2. M1: the trim needs the mode line's unfocused-panel hint (`↓ to manage`); without it the panel may hold the
+#      keyboard focus and the strict box geometry must refuse the pane (nothing is typed into a focused panel)
+scenario m1-focused 3400 "LFOC" "ROK"; run
+[[ $(sent_keys) -eq 0 ]] || { calls >&2; fail "M1: a panel without the unfocused hint may be focused and must not be pinged"; }
+logged 'skip input-box-layout' || fail "M1: the focused-panel frame is refused by the box geometry"
+scenario m1-unfocused 3400 "LID" "LRID"; run
+called 'send-keys %1 Enter' || { calls >&2; fail "M1: the unfocused agents panel (hint present) stays pingable"; }
 
 # 4b. M1: a multi-line draft (box row empty, continuation line below it) is never typed into, and never erased or submitted
 #     when it only shows on the read-back (cursor on the draft line or on the marker row)
@@ -218,6 +278,9 @@ logged 'skip one-ping-per-anchor' || fail "one-ping-per-anchor logged"
 
 # 6. the session mapping: every guard skips without touching tmux
 scenario dead 3400 "I" "ROK"; rm -rf "$D/proc/1001"; run; [[ ! -e $D/calls.log ]] || fail "dead pid"
+scenario empty-window 3000 "I" "ROK"; rm -rf "$D/proc/1001"; run
+[[ $RC -eq 0 && ! -e $D/calls.log ]] || fail "an empty window with only a dead pid record exits 0 and sends nothing"
+logged 'dead-or-not-claude' || fail "the dead pid record was not skipped"
 scenario comm 3400 "I" "ROK"; echo bash >"$D/proc/1001/comm"; run; [[ ! -e $D/calls.log ]] || fail "comm is not claude"
 scenario reuse 3400 "I" "ROK"; sed -i 's/ 0 1 0 91001 / 0 1 0 5 /' "$D/proc/1001/stat"; run; [[ ! -e $D/calls.log ]] || fail "procStart mismatch (pid reuse)"
 logged 'pid-reused' || fail "pid reuse logged"
@@ -249,7 +312,7 @@ helper() { # <script> <args...> with the stub and a short lock wait; sets RC
   STUB_DIR=$D PATH=$ROOT/bin:$PATH CLEAR_RESUME_LOCK_DIR=$D/home/locks COMPACT_RESUME_LOCK_DIR=$D/home/locks \
     CLEAR_RESUME_LOCK_WAIT=0.2 COMPACT_RESUME_LOCK_WAIT=0.2 CLEAR_RESUME_POLL=0.01 CLEAR_RESUME_TYPE_PAUSE=0.01 CLEAR_RESUME_FINAL_WAIT=0.01 \
     CLEAR_RESUME_CLEAR_TRIES=1 COMPACT_RESUME_POLL=0.01 COMPACT_RESUME_TYPE_PAUSE=0.01 COMPACT_RESUME_FINAL_WAIT=0.01 COMPACT_RESUME_SETTLE=0.01 \
-    COMPACT_RESUME_START_TRIES=1 bash "$@" 2>"$D/stderr"; RC=$?
+    COMPACT_RESUME_START_TRIES=1 bash "$@" </dev/null 2>"$D/stderr"; RC=$?
 }
 scenario lockhelp 3400 "I I I I I I I I I I I I" "I"; echo "prompt" >"$D/prompt.txt"; echo "guide" >"$D/guide.txt"; mkdir -p "$D/home/locks"
 hold "$D/home/locks/%1.lock" 2
@@ -267,6 +330,18 @@ called 'send-keys %1 /clear Enter' || { calls >&2; fail "the helper must send to
 ! called 'send-keys main' || fail "the helper sent to the unresolved target"
 [[ -e $D/home/locks/%1.lock ]] || fail "the helper's lock file is keyed on the resolved pane id"
 
+# 7a. N1 without a signal: a stub poll_once sets stop during the poll, and the watch loop must not enter the sleep.
+# L1: the stub FAILS (exit 43) on a second poll, which it runs in the PARENT shell, so a regression that drops both `stop`
+# checks reports FAIL instead of hanging the gate until the timeout.
+scenario stop-after-poll 3400 "I" "ROK"; prep
+KEEPALIVE_SOURCE_ONLY=1 SLEEP_MARKER=$D/slept bash -c '
+  source "$1"
+  stop=0; polls=0
+  poll_once() { (( ++polls > 1 )) && exit 43; stop=1; }
+  sleep() { printf called >"$SLEEP_MARKER"; exit 42; }
+  watch_loop
+' _ "$KA" || fail "the watch loop did not end immediately after stop was set"
+[[ ! -e $D/slept ]] || fail "the watch loop entered the poll sleep after stop was set"
 # 7b. L1: a SIGTERM during the 1-s read-back does not leave the typed ping behind: the ping is completed first
 scenario term 3400 "I" "ROK"; prep
 STUB_DIR=$D PATH=$ROOT/bin:$PATH KEEPALIVE_HOME=$D/home KEEPALIVE_SESSIONS_DIR=$D/sessions KEEPALIVE_PROJECTS_DIR=$D/projects \

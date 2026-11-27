@@ -1,6 +1,7 @@
 //! The cgroupfs readers against the committed fixture tree the sampler proved its
 //! collectors on (`crates/kernel/tests/fixtures/cgroupfs`, copied from
-//! `topos/tests/fixtures/cgroupfs` in the sampler worktree).
+//! `topos/tests/fixtures/cgroupfs` in the sampler worktree). Standalone parser files live
+//! under `cgroupfs-files/`, outside the recursively walked cgroup tree.
 //!
 //! The tree is the sampler's own fixture, so these tests assert the *same facts* the
 //! sampler asserted on the same bytes, and they add the behaviours plan v4 requires to
@@ -10,9 +11,9 @@
 use std::path::{Path, PathBuf};
 
 use hostobs_kernel::cgroup::{
-    cgroup_dir, parse_cpu_max, parse_cpu_stat, parse_io_stat, parse_limit, parse_memory_events,
-    parse_memory_stat, parse_pressure, parse_single_u64, read_cgroup, DeviceTopology,
-    FixedTopology, PressureResource, UnknownTopology, CGROUP_FILES,
+    cgroup_dir, parse_cgroup_events, parse_cpu_max, parse_cpu_stat, parse_io_stat, parse_limit,
+    parse_memory_events, parse_memory_stat, parse_pressure, parse_single_u64, read_cgroup,
+    DeviceTopology, FixedTopology, KernelError, PressureResource, UnknownTopology, CGROUP_FILES,
 };
 use hostobs_kernel::fs::{Fs, MemFs, RealFs};
 use hostobs_kernel::quality::QualityCode;
@@ -22,8 +23,19 @@ fn fixtures() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/cgroupfs")
 }
 
+fn state_fixtures() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/cgroupfs-files/state")
+}
+
 fn read(name: &str) -> Vec<u8> {
     let path = fixtures().join(name);
+    RealFs::new()
+        .read(&path, Bounds::POLICY.max_file_bytes)
+        .unwrap_or_else(|error| panic!("{name}: {error}"))
+}
+
+fn read_state(name: &str) -> Vec<u8> {
+    let path = state_fixtures().join(name);
     RealFs::new()
         .read(&path, Bounds::POLICY.max_file_bytes)
         .unwrap_or_else(|error| panic!("{name}: {error}"))
@@ -103,6 +115,50 @@ fn a_max_limit_is_a_state_and_never_a_number() {
 }
 
 #[test]
+fn cpu_max_fixture_quota_period_absence_and_parse_failure_are_distinct() {
+    let topology = FixedTopology::with_default(DeviceTopology::Bottom);
+    let unlimited = read_cgroup(&RealFs::new(), &fixtures(), Bounds::POLICY, &topology);
+    let max = unlimited.readings_of("cpu.max").expect("cpu.max fixture");
+    assert_eq!(
+        max.quality("limit.cpu.max.quota"),
+        Some(QualityCode::Unsupported)
+    );
+    assert_eq!(
+        max.u64("limit.cpu.max.quota"),
+        None,
+        "max is not a measurement"
+    );
+    assert_eq!(max.u64("limit.cpu.max.period"), Some(100_000));
+
+    let numeric_path = Path::new("system.slice")
+        .join(format!("docker-{}.scope", "a".repeat(64)))
+        .join("cpu.max");
+    let numeric_bytes = read(numeric_path.to_str().expect("fixture path"));
+    let numeric = parse_cpu_max(&numeric_bytes).expect("numeric cpu.max fixture");
+    assert_eq!(numeric.quota_usec, Some(200_000));
+    assert_eq!(numeric.period_usec, 100_000);
+
+    let mut fs = MemFs::new();
+    fs.directory("/cg", 1);
+    let missing = read_cgroup(&fs, Path::new("/cg"), Bounds::POLICY, &topology);
+    assert_eq!(
+        missing.failure_of("cpu.max"),
+        Some(&KernelError::Absent(QualityCode::Absent))
+    );
+    assert!(missing.readings_of("cpu.max").is_none());
+
+    let malformed = parse_cpu_max(b"200000 not-a-period\n").expect_err("bad period");
+    assert_eq!(malformed.quality(), QualityCode::Unreadable);
+    assert!(matches!(
+        malformed,
+        KernelError::Parse {
+            file: "cpu.max",
+            line: None
+        }
+    ));
+}
+
+#[test]
 fn memory_stat_and_events_keep_every_key_the_files_write() {
     let stat = parse_memory_stat(&read("memory.stat"), Bounds::POLICY).expect("memory.stat");
     assert!(!stat.is_empty());
@@ -143,6 +199,122 @@ fn memory_stat_and_events_keep_every_key_the_files_write() {
     for entry in local.entries() {
         assert!(entry.metric.starts_with("memevl."), "{}", entry.metric);
     }
+}
+
+#[test]
+fn freezer_state_parsers_read_zero_one_and_frozen_but_empty() {
+    let thawed = parse_single_u64("cgroup.freeze", &read_state("cgroup.freeze.zero"))
+        .expect("cgroup.freeze zero");
+    assert_eq!(thawed.u64(), Some(0));
+    let frozen = parse_single_u64("cgroup.freeze", &read_state("cgroup.freeze.one"))
+        .expect("cgroup.freeze one");
+    assert_eq!(frozen.u64(), Some(1));
+
+    let events = parse_cgroup_events(&read_state("cgroup.events.frozen-empty"), Bounds::POLICY)
+        .expect("cgroup.events frozen but empty");
+    assert_eq!(events.u64("cgevents.frozen"), Some(1));
+    assert_eq!(events.u64("cgevents.populated"), Some(0));
+}
+
+#[test]
+fn an_unparseable_cgroup_event_only_marks_its_metric_unreadable() {
+    let events = parse_cgroup_events(&read_state("cgroup.events.unparseable"), Bounds::POLICY)
+        .expect("valid keyed lines remain readable");
+    assert_eq!(
+        events.quality("cgevents.frozen"),
+        Some(QualityCode::Unreadable)
+    );
+    assert_eq!(events.u64("cgevents.frozen"), None, "no invented zero");
+    assert_eq!(events.u64("cgevents.populated"), Some(0));
+}
+
+#[test]
+fn a_cgroup_event_above_one_is_unreadable_and_an_empty_file_is_refused() {
+    let events = parse_cgroup_events(b"populated 2\nfrozen 1\n", Bounds::POLICY)
+        .expect("keyed lines remain readable");
+    assert_eq!(
+        events.quality("cgevents.populated"),
+        Some(QualityCode::Unreadable)
+    );
+    assert_eq!(events.u64("cgevents.populated"), None);
+    assert_eq!(events.u64("cgevents.frozen"), Some(1));
+
+    assert!(parse_cgroup_events(b"", Bounds::POLICY).is_err());
+}
+
+#[test]
+fn a_duplicate_cgroup_event_is_unreadable_without_poisoning_other_keys() {
+    let events = parse_cgroup_events(b"populated 0\nfrozen 0\nfrozen 1\n", Bounds::POLICY)
+        .expect("keyed lines remain readable");
+
+    assert_eq!(
+        events.quality("cgevents.frozen"),
+        Some(QualityCode::Unreadable)
+    );
+    assert_eq!(events.u64("cgevents.frozen"), None, "no chosen duplicate");
+    assert_eq!(events.quality("cgevents.populated"), Some(QualityCode::Ok));
+    assert_eq!(events.u64("cgevents.populated"), Some(0));
+}
+
+#[test]
+fn memory_event_duplicates_keep_the_existing_first_entry_behavior() {
+    let events = parse_memory_events(
+        "memev.",
+        "memory.events",
+        b"high 2\nhigh 3\n",
+        Bounds::POLICY,
+    )
+    .expect("keyed lines remain readable");
+
+    assert_eq!(events.len(), 2, "the generic parser keeps both entries");
+    assert_eq!(
+        events.u64("memev.high"),
+        Some(2),
+        "lookup remains first-wins"
+    );
+}
+
+#[test]
+fn a_missing_freezer_file_is_unsupported_and_not_a_measured_zero() {
+    let mut fs = MemFs::new();
+    fs.directory("/cg", 1);
+    let topology = FixedTopology::with_default(DeviceTopology::Bottom);
+    let snapshot = read_cgroup(&fs, Path::new("/cg"), Bounds::POLICY, &topology);
+
+    let failure = snapshot
+        .failure_of("cgroup.freeze")
+        .expect("missing freezer feature is recorded");
+    assert_eq!(failure, &KernelError::Absent(QualityCode::Unsupported));
+    assert_eq!(failure.quality(), QualityCode::Unsupported);
+    assert!(
+        snapshot.readings_of("cgroup.freeze").is_none(),
+        "an absent file cannot produce a measured zero"
+    );
+    assert_eq!(
+        snapshot
+            .failure_of("cgroup.events")
+            .map(KernelError::quality),
+        Some(QualityCode::Unsupported),
+        "cgroup.events is a kernel feature too"
+    );
+}
+
+#[test]
+fn cgroup_freeze_rejects_values_outside_zero_and_one() {
+    let mut fs = MemFs::new();
+    fs.directory("/cg", 1);
+    fs.file("/cg/cgroup.freeze", "2\n", 2);
+    let topology = FixedTopology::with_default(DeviceTopology::Bottom);
+    let snapshot = read_cgroup(&fs, Path::new("/cg"), Bounds::POLICY, &topology);
+
+    assert_eq!(
+        snapshot
+            .failure_of("cgroup.freeze")
+            .map(KernelError::quality),
+        Some(QualityCode::Unreadable),
+        "the kernel's boolean state is only zero or one"
+    );
+    assert!(snapshot.readings_of("cgroup.freeze").is_none());
 }
 
 #[test]

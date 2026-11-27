@@ -70,7 +70,7 @@ def test_disposable_fixture_copies_shared_libraries_and_estate_configs(tmp_path,
         source.write_text(f"name = {relative.parts[0]!r}\n", encoding="utf-8")
 
     subprocess.run(["git", "init", "-q", str(repo)], check=True)
-    subprocess.run(["git", "-C", str(repo), "add", "cmru", "libraries/worktree", "topos", "nyxloom"], check=True)
+    subprocess.run(["git", "-C", str(repo), "add", "cmru", "libraries", "topos", "nyxloom"], check=True)
     subprocess.run(
         ["git", "-C", str(repo), "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "fixture"],
         check=True,
@@ -580,6 +580,64 @@ def test_assay_source_status_refuses_hidden_index_entries(tmp_path, index_flag):
 
     with pytest.raises(RuntimeError, match="assume-unchanged or skip-worktree"):
         mutation_campaign._assay_source_tree_status(assay)
+
+
+def test_campaign_status_ignores_a_shared_library_released_artifact_tree(tmp_path):
+    """M2/L3: only `libraries/test-policy/src` is carried, so a released tree is clean.
+
+    The repository root `.gitignore` ignores these released output directories
+    with its `**/artifacts/`, `**/evidence/` and `**/logs/` rules;
+    the dirty check excuses caches only.
+    A whole-tree pathspec would therefore refuse a checkout that is committed and
+    clean -- the same "control dies before a mutant" class as KI-209.
+    """
+    repo = tmp_path / "repo"
+    project = repo / "cmru"
+    (project / "tests").mkdir(parents=True)
+    (project / "tests" / "test_ok.py").write_text("def test_ok(): pass\n", encoding="utf-8")
+    policy = repo / "libraries" / "test-policy"
+    (policy / "src" / "estate_test_policy").mkdir(parents=True)
+    (policy / "src" / "estate_test_policy" / "plugin.py").write_text(
+        "pytest_plugins = ()\n", encoding="utf-8",
+    )
+    (repo / "libraries" / "worktree" / "src" / "worktree").mkdir(parents=True)
+    (repo / "libraries" / "worktree" / "src" / "worktree" / "__init__.py").write_text(
+        "", encoding="utf-8",
+    )
+    (repo / ".gitignore").write_text("libraries/test-policy/artifacts/\n"
+                                       "libraries/test-policy/evidence/\n"
+                                       "libraries/test-policy/logs/\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "add", "cmru", "libraries", ".gitignore"], check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(repo), "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+         "commit", "-qm", "base"],
+        check=True,
+    )
+    # A released test-policy tree, exactly as the estate has it: a wheel beside
+    # its digest, evidence JSON and lane logs, all ignored and all untracked.
+    release = policy / "artifacts" / "test-policy-v0.1.0" / "dist"
+    release.mkdir(parents=True)
+    (release / "test_policy-0.1.0-py3-none-any.whl").write_text("wheel\n", encoding="utf-8")
+    (release / "test_policy-0.1.0-py3-none-any.whl.sha256").write_text("digest\n", encoding="utf-8")
+    (policy / "artifacts" / "test-policy-v0.1.0" / "latest.json").write_text("{}\n", encoding="utf-8")
+    evidence = policy / "evidence" / "cmru-release" / "test-policy-v0.1.0"
+    evidence.mkdir(parents=True)
+    (evidence / "evidence.json").write_text("{}\n", encoding="utf-8")
+    logs = policy / "logs" / "cmru-release" / "test-policy-v0.1.0"
+    logs.mkdir(parents=True)
+    (logs / "run-tests.log").write_text("ok\n", encoding="utf-8")
+
+    assert mutation_campaign._campaign_tree_status(repo, Path("cmru")) == ""
+
+    # The dirty check still sees the tracked library's own source change.
+    (policy / "src" / "estate_test_policy" / "plugin.py").write_text(
+        "pytest_plugins = ()\n# changed\n", encoding="utf-8",
+    )
+    status = mutation_campaign._campaign_tree_status(repo, Path("cmru"))
+    assert "libraries/test-policy/src/estate_test_policy/plugin.py" in status
 
 
 def test_campaign_status_refuses_ignored_test_files_but_allows_pytest_cache(tmp_path):
@@ -2037,3 +2095,68 @@ def test_resume_accepts_monorepo_commits_with_unchanged_assay_source(tmp_path):
             max_mutants=1,
             timeout_seconds=120,
         )
+
+
+def _judged_base_repo(root: Path) -> tuple[Path, str, str, str]:
+    """A repository whose HEAD is a merge, with the selected tag on neither parent tip.
+
+    ``tag`` is the base the lane would pass. The first parent adds a CMRU
+    source change after the tag, and the merged-in branch adds another, so an
+    undeligated (first-parent) resolution would judge only the merge's own
+    payload while a delegated one judges both. Returns (project, tag_commit,
+    first_parent, merge_head).
+    """
+    repo = root / "repo"
+    project = repo / "cmru"
+    source = project / "src" / "cmru" / "module.py"
+    source.parent.mkdir(parents=True)
+    source.write_text("first\n", encoding="utf-8")
+    (project / "pyproject.toml").write_text("[tool.pytest.ini_options]\n", encoding="utf-8")
+
+    def git(*args: str) -> str:
+        return subprocess.run(
+            ["git", "-C", str(repo), "-c", "user.name=Test",
+             "-c", "user.email=test@example.invalid", *args],
+            check=True, text=True, stdout=subprocess.PIPE,
+        ).stdout.strip()
+
+    git("init", "-q", "-b", "main")
+    git("add", "cmru")
+    git("commit", "-qm", "tagged base")
+    tag_commit = git("rev-parse", "HEAD")
+    git("tag", "cmru-v1.0.0")
+    source.write_text("second\n", encoding="utf-8")
+    git("commit", "-qam", "first-parent source change")
+    first_parent = git("rev-parse", "HEAD")
+    git("checkout", "-q", "-B", "incoming", tag_commit)
+    (project / "src" / "cmru" / "other.py").write_text("incoming\n", encoding="utf-8")
+    git("add", "cmru/src/cmru/other.py")
+    git("commit", "-qm", "second-parent source change")
+    git("checkout", "-q", "main")
+    git("merge", "-q", "--no-ff", "--no-edit", "incoming")
+    return project, tag_commit, first_parent, git("rev-parse", "HEAD")
+
+
+def test_campaign_judges_a_merge_head_against_the_selected_tag_not_the_first_parent(tmp_path):
+    """KI-211: the campaign's own base resolution, at the boundary it uses."""
+    from assay import diff as assay_diff
+
+    project, tag_commit, first_parent, merge_head = _judged_base_repo(tmp_path)
+    repo_root = project.parent
+
+    # Assay's undelegated answer for this shape, and the one the campaign must use.
+    assert assay_git.resolve_base(repo_root, tag_commit) == first_parent
+    judged = mutation_campaign._judged_base(repo_root, tag_commit, assay_git)
+    assert judged == tag_commit
+
+    # The judged diff is tag..HEAD: both parents' source changes.
+    diff_text = assay_git.run(repo_root, "diff", "--unified=0", judged, merge_head)
+    added = sorted(assay_diff.parse_added_lines(diff_text).by_file)
+    assert "cmru/src/cmru/module.py" in added
+    assert "cmru/src/cmru/other.py" in added
+    # An undelegated (first-parent) comparison would MISS the first parent's own
+    # source change after the tag -- the narrowing this fix removes.
+    merge_payload = assay_git.run(repo_root, "diff", "--unified=0", first_parent, merge_head)
+    assert sorted(assay_diff.parse_added_lines(merge_payload).by_file) == [
+        "cmru/src/cmru/other.py",
+    ]

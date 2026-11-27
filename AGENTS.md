@@ -83,7 +83,8 @@ For programmatic Codex invocations in this environment, repository work MUST
 be launched through the controller wrapper with the route selected by name.
 Use `scripts/controller/codex-impl.sh` with `CODEX_ROUTE=luna`,
 `CODEX_ROUTE=deepseek-volker`, or `CODEX_ROUTE=deepseek-github2`; reviews use
-`scripts/controller/codex-review.sh`. The wrapper owns the profile-home and
+`scripts/controller/codex-review.sh`, or `scripts/controller/pi-review.sh` for a
+pi review on the other Open Design account. The wrapper owns the profile-home and
 shared-session details. Do not export a Codex home by hand. Ordinary tasks use
 GPT-6-Luna at xhigh when that is the operator's route; programmatic reviews and
 plans use GPT-6-Sol at xhigh when directed.
@@ -287,6 +288,10 @@ identity (passwd+group+HOME+XDG). "Green in the devcontainer venv" is not a ship
 signal.
 `tester-unified` builds FROM `tester-base` (`tester-base/`: python:3.14-trixie
 plus docker client, minisign and shellcheck), not from the MDT cockpit image.
+Estate-wide checks (the real release graph, Run-Gate lane budgets) live in
+**`estate-lint/`** (lane `suite`), not in any one project's lane: each tool judges
+only its own rules (P-core-12, KI-194). A change that edits only a `run-gate.toml`
+or `assay.toml` also runs `estate-lint/suite`.
 
 **Do not execute tests from the devcontainer cockpit.** This includes pytest,
 Hypothesis, unittest, project test scripts, and focused test selections. Run

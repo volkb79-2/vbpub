@@ -72,6 +72,7 @@ dependencies = [
  "hostobs-model",
  "hostobs-proto",
  "hostobs-serve",
+ "hostobs-store",
  "rustix",
  "serde",
  "toml",

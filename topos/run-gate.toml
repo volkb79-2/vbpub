@@ -15,6 +15,9 @@ kind = "command"
 environment = "tester-unified"
 argv = ["bash", "-c", "cd {worktree} && export PYTHONPATH=topos/src:topos:augeaswrap/src:libraries/cli-extended/src && /opt/tester-venv/bin/python -m pytest topos/tests -q -n auto --cov=topos/src/topos --cov-branch --cov-report=json:/tmp/topos-coverage.json && /opt/tester-venv/bin/python topos/tools/coverage_gate.py --repo . --base main --coverage-json /tmp/topos-coverage.json --source topos/src/topos"]
 budget = "30m"
+# RG-320/RG-326: SILENT BY CONSTRUCTION during the pytest coverage run and
+# coverage_gate.py; no <=300s output cadence is guaranteed; see RG-326.
+stall_timeout = "30m"
 
 [lanes.py-compile]
 kind = "command"
@@ -27,6 +30,9 @@ environment = "tester-unified"
 # Run-Gate 24 retired the run-gate.py symlinks).
 argv = ["bash", "-c", "cd {worktree} && set -o pipefail && git diff --name-only -z --diff-filter=d main...HEAD -- '*.py' | xargs -0 -r python3 -m py_compile && echo 'py-compile: OK' || { rc=$?; echo \"py-compile: FAILED (exit $rc)\" 1>&2; exit $rc; }"]
 budget = "2m"
+# RG-320/RG-326: SILENT BY CONSTRUCTION while git diff and py_compile run;
+# the success line arrives only after compilation; no cadence is measured; see RG-326.
+stall_timeout = "2m"
 
 [lanes.e2-endpoints]
 kind = "command"
@@ -62,3 +68,6 @@ exec /opt/tester-venv/bin/python -m pytest -q "$@"
   "--",
 ]
 budget = "30m"
+# RG-320/RG-326: SILENT BY CONSTRUCTION during serial endpoint pytest cases;
+# no <=300s output cadence is guaranteed; no bound is measured; see RG-326.
+stall_timeout = "30m"

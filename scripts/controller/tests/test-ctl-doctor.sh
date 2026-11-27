@@ -52,9 +52,12 @@ write_env() {
   printf '%s\n' '# test fixture' 'NETCUP_TOKEN=TOPSECRET-envvalue-123' "CONTROLLER_GATE_LOCK=\"$home/gate.lock\"" "CONTROLLER_GATE2_LOCK=\"$home/gate2.lock\"" "$@" > "$home/controller.local.env"
 }
 fixture() {
-  # $1 name; sets H to a complete, passing controller home
-  H=$ROOT/$1/home
+  # $1 name; sets H to a complete, passing controller home. $2 overrides its path (a default $HOME/controller case)
+  H=${2:-$ROOT/$1/home}
   mkdir -p "$H/runs" "$H/logs" "$H/keys"
+  printf '4242\n' > "$H/keepalive.pid"
+  mkdir -p "$ROOT/proc/4242"
+  printf 'bash\0%s\0' "$SCRIPT_DIR/../ctl-keepalive.sh" > "$ROOT/proc/4242/cmdline"
   printf 'TOPSECRET-keybody-789\n' > "$H/keys/id"; chmod 600 "$H/keys/id"
   : > "$H/keys/known_hosts"
   printf '#!/bin/sh\nexit 0\n' > "$H/keys/api-check"; chmod +x "$H/keys/api-check"
@@ -85,7 +88,7 @@ run_doctor() {
   shift
   env -i HOME="$ROOT/home" PATH="${TOOLS_IN_USE:-$TOOLS}" CONTROLLER_HOME="$H" CONTROLLER_REPO="$REPO" DOCKER_MODE=present DOCKER_LOG="$ROOT/docker.log" \
     CTL_HYGIENE_SCRIPT=/dev/null HYGIENE_MEMORY_DIR="$ROOT/no-memory" HYGIENE_STATE_DIR="$ROOT/no-state" \
-    HYGIENE_REPO="$REPO" HYGIENE_TODAY=2026-11-24 \
+    HYGIENE_REPO="$REPO" HYGIENE_TODAY=2026-11-24 KEEPALIVE_PROC="$ROOT/proc" \
     ${extra[@]+"${extra[@]}"} "$BASH" "$DOCTOR" "$@" > "$ROOT/out" 2> "$ROOT/err"
   RC=$?
   local secret
@@ -104,7 +107,7 @@ before=$(find "$H" -printf '%p %T@ %s\n' | sort)
 run_doctor --
 expect_rc 0 'a complete controller home must pass'
 for ok in 'OK home' 'OK env-file' 'OK tool:flock' 'OK tool:git' 'OK tool:python3' 'OK tool:jq' 'OK tool:docker' 'OK tool:shellcheck' \
-          'OK hosts:main:alpha' 'OK remote-allow-list' 'OK image' 'OK pinned-image' 'OK runs-dir' 'OK logs-dir' 'OK CONTROLLER_GATE_LOCK' 'OK CONTROLLER_GATE2_LOCK' 'OK residency:home'; do
+          'OK hosts:main:alpha' 'OK remote-allow-list' 'OK image' 'OK pinned-image' 'OK runs-dir' 'OK logs-dir' 'OK keepalive:' 'OK CONTROLLER_GATE_LOCK' 'OK CONTROLLER_GATE2_LOCK' 'OK residency:home'; do
   line "^$ok" "baseline check $ok"
 done
 line '^INFO run-gate-profile: effective RUN_GATE_PROFILE=off ' 'the default profile is printed as off'
@@ -112,7 +115,50 @@ line '^ctl-doctor: [0-9]+ ok, 0 warning\(s\), 0 failure\(s\)$' 'baseline summary
 grep -qxF 'image inspect --format {{.Id}} fixture-image:1' "$ROOT/docker.log" || fail 'the image must be looked up by its exact name from run-gate.root.toml'
 [[ $(find "$H" -printf '%p %T@ %s\n' | sort) == "$before" ]] || fail 'the doctor must not change anything under CONTROLLER_HOME'
 
+# --- keep-alive watcher: running from /proc, absent, stale; never a lock/signal probe
+DOCTOR_DIR=$(cd -- "$(dirname -- "$DOCTOR")" && pwd -P)
+DEFAULT_HOME=$ROOT/home/controller
+kfix() { # the exact `fix:` line the doctor must print for the current $H: CONTROLLER_HOME only when it is not the default
+  local prefix=''
+  [[ $H == "$DEFAULT_HOME" ]] || prefix="CONTROLLER_HOME=$(printf '%q' "$H") "
+  printf '%s' "${prefix}setsid nohup bash $(printf '%q' "$DOCTOR_DIR/ctl-keepalive.sh") >/dev/null 2>&1 & disown"
+}
+fixture keepalive-running
+run_doctor --
+expect_rc 0 'a running keep-alive watcher is not a warning'
+line '^OK keepalive: running pid 4242$' 'running watcher'
+no_line '^WARN keepalive' 'a running watcher has no warning'
+fixture keepalive-absent; rm "$H/keepalive.pid"
+run_doctor --
+expect_rc 0 'an absent keep-alive watcher is only a warning'
+line '^WARN keepalive: absent$' 'absent watcher'
+grep -qxF "  fix: $(kfix)" "$ROOT/out" || fail 'absent watcher prints the exact start command'
+fixture keepalive-stale; printf '9999\n' > "$H/keepalive.pid"
+run_doctor --
+expect_rc 0 'a stale keep-alive pid file is only a warning'
+line '^WARN keepalive: absent \(stale pid file\)$' 'stale watcher pid'
+grep -qxF "  fix: $(kfix)" "$ROOT/out" || fail 'stale watcher prints the exact start command'
+# N3: a non-default CONTROLLER_HOME must be carried by the printed command (else the watcher writes its pid file under
+# $HOME/controller, and this check would keep saying absent); the assertion above is that exact line, and the check
+# below pins that the prefix really is there rather than being an accident of both strings matching
+grep -qF '  fix: CONTROLLER_HOME=' "$ROOT/out" || fail 'the start command must carry a non-default CONTROLLER_HOME'
+# a pid file written WITHOUT a trailing newline is still a pid: `read` alone returns 1 there and the pid reads as stale
+fixture keepalive-nonl; printf '4242' > "$H/keepalive.pid"
+run_doctor --
+expect_rc 0 'a pid file without a trailing newline is not stale'
+line '^OK keepalive: running pid 4242$' 'pid file without a trailing newline'
+no_line '^WARN keepalive' 'no stale-pid warning for a newline-less pid file'
+# the DEFAULT CONTROLLER_HOME ($HOME/controller) needs no prefix: it would not change what the command does
+fixture keepalive-default "$DEFAULT_HOME"
+rm "$H/keepalive.pid"
+run_doctor --
+expect_rc 0 'an absent watcher under the default home is only a warning'
+line '^WARN keepalive: absent$' 'absent watcher (default home)'
+grep -qxF "  fix: $(kfix)" "$ROOT/out" || fail 'the default CONTROLLER_HOME must not appear in the start command'
+! grep -qF '  fix: CONTROLLER_HOME=' "$ROOT/out" || fail 'the default CONTROLLER_HOME must not be printed'
+
 # --- hygiene findings follow the checks and never change the status or the counts (ctl-hygiene.sh has its own test)
+fixture base   # the keep-alive cases above intentionally ended with a stale pid file
 mkdir -p "$ROOT/hy/state" "$ROOT/hy/memory"
 printf '## RESUME HERE #1\n## RESUME HERE #2\n## RESUME HERE #3\n' > "$ROOT/hy/state/HANDOFF.md"
 HY=CTL_HYGIENE_SCRIPT=   # empty: the doctor falls back to its own ctl-hygiene.sh (the production path); the other runs use /dev/null, the mutation stage repeats them hundreds of times

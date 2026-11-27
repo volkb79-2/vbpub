@@ -23,6 +23,7 @@ import pytest
 import fleetd
 from fleetd.cli import main
 from fleetd.transport import FakeTransport
+from host_facts_v2 import write_host_set_v2
 from test_campaign import _plan
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -55,10 +56,11 @@ def _demand(tmp_path: Path) -> Path:
 
 
 def _plan_inputs(tmp_path: Path) -> list[str]:
+    hosts = write_host_set_v2(FIXTURES / "fleet-host-set.valid.json", tmp_path / "hosts-v2.json")
     return [
         "plan", "r2",
         "--candidates", str(FIXTURES / "candidate-table.valid.json"),
-        "--hosts", str(FIXTURES / "fleet-host-set.valid.json"),
+        "--hosts", str(hosts),
         "--demand", str(_demand(tmp_path)),
     ]
 
@@ -123,7 +125,7 @@ def test_facts_collect_writes_host_facts_json_and_nothing_else(capsys):
     captured = capsys.readouterr()
     assert captured.err == ""
     document = json.loads(captured.out)
-    assert document["schema"] == "host-facts/1"
+    assert document["schema"] == "host-facts/2"
 
 
 def test_facts_collect_without_a_readable_config_is_exit_two_on_stderr_only(capsys, tmp_path):

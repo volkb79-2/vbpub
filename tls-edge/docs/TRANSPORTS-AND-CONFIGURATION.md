@@ -22,11 +22,12 @@ available on TCP. The app-facing connection is plain HTTP by default; Traefik
 does not make a second TLS connection to the app unless the service is
 explicitly configured to use HTTPS.
 
-The generic shipped public port set is 80/TCP (HTTP redirect and, when
-selected, HTTP-01) and 443/TCP (HTTPS). Enabling HTTP/3 adds 443/UDP by default.
-Every HTTP consumer shares the same HTTPS listener and Traefik selects the app
-by host name. A consumer that also serves raw media publishes a separate host
-port pair itself; tls-edge has no L4 media listeners or routes.
+The shipped public port set, the bind IP and the off switch for the HTTP listener
+are declared in `ciu-stack/ciu.defaults.toml.j2`; an instance's effective set is
+the `ports` block of `tls-edge show --json`. Every HTTP consumer shares the same
+HTTPS listener and Traefik selects the app by host name. A consumer that also
+serves raw media publishes a separate host port pair itself; tls-edge has no L4
+media listeners or routes.
 
 With HTTP/3 enabled, the request path becomes:
 
@@ -84,9 +85,9 @@ ports:
   - "443:443/udp"
 ```
 
-The configuration derives `http3.advertisedPort` from the public HTTPS port.
-This supports a host mapping such as public UDP 9443 to Traefik's internal 443.
-The CLI checks conflicts between HTTP listener ports before writing changes.
+The configuration derives `http3.advertisedPort` from the public HTTPS port, so a
+host mapping that publishes a different public UDP port still advertises the right
+one. The CLI checks conflicts between HTTP listener ports before writing changes.
 
 Traefik advertises HTTP/3 through `Alt-Svc` responses when HTTP/3 is enabled.
 For a browser with no cached alternative and no usable HTTPS DNS record, the
@@ -318,10 +319,6 @@ mode = "acme-tls"
 
 [tls_edge.acme]
 email = "ops@example.test"
-
-[tls_edge.ports]
-expose_http = true
-https = 443
 
 [tls_edge.http3]
 enabled = true

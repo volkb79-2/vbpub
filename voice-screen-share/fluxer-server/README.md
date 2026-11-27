@@ -99,6 +99,20 @@ ciu env generate --root-folder voice-screen-share/fluxer-server     # creates ci
 ciu up --dir voice-screen-share/fluxer-server --yes
 ```
 
+Stop the stack from its own directory (the directory is the ciu root):
+
+```bash
+cd voice-screen-share/fluxer-server
+eval "$(ciu env print)"      # the env `ciu down` needs; a bare `ciu down` here fails without it
+ciu down --yes
+```
+
+`ciu down --dir voice-screen-share/fluxer-server` exits 2 `[no-ciu-root]` from the checkout root
+(seen on ciu 7.26.0 and 7.28.0), and `ciu down --dir . --yes` inside that directory exits 2
+`[S18] --stack '.' is not in the current deploy selection` (ciu 7.26.0). The form above stopped
+the stack (exit 0) on a real host on 2026-11-26; the jitsi-server README's "Start / stop" says the
+same.
+
 Run `ciu up` from the checkout root with `--dir` alone. Adding `--root-folder` makes ciu join the relative
 `--dir` onto the root a second time and refuse with `[no-ciu-root]` (CIU-228). Set `DOCKER_GID` if the host has
 no docker group, the same as for jitsi-server.

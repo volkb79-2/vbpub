@@ -1,0 +1,13 @@
+schema_version = 1
+
+# Every unbounded command lane needs a [[lanes]] record with progress evidence
+# proving a flushed stdout event at least every 300 seconds while healthy.
+# A [[wrappers]] record is reserved for a nested lane set that cannot be derived
+# from argv; name those members as "run-gate.toml#lane".
+[[lanes]]
+config = "assay/run-gate.toml"
+lane = "hang-test-contention"
+[lanes.progress]
+producer = "assay/run-gate.toml"
+emitter = "the printf the lane's loop runs before each iteration"
+guarantee = "each iteration runs one test (test_hung_docker_client_is_bounded_and_cleanup_is_conservative) whose run_launcher subprocess.run timeout is 20s, so healthy iterations print well within 300s"

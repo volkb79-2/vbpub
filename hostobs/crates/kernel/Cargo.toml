@@ -4,8 +4,9 @@ version.workspace = true
 edition.workspace = true
 publish = false
 
-# The plan's `unsafe` allowance for this crate (§A.3) stays declared for one audited use:
-# `activation::adopt_raw` claims a systemd-owned listening fd. The crate carries
+# The plan's `unsafe` allowance for this crate (§A.3) stays declared for the private
+# `activation::raw` module: `adopt_raw` claims a systemd-owned listening fd and
+# `peer_credentials_raw` reads `SO_PEERCRED` (HOB-90). The crate carries
 # `#![deny(unsafe_code)]`; Cargo refuses to combine `[lints] workspace = true` with a
 # package-level override, so the allowance is spelled out directly (the same shape
 # `crates/act` has).

@@ -75,8 +75,8 @@ Docker level.
 
 **Implication**: east-west isolation between containers on the same Docker
 network must be enforced at the application layer (bind address), the host
-firewall (`DOCKER-USER` iptables chain), or by not co-locating services on the
-same network at all.
+firewall (rules installed by the host's own setup), or by not co-locating
+services on the same network at all.
 
 ### `ports:` vs `expose:`
 
@@ -207,15 +207,9 @@ route to the internet or to any application network.
 ### Decision: ACME-first, five configurable modes
 
 TLS mode is selected via `[tls_edge.tls] mode` in `ciu-stack/ciu.defaults.toml.j2`
-(or a gitignored `ciu.toml.j2` override).  The default is `acme-tls`.
-
-| Mode | Mechanism | Port 80 required | Wildcard cert |
-|---|---|---|---|
-| `acme-tls` (default) | TLS-ALPN-01 entirely on :443 | No | No (per-name certs) |
-| `acme-http` | HTTP-01 challenge | Yes (`expose_http=true`) | No |
-| `acme-dns` | DNS-01 via lego provider API | No | Yes (optional) |
-| `static` | File-based certs (certbot, corporate, manual) | No | Operator-managed |
-| `dev` | Self-signed (scripts/dev-certs.sh / mkcert) | No | n/a |
+(or a gitignored `ciu.toml.j2` override); that file carries every mode and the
+default, and `tls-edge show` reports the mode an instance uses.  The rest of
+this section is why each mode exists, not a second list of its settings.
 
 #### acme-tls (default)
 
@@ -286,12 +280,13 @@ CA or mkcert) in the same `live/<domain>/` layout as static mode.  For
 devcontainer / Docker-outside-of-Docker (DooD) environments, a named volume
 (`certs-dev`) carries the certificate material into the container.
 
-### Port 80 is ON by default
+### Port 80 can be turned off
 
 Port 80 carries a permanent HTTP→HTTPS redirect and ACME HTTP-01 challenges
-(`acme-http` mode requires it).  `tls-edge configure` can set
-`expose_http = false` for a host that must not serve it; the edge
-is then TLS-only.  Consumers should still publish `https://` URLs.
+(`acme-http` mode requires `expose_http = true`).  `tls-edge configure` can turn
+it off for a host that must not serve it; the edge is then TLS-only.  Consumers
+should still publish `https://` URLs.  Whether a given instance serves it is
+reported by `tls-edge show`, not restated here.
 
 ### Wildcard DNS record vs wildcard certificate vs per-name ACME
 
@@ -359,15 +354,10 @@ access to the Docker socket, which in turn grants significant host control.
 **Mitigation**: Docker socket proxy (`tecnativa/docker-socket-proxy:v0.5.0`).
 
 The socket proxy is a separate container that accepts a restricted subset of
-Docker API calls and proxies them to the real socket.  Configuration:
-
-```
-CONTAINERS: 1   # read container metadata
-NETWORKS:   1   # read network info
-SERVICES:   1   # read swarm service metadata
-TASKS:      1   # read swarm task metadata
-POST:       0   # DENY all mutating calls
-```
+Docker API calls and proxies them to the real socket.  The allowlist it enforces,
+and why each endpoint is there, is [§6](#6-docker-socket-security); the values the
+instance actually ships are the `dockerproxy` service's `environment` block in
+`ciu-stack/ciu.compose.yml.j2`.
 
 Traefik talks to `tcp://dockerproxy:2375` and never touches
 `/var/run/docker.sock` directly.  The socket proxy sits on `traefik_internal`
@@ -405,19 +395,30 @@ Traefik and the Docker daemon.  Traefik speaks to `tcp://dockerproxy:2375`
 (inside `traefik_internal`) and never holds a file descriptor to
 `/var/run/docker.sock`.  Only the socket proxy container mounts the socket.
 
-The proxy enforces an endpoint allowlist.  Traefik needs:
+The proxy enforces an endpoint allowlist.  What the shipped stack sets is the
+`environment` block of the `dockerproxy` service in
+`ciu-stack/ciu.compose.yml.j2`, reproduced here so the list is readable in one
+place; that template is authoritative and this block must agree with it:
 
 ```
-CONTAINERS: 1   # read container state and labels
-NETWORKS:   1   # read network topology
-EVENTS:     1   # watch for container start/stop events
-VERSION:    1   # Traefik version probe on startup
-INFO:       1   # daemon capabilities probe on startup
+CONTAINERS: 1   # read container metadata
+NETWORKS:   1   # read network info
+EVENTS:     1   # read the event stream the Docker provider watches
+SERVICES:    1   # read swarm service metadata (no-op on standalone Docker)
+TASKS:       1   # read swarm task metadata (no-op on standalone Docker)
+POST:        0   # DENY all mutating calls
 ```
 
-Everything else — and critically, **all write operations (POST is denied
-globally)** — is blocked at the proxy layer before the request ever reaches
-the Docker daemon.
+No other endpoint is enabled, and **all write operations are denied globally by
+that `POST: 0`** before the request ever reaches the Docker daemon.  `EVENTS` is
+what makes the Docker provider's `watch: true` (`ciu-stack/traefik.yml.j2:116`)
+do anything: the socket proxy is the only holder of `/var/run/docker.sock`, so
+without it every container started after Traefik is not routed.
+`docker-socket-proxy:v0.5.0` already defaults `EVENTS` to `1`; the instance sets
+it explicitly so a change of that default cannot silently stop new containers
+from being routed.  Verified on r1002 on 2026-11-26 (tls-edge 4.0.0): a labelled
+container was routed by the second 0.5 s poll (about 1 s) after start and unrouted
+by the same poll after `docker stop`, with Traefik restarts still 0 (TE-14, closed).
 
 ### Blast radius analysis
 
@@ -508,11 +509,12 @@ ambiguous.  At least one discriminator is required.
 
 ### Decision: host-name routing only
 
-One HTTP/TLS Traefik entrypoint carries all HTTPS: `websecure` on port 443.
-Every service gets its own host name; there is no alternate HTTPS port.
-Generic defaults publish 80/tcp and 443/tcp only. HTTP/3 optionally adds UDP
-on the configured public HTTPS port. Raw media stays outside Traefik: the
-application publishes its own TCP/UDP ports directly.
+One HTTP/TLS Traefik entrypoint carries all HTTPS: `websecure`, on the single
+public HTTPS port.  Every service gets its own host name; there is no alternate
+HTTPS port.  HTTP/3 optionally adds UDP on that same public port.  The shipped
+port set is in `ciu-stack/ciu.defaults.toml.j2` and what an instance publishes is
+in `tls-edge show`.  Raw media stays outside Traefik: the application publishes
+its own TCP/UDP ports directly.
 
 Path-based routing can be layered on top by adding `&& PathPrefix(...)` to the
 router rule.
@@ -589,7 +591,7 @@ selection is indeterminate.
 | App binds ops to `127.0.0.1` + sidecar namespace share | Strong: loopback not reachable by peers | App must support configurable bind address |
 | Dedicated ops Docker network | Weak: app on both nets; ops port reachable from ops net AND other nets if bound to 0.0.0.0 | App must still bind correctly; adds network complexity |
 | Separate container for ops endpoint | Strong: ops and API are separate processes | Requires app refactoring |
-| Host firewall `DOCKER-USER` rules | Strong: enforced at kernel level | Requires iptables knowledge; rules must survive Docker restarts |
+| Host firewall rules | Strong: enforced at kernel level | Requires iptables knowledge; rules must survive Docker restarts |
 | mTLS on ops endpoint | Strong: cryptographic enforcement | Significant PKI complexity |
 
 ### Decision: loopback binding + sidecar namespace sharing
@@ -607,22 +609,24 @@ to `0.0.0.0` is reachable from both networks.  The dedicated network provides
 no isolation guarantee without the same application-layer binding restriction.
 It adds complexity without adding isolation, so it was rejected.
 
-**Future option**: host firewall `DOCKER-USER` iptables rules can enforce that
-only specific source container IPs can reach specific destination ports,
-independent of application binding.  This provides kernel-level enforcement.
+**Out of scope**: host firewall rules can enforce that only specific source
+container IPs reach specific destination ports, independent of application
+binding.  That is host setup, not part of the edge: the per-host rules, their
+survival across Docker restarts, and the CIDR bookkeeping belong to the host's
+own configuration.
 
 ---
 
 ## 11. Configuration Model & Rendering
 
-### Single source of truth: Jinja2 templates in `ciu-stack/`
+### Configuration model: Jinja2 templates in `ciu-stack/`
 
-All configuration is generated from Jinja2 templates.  The canonical
-configuration schema lives in:
+All configuration is generated from Jinja2 templates.  The configuration
+schema and every shipped default live in one file:
 
 ```
 ciu-stack/
-  ciu.defaults.toml.j2      ← default values for all options (TOML schema)
+  ciu.defaults.toml.j2      ← schema and default values for all options (TOML)
   ciu.compose.yml.j2        ← Compose template
   traefik.yml.j2            ← Traefik static config template
   conf.d/
@@ -633,6 +637,11 @@ ciu-stack/
 
 `ciu-stack/` is also a complete ciu v2 stack package and can be deployed
 directly by ciu without any extra tooling.
+
+**Where the facts live.** Ports, keys and defaults are not restated here: read
+`ciu-stack/ciu.defaults.toml.j2` for the schema, and `tls-edge show --json` for
+the values a configured instance actually uses.  This document explains why the
+choices were made, not what the current values are.
 
 ### Supported and trial render paths
 
@@ -695,8 +704,7 @@ middlewares, and the static certificate store.
 
 | Directive | Why |
 |---|---|
-| `POST: 0` | Prevents all mutating Docker API calls |
-| `CONTAINERS/NETWORKS/SERVICES/TASKS: 1` | Minimum readable metadata for Traefik discovery |
+| `POST: 0`, and only the read-only endpoints of §6 | Prevents all mutating Docker API calls |
 | `security_opt: no-new-privileges:true` | Privilege escalation prevention |
 | `read_only: true` with `tmpfs: /run /tmp` | Immutable filesystem; writable scratch in memory |
 | On `traefik_internal` only | No route to internet or application networks |
@@ -790,10 +798,9 @@ If two containers attempt to publish the same host port (e.g., both `ports: - "4
 - Docker rejects the second `docker compose up` with:
   `Bind for 0.0.0.0:443 failed: port is already allocated`
 - The first stack retains the binding; the second fails to start.
-- **Rule**: only the tls-edge instance may publish host HTTP/HTTPS ports (80
-  and 443). HTTP consumer stacks use `expose:` only; an application serving
-  raw TCP/UDP media owns and publishes its separate host media port pair
-  directly.
+- **Rule**: only the tls-edge instance may publish host HTTP/HTTPS ports. HTTP
+  consumer stacks use `expose:` only; an application serving raw TCP/UDP media
+  owns and publishes its separate host media port pair directly.
 
 ### Traefik router rule collision (proxy level)
 
@@ -819,14 +826,24 @@ If two services share a hostname and a path prefix:
 
 ### Codified check suite
 
-`scripts/verify.sh` is the canonical verification tool.  It checks:
-- Template freshness (rendered files match the templates).
-- Docker socket proxy policy (POST is denied, required reads are allowed).
-- TLS certificate loaded and not the Traefik self-signed default cert.
-- Canary route end-to-end connectivity.
-- Ops isolation probe (ops port unreachable from a peer container).
+`scripts/verify.sh` is the canonical verification tool.  It checks, in order: the
+bundled `<root>/ciu check`; that `docker compose config -q` accepts the rendered
+stack; both containers' health; `ingress_public` and the internal network; the
+socket-proxy policy (GET allowed, POST refused); the HTTP redirect (when
+`expose_http = true`); the served certificate (not Traefik's self-signed
+default); ACME storage or the static cert file; the canary route through
+`websecure`; the access-log JSON format; and the optional `--ops-check`
+isolation probe. In ACME modes, storage discovery accepts an existing named
+volume or bind mount and never creates one. ACME log scan errors fail check 8;
+a missing `--domain` mention in `acme.json` warns.
 
 Run it after any configuration change before declaring the deployment healthy.
+Pass `--domain` as a host name the edge already serves a certificate for. The
+canary router uses `Host(tls-edge-verify-canary.invalid)` on `websecure` with
+`tls=true` and no `certresolver`; its probe uses `--domain` for TLS SNI and the
+fixed `.invalid` name for the HTTP Host, so the canary orders no certificate.
+It polls for a `Hostname:` response up to 30 times. `--no-canary` remains an
+optional way to skip check 9.
 
 ### Route registration audit
 
@@ -857,8 +874,9 @@ curl --cacert /path/to/local-ca.crt https://svc.my.domain/
 curl -k https://svc.my.domain/
 ```
 
-Note: port 80 is on by default and answers with a permanent redirect to
-https.  When `expose_http = false`, `curl http://...` times out or is refused.
+Note: an instance whose override keeps the HTTP listener answers there with a
+permanent redirect to https.  When `expose_http = false`, `curl http://...` times
+out or is refused.
 
 ### Access log as audit trail
 
@@ -898,40 +916,30 @@ docker run --rm --network <stack>_private alpine \
 This option has been implemented as `mode = "acme-dns"` with optional
 `wildcard_main` in `[tls_edge.acme.dns]`.  See [Section 4](#4-tls-strategy).
 
-### F2. Multiple Traefik instances per trust class
+### F2. Multiple Traefik instances per trust class — out of scope
 
-**What**: run separate Traefik containers, each attached to a different ingress
-network, serving different consumer groups with different routing policies.
+Run separate Traefik containers, each attached to a different ingress network,
+serving different consumer groups with different routing policies.  Dropped: no
+demand.  The requirements, recorded so the option is not re-argued:
 
-**When it becomes necessary**:
 - Different consumer groups need different TLS policies (e.g., mTLS for internal
   services, standard TLS for public).
 - Routing table size per Traefik instance needs to be bounded.
 - Regulatory requirement for network-level isolation between trust zones.
 
-**Implementation**:
-- Each Traefik instance needs a different published host port, OR
-- An upstream L4 load balancer (HAProxy, IPVS) distributes to the right
-  Traefik instance by SNI.
+The implementation would need either a different published host port per Traefik
+instance or an upstream L4 load balancer (HAProxy, IPVS) distributing by SNI —
+neither of which the single-host compose deployment has.
 
-### F3. Host firewall (`DOCKER-USER`) enforcement
+### F3. Host firewall enforcement — out of scope
 
-**What**: add iptables rules in the `DOCKER-USER` chain to enforce east-west
-access control between containers that Docker itself cannot express.
-
-**Example**: allow only the ops-agent container IP to reach port 9090 on the
-app container, even if the app incorrectly binds ops to `0.0.0.0`.
-
-```sh
-# Allow ops-agent (172.20.0.5) to reach app (172.20.0.4) on port 9090
-iptables -I DOCKER-USER -s 172.20.0.5 -d 172.20.0.4 -p tcp --dport 9090 -j ACCEPT
-# Block all others from reaching app port 9090
-iptables -I DOCKER-USER -d 172.20.0.4 -p tcp --dport 9090 -j DROP
-```
-
-**Caveat**: Docker container IPs are not stable across restarts unless
-`networks.<name>.ipv4_address` is set.  Rules must be regenerated or use
-network CIDRs rather than container IPs for robustness.
+Host firewall rules can enforce east-west access control between containers
+when Docker itself cannot express it (a per-port-per-network ACL does not exist
+at the Docker level).  That is host setup, not part of the edge: rules, their
+survival across Docker restarts, and the network-CIDR bookkeeping belong to the
+host's own firewall configuration.  tls-edge therefore ships no helper and
+only documents the limitation (see §17), which is the mitigation the operator
+actually applies.
 
 ### F4. OPNsense as external firewall/reverse proxy
 
@@ -959,8 +967,8 @@ VM or physical machine.
 ### F5. Traefik middleware additions — Partially implemented
 
 Security headers (`secure-headers`) are now attached at the entrypoint level
-and apply to all consumers.  Remaining per-router additions for future
-consideration:
+and apply to all consumers.  Remaining middleware work is tracked as a roadmap
+item in `KNOWN_ISSUES_TODO_BACKLOG.md` (FEAT-01 and its middleware list):
 - Rate limiting (`rateLimit`)
 - IP allowlisting (`ipAllowList`)
 - HTTP Basic Auth (`basicAuth`)
@@ -968,23 +976,12 @@ consideration:
 - Content Security Policy (per-router `headers` middleware, intentionally not
   set globally to avoid breaking iframe-embedding consumers)
 
-### F6. Centralised log aggregation
+### F6. Centralised log aggregation — out of scope
 
-Pipe `docker logs tls-edge-<id>-traefik` to a log aggregation stack for persistent,
-searchable, tamper-resistant audit trail.  The access log is already JSON,
-which integrates cleanly with:
-
-- **Loki + Grafana**: lightweight; Docker log driver integration available.
-- **Elastic Stack**: full-text search; higher resource cost.
-- **Splunk**: enterprise; highest operational cost.
-
-Configure via Docker log driver on the `traefik` service:
-```yaml
-logging:
-  driver: loki
-  options:
-    loki-url: "http://localhost:3100/loki/api/v1/push"
-```
+Shipping `docker logs tls-edge-<id>-traefik` to an aggregation stack is the host's
+logging stack, not an edge feature: dropped.  The access log stays JSON and the
+container's log driver stays bounded, so a host that runs Loki + Grafana,
+Elastic Stack, or Splunk can collect it there without a tls-edge change.
 
 ### F7. Traefik label constraints for consumer governance
 
@@ -1007,17 +1004,17 @@ a second gate that is harder to satisfy accidentally.
 
 | Limitation | Impact | Mitigation |
 |---|---|---|
-| Docker has no per-port-per-network ACL | Ops endpoints can only be isolated by app bind address or host firewall | Use loopback binding + sidecar; plan for DOCKER-USER rules |
+| Docker has no per-port-per-network ACL | Ops endpoints can only be isolated by app bind address or host firewall | Use loopback binding + sidecar; host firewalling is host setup, not the edge |
 | Cert mount footgun (static mode): must mount parent dirs, not `live/<domain>` directly | Mounting `live/<domain>` breaks certbot's relative symlinks; Traefik silently serves its self-signed default cert | Fixed by design: compose template mounts `cert_base/live` and `cert_base/archive` as parents; explanation retained for awareness |
 | `exposedByDefault: false` is the only admission gate | Any container on `ingress_public` with the right label is routed | Add label constraints (F7) or network segmentation by trust class (F2) |
 | Static-mode certificate reload restarts Traefik | The hook resolves the instance container and restarts it, so the edge is unavailable briefly | `docker restart --time 5 <resolved-name>`; expect about 3 seconds of downtime after a renewal |
 | acme-data volume loss | `docker compose down -v` destroys ACME state; all certs are re-issued on next start; LE rate limits (~5 duplicate certs/week) apply | Never use `-v` in production without a backup plan; use staging CA for experiments |
 | sniStrict rejects SNI-less clients | Bare-IP probes, some uptime checkers, and `openssl s_client` without `-servername` are rejected | Expected and desirable; disable `sniStrict` in `conf.d/options.yml` only if such clients must be served |
-| Port 80 is on by default | The edge answers on a second public port | Use `tls-edge configure` to disable it for an installed instance; `acme-http` then cannot be used |
+| HTTP listener in the shipped defaults | The edge answers on a second public port | Use `tls-edge configure` to disable it for an installed instance; `acme-http` then cannot be used |
 | Router name uniqueness is operator-enforced | Two stacks using the same router name will conflict | Naming convention adopted in examples: `<stack>-<service>` |
-| App must configure loopback bind for ops | Docker cannot enforce this; relies on app configuration discipline | Document requirement prominently; verify via `scripts/verify.sh` |
+| App must configure loopback bind for ops | Docker cannot enforce this; relies on app configuration discipline | Document requirement prominently; verify via `scripts/verify.sh --ops-check <network> <container> <port>` (§15) |
 | Single Traefik instance is a SPOF | If Traefik crashes, all public services are unreachable | `restart: unless-stopped` mitigates transient failures; HA Traefik requires Swarm or Kubernetes |
-| `ingress_public` east-west visibility | Containers on ingress can attempt connections to each other | Keep ingress membership minimal; add DOCKER-USER rules for strict isolation |
+| `ingress_public` east-west visibility | Containers on ingress can attempt connections to each other | Keep ingress membership minimal; strict isolation needs host firewall rules installed by the host |
 | Static config changes (log level, entrypoints, ACME) require re-render + restart | No live override via env vars once config file is mounted | Re-render via ciu (or `tools/render.sh` for a maintainer trial), then `docker compose restart traefik` |
 
 Additional known issues and open items are tracked in `KNOWN_ISSUES_TODO_BACKLOG.md`.
