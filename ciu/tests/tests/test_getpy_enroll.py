@@ -122,9 +122,10 @@ class TestEnrollCLIShape:
         assert self._flags_in(usage) | {"-h", "--help"} == ENROLL_EXPECTED_FLAGS
         assert self._flags_in(text) == ENROLL_EXPECTED_FLAGS
 
-    def test_enroll_key_and_controller_flags_remain_required(self):
+    def test_enroll_required_flags_are_required(self):
         text = self._help(GET_PY, "enroll", "--help")
         usage = text.split("options:")[0]
+        # required ⇒ unbracketed; optional ⇒ bracketed
         assert "--authorized-key KEY" in usage
         assert "[--authorized-key" not in usage
         assert "--controller FQDN" in usage
