@@ -133,6 +133,18 @@ def _wait_file(path: Path) -> str:
     raise AssertionError(f"{path} was never written")
 
 
+def _wait_for_process_group_to_disappear(shell: int, holder: int) -> bool:
+    deadline = time.monotonic() + JOIN_LIMIT
+    while time.monotonic() < deadline:
+        if not _alive(shell) and not _alive(holder):
+            try:
+                os.killpg(shell, 0)
+            except ProcessLookupError:
+                return True
+        time.sleep(0.05)
+    return False
+
+
 def _kill_quietly(pid: int | None) -> None:
     if pid is None:
         return
@@ -612,8 +624,10 @@ def test_captured_probe_timeout_reaps_its_lingering_grandchild(tmp_path, monkeyp
         thread.join(JOIN_LIMIT)
         assert not thread.is_alive()
         assert isinstance(outcome["error"], subprocess.TimeoutExpired)
+        assert _wait_for_process_group_to_disappear(shell, holder), (
+            "timed out waiting for the signalled group and its members to disappear"
+        )
         assert not _alive(shell) and not _alive(holder)
-        _kill_quietly(holder)
         with pytest.raises(ProcessLookupError):
             os.killpg(shell, 0)
     finally:
