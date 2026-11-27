@@ -242,7 +242,34 @@ for pi_case in \
   pi-force-retire-early:refusal-keeps-records \
   pi-force-retire-before-credentials:refusal-keeps-records \
   pi-resume-block-inverted:accepted-resume-records \
-  pi-record-owner-new-only:accepted-resume-records; do
+  pi-record-owner-new-only:accepted-resume-records \
+  pi-mode-value-guard:mode-value pi-mode-argv-append-dropped:review-argv \
+  pi-mode-jsonl-session-id-allowed:session-id \
+  pi-mode-unknown-session-allowed:mode-resume-exact \
+  pi-mode-stream-session-mismatch-allowed:mode-resume-mismatch \
+  pi-mode-claimed-name-reread-dropped:mode-claimed-name-reread \
+  pi-mode-argv-missing-guard:mode-no-argv-file \
+  pi-mode-argv-empty-guard:mode-empty-argv \
+  pi-mode-record-not-written:mode-record pi-mode-record-written-before-refusal:mode-not-written-on-refusal \
+  pi-mode-sticky-refusal-dropped:mode-sticky \
+  pi-mode-record-ignored:mode-sticky pi-mode-narrow-dropped:mode-sticky \
+  pi-mode-invalid-record-guessed:mode-sticky pi-mode-evidence-dropped:mode-evidence \
+  pi-mode-extra-args-allowed:mode-extra-args \
+  pi-mode-extra-args-list-dropped:mode-extra-args \
+  pi-mode-rules-file-refusal-dropped:mode-rules-file \
+  pi-mode-prompt-dropped:mode-prompt pi-mode-local-env-flip:mode-local-env \
+  pi-mode-session-thread-ignored:mode-session-thread \
+  pi-mode-thread-evidence-dropped:mode-session-thread \
+  pi-mode-stream-review-ignored:mode-stream-review \
+  pi-mode-review-material-unreadable-allowed:mode-review-material-unreadable \
+  pi-mode-retired-session-not-preserved:mode-stream-review \
+  pi-mode-session-write-dropped:mode-session-thread \
+  pi-mode-session-implementer-refusal-dropped:mode-session-thread \
+  pi-mode-session-thread-invalid-record-guessed:mode-session-thread \
+  pi-mode-session-record-ignored:mode-session-record \
+  pi-mode-session-monotonic-dropped:mode-session-record \
+  pi-mode-session-invalid-record-guessed:mode-session-record \
+  pi-mode-session-implementer-as-review:mode-session-implementer; do
   pi_mutant=${pi_case%%:*}
   pi_focus=${pi_case#*:}
   if [[ $pi_mutant == pi-run-name-refusal-overwrites && $pi_focus == refusal-keeps-records ]]; then

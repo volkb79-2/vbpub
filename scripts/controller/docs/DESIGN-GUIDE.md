@@ -123,6 +123,97 @@ the missing/non-executable shim and the managed-bin shadow (all with no pi
 invocation and no claimed run name), and the continuation case requires every
 guard fact **twice**, because the continuation is a launch too.
 
+### Why a review mode is the wrapper's own switch, and sticky
+
+A review and an implementation run the SAME wrapper, and the difference between
+them is what the agent may DO. It used to be a caller convention: `pi-review.sh`
+exported a read-only tool list through `pi-impl.sh`'s `PI_EXTRA_ARGS` seam, and
+every other path — a review launched straight through `pi-impl.sh`, or a review
+RESUMED through it — got the full implementer tool set unless the caller
+remembered. That is the same shape as the signal guard's defect: a rule that
+holds only while someone remembers it, and a pi reviewer already spent two hours
+running kill/trap scripts in the shared devcontainer when it did not.
+
+The mode is therefore `pi-impl.sh`'s own switch:
+
+- **The tool set is the wrapper's argv, not a caller's variable.** Review mode
+  reads `pi-review-argv` once and appends it to `base_pi_args`, so the first run,
+  a manual `resume` and every automatic continuation carry the same element.
+  The list has ONE definition, in that file; `pi-review.sh` sets the mode and
+  carries no copy of it. Rejected: a second copy of the literal list in the
+  launcher (two definitions drift, and the drift is invisible), and a
+  `--review` flag on `pi-impl.sh` (a new reserved argv element that a
+  `PI_EXTRA_ARGS` value or a stale wrapper invocation would have to keep
+  in step).
+- **The seam is refused, not classified.** In review mode any non-empty
+  `PI_EXTRA_ARGS` is an error (exit 2), and every spelling pi accepts for a tool
+  selection, an extension, an MCP server, a skill, a prompt template or project
+  trust (`--tools`, `-t`, `--exclude-tools`, `-xt`, `--no-tools`, `-nt`,
+  `--no-builtin-tools`, `-nbt`, `--extension`, `-e`, `--no-extensions`, `-ne`,
+  `--no-mcp`, `--skill`, `--no-skills`, `-ns`, `--prompt-template`,
+  `--no-prompt-templates`, `-np`, `--approve`, `-a`, `--no-approve`, `-na`) is
+  named in the refusal first, so the message says which one. The general refusal
+  behind it exists because the alternative — a whitelist of "harmless" additions
+  — is a vocabulary that must be kept in step with pi, and a spelling it misses
+  fails silently. Rejected: allowing an "equal or narrower" seam, which cannot
+  be decided without re-implementing pi's own tool merge.
+- **The mode follows both the run name and the pi session.** Every accepted
+  launch writes `<run>.mode`; a resume records its known ID in
+  `<runs-dir>/session-modes/<session-id>` before invoking pi, while a first
+  launch records it after pi returns with the ID. A resume requires the exact id
+  in a session-mode record, `.thread`, or a session event in the first 64 KiB
+  of a run's `.jsonl`. The bounded head scan covers a still-running or killed
+  first review before `.thread` or session-mode state exists. It then reads the
+  matching names' mode records and review material. Forced reuse persists the
+  old session mode before retiring the name's `.thread` and `.jsonl`. This
+  covers a review resumed under a fresh name and sessions created before
+  session records existed. If any source says `review`,
+  the launch is a review; a caller that ASKS for implementer mode is refused
+  (exit 2, before the new name is claimed when its review record is already
+  visible); the name is re-read after claim to catch a record written during
+  preflight. Resume ids match full recorded ids exactly: prefixes and ids ending
+  `.jsonl` are refused. A resume with no named mode takes review. Session writes
+  use a lock and move only toward review, so a later
+  implementer launch cannot overwrite it. An implementer name or session may be
+  resumed STRICTER; its records then become `review`.
+- **Missing or unreadable: the safe direction only where the fact exists.** An
+  unreadable or invalid name, session, or matching-name mode record is refused —
+  no correct writer produces it, and guessing which word was meant is a fallback
+  that cannot fail loudly. A missing name record is not the same fact: a name
+  carrying `<run>.review/before-state.txt` (written by `pi-review.sh` before its
+  launch) is known to be a review and is resumed as one. A pre-existing
+  implementer session without review evidence or any matching review record
+  resumes unchanged rather than being turned into a review by a refusal it
+  never asked for.
+- **A host file is a default, not a request.** `controller.local.env` is sourced
+  with `set -a`, so a `PI_RUN_MODE=implementer` line in it would otherwise decide
+  every launch. The caller's own value is saved before that file is sourced and
+  re-applied after, so a caller's review is never flipped; a value that only the
+  file supplied is treated as the default for launches that name no mode, and on
+  a resume against a record it is printed and NOT obeyed. Rejected: refusing any
+  local value (it breaks hosts that put their default there) and letting it
+  override a record (a silent widening of a review).
+
+### Why every pi prompt carries a rule paragraph, and why it is only an instruction
+
+Both modes append a fixed paragraph to every prompt: the implementer one names
+the pattern-kill ban and confines signal/TERM-trap tests to a capped container
+with a private PID namespace, against PIDs the test recorded itself; the review
+one says the run executes nothing at all. The paragraph is a tracked file beside
+the script (`implementer-prompt-rules.md`, `review-prompt-rules.md`), appended to
+every launch and to the automatic continuation, and a launch whose file is
+missing is refused: a prompt that lost the rule is not the contract the wrapper
+promises, so the absence must be loud rather than silent.
+
+It is still only an INSTRUCTION. In the implementer mode the agent has `bash`,
+so the bash builtin `kill`, a TERM-trap script and a direct syscall are not
+technically prevented by anything here; the mechanical part is the `pi-shims`
+`PATH` guard above, whose own limits are recorded there. Review mode is stronger
+because the tool set contains no tool that can execute or write at all — an
+enforcement of the argv, not a sandbox — and even it leaves `read` unconfined.
+Writing that down is part of the contract: a document that claimed prevention
+would be the false certification this kit exists to prevent.
+
 ### Why a run name is owned by one live wrapper
 
 Everything a run owns is keyed by its NAME: `<run>.done`, `.jsonl`, `.err`,

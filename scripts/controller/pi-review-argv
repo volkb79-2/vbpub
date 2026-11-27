@@ -1,0 +1,6 @@
+--tools
+read,grep,find,ls
+--exclude-tools
+mcp__*
+--no-extensions
+--no-mcp
