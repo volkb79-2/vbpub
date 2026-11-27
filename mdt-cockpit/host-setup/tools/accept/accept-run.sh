@@ -47,6 +47,7 @@ POLL=${MDT_ACCEPT_POLL_STEP:-1}
 RM_TIMEOUT=${MDT_ACCEPT_RM_TIMEOUT:-30}
 SYSTEMCTL_TIMEOUT=${MDT_ACCEPT_SYSTEMCTL_TIMEOUT:-2}
 GROW_TRIES=${MDT_ACCEPT_GROW_TRIES:-60}
+MAX_TICKS=${MDT_ACCEPT_MAX_TICKS:-0}
 PSI_HOLD=${MDT_ACCEPT_PSI_HOLD:-10}
 GUARD_EVERY=${MDT_ACCEPT_GUARD_EVERY:-5}   # L5: seconds between the guard runs inside one tick (test hook: 0 = every probe)
 UNITS=${MDT_ACCEPT_UNITS:-"ssh.service=system.slice/ssh.service docker.service=system.slice/docker.service containerd.service=system.slice/containerd.service systemd-journald.service=system.slice/systemd-journald.service mdt-psi-guard.service=system.slice/mdt-psi-guard.service cgprofiled.service=cgprofile.slice/cgprofiled.service user.slice=user.slice dev-interactive.slice=dev.slice/dev-interactive.slice"}

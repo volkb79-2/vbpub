@@ -29,9 +29,7 @@ MIB = 1024 ** 2
 spec = importlib.util.spec_from_file_location("accept_eval_t", KIT / "accept-eval.py")
 ev = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(ev)
-hspec = importlib.util.spec_from_file_location("accept_hotset_t", KIT / "accept-hotset.py")
-hs = importlib.util.module_from_spec(hspec)
-hspec.loader.exec_module(hs)
+hs = F.hs  # run_hotset() invokes this same module object; patches below must target it.
 FAKE_DOCKER, _fake = F.FAKE_DOCKER, F.fake_one
 
 
@@ -315,7 +313,8 @@ class EvalTests(unittest.TestCase):
         self.assertEqual(evaluated["floors"]["docker.service"]["steps"], [0])
         rc, out = run_eval(str(d))
         self.assertEqual(rc, 0, out)
-        self.assertIn("FLOOR docker.service=220M source=damon candidate", out)
+        self.assertIn("FLOOR docker.service=220M source=damon candidate (installed 220M, "
+                      "untested: dropped at step 1: directory identity changed after commit)", out)
 
     def test_a_damon_refusal_names_the_table_row(self) -> None:
         d = F.write_run(self.tmp / "refused", steps=(0,), verdicts=("PASS",))
@@ -791,11 +790,72 @@ class HotsetTests(unittest.TestCase):
                 mock.patch.object(hs, "physical_ranges", return_value=[(0, 4096)]), \
                 mock.patch.object(hs, "configure", side_effect=hs.Refusal("a leaf vanished")) as configure:
             rc, out = run_hotset("refresh-schemes", *self.args("--step", "1"))
-        self.assertEqual(rc, 3, out)
+        self.assertEqual(rc, 4, out)
         self.assertIn("scheme refresh failed after 3 attempts", out)
         self.assertEqual(configure.call_count, 3)
 
-    def test_sample_reconfigures_and_measures_a_leaf_inserted_after_configure(self) -> None:
+    def test_setup_reenumerates_and_rewrites_every_input_after_a_leaf_vanishes(self) -> None:
+        self.units = "user.slice=user.slice docker.service=system.slice/docker.service"
+        user_root = self.cg / "user.slice"
+        (user_root / "memory.current").unlink(missing_ok=True)
+        for name in ("session-a.scope", "session-b.scope"):
+            leaf = user_root / name
+            leaf.mkdir()
+            (leaf / "memory.current").write_text(f"{8 * M}\n")
+        model = self.sysfs_model()
+        da = hs.load_lib(self.lib, str(self.admin))
+        original_write = model.write
+        state_path = str(self.kd / "0" / "state")
+        start_attempts = 0
+
+        def reject_first_start_after_leaf_vanishes(path: str, value: object) -> None:
+            nonlocal start_attempts
+            if path == state_path and value == "on":
+                start_attempts += 1
+                if start_attempts == 1:
+                    shutil.rmtree(user_root / "session-b.scope")
+                    raise OSError("injected start-time leaf race")
+            original_write(path, value)
+
+        self.enterContext(mock.patch.object(hs, "write_text", reject_first_start_after_leaf_vanishes))
+        self.enterContext(mock.patch.object(da.SysfsInterface, "_write", reject_first_start_after_leaf_vanishes))
+        rc, out = run_hotset("setup", *self.args())
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(start_attempts, 2)
+        scheme_count_writes = [value for path, value in model.writes if path.endswith("/schemes/nr_schemes")]
+        self.assertEqual(scheme_count_writes, ["3\n", "2\n"], "each setup attempt rebuilds all scheme inputs")
+        configured = {p.read_text().strip() for p in (self.kd / "0/contexts/0/schemes").glob("*/ops_filters/0/memcg_path")}
+        self.assertNotIn("/user.slice/session-b.scope", configured)
+
+    def test_sample_does_not_write_scheme_inputs_for_a_stable_committed_topology(self) -> None:
+        model = self.setup_user_topology(["session-a.scope"])
+        model.writes.clear()
+        rc, out = run_hotset("sample", *self.args("--step", "0", "--kdamond", "0"))
+        self.assertEqual(rc, 0, out)
+        sample_writes = [(path, value) for path, value in model.writes
+                         if "/schemes/" in path or (path.endswith("/state") and value == "commit\n")]
+        self.assertEqual(sample_writes, [])
+        self.assertEqual([value.strip() for path, value in model.writes if path.endswith("/state")],
+                         ["update_schemes_stats", "update_schemes_tried_regions"])
+
+    def test_leaf_added_between_boundaries_is_dropped_for_this_step_and_other_units_continue(self) -> None:
+        model = self.setup_user_topology(["session-a.scope"])
+        inserted = self.cg / "user.slice" / "session-b.scope"
+        inserted.mkdir()
+        (inserted / "memory.current").write_text(f"{8 * M}\n")
+        model.writes.clear()
+
+        rc, out = run_hotset("sample", *self.args("--step", "0", "--kdamond", "0"))
+        self.assertEqual(rc, 0, out)
+        rows = {row["unit"]: row for row in csv.DictReader((self.ev / "hotset.csv").open())}
+        sample_writes = [(path, value) for path, value in model.writes
+                         if "/schemes/" in path or (path.endswith("/state") and value == "commit\n")]
+        self.assertEqual(sample_writes, [], "a sample must not stage or commit inputs after a leaf appears")
+        self.assertEqual(set(rows), {"docker.service"})
+        self.assertTrue(any(row["kind"] == "dropped" and row["unit"] == "user.slice"
+                            and "appeared after commit" in row["reason"] for row in self.topology_records()))
+
+    def test_dropped_unit_is_measured_again_after_the_next_boundary(self) -> None:
         self.setup_user_topology(["session-a.scope"])
         inserted = self.cg / "user.slice" / "session-b.scope"
         inserted.mkdir()
@@ -803,28 +863,30 @@ class HotsetTests(unittest.TestCase):
 
         rc, out = run_hotset("sample", *self.args("--step", "0", "--kdamond", "0"))
         self.assertEqual(rc, 0, out)
-        rows = {row["unit"]: row for row in csv.DictReader((self.ev / "hotset.csv").open())}
-        self.assertEqual(set(rows), {"docker.service", "user.slice"})
-        self.assertEqual(int(rows["user.slice"]["memcg_leaves"]), 2)
-        schemes = self.kd / "0" / "contexts" / "0" / "schemes"
-        configured_paths = {p.read_text().strip() for p in schemes.glob("*/ops_filters/0/memcg_path")}
-        self.assertIn("/user.slice/session-b.scope", configured_paths)
-        self.assertTrue(any(row["kind"] == "topology_change" and row["source"] == "sample"
-                            for row in self.topology_records()))
+        rows0 = {row["unit"] for row in csv.DictReader((self.ev / "hotset.csv").open())}
+        self.assertNotIn("user.slice", rows0)
+        self.assertFalse((self.ev / "hotset-refused").exists(), "a step-local topology drop is not a run refusal")
 
-    def test_configured_leaf_removed_after_configure_re_resolves_the_remaining_leaf(self) -> None:
+        rc, out = run_hotset("refresh-schemes", *self.args("--step", "1", "--kdamond", "0"))
+        self.assertEqual(rc, 0, out)
+        rc, out = run_hotset("sample", *self.args("--step", "1", "--kdamond", "0"))
+        self.assertEqual(rc, 0, out)
+        rows1 = [row for row in csv.DictReader((self.ev / "hotset.csv").open()) if row["step"] == "1"]
+        self.assertEqual({row["unit"] for row in rows1}, {"docker.service", "user.slice"})
+
+    def test_removed_leaf_drops_the_whole_unit_for_this_step(self) -> None:
         self.setup_user_topology(["session-a.scope", "session-b.scope"])
         shutil.rmtree(self.cg / "user.slice" / "session-a.scope")
 
         rc, out = run_hotset("sample", *self.args("--step", "0", "--kdamond", "0"))
         self.assertEqual(rc, 0, out)
         rows = {row["unit"]: row for row in csv.DictReader((self.ev / "hotset.csv").open())}
-        self.assertEqual(int(rows["user.slice"]["memcg_leaves"]), 1)
-        changes = [row for row in self.topology_records() if row["kind"] == "topology_change"]
-        self.assertTrue(changes)
-        self.assertNotIn("user.slice/session-a.scope", {leaf["path"] for leaf in changes[-1]["after"]})
+        self.assertNotIn("user.slice", rows)
+        self.assertIn("docker.service", rows)
+        self.assertTrue(any(row["kind"] == "dropped" and row["unit"] == "user.slice"
+                            and "session-a.scope disappeared" in row["reason"] for row in self.topology_records()))
 
-    def test_configured_leaf_unit_that_gains_a_child_is_reconfigured_to_the_child(self) -> None:
+    def test_leaf_unit_that_gains_a_child_is_dropped_for_this_step(self) -> None:
         self.setup_user_topology(None)
         child = self.cg / "user.slice" / "session-a.scope"
         child.mkdir()
@@ -833,27 +895,25 @@ class HotsetTests(unittest.TestCase):
         rc, out = run_hotset("sample", *self.args("--step", "0", "--kdamond", "0"))
         self.assertEqual(rc, 0, out)
         rows = {row["unit"]: row for row in csv.DictReader((self.ev / "hotset.csv").open())}
-        self.assertEqual(int(rows["user.slice"]["memcg_leaves"]), 1)
-        schemes = self.kd / "0" / "contexts" / "0" / "schemes"
-        paths = {p.read_text().strip() for p in schemes.glob("*/ops_filters/0/memcg_path")}
-        self.assertIn("/user.slice/session-a.scope", paths)
-        self.assertNotIn("/user.slice", paths)
+        self.assertNotIn("user.slice", rows)
+        self.assertIn("docker.service", rows)
+        self.assertTrue(any(row["kind"] == "dropped" and row["unit"] == "user.slice"
+                            and "gained child cgroups" in row["reason"] for row in self.topology_records()))
 
-    def test_unit_restart_with_a_new_leaf_path_is_reconfigured(self) -> None:
+    def test_refresh_after_warmup_picks_up_a_leaf_added_during_warmup(self) -> None:
         self.setup_user_topology(["session-a.scope"])
-        shutil.rmtree(self.cg / "user.slice" / "session-a.scope")
-        replacement = self.cg / "user.slice" / "session-b.scope"
-        replacement.mkdir()
-        (replacement / "memory.current").write_text(f"{8 * M}\n")
+        added_during_warmup = self.cg / "user.slice" / "session-b.scope"
+        added_during_warmup.mkdir()
+        (added_during_warmup / "memory.current").write_text(f"{8 * M}\n")
 
-        rc, out = run_hotset("sample", *self.args("--step", "0", "--kdamond", "0"))
+        rc, out = run_hotset("refresh-schemes", *self.args("--step", "0", "--kdamond", "0"))
         self.assertEqual(rc, 0, out)
         schemes = self.kd / "0" / "contexts" / "0" / "schemes"
         paths = {p.read_text().strip() for p in schemes.glob("*/ops_filters/0/memcg_path")}
+        self.assertIn("/user.slice/session-a.scope", paths)
         self.assertIn("/user.slice/session-b.scope", paths)
-        self.assertNotIn("/user.slice/session-a.scope", paths)
 
-    def test_unit_restart_at_the_same_leaf_path_changes_the_directory_identity(self) -> None:
+    def test_reinoded_leaf_drops_the_whole_unit_for_this_step(self) -> None:
         self.setup_user_topology(["session-a.scope"])
         leaf = self.cg / "user.slice" / "session-a.scope"
         old_inode = leaf.stat().st_ino
@@ -869,32 +929,63 @@ class HotsetTests(unittest.TestCase):
 
         rc, out = run_hotset("sample", *self.args("--step", "0", "--kdamond", "0"))
         self.assertEqual(rc, 0, out)
-        changes = [row for row in self.topology_records() if row["kind"] == "topology_change"]
-        self.assertTrue(changes)
-        before = next(row for row in changes[-1]["before"] if row["path"] == "user.slice/session-a.scope")
-        after = next(row for row in changes[-1]["after"] if row["path"] == "user.slice/session-a.scope")
-        self.assertNotEqual(before["inode"], after["inode"])
+        rows = {row["unit"] for row in csv.DictReader((self.ev / "hotset.csv").open())}
+        self.assertNotIn("user.slice", rows)
+        self.assertIn("docker.service", rows)
+        self.assertTrue(any(row["kind"] == "dropped" and row["unit"] == "user.slice"
+                            and "changed directory inode" in row["reason"] for row in self.topology_records()))
 
-    def test_leaf_changed_between_commit_and_read_is_dropped_with_its_reason(self) -> None:
+    def test_leaf_added_during_apply_drops_the_whole_unit_without_a_run_refusal(self) -> None:
         self.setup_user_topology(["session-a.scope"])
         inserted = self.cg / "user.slice" / "session-b.scope"
-        inserted.mkdir()
-        (inserted / "memory.current").write_text(f"{8 * M}\n")
         da = hs.load_lib(self.lib, str(self.admin))
         apply = da.SysfsInterface.kdamond_update_tried_regions
 
-        def remove_after_apply(kdamond: int) -> None:
+        def insert_after_apply(kdamond: int) -> None:
             apply(kdamond)
-            shutil.rmtree(inserted)
+            inserted.mkdir()
+            (inserted / "memory.current").write_text(f"{8 * M}\n")
 
-        with mock.patch.object(da.SysfsInterface, "kdamond_update_tried_regions", side_effect=remove_after_apply):
+        with mock.patch.object(da.SysfsInterface, "kdamond_update_tried_regions", side_effect=insert_after_apply):
             rc, out = run_hotset("sample", *self.args("--step", "0", "--kdamond", "0"))
         self.assertEqual(rc, 0, out)
         rows = {row["unit"]: row for row in csv.DictReader((self.ev / "hotset.csv").open())}
-        self.assertEqual(int(rows["user.slice"]["memcg_leaves"]), 1)
+        self.assertEqual(set(rows), {"docker.service"})
         dropped = [row for row in self.topology_records() if row["kind"] == "dropped"]
-        self.assertTrue(any(row["path"] == "user.slice/session-b.scope" and "after commit" in row["reason"]
+        self.assertTrue(any(row["path"] == "user.slice/session-b.scope" and "appeared after commit" in row["reason"]
                             for row in dropped))
+        self.assertFalse((self.ev / "hotset-refused").exists(), "a sample-local drop does not poison later steps")
+
+    def test_boundary_commit_retries_all_inputs_after_a_leaf_is_removed(self) -> None:
+        model = self.setup_user_topology(["session-a.scope"])
+        inserted = self.cg / "user.slice" / "session-b.scope"
+        inserted.mkdir()
+        (inserted / "memory.current").write_text(f"{8 * M}\n")
+        model.writes.clear()
+        da = hs.load_lib(self.lib, str(self.admin))
+        original_write = model.write
+        state_path = str(self.kd / "0" / "state")
+        commit_attempts = 0
+
+        def reject_first_commit_after_leaf_vanishes(path: str, value: object) -> None:
+            nonlocal commit_attempts
+            if path == state_path and value == "commit":
+                commit_attempts += 1
+                if commit_attempts == 1:
+                    shutil.rmtree(inserted)
+                    raise OSError("injected boundary commit rejection")
+            original_write(path, value)
+
+        with mock.patch.object(hs, "write_text", side_effect=reject_first_commit_after_leaf_vanishes), \
+                mock.patch.object(da.SysfsInterface, "_write", side_effect=reject_first_commit_after_leaf_vanishes):
+            rc, out = run_hotset("refresh-schemes", *self.args("--step", "1", "--kdamond", "0"))
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(commit_attempts, 2)
+        scheme_count_writes = [value for path, value in model.writes if path.endswith("/schemes/nr_schemes")]
+        self.assertEqual(scheme_count_writes, ["3\n", "2\n"])
+        memcg_paths = [value.strip() for path, value in model.writes if path.endswith("/ops_filters/0/memcg_path")]
+        self.assertEqual(memcg_paths.count("/user.slice/session-a.scope"), 2)
+        self.assertEqual(memcg_paths.count("/user.slice/session-b.scope"), 1)
 
     def test_single_leaf_unit_gone_has_no_zero_row_and_other_units_continue(self) -> None:
         self.setup_user_topology(None)
@@ -1017,6 +1108,36 @@ class HotsetTests(unittest.TestCase):
 class ShellKitTests(F.ShellKitBase):
     """accept-run.sh: the ladder, the WAL, the per-step writes, the probes, the stop rule, the cleanup paths."""
 
+    def test_step_zero_reconfigures_after_warmup_before_its_settle_window(self) -> None:
+        hotset_log = self.tmp / "hotset-calls.log"
+        marker = self.tmp / "warmup-leaf-added"
+        fake_hotset = self.tmp / "hotset-fake.py"
+        fake_hotset.write_text(
+            "import os, sys\n"
+            "from pathlib import Path\n"
+            "args = sys.argv[1:]\n"
+            "with open(os.environ['FAKE_HOTSET_LOG'], 'a', encoding='utf-8') as f:\n"
+            "    f.write(' '.join(args) + '\\n')\n"
+            "if args[0] == 'refresh-schemes':\n"
+            "    Path(os.environ['FAKE_HOTSET_MARKER']).write_text('leaf-added-during-warmup')\n"
+            "if args[0] == 'sample' and not Path(os.environ['FAKE_HOTSET_MARKER']).is_file():\n"
+            "    print('sample reached before the warm-up topology was committed', file=sys.stderr)\n"
+            "    raise SystemExit(4)\n"
+        )
+        result = self.run_kit("--steps", "0", "--dwell", "0", "--warmup", "5", "--control", "off", ticks="12",
+                              MDT_ACCEPT_HOTSET=str(fake_hotset), MDT_ACCEPT_WARMUP_TICKS="1",
+                              FAKE_HOTSET_LOG=str(hotset_log), FAKE_HOTSET_MARKER=str(marker),
+                              **self.judge_env("PASS"))
+        calls = hotset_log.read_text().splitlines()
+        self.assertTrue(any(line.startswith("refresh-schemes --step 0") for line in calls),
+                        f"step 0 must re-enumerate after warm-up and before sampling; calls were {calls!r}")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        refresh = next(i for i, line in enumerate(calls) if line.startswith("refresh-schemes --step 0"))
+        sample = next(i for i, line in enumerate(calls) if line.startswith("sample --step 0"))
+        self.assertLess(refresh, sample)
+        self.assertEqual(len([row for row in csv.DictReader((self.ev / "samples.csv").open())
+                              if row["phase"] == "warmup"]), 1)
+
     def test_hotset_sample_runs_before_the_first_judged_row_of_each_window(self) -> None:
         src = (KIT / "accept-run.sh").read_text()
         tick = src[src.index('tick() { # <phase>'):src.index('dwell() { # <phase>')]
@@ -1033,7 +1154,7 @@ class ShellKitTests(F.ShellKitBase):
         self.assertLess(override, zero_interval)
         self.assertIn('else\n  WARMUP_TICKS=$(( (WARMUP + INTERVAL - 1) / INTERVAL ))', warmup_branch,
                       "without the override and with INTERVAL > 0, round the product warm-up up to full ticks")
-        self.assertIn('WARMUP_RUN_SECONDS=$((WARMUP_TICKS * INTERVAL))', warmup_branch)
+        self.assertIn('WARMUP_RUN_SECONDS=$((WARMUP_TICKS * INTERVAL))', src[formula:])
         self.assertEqual((600 + 5 - 1) // 5, 120)
         self.assertEqual(120 * 5, 600)
         self.assertIn('dummy_budget=$((WARMUP_RUN_SECONDS + (STEPS + 2) * DWELL))', src)

@@ -245,6 +245,7 @@ class DamonSysfsModel:
         self.avail = avail
         self.stats = stats
         self.filters = filters
+        self.writes: list[tuple[str, str]] = []
 
     def initialize(self, count: int = 0, state: str = "off") -> None:
         self.kdamonds.mkdir(parents=True, exist_ok=True)
@@ -371,6 +372,7 @@ class DamonSysfsModel:
         # the attribute without materializing the children that the kernel
         # creates on nr_kdamonds/nr_contexts/nr_* writes.
         target = Path(os.path.abspath(path))
+        self.writes.append((str(target), f"{value}\n"))
         if not target.is_file():
             raise FileNotFoundError(path)
         text = f"{value}\n"
