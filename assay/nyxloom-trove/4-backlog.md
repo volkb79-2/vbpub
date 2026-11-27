@@ -16359,14 +16359,19 @@ characterization and exclusion-pin refresh `c56273ab5`, L6/L7/nit/docs
 
 ## B599 — B105 RAM admission counts reclaimable file cache as used
 
-**Status: FIXED by b427d48d9; red proof c0f7817d2; severity: medium.**
+**Status: FIXED by b427d48d9; round-1 review HOLD closed by c93755545; red
+proof f94090150 and a6b9f193a at baseline 268725a06; severity: medium.**
 
-Implementation: `assay/tools/cgroup-parent.sh:190` (conditional file mount and
-retry), `assay/tools/cgroup-parent.sh:469` (validated reclaimable calculation),
-and `assay/tools/cgroup-parent.sh:543` (bounded admission). Behavioral tests:
-`assay/gate/tests/test_cgroup_parent.py:650`, `:710`, `:750`, `:807`, `:831`,
-and `:852`. Documentation and changelog: `assay/docs/DESIGN-GUIDE.md:3119`
-and `assay/CHANGES.md:7`.
+Implementation: `assay/tools/cgroup-parent.sh:125` (verified probe identity and
+definite-absence classification), `:180` (ambiguous failure retains ownership),
+`:204` (bounded memory.stat reader), `:478` (validated reclaimable calculation),
+and `:553` (bounded admission). Behavioral tests:
+`assay/gate/tests/test_cgroup_parent.py:809` (admission), `:829` (single-file
+mount), `:869` (invalid stat fallback), `:909` (mount fallback), `:968`
+(definite absence), `:1002` (ambiguous inspect and EXIT cleanup), `:1027`
+(owner mismatch), `:1049` (execute generated probe script), `:1156` (dirty and
+writeback), `:1180` (clamp), and `:1201` (continued refusal). Documentation and
+changelog: `assay/docs/DESIGN-GUIDE.md:3119` and `assay/CHANGES.md:7`.
 
 Before the fix, `assay/tools/cgroup-parent.sh` computed the gates slice
 headroom as `memory.max - memory.current`. `memory.current` includes
