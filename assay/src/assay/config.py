@@ -2628,18 +2628,22 @@ def _refuse_unbounded_without_unit_bounds(
     **(P4) ``unbounded`` is still refused, and its meaning is now stated
     per-run rather than per-unit.** A native R2 candidate with an armed watch
     has a CPU-without-progress bound (`max(3 x baseline, baseline + 60 s)` of
-    process-tree CPU), a per-test CPU bound, and a wall backstop after four
-    times the CPU bound without a completed event. The wall backstop does not
-    depend on CPU readability or pressure. The per-candidate budget is
-    ADVISORY while the watch is armed. Arming is a RUNTIME fact -- it needs
-    liveness injection and baseline plugin records -- and a config file is read
-    before either is known. So this rule keeps refusing `"none"` by name and
-    admitting the omitted / `"auto"` key: it is never unbounded for a candidate
-    that stops completing events, because either the armed watch's finite
-    bounds or the binding per-candidate budget ends that stalled attempt. A
-    candidate that keeps completing events can renew the watch; an
-    `unbounded` lane gives that progressing command no total wall cap by
-    design.
+    process-tree CPU), a per-test CPU bound, and a no-progress stop after four
+    times that CPU bound. The no-progress stop uses plain wall time until the
+    resource comparator has classified an interval as `clear` or `stalled`;
+    after that it uses the idle rule's `liveness_clock`, where only `clear`
+    intervals advance and both `stalled` and `unknown` intervals are
+    ineligible. Later unreadable pressure data does not restore the wall-time
+    fallback, so sustained pressure can delay or prevent this stop. The
+    per-candidate budget is ADVISORY while the watch is armed. Arming is a
+    RUNTIME fact -- it needs liveness injection and baseline plugin records --
+    and a config file is read before either is known. So this rule keeps
+    refusing `"none"` by name and admitting the omitted / `"auto"` key, but it
+    does not promise a total wall bound for every stalled candidate on an
+    armed run. The binding budget still ends runs where the watch is not armed
+    or CPU never becomes readable. A candidate that keeps completing events
+    can renew the watch; an `unbounded` lane gives that progressing command no
+    total wall cap by design.
 
     **(B091/D-23) An omitted ``judge.mutation.budget_per_candidate`` is no
     longer such a unit with no bound.** It now means ``"auto"`` -- see

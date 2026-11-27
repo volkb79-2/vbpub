@@ -117,6 +117,147 @@ def _evidence() -> dict:
     }
 
 
+@pytest.mark.parametrize(
+    ("decision", "changes"),
+    [
+        ("cpu-without-progress", {"decision": "unsupported"}),
+        ("cpu-without-progress", {"candidate_cpu_source": "other"}),
+        ("cpu-without-progress", {"wall_elapsed_s": None}),
+        ("cpu-without-progress", {"candidate_cpu_s": -1.0}),
+        ("cpu-without-progress", {"candidate_cpu_s": 69.0}),
+        ("cpu-without-progress", {"required_cpu_s": 0.0}),
+        ("cpu-without-progress", {"cpu_since_last_completed_event_s": 69.0}),
+        ("cpu-without-progress", {"completed_events": -1}),
+        ("cpu-without-progress", {"completed_events": False}),
+        ("cpu-without-progress", {"trace_compacted": None}),
+        ("cpu-without-progress", {"resources": []}),
+        ("per-test-cpu-bound", {"test_nodeid": None}),
+        ("per-test-cpu-bound", {"per_test_baseline_s": None}),
+        ("per-test-cpu-bound", {"per_test_baseline_s": -1.0}),
+        ("per-test-cpu-bound", {"per_test_cpu_s": None}),
+        ("per-test-cpu-bound", {"per_test_cpu_s": -1.0}),
+        ("per-test-cpu-bound", {"required_cpu_s": 61.0}),
+        ("per-test-cpu-bound", {"per_test_cpu_s": 59.0}),
+    ],
+    ids=(
+        "unknown-decision",
+        "wrong-cpu-source",
+        "non-finite-top-field",
+        "negative-top-field",
+        "candidate-series-below-span",
+        "non-positive-bound",
+        "span-below-bound",
+        "negative-completed-count",
+        "bool-completed-count",
+        "non-boolean-compaction-flag",
+        "non-mapping-resources",
+        "missing-per-test-nodeid",
+        "missing-per-test-baseline",
+        "negative-per-test-baseline",
+        "missing-per-test-cpu",
+        "negative-per-test-cpu",
+        "per-test-bound-does-not-match-formula",
+        "per-test-cpu-below-bound",
+    ),
+)
+def test_cpu_hang_evidence_validator_refuses_each_invalid_condition(
+    decision: str, changes: dict
+) -> None:
+    evidence = _cpu_evidence(decision=decision)
+    evidence.update(changes)
+    assert mutation_store._valid_hung_resource_evidence(evidence) is False
+
+
+def test_idle_hang_evidence_validator_refuses_eligible_time_in_a_stall() -> None:
+    evidence = _evidence()
+    for index, sample in enumerate(evidence["samples"]):
+        resources = json.loads(json.dumps(sample["resources"]))
+        if index == 1:
+            resources["host_psi"]["memory"]["full"] = 1
+            sample["resource_interval"] = "stalled"
+            sample["resource_deltas"] = {"host_psi.memory.full_us": 1}
+        elif index > 1:
+            resources["host_psi"]["memory"]["full"] = 1
+        sample["resources"] = resources
+
+    assert mutation_store._valid_hung_resource_evidence(evidence) is False
+
+
+def test_resource_trace_reset_without_a_sample_clears_all_trace_state() -> None:
+    trace = liveness._ResourceTrace(max_samples=2)
+    trace.reset({"resource_interval": "unknown"})
+    trace.append({"resource_interval": "clear", "eligible_elapsed_s": 1.0})
+    trace.append({"resource_interval": "clear", "eligible_elapsed_s": 2.0})
+    trace.append(
+        {
+            "resource_interval": "clear",
+            "eligible_elapsed_s": 3.0,
+            "resource_deltas": {},
+        }
+    )
+    assert trace.compacted is True
+
+    trace.reset()
+
+    assert trace.samples == []
+    assert trace.compacted is False
+    assert trace.merged == 0
+
+
+@pytest.mark.parametrize(
+    ("middle_kind", "newer_kind"),
+    [("unknown", "clear"), ("clear", "unknown")],
+    ids=("unknown-older-row", "unknown-newer-row"),
+)
+def test_resource_trace_refuses_to_merge_unknown_rows(
+    middle_kind: str, newer_kind: str
+) -> None:
+    trace = liveness._ResourceTrace(max_samples=2)
+    trace.reset({"resource_interval": "unknown", "eligible_elapsed_s": 0.0})
+    trace.append({"resource_interval": "clear", "eligible_elapsed_s": 1.0})
+    trace.append({"resource_interval": middle_kind, "eligible_elapsed_s": 1.0})
+    trace.append({"resource_interval": newer_kind, "eligible_elapsed_s": 2.0})
+
+    assert len(trace.samples) == 4
+    assert trace.compacted is False
+    assert trace.merged == 0
+
+
+def test_resource_trace_compacts_a_stalled_pair_and_sums_its_deltas() -> None:
+    trace = liveness._ResourceTrace(max_samples=3)
+    anchor = {"resource_interval": "unknown", "eligible_elapsed_s": 0.0}
+    trace.reset(anchor)
+    trace.append(
+        {
+            "resource_interval": "clear",
+            "eligible_elapsed_s": 1.0,
+            "resource_deltas": {},
+        }
+    )
+    trace.append(
+        {
+            "resource_interval": "stalled",
+            "eligible_elapsed_s": 1.0,
+            "resource_deltas": {"host_psi.memory.full_us": 2},
+        }
+    )
+    trace.append(
+        {
+            "resource_interval": "clear",
+            "eligible_elapsed_s": 2.0,
+            "resource_deltas": {},
+        }
+    )
+
+    assert trace.compacted is True
+    assert trace.samples[0] == anchor
+    assert trace.samples[2]["resource_interval"] == "stalled"
+    assert trace.samples[2]["eligible_interval_s"] == 1.0
+    assert trace.samples[2]["resource_deltas"] == {
+        "host_psi.memory.full_us": 2
+    }
+
+
 def _repo(tmp_path: Path) -> GitRepo:
     repo = GitRepo(path=tmp_path / "repo")
     repo.path.mkdir()

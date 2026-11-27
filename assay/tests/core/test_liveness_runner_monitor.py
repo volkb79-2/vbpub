@@ -1857,8 +1857,143 @@ def test_wall_backstop_stops_an_armed_candidate_without_completed_events(
         runner(("pytest", "-q"), env={}, cwd=cwd, timeout=30.0)
     assert excinfo.value.wall_bound_s == 4 * 2.0
     assert excinfo.value.wall_seconds >= excinfo.value.wall_bound_s
+    assert excinfo.value.eligible_seconds >= excinfo.value.wall_bound_s
+    assert excinfo.value.pressure_credit_active is True
     assert clock.t >= excinfo.value.wall_bound_s
     assert proc.waited
+
+
+def test_stalled_pressure_intervals_do_not_advance_the_no_progress_stop(
+    tmp_path: Path,
+) -> None:
+    clock = _FakeClock()
+    proc = _ScriptedProc(pid=7012)
+
+    def pressured_resources(_pid: int) -> dict:
+        sample = _clear_resource_snapshot()
+        if clock.t > 0:
+            sample["host_psi"]["memory"]["full"] = int(clock.t * 1_000_000)
+        return sample
+
+    runner, cwd = _runner(
+        tmp_path,
+        proc=proc,
+        clock=clock,
+        cpu_reader=lambda _pid: 0.0,
+        resource_reader=pressured_resources,
+        cpu_without_progress_bound_s=2.0,
+        expect_next_event_within_s=600.0,
+    )
+    with pytest.raises(subprocess.TimeoutExpired) as excinfo:
+        runner(("pytest", "-q"), env={}, cwd=cwd, timeout=20.0)
+
+    assert type(excinfo.value) is subprocess.TimeoutExpired
+    assert clock.t == 20.0  # wall time passed the 8s stop bound under pressure.
+    assert excinfo.value.liveness_resource_evidence["decision"] == "configured-budget-expired"
+    assert any(
+        sample["resource_interval"] == "stalled"
+        for sample in excinfo.value.liveness_resource_evidence["samples"]
+    )
+
+
+def test_no_comparable_pressure_data_keeps_the_wall_fallback(
+    tmp_path: Path,
+) -> None:
+    clock = _FakeClock()
+    proc = _ScriptedProc(pid=7013)
+    runner, cwd = _runner(
+        tmp_path,
+        proc=proc,
+        clock=clock,
+        cpu_reader=lambda _pid: 0.0,
+        resource_reader=lambda _pid: {
+            "schema_version": 1,
+            "status": "unavailable",
+            "reason": "scripted-unreadable-pressure",
+        },
+        cpu_without_progress_bound_s=2.0,
+        expect_next_event_within_s=600.0,
+    )
+
+    with pytest.raises(liveness.LivenessNoProgressWallExpired) as excinfo:
+        runner(("pytest", "-q"), env={}, cwd=cwd, timeout=30.0)
+
+    assert excinfo.value.pressure_credit_active is False
+    assert excinfo.value.wall_seconds >= 8.0
+    assert excinfo.value.eligible_seconds == 0.0
+    assert clock.t >= 8.0
+
+
+def test_unreadable_pressure_after_comparability_does_not_restore_wall_fallback(
+    tmp_path: Path,
+) -> None:
+    clock = _FakeClock()
+    proc = _ScriptedProc(pid=7014)
+
+    def resources(_pid: int) -> dict:
+        if clock.t <= 1.0:
+            return _clear_resource_snapshot()
+        return {
+            "schema_version": 1,
+            "status": "unavailable",
+            "reason": "pressure-became-unreadable",
+        }
+
+    runner, cwd = _runner(
+        tmp_path,
+        proc=proc,
+        clock=clock,
+        cpu_reader=lambda _pid: 0.0,
+        resource_reader=resources,
+        cpu_without_progress_bound_s=2.0,
+        expect_next_event_within_s=600.0,
+    )
+    with pytest.raises(subprocess.TimeoutExpired) as excinfo:
+        runner(("pytest", "-q"), env={}, cwd=cwd, timeout=12.0)
+
+    assert type(excinfo.value) is subprocess.TimeoutExpired
+    assert clock.t == 12.0  # the 8s wall bound did not reactivate after unknowns.
+    assert excinfo.value.liveness_resource_evidence["decision"] == "configured-budget-expired"
+    assert excinfo.value.liveness_resource_evidence["eligible_elapsed_s"] == 1.0
+
+
+def test_completed_event_during_stalls_redates_the_pressure_credited_window(
+    tmp_path: Path,
+) -> None:
+    clock = _FakeClock()
+    proc = _ScriptedProc(pid=7015)
+    events_path = liveness.candidate_events_path(tmp_path / "candidates", tmp_path / "cand")
+    cpu_reader = _scripted_events(
+        clock,
+        events_path,
+        [(10.0, {"event": "phase"})],
+        proc=proc,
+    )
+
+    def resources(_pid: int) -> dict:
+        sample = _clear_resource_snapshot()
+        if 8.0 <= clock.t <= 12.0:
+            sample["host_psi"]["memory"]["full"] = int(clock.t * 1_000_000)
+        elif clock.t > 12.0:
+            sample["host_psi"]["memory"]["full"] = 12_000_000
+        return sample
+
+    runner, cwd = _runner(
+        tmp_path,
+        proc=proc,
+        clock=clock,
+        cpu_reader=cpu_reader,
+        resource_reader=resources,
+        cpu_without_progress_bound_s=2.0,
+        expect_next_event_within_s=600.0,
+    )
+    with pytest.raises(liveness.LivenessNoProgressWallExpired) as excinfo:
+        runner(("pytest", "-q"), env={}, cwd=cwd, timeout=30.0)
+
+    assert excinfo.value.pressure_credit_active is True
+    assert excinfo.value.eligible_seconds == 8.0
+    assert excinfo.value.wall_seconds >= 8.0
+    assert clock.t == 20.0  # eight eligible seconds AFTER the stalled event.
 
 
 def test_completed_events_redate_the_wall_backstop(tmp_path: Path) -> None:
@@ -1934,6 +2069,68 @@ def test_wall_backstop_still_fires_after_cpu_becomes_unreadable(
         runner(("pytest", "-q"), env={}, cwd=cwd, timeout=30.0)
     assert excinfo.value.wall_seconds >= 8.0
     assert reads["count"] > 1
+
+
+def test_readable_cpu_budget_warning_is_emitted_once_and_candidate_can_finish(
+    tmp_path: Path,
+) -> None:
+    clock = _FakeClock()
+    proc = _ScriptedProc(pid=7016)
+    events_path = liveness.candidate_events_path(tmp_path / "candidates", tmp_path / "cand")
+    reader = _scripted_events(
+        clock, events_path, [], proc=proc, finish_at=(4.0, 0), cpu=0.0
+    )
+    runner, cwd = _runner(
+        tmp_path,
+        proc=proc,
+        clock=clock,
+        cpu_reader=reader,
+        advisory_budget_s=2.0,
+        expect_next_event_within_s=600.0,
+    )
+
+    result = runner(("pytest", "-q"), env={}, cwd=cwd, timeout=None)
+
+    assert result.returncode == 0
+    assert runner.advisory_exceeded_at_s == 2.0
+    assert runner._advisory_warned is True
+
+
+def test_unarmed_budget_expiry_closes_an_open_observer_window(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class Window:
+        closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    window = Window()
+    monkeypatch.setattr(
+        liveness.observer_windows, "open_for_root", lambda _pid: window
+    )
+    monkeypatch.setattr(
+        liveness.observer_windows, "exited_unreaped", lambda _pid: False
+    )
+    clock = _FakeClock()
+    proc = _ScriptedProc(pid=7017)
+
+    def unreadable_cpu(_pid: int) -> float:
+        raise OSError("scripted CPU source unavailable")
+
+    runner, cwd = _runner(
+        tmp_path,
+        proc=proc,
+        clock=clock,
+        cpu_reader=unreadable_cpu,
+        cpu_without_progress_bound_s=None,
+        advisory_budget_s=2.0,
+        expect_next_event_within_s=600.0,
+    )
+    with pytest.raises(subprocess.TimeoutExpired):
+        runner(("pytest", "-q"), env={}, cwd=cwd, timeout=30.0)
+
+    assert window.closed is True
 
 
 def test_wall_backstop_is_disabled_without_a_calibrated_cpu_bound(
@@ -2598,6 +2795,28 @@ def _write_stamped_records(
     with events_path.open("a", encoding="utf-8") as stream:
         for record in records:
             stream.write(json.dumps({**record, "pid": pid}) + "\n")
+
+
+def test_the_reader_marks_a_second_unfinished_test_as_overlap(
+    tmp_path: Path,
+) -> None:
+    events_path = tmp_path / "reader-overlap.ndjson"
+    _write_stamped_records(
+        events_path,
+        [
+            {"event": "session_start"},
+            {"event": "test_start", "nodeid": "t::first"},
+            {"event": "test_start", "nodeid": "t::second"},
+        ],
+        pid=100,
+    )
+    reader = liveness._EventProgressReader(100)
+
+    reader.read(events_path)
+
+    assert reader.overlapping_tests is True
+    assert reader.in_flight is not None
+    assert reader.in_flight[0] == "t::second"
 
 
 def test_the_reader_clears_in_flight_only_on_the_matching_test_finish(

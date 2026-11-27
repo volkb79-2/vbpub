@@ -132,6 +132,24 @@ def test_per_test_baseline_uses_the_last_duration_for_each_repeated_phase(
     assert liveness.baseline_per_test_seconds(events) == {"same": 15.0}
 
 
+def test_per_test_baseline_skips_unusable_nodes_and_other_phase_kinds(
+    tmp_path: Path,
+) -> None:
+    events = _write(
+        tmp_path / "unusable-baseline-records.ndjson",
+        [
+            _phase("ignored", "other", 9.0),
+            _phase(["unhashable"], "setup", 8.0),
+            _call(["unhashable"]),
+            _phase("kept", "setup", 1.0),
+            _call("kept"),
+            _phase("kept", "teardown", 3.0),
+        ],
+    )
+
+    assert liveness.baseline_per_test_seconds(events) == {"kept": 5.0}
+
+
 # --------------------------------------------------------------------------
 # read_resource_sidecar / first_event_times
 # --------------------------------------------------------------------------

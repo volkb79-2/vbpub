@@ -4621,15 +4621,26 @@ fallback appears on that candidate's evidence as
 
 **No-progress wall stop.** An armed watch also stops a candidate if no
 completed `test` or `phase` event arrives for four times the calibrated
-CPU-without-progress bound in wall time. Its window starts at spawn and is
-re-dated by each completed event and once at the first `session_finish`. The
-stop does not depend on CPU readability or host pressure. The CPU and per-test
-`hung` bounds and the lane deadline still win if they fire first. This stop is
-an unclassified fatal `BUDGET_EXCEEDED`/`LANE_TIMEOUT`: it writes no candidate
-result or mutation bucket, and `assay run` ends so `--resume` retries the
-missing candidate. It is never reported as `hung` or placed in the
-`budget_exceeded` bucket. If CPU remains unreadable, the existing binding
-candidate budget can still expire first.
+bound. Its window starts at spawn and is re-dated by each completed event and
+once at the first `session_finish`. Before the first comparable pressure
+interval (`clear` or `stalled` from the resource comparator), it uses plain
+wall time. Thereafter it uses `LivenessRunner`'s existing `liveness_clock`,
+the idle rule's pressure-credited clock: only `clear` intervals advance it.
+Positive deltas in host or cgroup CPU PSI (`some`), memory or I/O PSI
+(`some`/`full`), or cgroup CPU throttle counters (`nr_throttled`,
+`throttled_usec`) make an interval `stalled`; missing, incomplete, reset, or
+mismatched snapshots are `unknown`. Both `stalled` and `unknown` intervals
+are ineligible. If pressure data is never comparable, the wall-time fallback
+keeps the stop active. Once one interval is comparable, later unreadable
+intervals are `unknown` and pause the eligible clock without restoring the
+wall fallback. Continuous pressure can delay or prevent the stop. Candidate
+CPU readability is not required. The CPU and per-test `hung` bounds and the
+lane deadline still win if they fire first. This stop is an unclassified fatal
+`BUDGET_EXCEEDED`/`LANE_TIMEOUT`: it writes no candidate result or mutation
+bucket, and `assay run` ends so `--resume` retries the missing candidate. It
+is never reported as `hung` or placed in the `budget_exceeded` bucket. If CPU
+remains unreadable, the existing binding candidate budget can still expire
+first.
 
 For `jobs > 1`, candidates already in flight are allowed to finish and persist
 their results before the fatal error is raised; no additional candidates are

@@ -3900,8 +3900,11 @@ def _execute_mutation_jobs(
                         raise _UnclassifiedLivenessWallStop(
                             f"native R2 candidate {candidate_id(job)} stopped "
                             f"after {execution_error.wall_seconds:.1f} wall "
-                            f"seconds without a completed event (wall bound "
-                            f"{execution_error.wall_bound_s:.1f}s); the attempt "
+                            f"seconds and {execution_error.eligible_seconds:.1f} "
+                            f"eligible seconds since the last re-date (a "
+                            f"completed event, session_finish or spawn; bound "
+                            f"{execution_error.wall_bound_s:.1f}s in "
+                            f"{'pressure-credited eligible time' if execution_error.pressure_credit_active else 'wall time before comparable pressure data'}); the attempt "
                             "is unclassified and will be retried on resume",
                             outcome=Outcome.BUDGET_EXCEEDED,
                             reason_code=ReasonCode.LANE_TIMEOUT,

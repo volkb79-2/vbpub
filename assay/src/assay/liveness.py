@@ -696,11 +696,13 @@ class LivenessHungExpired(subprocess.TimeoutExpired):
 
 
 class LivenessNoProgressWallExpired(subprocess.TimeoutExpired):
-    """Raised when an armed candidate has no completed event for its wall cap.
+    """Raised when an armed candidate has no completed event for its stop cap.
 
     This stops the run without classifying the attempt. `mutation.run_mutation`
     converts it to the existing lane-timeout fatal path, so there is no
-    candidate bucket or stored result.
+    candidate bucket or stored result. The cap uses wall time until one
+    resource interval is comparable, then uses the same pressure-credited
+    clock as the idle rule.
     """
 
     def __init__(
@@ -709,13 +711,17 @@ class LivenessNoProgressWallExpired(subprocess.TimeoutExpired):
         *,
         timeout: float,
         wall_seconds: float,
+        eligible_seconds: float,
         wall_bound_s: float,
+        pressure_credit_active: bool,
         output: bytes,
         stderr: bytes,
     ) -> None:
         super().__init__(cmd, timeout=timeout, output=output, stderr=stderr)
         self.wall_seconds = wall_seconds
+        self.eligible_seconds = eligible_seconds
         self.wall_bound_s = wall_bound_s
+        self.pressure_credit_active = pressure_credit_active
 
 
 #: (B091/RW-33, P7 A3) The idle-stall thresholds, named once rather than as
@@ -2404,6 +2410,8 @@ class LivenessRunner:
         liveness_clock = 0.0
         last_progress_at = 0.0
         no_progress_wall_marker = start
+        no_progress_eligible_marker = 0.0
+        pressure_interval_seen = False
         last_event_count = 0
         session_finish_at: float | None = None
         last_stdout_size = 0
@@ -2546,6 +2554,12 @@ class LivenessRunner:
             resource_status, resource_deltas = compare_resource_snapshots(
                 prior_resources, resources
             )
+            if resource_status in ("clear", "stalled"):
+                # These are the comparator's only comparable outcomes. Keep
+                # this sticky for the run: once pressure credit is established,
+                # later unknown intervals pause the clock rather than restoring
+                # the wall fallback.
+                pressure_interval_seen = True
             resources_complete = (
                 resources.get("status") == "available"
                 and compare_resource_snapshots(resources, resources)[0] == "clear"
@@ -2673,6 +2687,7 @@ class LivenessRunner:
                 completed_marker_cpu = cpu_series
                 completed_marker_wall = now
                 no_progress_wall_marker = now
+                no_progress_eligible_marker = liveness_clock
             if session_finish_first_seen:
                 # `session_finish` is not a completed test/phase event, but
                 # teardown after it gets one full CPU-without-progress bound
@@ -2685,6 +2700,7 @@ class LivenessRunner:
                 completed_marker_cpu = cpu_series
                 completed_marker_wall = now
                 no_progress_wall_marker = now
+                no_progress_eligible_marker = liveness_clock
 
             cpu_growing = True
             if resource_status == "clear" and cpu_now is not None:
@@ -2853,19 +2869,27 @@ class LivenessRunner:
                 )
                 raise exc
 
-            # (P4/M2) A wall backstop for candidates that keep burning a
-            # little CPU, or whose CPU source later becomes unreadable. It is
-            # armed only with the calibrated CPU bound, but elapsed wall time
-            # is measured independently of CPU and pressure. Completed events
-            # and the first session_finish re-date the window above. CPU and
-            # per-test hung bounds run first; the lane timeout above also wins
-            # when it reaches its deadline first.
+            # (P4/M2) A no-progress backstop for candidates that keep burning
+            # a little CPU, or whose CPU source later becomes unreadable. It is
+            # armed only with the calibrated CPU bound. Until the first
+            # comparable resource interval, it uses wall time so missing
+            # pressure data cannot disable the stop; after that it uses the
+            # idle rule's existing pressure-credited liveness clock. Completed
+            # events and the first session_finish re-date both windows above.
+            # CPU and per-test hung bounds run first; the lane timeout above
+            # also wins when it reaches its deadline first.
             if self.cpu_without_progress_bound_s is not None:
                 wall_bound_s = (
                     NO_PROGRESS_WALL_FACTOR * self.cpu_without_progress_bound_s
                 )
                 wall_seconds = max(0.0, now - no_progress_wall_marker)
-                if wall_seconds >= wall_bound_s:
+                eligible_seconds = max(
+                    0.0, liveness_clock - no_progress_eligible_marker
+                )
+                window_seconds = (
+                    eligible_seconds if pressure_interval_seen else wall_seconds
+                )
+                if window_seconds >= wall_bound_s:
                     if window is not None:
                         window.close()
                     self._kill(proc)
@@ -2873,7 +2897,9 @@ class LivenessRunner:
                         cmd=list(argv),
                         timeout=wall_bound_s,
                         wall_seconds=wall_seconds,
+                        eligible_seconds=eligible_seconds,
                         wall_bound_s=wall_bound_s,
+                        pressure_credit_active=pressure_interval_seen,
                         output=_read_bytes(stdout_path),
                         stderr=_read_bytes(stderr_path),
                     )

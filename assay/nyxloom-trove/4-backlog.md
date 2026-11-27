@@ -16229,6 +16229,17 @@ outstanding one, every resume encounters it again and candidates after it stay
 untried. With `jobs > 1`, already in-flight candidates drain and persist their
 results before the fatal error; unstarted work remains for a later resume.
 
+The stop initially uses wall time. Once the resource comparator has produced
+one `clear` or `stalled` interval, it uses the idle rule's existing
+pressure-credited `liveness_clock`: only `clear` intervals advance it. Any
+positive host or cgroup CPU PSI (`some`), memory or I/O PSI (`some`/`full`),
+or cgroup CPU-throttle counter (`nr_throttled`, `throttled_usec`) makes an
+interval `stalled`; unavailable, incomplete, reset, or mismatched snapshots
+are `unknown`. Both are ineligible. If pressure is unreadable throughout the
+run, the wall fallback remains active. If it is comparable once and becomes
+unreadable later, those `unknown` intervals pause the eligible clock and do
+not restore the fallback; sustained pressure can delay or prevent the stop.
+
 **Wanted.** Consider ending only the stopped candidate as an unclassified
 attempt and continuing the sweep, while retaining the no-bucket/no-result
 semantics and making resume safe for the candidate's retry.

@@ -1377,17 +1377,13 @@ def test_native_r2_resume_and_progress_contract_is_documented_across_public_docs
 
 
 def test_p4_liveness_issues_and_plan_only_progress_disclosure_are_pinned():
-    changes = " ".join(
-        _current_changes_text(
-            (REPO_ROOT / "CHANGES.md").read_text(encoding="utf-8")
-        ).split()
-    )
+    # Whole history, not the current sections: the P4 entry stays in its release.
+    changes = " ".join((REPO_ROOT / "CHANGES.md").read_text(encoding="utf-8").split())
     consumers = " ".join(CONSUMERS.read_text(encoding="utf-8").split())
     design = " ".join(DESIGN_GUIDE.read_text(encoding="utf-8").split())
     readme = " ".join(README.read_text(encoding="utf-8").split())
     assay_toml = " ".join((REPO_ROOT / "assay.toml").read_text(encoding="utf-8").split())
 
-    assert "### Known issues" in changes
     assert "max(3 x baseline wall, baseline wall + 60s)" in changes
     assert "parallel suite can consume more baseline tree CPU than wall time" in changes
     assert "never counts as `killed`" in changes
@@ -1437,7 +1433,15 @@ def test_p4_liveness_issues_and_plan_only_progress_disclosure_are_pinned():
     assert "unclassified fatal `BUDGET_EXCEEDED`/`LANE_TIMEOUT`" in consumers
     assert "writes no candidate result or mutation bucket" in consumers
     assert "same stall can prevent later candidates from running" in consumers
+    assert "Only `clear` intervals advance `liveness_clock`" in changes
+    assert "Before the first comparable interval the stop uses plain wall time" in changes
+    assert "later unreadable intervals remain `unknown` and pause the eligible clock" in changes
+    assert "Before the first comparable pressure interval (`clear` or `stalled` from the resource comparator), it uses plain wall time" in consumers
+    assert "only `clear` intervals advance it" in consumers
+    assert "without restoring the wall fallback" in consumers
+    assert "Continuous pressure can delay or prevent the stop" in consumers
     assert "separate no-progress wall backstop is a fatal `BUDGET_EXCEEDED`/`LANE_TIMEOUT`" in design
+    assert "only `clear` intervals advance" in design
     assert "does not become `budget_exceeded`" in design
 
 

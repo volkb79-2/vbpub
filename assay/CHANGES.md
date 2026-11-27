@@ -37,9 +37,10 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
     `test`/`phase` event arrives for four times the CPU-without-progress bound,
     the attempt ends unclassified as `BUDGET_EXCEEDED`/`LANE_TIMEOUT`. It
     writes no candidate result or mutation bucket and is retried on resume; it
-    is neither `hung` nor `budget_exceeded`. This wall bound does not depend
-    on CPU readability or pressure. The CPU and per-test `hung` bounds and
-    lane deadline still win when they fire first.
+    is neither `hung` nor `budget_exceeded`. It does not depend on candidate
+    CPU readability. Its clock uses the pressure-credit rule described under
+    Known issues below. The CPU and per-test `hung` bounds and lane deadline
+    still win when they fire first.
   A retained resource trace is now COMPACTED past its 1024-sample cap instead of
   being marked incomplete, so no hang verdict is disabled by trace length and
   the stored evidence stays bounded.
@@ -108,6 +109,19 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   unstarted candidates remain for normal dispatch on resume. Ending only the
   stopped candidate and continuing the sweep is the remaining design option
   tracked by B597.
+- The no-progress wall stop uses the idle rule's pressure-credited clock after
+  pressure data has produced one comparable interval. A comparable interval
+  is one the resource comparator calls `clear` or `stalled`. Only `clear`
+  intervals advance `liveness_clock`: any positive delta in host or cgroup
+  CPU PSI (`some`), memory or I/O PSI (`some`/`full`), or cgroup CPU throttle
+  counters (`nr_throttled`, `throttled_usec`) makes an interval `stalled` and
+  ineligible. Missing, incomplete, reset, or mismatched snapshots are
+  `unknown` and also ineligible. Before the first comparable interval the
+  stop uses plain wall time, so pressure data that is unreadable throughout
+  the run does not disable it. Once comparability has been established, later
+  unreadable intervals remain `unknown` and pause the eligible clock; they do
+  not restore the wall fallback. Sustained pressure can therefore delay or
+  prevent the stop.
 - The CPU-without-progress threshold is derived from baseline **wall** seconds
   (`max(3 x baseline wall, baseline wall + 60s)`) and compared with
   process-tree CPU. This is lenient for a serial suite because tree CPU grows

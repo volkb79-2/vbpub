@@ -2117,8 +2117,15 @@ bound is bucketed `hung`. It is never `killed`, however it was stopped. The
 separate no-progress wall backstop is a fatal `BUDGET_EXCEEDED`/`LANE_TIMEOUT`
 with no candidate bucket or stored candidate result; it is not `hung` and does
 not become `budget_exceeded`. It applies to armed watches after four times the
-CPU-without-progress bound in wall time without a completed event, independent
-of CPU readability or pressure. The lane deadline and the CPU/per-test bounds
+CPU-without-progress bound without a completed event. Until the resource
+comparator has classified an interval as `clear` or `stalled`, it measures
+plain wall time; after that it uses the idle rule's `liveness_clock`, where
+only `clear` intervals advance. A `stalled` interval (positive host or
+cgroup CPU, memory or I/O pressure, or cgroup CPU-throttle deltas) and an
+`unknown` interval (unavailable, incomplete, reset or mismatched snapshots)
+are ineligible. Later unreadable pressure intervals do not restore the wall
+fallback, so sustained pressure can delay or prevent the stop. Candidate CPU
+readability is not required. The lane deadline and the CPU/per-test bounds
 still win when they fire first. This is a decision, not an artifact of the
 code path, and it is worth stating plainly because the rest of the
 mutation-tooling world reports the opposite.

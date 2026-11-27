@@ -125,21 +125,28 @@ def test_r2_without_r1_kills_the_one_generated_mutant(git_repo: GitRepo):
 
 
 @pytest.mark.parametrize(
-    "baseline_has_records",
-    [True, False],
-    ids=("baseline-plugin-records", "baseline-plugin-empty"),
+    ("baseline_has_records", "budget_per_candidate_none"),
+    [(True, False), (False, False), (True, True)],
+    ids=(
+        "baseline-plugin-records",
+        "baseline-plugin-empty",
+        "armed-none-budget-warning",
+    ),
 )
 def test_injected_lane_builds_liveness_runner_with_armed_or_idle_only_bounds(
     git_repo: GitRepo,
     monkeypatch: pytest.MonkeyPatch,
     baseline_has_records: bool,
+    budget_per_candidate_none: bool,
 ):
+    import io
+
     base_rev, head_rev = _seed_compare_swap_site(git_repo)
     mutation_config = MutationConfig(
         jobs=1,
         max_mutants=50,
         operators=("python:compare-swap",),
-        budget_per_candidate="45s",
+        budget_per_candidate=("none" if budget_per_candidate_none else "45s"),
     )
     judge = make_r2_judge(
         source_root_paths=(git_repo.path / "src",),
@@ -224,6 +231,7 @@ def test_injected_lane_builds_liveness_runner_with_armed_or_idle_only_bounds(
         )
 
     monkeypatch.setattr(runner.mutation, "run_mutation", capture_run_mutation)
+    diagnostics = io.StringIO() if budget_per_candidate_none else None
     runner.run_lane(
         lane,
         commit=head_rev,
@@ -232,6 +240,7 @@ def test_injected_lane_builds_liveness_runner_with_armed_or_idle_only_bounds(
         adapter=PythonAdapter(),
         assay_version="0.1.0",
         process_runner=fake_process_runner,
+        diagnostics=diagnostics,
     )
 
     assert len(baseline_path) == 1
@@ -247,10 +256,17 @@ def test_injected_lane_builds_liveness_runner_with_armed_or_idle_only_bounds(
         assert captured["liveness_watch_armed"] is True
         assert constructed["cpu_without_progress_bound_s"] == expected.cpu_without_progress_bound_s
         assert constructed["per_test_cpu_baseline_s"] == expected.per_test_baseline_s
-        assert constructed["advisory_budget_s"] == 45.0
+        assert constructed["advisory_budget_s"] == (
+            None if budget_per_candidate_none else 45.0
+        )
         assert candidate_runner.cpu_without_progress_bound_s == expected.cpu_without_progress_bound_s
         assert candidate_runner._per_test_cpu_baseline_s == dict(expected.per_test_baseline_s)
-        assert candidate_runner.advisory_budget_s == 45.0
+        assert candidate_runner.advisory_budget_s == (
+            None if budget_per_candidate_none else 45.0
+        )
+        if budget_per_candidate_none:
+            assert diagnostics is not None
+            assert "progress watch is armed" in diagnostics.getvalue()
     else:
         assert captured["liveness_watch_armed"] is False
         assert constructed["cpu_without_progress_bound_s"] is None

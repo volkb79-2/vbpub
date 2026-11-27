@@ -2386,7 +2386,14 @@ def test_plan_discloses_a_binding_budget_with_its_reason(tmp_path):
     assert plan["budget_per_candidate_s"] == 30.0
 
 
-def test_no_progress_wall_stop_is_unclassified_and_retried_on_resume(tmp_path):
+@pytest.mark.parametrize(
+    "pressure_credit_active",
+    [True, False],
+    ids=("comparable-pressure", "wall-fallback"),
+)
+def test_no_progress_wall_stop_is_unclassified_and_retried_on_resume(
+    tmp_path, pressure_credit_active
+):
     repo = _repo(tmp_path)
     scratch = tmp_path / "scratch"
     scratch.mkdir()
@@ -2401,7 +2408,9 @@ def test_no_progress_wall_stop_is_unclassified_and_retried_on_resume(tmp_path):
             argv,
             timeout=timeout,
             wall_seconds=48.25,
+            eligible_seconds=12.75 if pressure_credit_active else 0.0,
             wall_bound_s=48.0,
+            pressure_credit_active=pressure_credit_active,
             output=b"",
             stderr=b"",
         )
@@ -2442,7 +2451,15 @@ def test_no_progress_wall_stop_is_unclassified_and_retried_on_resume(tmp_path):
         assert error.reason_code is ReasonCode.LANE_TIMEOUT
         assert "candidate " in str(error)
         assert "48.2 wall seconds" in str(error)
+        assert (
+            "12.8 eligible seconds" if pressure_credit_active else "0.0 eligible seconds"
+        ) in str(error)
         assert "48.0s" in str(error)
+        assert (
+            "pressure-credited eligible time"
+            if pressure_credit_active
+            else "wall time before comparable pressure data"
+        ) in str(error)
         assert "attempt is unclassified" in str(error)
         assert "retried on resume" in str(error)
         # A second resume reaches the same command because the interrupted
