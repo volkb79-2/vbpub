@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from fleetd.agent_capacity import host_capacity_from_facts
+from fleetd.agent_capacity import _field_fact, host_capacity_from_facts
 from fleetd.contracts import ContractError, HostFacts, validate_host_facts
 from fleetd.facts import collect_host_facts
 
@@ -82,6 +82,22 @@ def test_host_capacity_keeps_null_collection_groups_and_limits_unknown():
     assert capacity.disks.reason == "disk collection unavailable"
     assert capacity.gate_slice.cpu_max.value is None
     assert capacity.gate_slice.cpu_max.reason == "cpu.max unreadable"
+
+
+@pytest.mark.parametrize("wrapper", [{"v": None}, {"v": None, "reason": "  "}, {"v": None, "reason": 4}])
+def test_capacity_fact_refuses_null_values_without_a_nonempty_reason(wrapper):
+    with pytest.raises(ValueError, match="unavailable without a reason"):
+        _field_fact(wrapper, "policy.fact")
+
+
+def test_capacity_mapping_preserves_unknown_policy_reason():
+    facts = _collect().to_dict()
+    facts["policy"]["footprint_charges_bytes"] = _unknown("footprint charges are not configured")
+
+    capacity = host_capacity_from_facts(validate_host_facts(facts))
+
+    assert capacity.policy.footprint_charges_bytes.value is None
+    assert capacity.policy.footprint_charges_bytes.reason == "footprint charges are not configured"
 
 
 def test_host_capacity_ignores_frozen_count_without_hostobs_reader():
