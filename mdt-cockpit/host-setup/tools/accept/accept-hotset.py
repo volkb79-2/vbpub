@@ -561,8 +561,26 @@ def sample(args) -> int:
     da.SysfsInterface.kdamond_update_stats(kd)
     da.SysfsInterface.kdamond_update_tried_regions(kd)   # exactly one apply per sample
     per: dict[str, dict] = {}
-    for i, (unit, _leaf) in enumerate(entries):
+    schemes = os.path.join(args.admin, "kdamonds", str(kd), "contexts", "0", "schemes")
+    nr_schemes = read_int(os.path.join(schemes, "nr_schemes"), -1)
+    if nr_schemes < 0:
+        raise Refusal(f"{schemes}/nr_schemes is unreadable: configured DAMON schemes are unknown")
+    unit_by_memcg_path: dict[str, str] = {}
+    for unit, leaf in entries:
+        memcg_path = "/" + leaf.lstrip("/")
+        prior = unit_by_memcg_path.get(memcg_path)
+        if prior is not None and prior != unit:
+            raise Refusal(f"memcg path {memcg_path!r} belongs to both {prior} and {unit}; refusing ambiguous scheme attribution")
+        unit_by_memcg_path[memcg_path] = unit
+    for i in range(nr_schemes):
         sdir = da.SysfsInterface._scheme_dir(kd, 0, i)
+        path_lines = read_lines(os.path.join(sdir, "ops_filters", "0", "memcg_path"))
+        if not path_lines or not path_lines[0].strip():
+            raise Refusal(f"scheme {i} has no readable ops_filters/0/memcg_path; refusing to guess its unit")
+        memcg_path = path_lines[0].strip()
+        unit = unit_by_memcg_path.get(memcg_path)
+        if unit is None:
+            raise Refusal(f"scheme {i} memcg_path {memcg_path!r} is not a current leaf under the configured units; refusing stale attribution")
         tried = os.path.join(sdir, "tried_regions")
         passed = hot = 0
         names = sorted(os.listdir(tried)) if os.path.isdir(tried) else []

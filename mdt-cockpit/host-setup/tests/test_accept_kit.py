@@ -385,6 +385,7 @@ class HotsetTests(unittest.TestCase):
 
     def ready(self, *, filters: bool = True, stats: bool = True) -> None:
         """The kernel side after `update_schemes_tried_regions`: two schemes with the filter chain and the stats."""
+        (self.kd / "0" / "contexts" / "0" / "schemes" / "nr_schemes").write_text("2\n")
         for i, names in ((0, ("7", "9")), (1, ("3",))):
             sdir = self.kd / "0" / "contexts" / "0" / "schemes" / str(i)
             sdir.mkdir(parents=True, exist_ok=True)
@@ -395,6 +396,8 @@ class HotsetTests(unittest.TestCase):
                                   ("1", "type"), ("1", "matching")):
                     (sdir / "ops_filters" / idx / name).write_text("\n")
                 (sdir / "ops_filters" / "nr_filters").write_text("0\n")
+                (sdir / "ops_filters" / "0" / "memcg_path").write_text(
+                    ("/system.slice/docker.service" if i == 0 else "/user.slice") + "\n")
             (sdir / "stats").mkdir(parents=True, exist_ok=True)
             if stats:
                 (sdir / "stats" / "sz_ops_filter_passed").write_text("0\n")
@@ -595,6 +598,31 @@ class HotsetTests(unittest.TestCase):
         self.assertEqual(int(rows[1]["sz_filter_passed_one_apply"]), 8192)             # scheme 1: its one region, 2 pages
         self.assertEqual(int(rows[1]["regions_hot_bytes_info"]), 4096)
         self.assertEqual(rows[1]["unit"], "user.slice")
+
+    def test_sample_attributes_configured_schemes_by_path_after_a_leaf_is_inserted(self) -> None:
+        self.units = "user.slice=user.slice docker.service=system.slice/docker.service"
+        original = self.cg / "user.slice" / "session-a.scope"
+        original.mkdir()
+        (original / "memory.current").write_text(f"{8 * M}\n")
+        self.sysfs_model(count=1)
+        rc, out = run_hotset("setup", *self.args())
+        self.assertEqual(rc, 0, out)
+
+        schemes = self.kd / "0" / "contexts" / "0" / "schemes"
+        self.assertEqual((schemes / "0" / "ops_filters" / "0" / "memcg_path").read_text().strip(),
+                         "/user.slice/session-a.scope")
+        self.assertEqual((schemes / "1" / "ops_filters" / "0" / "memcg_path").read_text().strip(),
+                         "/system.slice/docker.service")
+        inserted = self.cg / "user.slice" / "session-0.scope"
+        inserted.mkdir()
+        (inserted / "memory.current").write_text(f"{8 * M}\n")
+
+        rc, out = run_hotset("sample", *self.args("--step", "0", "--kdamond", "0"))
+        self.assertEqual(rc, 0, out)
+        rows = {row["unit"]: row for row in csv.DictReader((self.ev / "hotset.csv").open())}
+        self.assertEqual(set(rows), {"docker.service", "user.slice"})
+        self.assertGreater(int(rows["docker.service"]["sz_filter_passed_one_apply"]), 0)
+        self.assertGreater(int(rows["user.slice"]["sz_filter_passed_one_apply"]), 0)
 
     def test_a_zero_filtered_count_above_1mib_refuses_that_floor_and_records_it(self) -> None:
         self.tree(nr=1, state="off")
