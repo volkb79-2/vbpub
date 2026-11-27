@@ -91,7 +91,11 @@ CONTROLLER_RUN_PREVIOUS_OWNER=''
 CONTROLLER_RUN_LOCK_PATH=''
 
 controller_run_record_extensions() {
-  printf '%s\n' 'done' 'jsonl' 'err' 'events' 'live' 'last.txt' 'wt' 'route' 'thread' 'autoresume.log'
+  # 'mode' is the pi run mode record (pi-impl.sh writes <name>.mode: 'review' or
+  # 'implementer'). It is listed here so a forced reuse RETIRES it like the other
+  # name-owned records; a run of the same name never silently inherits the
+  # previous run's mode.
+  printf '%s\n' 'done' 'jsonl' 'err' 'events' 'live' 'last.txt' 'wt' 'route' 'thread' 'mode' 'autoresume.log'
 }
 
 controller_pid_start_ticks() {
