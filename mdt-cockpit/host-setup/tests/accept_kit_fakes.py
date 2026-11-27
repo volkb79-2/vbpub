@@ -239,9 +239,9 @@ class DamonSysfsModel:
 
     def __init__(self, admin: Path, *, cgroup: Path, avail: str = "vaddr paddr", stats: bool = True,
                  filters: bool = True) -> None:
-        self.admin = admin
+        self.admin = Path(os.path.abspath(admin))
         self.cgroup = cgroup
-        self.kdamonds = admin / "kdamonds"
+        self.kdamonds = self.admin / "kdamonds"
         self.avail = avail
         self.stats = stats
         self.filters = filters
@@ -365,13 +365,18 @@ class DamonSysfsModel:
                 raise OSError(f"DAMON fake: memcg_path {memcg_path!r} is not an existing cgroup")
 
     def write(self, path: str, value: object) -> None:
-        target = Path(path)
+        # SysfsInterface builds paths from its configured string root while the
+        # test fixture owns Path objects. Normalize both before matching them:
+        # otherwise a relative spelling of the same fake sysfs path can write
+        # the attribute without materializing the children that the kernel
+        # creates on nr_kdamonds/nr_contexts/nr_* writes.
+        target = Path(os.path.abspath(path))
         if not target.is_file():
             raise FileNotFoundError(path)
         text = f"{value}\n"
         prior = target.read_text()
         try:
-            relative = target.relative_to(self.kdamonds)
+            relative = target.relative_to(Path(os.path.abspath(self.kdamonds)))
         except ValueError:
             relative = ()
         parts = relative.parts if relative else ()

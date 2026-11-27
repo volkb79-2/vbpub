@@ -436,6 +436,20 @@ class HotsetTests(unittest.TestCase):
         self.enterContext(mock.patch.object(da.SysfsInterface, "_read", model.read))
         return model
 
+    def test_damon_fake_materializes_children_at_the_paths_used_by_create_context(self) -> None:
+        model = self.sysfs_model()
+        model.write(str(self.kd / "nr_kdamonds"), 1)
+        contexts = self.kd / "0" / "contexts"
+        self.assertTrue((contexts / "nr_contexts").is_file())
+        model.write(str(contexts / "nr_contexts"), 1)
+        target_count = contexts / "0" / "targets" / "nr_targets"
+        self.assertTrue(target_count.is_file())
+        model.write(str(target_count), 1)
+        regions_count = contexts / "0" / "targets" / "0" / "regions" / "nr_regions"
+        self.assertTrue(regions_count.is_file())
+        model.write(str(regions_count), 1)
+        self.assertTrue((regions_count.parent / "0" / "start").is_file())
+
     def restore_model(self) -> subprocess.CompletedProcess:
         env = dict(os.environ, MDT_ACCEPT_SQUEEZE_STATE=str(self.wal), MDT_ACCEPT_MANIFEST=str(self.ev / "manifest.env"),
                    MDT_ACCEPT_DAMON_ADMIN=str(self.admin), MDT_ACCEPT_LOCK=str(self.tmp / "accept.lock"))
