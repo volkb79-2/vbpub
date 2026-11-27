@@ -98,7 +98,9 @@ def test_eacces_for_unrelated_hidden_process_is_skipped(tmp_path, monkeypatch):
     def not_our_child(idtype, pid, options):
         raise ChildProcessError(errno.ECHILD, "not a child")
 
-    monkeypatch.setattr(children.os, "waitid", not_our_child)
+    real_waitid = os.waitid
+    monkeypatch.setattr(children, "_waitid", not_our_child)
+    assert os.waitid is real_waitid
     assert children.direct_children(3, tmp_path, reader=denied) == {}
 
 
@@ -111,8 +113,8 @@ def test_eacces_for_our_credential_changed_child_fails_loudly(tmp_path, monkeypa
     def is_our_child(idtype, pid, options):
         return object()
 
-    monkeypatch.setattr(children.os, "waitid", is_our_child)
-    with pytest.raises(children.ProcessGuardError, match="our child"):
+    monkeypatch.setattr(children, "_waitid", is_our_child)
+    with pytest.raises(children.ProcessGuardError, match="refusing to skip it"):
         children.direct_children(3, tmp_path, reader=denied)
 
 
@@ -125,9 +127,29 @@ def test_eacces_with_failed_ownership_check_refuses(tmp_path, monkeypatch):
     def failed_probe(idtype, pid, options):
         raise OSError(errno.EIO, "waitid failed")
 
-    monkeypatch.setattr(children.os, "waitid", failed_probe)
+    monkeypatch.setattr(children, "_waitid", failed_probe)
     with pytest.raises(children.ProcessGuardError, match="cannot verify whether process 10 is our child"):
         children.direct_children(3, tmp_path, reader=denied)
+
+
+def test_real_waitid_probe_identifies_owned_child_and_preserves_wait_status():
+    if not children.is_linux():
+        pytest.skip("waitid(P_PID, ...) ownership probe is Linux-specific")
+    proc = subprocess.Popen(["/bin/true"])
+
+    def denied(path):
+        raise PermissionError(errno.EACCES, "hidden by procfs", str(path))
+
+    try:
+        info = os.waitid(os.P_PID, proc.pid, os.WEXITED | os.WNOWAIT)
+        assert info.si_pid == proc.pid
+        with pytest.raises(children.ProcessGuardError, match="refusing to skip it"):
+            children.read_process(proc.pid, reader=denied)
+        with pytest.raises(ChildProcessError):
+            os.waitid(os.P_PID, os.getpid(), os.WEXITED | os.WNOHANG | os.WNOWAIT)
+        assert proc.wait() == 0
+    finally:
+        proc.wait()
 
 
 def test_settle_skips_an_already_reported_identity(tmp_path):
@@ -278,8 +300,8 @@ def test_child_guard_reports_unreaped_identity_once_and_tracks_reused_pid(tmp_pa
     def remove(record, **kwargs):
         removed.append(record.identity)
         if record.identity == stuck.identity:
-            return "pid 10 comm blocked (unreaped after SIGKILL)"
-        return "pid 10 comm replacement (alive; SIGKILL sent and reaped)"
+            return children.RemovalOutcome("pid 10 comm blocked (unreaped after SIGKILL)", unreaped=True)
+        return children.RemovalOutcome("pid 10 comm replacement (alive; SIGKILL sent and reaped)")
 
     monkeypatch.setattr(children, "wait_for_new_children", observe)
     monkeypatch.setattr(children, "remove_if_still_ours", remove)
@@ -290,8 +312,82 @@ def test_child_guard_reports_unreaped_identity_once_and_tracks_reused_pid(tmp_pa
         "pid 10 comm blocked (unreaped after SIGKILL)",
         "pid 10 comm replacement (alive; SIGKILL sent and reaped)",
     ]
-    assert removed == [stuck.identity, reused.identity]
+    assert removed == [stuck.identity, reused.identity, stuck.identity]
     assert stuck.identity in seen_ignored[1]
+
+
+def test_child_guard_pass_bound_lists_only_fresh_children_after_an_unreaped_identity(tmp_path, monkeypatch):
+    guard = children.ChildGuard(root_pid=3, proc_root=tmp_path, settle_seconds=0)
+    stuck = children.ProcessRecord(10, 3, "D", "blocked", 100)
+    fresh = children.ProcessRecord(11, 3, "S", "worker", 200)
+    observations = iter([{stuck.identity: stuck}, *[{fresh.identity: fresh}] * (children.MAX_CLEANUP_PASSES - 1)])
+
+    def observe(*args, **kwargs):
+        return next(observations)  # Deliberately ignores the `ignore` argument.
+
+    def remove(record, **kwargs):
+        if record.identity == stuck.identity:
+            return children.RemovalOutcome("pid 10 comm blocked (unreaped after SIGKILL)", unreaped=True)
+        return None
+
+    monkeypatch.setattr(children, "wait_for_new_children", observe)
+    monkeypatch.setattr(children, "remove_if_still_ours", remove)
+    monkeypatch.setattr(
+        children,
+        "new_children",
+        lambda *args, **kwargs: {stuck.identity: stuck, fresh.identity: fresh},
+    )
+
+    leaked = guard.check()
+
+    bound = next(item for item in leaked if "reached the 10-pass bound" in item)
+    assert bound == "child cleanup reached the 10-pass bound; remaining new children: pid 11 comm worker"
+
+
+def test_child_guard_retries_recorded_unreaped_identity_after_passes(tmp_path, monkeypatch):
+    guard = children.ChildGuard(root_pid=3, proc_root=tmp_path, settle_seconds=0)
+    stuck = children.ProcessRecord(10, 3, "D", "blocked", 100)
+    observations = iter(({stuck.identity: stuck}, {}))
+    removed = []
+    kill_live_values = []
+
+    monkeypatch.setattr(children, "wait_for_new_children", lambda *args, **kwargs: next(observations))
+
+    def remove(record, **kwargs):
+        removed.append(record.identity)
+        kill_live_values.append(kwargs["kill_live"])
+        if len(removed) == 1:
+            return children.RemovalOutcome("pid 10 comm blocked (unreaped after SIGKILL)", unreaped=True)
+        return children.RemovalOutcome("pid 10 comm blocked (zombie; reaped)")
+
+    monkeypatch.setattr(children, "remove_if_still_ours", remove)
+    monkeypatch.setattr(children, "new_children", lambda *args, **kwargs: {})
+
+    assert guard.check() == ["pid 10 comm blocked (unreaped after SIGKILL)"]
+    assert removed == [stuck.identity, stuck.identity]
+    assert kill_live_values == [True, False]
+
+
+def test_child_guard_does_not_infer_unreaped_state_from_command_text(tmp_path, monkeypatch):
+    guard = children.ChildGuard(root_pid=3, proc_root=tmp_path, settle_seconds=0)
+    record = children.ProcessRecord(10, 3, "S", "unreaped", 100)
+    observations = iter(({record.identity: record}, {}))
+    ignored = []
+    monkeypatch.setattr(
+        children,
+        "wait_for_new_children",
+        lambda *args, ignore=(), **kwargs: (ignored.append(set(ignore)) or next(observations)),
+    )
+    monkeypatch.setattr(
+        children,
+        "remove_if_still_ours",
+        lambda *args, **kwargs: children.RemovalOutcome(
+            "pid 10 comm unreaped (alive; SIGKILL sent and reaped)", unreaped=False
+        ),
+    )
+
+    assert guard.check() == ["pid 10 comm unreaped (alive; SIGKILL sent and reaped)"]
+    assert ignored == [set(), set()]
 
 
 def test_child_guard_omits_pass_bound_when_no_children_remain(tmp_path, monkeypatch):
@@ -302,7 +398,9 @@ def test_child_guard_omits_pass_bound_when_no_children_remain(tmp_path, monkeypa
     monkeypatch.setattr(
         children,
         "remove_if_still_ours",
-        lambda record, **kwargs: f"pid {record.pid} comm {record.command} (alive; SIGKILL sent and reaped)",
+        lambda record, **kwargs: children.RemovalOutcome(
+            f"pid {record.pid} comm {record.command} (alive; SIGKILL sent and reaped)"
+        ),
     )
     monkeypatch.setattr(children, "new_children", lambda *args, **kwargs: {})
 
@@ -351,7 +449,8 @@ def test_bounded_reap_returns_unreaped_without_hanging():
         sleeper=sleeper,
         waiter=never_ready,
     )
-    assert outcome is not None and "unreaped after SIGKILL" in outcome
+    assert outcome is not None and "unreaped after SIGKILL" in outcome.message
+    assert outcome.unreaped
     assert 1 <= calls[0] <= 3
     assert proc.wait(timeout=120) == -9
 
