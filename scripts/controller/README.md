@@ -792,16 +792,17 @@ caller sets it: the resource observer needs the rebuilt container, and a lane
 that declares one goes to a remote gate worker instead.
 
 A held slot is not an admission (CTL-57): after it holds a slot and before it starts
-`run-gate`, `gate-run.sh` waits while the host's memory PSI `full` avg10
-(`/proc/pressure/memory`) is at or above 3, the programme's stop signal (fixed, no
+`run-gate`, `gate-run.sh` waits while the host's memory PSI `full` avg60
+(`/proc/pressure/memory`) is at or above 10, the programme's stop signal (fixed, no
 knob). It prints `gate-run: waiting for host admission: <value>, <n>s of <bound>s`
 once a minute (the wait is counted in its own 10 s sleeps, never read from a clock)
 and gives up after `CONTROLLER_GATE_PSI_WAIT_S` seconds (default 1800) with exit 75 and
-`gate-run: not admitted (memory PSI full avg10=X >= 3 for Ns); nothing ran`. A value that
+`gate-run: not admitted (memory PSI full avg60=X >= 10 for Ns); nothing ran`. A value that
 cannot be read is not waited on: exit 75 at once, `not admitted (memory PSI unreadable:
 <path>); nothing ran`. Exit 75 from this step is "nothing ran", never a lane verdict.
-Same rule as `dev` host-admission/1. `CONTROLLER_GATE_PSI_FILE` replaces the PSI path
-(a test seam).
+`avg10` spikes are ignored. `dev` host-admission/1 and
+`scripts/netcup/runner/remote-gate.py` use other rules.
+`CONTROLLER_GATE_PSI_FILE` replaces the PSI path (a test seam).
 
 ## Run one lane on a remote gate worker
 
