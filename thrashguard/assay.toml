@@ -1,0 +1,137 @@
+# thrashguard's judged lanes (Assay R0/R1, Rust).
+#
+# P1 `observe` ships one lane: `r0-r1`. The R0 half is the crate's own build,
+# nextest run and doctests (executed by the Run-Gate COMMAND lane that reaches
+# this judge); the R1 half is line coverage of the judged `src/` files at the
+# declared floor. `run-gate.toml [lanes.r0-r1]` is the reaching lane: it runs
+# the judge from the worktree's own `assay/src`, because `tester-unified-rust`
+# deliberately ships no pip/venv (see tester-unified-rust/docs/CONSUMERS.md).
+#
+# ## Floor and its derivation
+#
+# The floor is set from the MEASURED coverage of the JUDGED SET at the commit that
+# introduced this lane, rounded DOWN by one full point, and it is a regression
+# guard, not a target. `thrashguard/tools/check-floors.py` re-derives the declared
+# number from the LCOV artifact over the same `judge.targets` list and fails when
+# the declared floor is above the measured value (a floor nobody can reach is not a
+# measurement) or more than four points below it (a floor that protects nothing).
+#
+# ## What R1 does not cover (documented limits, not gaps to fill silently)
+#
+# - **Branches.** Stable Rust's cargo-llvm-cov writes no `BRDA:` records, so
+#   Assay records `branch_capability: unavailable` and `branches_total: 0`.
+#   `require_branch` stays `false`: `true` would refuse every run with
+#   `NO_MEASUREMENT/BRANCH_UNAVAILABLE`, which is a refusal, not a measurement.
+#   Branch coverage is never faked to satisfy a lane.
+#
+# - **Inline `#[cfg(test)]` blocks in a judged file ARE measured** (LCOV has no
+#   per-region exclusion; assay known issue K5). Every module here keeps its
+#   tests inline by design, so the measured percentage is honest about *this
+#   file's lines being exercised* and is not a product-code-only number.
+#
+# - **No R2.** No mutation campaign exists for this crate yet (backlog TG-5),
+#   and none is declared: a declared-but-never-run lane is not evidence.
+schema_version = 2
+
+[lanes.r0-r1]
+scope = "S1"
+rigor = ["R0", "R1"]
+enforcement = "gate"
+# Project-relative (Assay runs this argv in its own snapshot with cwd at
+# `thrashguard/`); `{worktree}` is a Run-Gate COMMAND-lane token and must not
+# appear here.
+argv = [
+  "bash", "-c",
+  '''set -eu
+tools/cargo-offline.sh llvm-cov nextest --locked --offline --profile ci --no-tests=fail --lcov --output-path lcov.info
+tools/cargo-offline.sh test --doc --locked --offline
+tools/cargo-offline.sh llvm-cov report --json --summary-only --output-path cov-summary.json
+python3 -I tools/check-floors.py lcov.info coverage-floors.toml assay.toml r0-r1''',
+]
+env = {}
+# `PATH` finds the tools; the two cargo homes are what the rustup proxy needs.
+env_passthrough = ["PATH", "CARGO_HOME", "RUSTUP_HOME"]
+budget = "20m"
+allow_argv_append = false
+
+[lanes.r0-r1.judge]
+language = "rust"
+source_roots = ["src"]
+# whole_target: every executable line of every declared target is judged, not
+# only the lines a commit changed. That is what makes this a floor rather than
+# a diff gate; `judge.targets` is required and honoured in this mode, and
+# `judge.base`/`base_source` are forbidden (there is no diff).
+mode = "whole_target"
+targets = [
+  # The judged set grows with every module that lands; a target listed before
+  # its file exists is a refusal (`NO_MEASUREMENT/TARGET_NOT_MEASURED`).
+  # Two files are absent on purpose, and for opposite reasons:
+  #
+  # - `src/lib.rs` carries only module declarations, `//!` documentation and three
+  #   constants with no executable line, so cargo-llvm-cov emits no `SF:` record for
+  #   it; a declared target with no artifact entry is refused
+  #   (`NO_MEASUREMENT/TARGET_NOT_MEASURED`), which is the correct answer and the
+  #   reason it is excluded HERE rather than excused.
+  # - `src/cli.rs` is the argv adapter, not part of the twelve-module numeric
+  #   whole-target coverage set below. Its contract is exercised by the focused
+  #   `every_documented_invocation_parses` and `every_refusal_is_a_named_error`
+  #   unit tests in that file, which the lane runs; this percentage floor does
+  #   not claim to measure CLI coverage.
+  "src/activation.rs",
+  "src/clock.rs",
+  "src/config.rs",
+  "src/daemon.rs",
+  "src/hysteresis.rs",
+  "src/json.rs",
+  "src/events.rs",
+  "src/psi.rs",
+  "src/report.rs",
+  "src/socket.rs",
+  "src/units.rs",
+  "src/wire.rs",
+]
+# The floor is the MEASURED value of this judged set rounded down by one full
+# point, and TG-6 is closed by this declaration (the placeholder 90.0 it tracked
+# is gone).
+#
+# Measured in the registered `r0-r1` lane on the tree of commit `8ac6b6bc22ff32688799886e40fa0e6803cbd9d5`
+# (image `tester-unified-rust:rs-20261124v`, `--locked --offline`, profile `ci`):
+#
+#   judged set: 12 `src/*.rs` files (activation, clock, config, daemon, events,
+#               hysteresis, json, psi, report, socket, units, wire)
+#   coverage:   3647 / 4058 executable lines = 89.8719 %   (whole file, inline
+#               `#[cfg(test)]` blocks included -- LCOV has no per-region exclusion)
+#
+# The judged set grew by `activation.rs` and `daemon.rs` in the same commit that
+# added them, and the re-measured value barely moved (89.8606 -> 89.8719), so the
+# floor stayed where it was.
+#
+# 89.87 - 1 = 88.87; the floor is declared as the whole point below it, 88.0, and
+# `coverage-floors.toml` carries the same number so `tools/check-floors.py` checks
+# the declaration in both directions (a floor above the measurement fails; more than
+# four points below it also fails). It is a regression guard, never a target: a
+# later wave that raises coverage raises this number in the same commit.
+fail_under = 88.0
+# LCOV carries no exclusion field, so `allow_excluded` has nothing to permit.
+allow_excluded = false
+require_branch = false
+
+[lanes.r0-r1.judge.coverage]
+format = "lcov"
+artifact = "lcov.info"
+
+# R1 needs an explicit snapshot policy (Assay's `[isolation]` requirement, an R1
+# refusal without one). The snapshot is the WHOLE repository, not just this crate,
+# because Assay snapshots the worktree; three `topos/tests/fixtures` files are
+# symlinks to absolute host paths (`/etc/passwd`, `memory.current`), and Git refuses
+# to materialise them in the snapshot (`ERROR/GIT_FAILED`). They are listed here
+# exactly as hostobs lists them (`hostobs/assay.toml:112-119`) — one repository,
+# one omission list — and none of them is inside this crate's judged `src/`.
+[lanes.r0-r1.isolation]
+snapshot_selection = "repository-minus-unsafe-symlinks"
+snapshot_history = "shallow"
+unsafe_symlink_omissions = [
+  "topos/tests/fixtures/inspect_files/_danger/passwd_link",
+  "topos/tests/fixtures/inspect_files/cgroup_escape/system.slice/ssh.service/dangerous_link/passwd_escape",
+  "topos/tests/fixtures/inspect_files/cgroup_nonreg/system.slice/ssh.service/memory.current",
+]

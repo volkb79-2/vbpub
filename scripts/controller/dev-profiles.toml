@@ -58,6 +58,20 @@ dev_image = "tester-unified-rust-dev:rs-20261124b"
 workdir = "hostobs"
 cache = "/home/gate/.cache/hostobs-target"
 
+# thrashguard is its own single-crate Rust workspace (design §5) whose lock names no registry
+# crate, so its `tools/cargo-offline.sh` verifies that fact itself instead of calling the
+# image's hostobs-lock verifier (see that script's header). Its lane is `r0-r1` -- the P1
+# cut has no R2 lane yet (backlog TG-5).
+[profiles.thrashguard]
+kind = "rust"
+lane = "r0-r1"
+environment = "tester-unified-rust"
+dev_image = "tester-unified-rust-dev:rs-20261124b"
+workdir = "thrashguard"
+cache = "/home/gate/.cache/thrashguard-target"
+# The inherited `gdb` verb still sets cwd to the hostobs cache directory above,
+# not this selected cache path. TG-13 tracks profile-specific gdb cwd support.
+
 [profiles.run-gate-project]
 kind = "python"
 lane = "selftest"

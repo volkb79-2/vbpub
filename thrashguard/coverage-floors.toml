@@ -1,0 +1,9 @@
+# The declared R1 floor for this crate, and the same number that
+# `assay.toml` `[lanes.r0-r1.judge].fail_under` carries. Both are read by
+# `tools/check-floors.py`, which refuses a floor above the measured value and a
+# floor more than four points below it, so a placeholder cannot survive here.
+#
+# Measured over the JUDGED SET of 12 `src/*.rs` files at commit 8ac6b6bc22ff32688799886e40fa0e6803cbd9d5:
+# 3647 / 4058 executable lines = 89.87 %; the floor is the whole point below it.
+[floor]
+pct = 88.0

@@ -1,4 +1,4 @@
-<!-- status: design; scope: run-gate + assay + remote-runner; operator decision 2026-11-25 -->
+<!-- status: design (P1 SHIPPED in run-gate rev 77); scope: run-gate + assay + fleetd/host-runner; operator decision 2026-11-25, questions answered 2026-11-25 (§8) -->
 # Design: no constraining time budgets — progress and stall detection replace wall-time caps
 
 ## 0. The decision this document implements
@@ -51,10 +51,10 @@ ends a run with a verdict.
 | RG-2 | lane `budget` (exec lane) | `:18612-18618`, `:18894-18919`, `:19058-19060` | per lane | in-runner GNU `timeout --preserve-status --kill-after=5s <budget>s`, then client grace | same, `BUDGET_EXCEEDED` |
 | RG-3 | lane `budget` (bare-host lane) | `:19393-19404`, `:19514-19519` | per lane | `proc.wait(timeout=remaining)`, then `terminate_process_group` | same |
 | RG-4 | lane `budget` re-attach continuation | `:17171-17181` | inherits the original admission clock | `await_container` | same (may fire immediately on a re-attach of an over-budget container) |
-| RG-5 | `stall_timeout` (assay lane) | `:1649-1663`, `ProgressWatch._idle_bound :16388-16405` | absent = auto bound | `ProgressWatch` from the progress file | `fail_infra` → `ERROR`, exit 2 (`:17436-17440`) |
-| RG-6 | `stall_timeout` (command container lane) | `:1667-1671` (legal for both kinds), `LogStreamWatch :16631`, `:17221-17226` | absent = no watch | log-line arrival age | `ERROR` exit 2, "STALLED" (`:17436-17440`) |
-| RG-7 | auto idle bound (assay lane, no declared key) | `:731` (600 s post-command), `:16405` (`max(300, 3*cadence)`) | 300 s floor | `ProgressWatch(auto_bound=True)` armed on container/exec/bare-host lanes (`:17201`, `:18853`, `:19307`) | `ERROR` exit 2 |
-| RG-8 | host-mode `stall_timeout` | `:1443-1453`, `:2102-2105` | — | nothing: accepted, WARNed, silently inert | none (a disclosed gap) |
+| RG-5 | `stall_timeout` (assay lane) | `:1741-1769` (legal on both kinds), `ProgressWatch._idle_bound :16961-16979` | absent = auto bound | `ProgressWatch` from the progress file | `fail_infra` → `ERROR`, exit 2 (`:18207`, `:19875`, `:20359`) |
+| RG-6 | `stall_timeout` (command container lane) | `:1741-1769` (legal for both kinds), `LogStreamWatch :17212-17401` | absent = 300 s auto bound (P1) | log-line arrival age | `ERROR` exit 2, "STALLED" (`:18207`) |
+| RG-7 | auto idle bound (assay lane, no declared key) | `:743` (600 s post-command), `:16979` (`max(300, 3*cadence)`), `:752` (the 300 s floor) | 300 s floor | `ProgressWatch(auto_bound=True)` armed on container/exec/bare-host lanes (`:17962`, `:18044`, `:19628`, `:20125`) | `ERROR` exit 2 |
+| RG-8 | host-mode `stall_timeout` | was `:1443-1453`, `:2102-2105` — **CLOSED by P1 (run-gate rev 77)** | — | `StreamWatch` over the runner's own output stream; the RG-58 WARN and `doctor` 2d are retired with the fact they asserted | none left: the key is no longer inert anywhere |
 | RG-9 | `lanes --check` outer/inner margin | `:217` (300 s), `:20133-20149` | 5 m | the check verb only | check finding (no run stops); `--strict` fails the estate-lint lane |
 | RG-10 | `lanes --check` canary attempt ≤ lane budget | `:20152-20168` | — | check verb only | finding |
 | RG-11 | admission wait | `:216`, `run_gate_admission.py` ticket | `10m` | `_admit_lane` | **not a stop**: WARN then proceeds (`:6766-6772`) |
@@ -90,7 +90,12 @@ useful judgement of a mutant run — this is the arithmetic defect the operator
 decision removes.
 | AS-7 | lane retry/`max_mutants` sentinel | `errors.py:180-190` | `max_mutants` | candidate discovery | `MUTANT_LIMIT_EXCEEDED` (not a time cap; listed for completeness) |
 
-### 1.3 runner / remote-gate (`scripts/netcup/runner/`)
+### 1.3 runner / remote-gate (`scripts/netcup/runner/` — TODAY's location)
+
+This inventory names where these caps live NOW. The shared host runner
+(`fleet host …`, fleetd's P-fd-05, controller `CTL-51`) is where the remote
+runner and its hosts/ssh configuration move to; `scripts/netcup` keeps only the
+netcup API and holds no host keys (operator answer to §8 Q2).
 
 | # | name | file:line | default | enforced by | verdict |
 |---|---|---|---|---|---|
@@ -143,28 +148,33 @@ Progress sources that exist today:
 |---|---|---|
 | assay lane (R0/R1/whole) | `--progress` phase stream, `command_running` heartbeat every 60 s (`README.md:648-660`) | `.assay/progress-<lane>.jsonl` |
 | assay R2 candidate | new plugin event, stdout/stderr file growth, process-tree CPU growth over 30 s; PSI-credit-gated idle clock (`liveness.py:1974-1990` eligibility, `:2050-2096` decision) | liveness side files |
-| container command lane | arrival age of `docker logs -f --timestamps` lines (`run_gate.py:16631-16740`) | log stream |
-| exec lane | same progress file (assay) or daemon profiler stream | `ProgressWatch` |
-| bare-host lane | `ProgressWatch` only (`:19307`) | progress file |
+| container command lane | arrival age of `docker logs -f --timestamps` lines (`run_gate.py:17212-17401`) | log stream |
+| exec command lane | since P1: arrival of the runner's own stdout chunks (`StreamWatch` over `OutputTee`) | output stream |
+| bare-host lane | `ProgressWatch` (assay) — and, as a command lane, since P1 its own stdout arrivals | progress file / output stream |
 
 Judgement quality already present:
 
-- **Silence, never total elapsed.** `ProgressWatch` measures `now - last event`
-  (`:16415`), the log watch measures line age, liveness measures idle inside
+- **Silence, never total elapsed.** `ProgressWatch._active_age` measures
+  `now - last event`, the log watch measures line age, liveness measures idle inside
   *eligible* intervals only.
 - **Pressure-independent.** run-gate pauses its idle clock when host PSI
-  `full avg10 > 5`, crediting at most 1800 s of pause (`:706`, `:16407-16430`);
+  `full avg10 > 5`, crediting at most 1800 s of pause
+  (`PRESSURE_PAUSE_MAX_SECONDS` in `ProgressWatch._active_age`);
   assay credits only intervals whose aggregate pressure/throttle counters did
   not move and never prorates a delta (`liveness.py:1974-1990`).
 - **Disclosure.** run-gate prints which source judged the lane
-  (`(source: progress file)` / `(source: log stream)`, `print_lane_bounds`).
+  (`(source: progress file)` / `(source: log stream)` / `(source: output
+  stream)`, `print_lane_bounds`) AND, since P1, whether the number is the
+  operator's own (`source: declared`, never paused) or the default (`stall
+  bound 300s (source: auto)`, paused under PSI), with the same facts recorded in
+  `run_record["stall_bound"]`.
 
 Gaps where nothing reports progress today:
 
 | G | unit | gap | evidence |
 |---|---|---|---|
-| G1 | bare-host lane | `stall_timeout` inert | `:1443-1453`, `:2102-2105` |
-| G2 | sequence lane | no own watch; only leaves' watches apply | `cmru/run-gate.toml:169` has one today |
+| G1 | bare-host lane (and the `exec` command lane, same one-line runner) | **CLOSED by P1** — was: `stall_timeout` inert, no signal of any kind | shipped in run-gate rev 77: `OutputTee` chunk arrivals → `StreamWatch`; out-of-tree `host_mode_stall_timeout_inert_reason` is a labelled no-op |
+| G2 | sequence lane | no own watch; only leaves' watches apply — **BY DECISION, not fixed**: a sequence composes members, and a heartbeat of "did a member finish" cannot show progress. `stall_timeout` on a sequence is REFUSED by name; the sequence validator returns before runner keys are read, so it has no runner disclosure or run-record stall bound | — |
 | G3 | canary probe | liveness is native-R2 only | verdict schema `schemas/verdict.schema.json:2538` |
 | G4 | cmru release/build step | watchdog sees output only | `runner.py:487-496` (`progress_paths=()`) |
 | G5 | remote-gate follower | no independent stall detection | RG-46, `run_gate.py:16916-16917` |
@@ -209,7 +219,7 @@ vocabulary — historical verdicts must keep parsing. Two additions, in this
 order:
 
 1. Stalls currently surface as `ERROR`/exit 2 via `fail_infra`
-   (`:17436-17440`, `:19062-19063`): a genuine stall is *not* an infrastructure
+   (`:18207`, `:19875`, `:20359`): a genuine stall is *not* an infrastructure
    failure and must not be reported as one. First package: keep exit 2 but
    carry a machine-readable reason token `lane-stalled` in the run record and
    the message.
@@ -251,7 +261,10 @@ Missing for "one command, about 3 shards per host on 3 hosts":
 
 - **No cross-host driver.** `run-r2-campaign.sh` is one host per invocation;
   `--shard-offset` exists precisely because a human starts the other hosts.
-  `remote-gate` runs one lane per `run`, with no fleet verb.
+  `remote-gate` runs one lane per `run`, with no fleet verb. Its OWNER is not
+  `scripts/netcup`: placing test-lane shards on hosts is the run-gate/fleetd
+  boundary (§5 row P6, `CTL-51`), because `scripts/netcup` holds the netcup API
+  and no host keys, and several ciu roots request runs from one fleetd.
 - **No store transport.** Moving a shard store off a host is manual
   (`scripts/netcup/CONSUMERS.md:745-750`); a partial host ends `75 merge-pending`.
 - **No per-shard stall watch across hosts.** Each host's own `run-gate` watches
@@ -260,15 +273,23 @@ Missing for "one command, about 3 shards per host on 3 hosts":
 - **The command-lane refusal** (§6a) blocks rollback v2's `kind = "command"`
   r2 lane from being sharded at all.
 
-Target shape (one command, 3 hosts × 3 single-threaded shards):
+Target shape (one command, 3 hosts × 3 single-threaded shards) — a fleetd +
+run-gate verb, not a `scripts/netcup` one:
 
 ```
-run-gate-r2-fleet <lane> --total 9 --hosts v1001,r1002,gates --jobs 1
-  -> per host: remote-gate run ... -- <lane> --shard K/9   (K = host offset..+2)
-  -> watch: per-shard stall, per-host job liveness, one fleet summary
+fleet r2 <lane> --total 9 --hosts v1001,r1002,gates --jobs 1
+  -> per host: the shared host runner starts `run-gate <lane> --shard K/9`
+     (K = that host's offset .. +2)
+  -> watch: per-shard stall (the shard's own run-gate), per-host job liveness,
+     one fleet summary
   -> collect: every shard store packaged by the job itself (§6b), then one
-     --merge-shards 9 run on any host (stores already present)
+     --merge-shards 9 run against stores that already arrived
 ```
+
+The verb's name is the design's open detail; what is decided (§8 Q2) is that it
+belongs to fleetd + run-gate, so the wheel that owns lane semantics and the
+service that owns hosts and keys are the two halves — and run-gate still never
+learns ssh.
 
 Per-shard stall detection: the shard's `run-gate` keeps its own
 `ProgressWatch` (progress file per shard, `assay_shard_state_dir`), the
@@ -291,10 +312,15 @@ shard of nine while its siblings keep the host log moving.
 | P3 | run-gate: stall reported as `lane-stalled`, then a `STALLED` verdict | vbpub-core + compatibility note | small/medium | closed verdict table change; needs its own release |
 | P4 | assay: the no-progress bound of §7.1, long-trace fix, per-run arming with disclosure, rewritten `unbounded` admission rule; only then `budget_per_candidate` stops binding where the watch is armed; new evidence decision ships in the v21 cut (P-assay-17) | vbpub-assay (implements and reviews) | medium/large | a slow single unit mistaken for no progress; old judges reject the new evidence decision |
 | P5 | assay: canary liveness (or an explicit unwatched disclosure) | vbpub-assay (implements and reviews) | medium | R3 units stay capped until this ships; do not remove `budget_per_attempt` first |
-| P6 | runner: fleet driver (`run-gate-r2-fleet`, or a `remote-gate fleet` verb); store collection on cancel/term is vbpub-platform's own small package (§6b), which P6 depends on | scripts/netcup owner | large | a fleet without that collection loses a stopped shard's progress |
+| P6 | runner: fleet driver, a fleetd + run-gate boundary (§8 Q2) — fleetd owns hosts/keys and serves several ciu roots, run-gate owns the shard semantics; store collection on cancel/term is vbpub-platform's own small package (§6b), which P6 depends on | fleetd + run-gate (shared host runner, `P-fd-05`; controller `CTL-51`) | large | a fleet without that collection loses a stopped shard's progress |
 | P7 | (lower priority: rollback converts debian-install-v2's R2 into a native R2 assay lane, which `--shard` already serves) run-gate: `--shard` for command lanes (a command lane's shard = per-shard `--only-candidates`-equivalent or per-shard runner partitioning) | vbpub-core | medium/large | a command lane has no candidate model; naive sharding splits a suite by file and silently changes what a PASS means |
 | P8 | cmru: feed the step watchdog `progress_paths` (build logs, gate progress) | cmru owner | small | watchdog stays, only its silence definition widens |
 | P9 | project toml migration (6 projects) | per-project owner, one change each | small each | a converted lane losing its only bound on an old run-gate |
+
+P6 also moves the remote-gate runner and its `hosts`/ssh configuration OUT of
+`scripts/netcup` into the shared host runner; until that line lands,
+`scripts/netcup` is where they are, which is a location fact, not an owner
+decision (§8 Q2).
 
 Ordering constraint: P1 before P2 (a rule that removes a cap needs the watch to
 exist), P6 after platform's store-collection package and independent of P1..P5
@@ -342,7 +368,9 @@ progress lives in that checkout, so a cancelled run loses it — exactly what
 `--resume` needed. `host-sat-queue.sh:186-190` cancels through this same path,
 so a queue timeout loses the store too.
 
-Fix (not part of P6: vbpub-platform owns it as its own small package): collect before teardown on every exit path — the TERM trap must run
+Fix (not part of P6: vbpub-platform owns it as its own small package, and it
+lands on TODAY's runner — the code that exists now, not the code the shared host
+runner will move): collect before teardown on every exit path — the TERM trap must run
 `collect_stores` (bounded, and never changing `rc`) *before* cancelling, or
 `finish` must call it after the lane container is stopped and before
 `rm -rf $CKDIR`. Same rule for `remote-gate cancel`, which currently only
@@ -360,17 +388,19 @@ before its cap may be dropped.
 | native R2 (assay, ephemeral container) | candidate | assay `LivenessRunner` (`CANDIDATE_HUNG`, AS-4) + run-gate `ProgressWatch` on the progress file | **idle stalls only** (§7.1) | `budget_per_candidate` stops binding only after P4, per run where the watch is armed; the lane-level bound after P2 and P4 |
 | native R2 (exec mode) | candidate | same | **idle stalls only** (§7.1) | same; `--shard` stays refused (`:3232-3236`) |
 | assay R0/R1 lane (container) | one command | `ProgressWatch` on `--progress`, heartbeat 60 s | **yes** | lane `budget` may become `unbounded` after P2 |
-| command lane, container | the command | `LogStreamWatch` (RG-41) | **yes**, only if `stall_timeout` is declared | auto-bound must arm first (P1) |
-| command lane, exec mode | the command | `ProgressWatch` only for an assay delegation; a plain command has **no** file | **no** (G5-adjacent) | P1 must add a log/file signal, else cap stays |
-| command lane, bare-host (`bare-host`) | the command | none — `stall_timeout` inert (G1) | **no** | cap stays until P1 |
-| sequence lane | members | leaves' own watches | partial (G2) | P1 |
+| command lane, container | the command | `LogStreamWatch` (RG-41), armed on every such lane since P1 (not only where `stall_timeout` is declared) | **yes** | cap may be dropped after P2 |
+| command lane, exec mode | the command | **yes** since P1: `StreamWatch` over the runner's own output stream (it has no container log to tail) | **yes** | cap may be dropped after P2 |
+| command lane, bare-host (`bare-host`) | the command | **yes** since P1: same `StreamWatch` (G1 closed) | **yes** | cap may be dropped after P2 |
+| sequence lane | members | leaves' own watches; the sequence itself declares none (G2, by decision) | partial (G2) — and settled: nothing to add | nothing removed at THIS level; the members' own rows decide |
 | canary (R3 probe inside an assay lane) | probe | none (`verdict.schema.json:2538`) | **no** | `budget_per_attempt` stays until P5 |
 | build / image bake (cmru steps, runner builds) | step | cmru procio watchdog, output-only (CM-1) | partial (G4) | step watchdog stays; only its silence definition widens (P8) |
 | release gate (cmru `release`, `tester-gate`) | the whole gate | composition: member lanes' watches + CM-1 | partial | nothing removed; it inherits member decisions |
-| remote shard (either kind) | shard | shard's own run-gate watch + fleet watch | partial (G6/G7) | P6 |
+| remote shard (either kind) | shard | shard's own run-gate watch (which P1 makes unconditional) + the fleet watch | partial (G6/G7) | P6 (a fleetd + run-gate boundary) |
 
-Nothing in this table is a reason to remove a cap today: five rows have no
-watch, and the rule is that the cap stays until the row's package ships.
+Nothing in this table is a reason to remove a cap today: the rows that still
+have no watch (canary/R3, cmru build steps, remote shards, and the sequence row
+that is none of its own) keep their caps until their package ships, and no cap
+is removed by P1 at all — P1 only ARMS the watches.
 
 ### 7.1 Hole in the native R2 row: a candidate that never completes a unit
 
@@ -421,30 +451,52 @@ times its measured baseline suite time. With `"none"` one spinning mutant runs
 until the finite lane budget and ends the whole lane `BUDGET_EXCEEDED` (main
 controller ruling, 2026-11-25; ciu applies it in CIU-235).
 
-## 8. Open operator questions
+## 8. Operator questions — ANSWERED (operator, 2026-11-25; recorded here, not proposed)
 
-(Sent to the operator by the main controller on 2026-11-25, with the
-recommendations below as the proposal; unanswered until recorded here.)
+The five questions were sent by the main controller with a recommendation each.
+The operator's answers are below; where the answer differs from the recommendation,
+the answer wins and the design is corrected where it had stated the other.
 
-1. **`BUDGET_EXCEEDED` for a stopped shard.** When a fleet shard stalls and is
-   cancelled, is the *campaign* verdict `INCONCLUSIVE` (a shard is missing) or
-   `BUDGET_EXCEEDED` (retained for compatibility)? Recommendation:
-   `INCONCLUSIVE` with the missing-shard list.
-2. **Where the fleet driver lives.** run-gate itself (a `run-gate r2-fleet` verb,
-   so one wheel owns the semantics) or `scripts/netcup` (where the host list and
-   ssh credentials already are)? Recommendation: `scripts/netcup`, because
-   run-gate must not learn ssh; the fleet verb then shells out to
-   `remote-gate run` per shard.
-3. **Retirement of `budget_per_candidate`.** Ignored-with-WARN indefinitely, or
-   removed in a major? Recommendation: deprecated now, removed only after the
-   second runtime's `CANDIDATE_HUNG` is proven (one release after P4/P5).
-4. **How long a stall window a lane of unknown cadence gets.** P1's floor is
-   300 s and `3×cadence` when the judge publishes a cadence. For a first-ever
-   lane (no history, no inventory) is 300 s acceptable as the default, or must
-   an unmeasured lane declare `stall_timeout` explicitly?
-5. **Canary cost.** If R3 probes stay capped while R2 goes unbounded, a canary
-   on a slow host can still cut the lane at `budget_per_attempt`. Accept a
-   disclosed exception, or prioritise P5?
+1. **`BUDGET_EXCEEDED` for a stopped shard — ANSWERED: `INCONCLUSIVE`.**
+   A stalled shard's campaign verdict is `INCONCLUSIVE`, and it carries the
+   missing-shard list. `BUDGET_EXCEEDED` is retained only for compatibility with
+   historical verdicts (§3.3), never as this case's verdict.
+2. **Where the fleet driver lives — ANSWERED: OVERRIDDEN, the fleet driver is
+   NOT `scripts/netcup`.** The recommendation above was `scripts/netcup`; the
+   operator overruled it. Placing test-lane shards on hosts is the
+   **run-gate/fleetd boundary** whenever fleetd manages those hosts:
+   `scripts/netcup` only provides the netcup API and holds **no host keys**; the
+   remote gate runner and the hosts/ssh configuration move OUT of
+   `scripts/netcup` in that line (the shared host runner, fleetd's own package
+   P-fd-05 / controller `CTL-51`). Several ciu roots may request runs, so fleetd
+   serves several clients rather than one repository's controller.
+   Consequences elsewhere in this document: §1.3's inventory names where the
+   runner lives TODAY, not where P6 puts it; §4's "no cross-host driver" and its
+   target shape are owned by fleetd + run-gate (§5 row P6); §6b's store
+   collection still lands on TODAY's runner, because it is a fix to the code
+   that exists now, not to the code P6 will move.
+3. **Retirement of `budget_per_candidate` — ANSWERED: deprecated now, removed
+   one release after P4 and P5 are proven.** Ignore-with-WARN is the state in
+   between; the removal is a later release, and the deprecation itself is
+   stated in assay's own release note (vbpub-assay, A-457's line).
+4. **Stall window for a lane of unknown cadence — ANSWERED: 300 s.**
+   `DEFAULT_STALL_BOUND_SECONDS = 300.0` is the default and it is never below
+   `3×` a published cadence: an assay lane with a published cadence keeps
+   `max(300, 3× cadence)` (RG-7), and the R2 post-`command_finished` bound stays
+   600 s. An unmeasured lane does NOT have to declare `stall_timeout`; it
+   inherits 300 s and the disclosure says the bound is `auto`. This is P1's
+   shipped behaviour (`run-gate-project/run_gate.py:740`, `stall_bound_facts`,
+   `print_lane_bounds`).
+   - **One exception the operator has not ruled on yet, reported rather than
+     guessed:** a lane whose child buffers its own stdout is silent by this
+     definition for its whole run, and 300 s will stop it. The escape is that
+     lane declaring its own `stall_timeout` with the measured reason; P1 does not
+     widen the default for it.
+5. **Canary cost — ANSWERED: accept a disclosed exception until P5.** R3 stays
+   capped at `budget_per_attempt` while R2 goes unbounded, and the run says so
+   in its disclosure rather than pretending the whole lane is unbounded. P5
+   (canary liveness, or an explicit unwatched disclosure) is what ends the
+   exception; the cap must not be removed before it ships (§7's rule).
 
 ## 9. UNVERIFIED
 
@@ -463,8 +515,19 @@ recommendations below as the proposal; unanswered until recorded here.)
 
 ## 10. What this design does not do
 
-No behaviour change, no schema change, no test change ships with this document.
-It names the order in which another agent may change them, and the single rule
-that decides when a cap may fall: a cap is removed only where a stall watch
+This document itself ships no behaviour change, no schema change and no test
+change: it names the order in which another agent may change them, and the single
+rule that decides when a cap may fall — a cap is removed only where a stall watch
 exists, and a lane that declares `unbounded` without that watch is refused by
 name.
+
+**P1 has since shipped** (run-gate rev 77, package `P1` in §5): every watchable
+lane kind is armed with a stall bound. What P1 newly ARMED is the *command*
+kinds — the exec/bare-host runners that had no signal at all (RG-41's
+`LogStreamWatch` already covered a container command lane), and the flat 300 s
+default now reaches every command lane that declares nothing. An **assay** lane
+was already armed before P1 with `ProgressWatch(auto_bound=True)` (RG-7: the
+`max(300, 3x cadence)` / 600 s post-command rule), so for those lanes P1 changed
+what is *disclosed and recorded*, not the number enforced. P1 removed no cap and
+does not accept `budget = "unbounded"` (that is P2), which is exactly the
+ordering the rule above demands. The rest of §5's packages are still design.
