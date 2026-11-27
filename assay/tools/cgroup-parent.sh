@@ -123,7 +123,7 @@ new_unit_probe_identity() {
   unit_probe_id=""
 }
 inspect_owned_unit_probe() {
-  local target="$1" facts message line absent
+  local target="$1" facts message absent
   local inspect_status inspected_id inspected_name inspected_owner
   local format='{{.Id}}|{{.Name}}|{{index .Config.Labels "io.assay.cgroup-parent.owner"}}'
   if facts="$(timeout --signal=TERM --kill-after=5s 30s docker inspect "$target" \
@@ -134,17 +134,20 @@ inspect_owned_unit_probe() {
     [[ "$inspect_status" == 1 && "$target" == "$unit_probe_name" ]] || return 3
     # Absence needs Docker's own statement for this exact name. Ask again with
     # only stderr captured: with --format, a failed inspect also writes an
-    # empty stdout line. A second call that succeeds is ambiguous too.
+    # empty stdout line. The second call must exit 1 and its whole stderr must
+    # be that one statement; success, another status or any extra text is
+    # ambiguous.
     if message="$(timeout --signal=TERM --kill-after=5s 30s docker inspect "$target" \
       --format "$format" 2>&1 >/dev/null)"; then
       return 3
+    else
+      inspect_status=$?
     fi
     absent="no such object: $target"
-    while IFS= read -r line; do
-      [[ "${line,,}" != "${absent,,}" && "${line,,}" != "error: ${absent,,}" ]] \
-        || return 1
-    done <<<"$message"
-    return 3
+    [[ "$inspect_status" == 1 \
+      && ( "${message,,}" == "${absent,,}" \
+        || "${message,,}" == "error: ${absent,,}" ) ]] || return 3
+    return 1
   fi
   [[ "$facts" != *$'\n'* ]] || return 2
   IFS='|' read -r inspected_id inspected_name inspected_owner <<<"$facts"
@@ -215,8 +218,7 @@ start_unit_probe() {
     memory_stat_reader="$(cat <<'MEMORY_STAT_READER'
     if [ -e /tmp/host-memory.stat ]; then
       printf "ASSAY_MEMORY_STAT_BEGIN\n"
-      if command -v timeout >/dev/null 2>&1 \
-        && timeout --kill-after=1s 3s awk '
+      if timeout --kill-after=1s 3s awk '
         $1 == "inactive_file" || $1 == "slab_reclaimable" ||
         $1 == "file_dirty" || $1 == "file_writeback" { print }
       ' /tmp/host-memory.stat; then
