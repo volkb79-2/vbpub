@@ -577,27 +577,40 @@ restart/downgrade cannot kill it (§4.5).
 
 ### 4.3 Stop, collect, then teardown (D7)
 
-On normal completion or lane failure, deregister the exited container, run `collect_once`, verify
-the archive, remove this job's containers by labels and checkout, then release its charge. On
-explicit cancel or TERM, deregister and thaw it if frozen, send TERM to the lane, and wait for its process
-or container to stop. Only then collect once and verify the archive. Collection is idempotent;
-store errors do not rewrite the lane verdict.
+On normal completion or lane failure, the worker persists the Run-Gate child status,
+confirms that its scope contains only the worker, and queries Docker by the exact
+`run-gate.job=<job id>` label. A query failure or any running job container leaves the
+checkout and charge untouched. The worker then runs `collect_once`, verifies the archive,
+removes only exact full container IDs carrying that job label, removes the checkout, writes
+the durable terminal record, and only then releases the charge. Collection is idempotent;
+store errors do not rewrite the lane verdict and are carried in the result detail.
 
-If deregister/thaw fails, retry without teardown. If TERM fails or the lane remains alive, collect
-no artifacts or store; keep the checkout, containers and charge, report `stopping`, and retry.
-When it exits, collect every flushed record. There is no wall-clock limit on this wait: stopping a
-run never silently discards its last writes.
+Cancel records intent only. The worker deregisters the job through the merged
+thrashguard `deregister` interface (whose server side effect thaws a frozen job), sends
+TERM to its owned lane process group and waits without an overall deadline. It persists
+the child status immediately after exit, then follows the same stop, collect and teardown
+checks. If deregistration or TERM fails, or a lane remains alive, collect no artifacts or
+store; keep the checkout, containers and charge, report `stopping`, and retry through an
+injected waiter. If guard presence is true and the `deregister` callable is unavailable,
+refuse that cancel path by name and retain the charge. Persistent `exec` cancellation or
+an end without the Run-Gate verdict proof cannot prove the in-runner process stopped and
+also remains `stopping` (FD-065).
 
 ### 4.4 Bind the verdict to the commit
 
 The agent verifies request `sha`; a host-written checkout line after `rev-parse HEAD` equals that
 sha (`scripts/netcup/runner/remote-gate.py:682-685`); exactly one `lane-verdict` for the job id,
 the exact-lane anchored summary, and Run-Gate process status agree; and every non-null
-`lane-started` container id matches the inspected full ID and checkout mount. Require
-`run-gate.*` labels for a Run-Gate-started container lane; for `mode = "exec"`, the request's
-persistent runner name selects the check and labels are not required. The checkout-mount check
-applies in both modes. It writes `result.json` from those facts only. A
-missing or mismatched fact is transport/refusal, never PASS. Rejected: binding to the client's
+`lane-started` container id matches the full ID and checkout mount observed while Run-Gate is
+running. Persist each observation and bind from it; a container already gone at observation is
+ERROR. Require matching `run-gate.*` job, repo, project, lane and commit labels for a
+Run-Gate-started container lane; for `mode = "exec"`, the captured persistent runner name
+selects the identity check and labels are not required. The checkout-mount check applies in
+both modes. A short-lane removal race remains FD-064 and must be closed before executor
+enablement; do not relax identity checks. Verify exec mount compatibility against a real
+persistent runner before enablement (FD-067). A host-mode lane runs as the event file's owner
+and can rewrite it; this limit is FD-066. The host writes `result.json` from observed facts only.
+A missing or mismatched fact is transport/refusal, never PASS. Rejected: binding to the client's
 `--commit` echo (`scripts/controller/remote-gate.sh:283-285`).
 
 ### 4.5 Host loss, agent restart and reboot
@@ -740,15 +753,19 @@ Contract gates also cover same-digest idempotence and major-version refusal.
 refused unless the request sha matches the host-authored checkout line, one
 closed-shape `lane-verdict` event agrees with the exact-lane anchored summary
 and Run-Gate process status, and every reported container id is inspected as a
-full id with the job checkout mount (plus Run-Gate labels where required).
-Cancellation on a host with the guard absent sends TERM and waits for the lane
-and container to stop before collection; when guard presence is known but no
-merged deregister/thaw callable exists, cancellation stays in `stopping` with
-a named refusal. Bundle size and sha256 are checked before checkout, then the
-host checks out the requested sha and records `rev-parse HEAD` in its own log.
-Event binding, archive checks, bundle verification, stop-signal dispatch and
-container waiting have injected-interface unit coverage; live
-systemd/Docker/cancellation acceptance remains a host probe.
+full id with the job checkout mount (plus matching Run-Gate labels where
+required). The worker observes and persists `lane-started` facts before
+Run-Gate can remove its container; a short-lane race remains FD-064 and blocks
+enablement. Cancellation on a guard-absent host records that fact before the
+worker sends TERM and waits; with guard present but no merged `deregister`
+callable, cancellation stays in `stopping` with a named refusal. Persistent
+exec cancel and unproved exec end retain the charge (FD-065). Bundle size and
+sha256 are checked before checkout, then the host checks out the requested sha
+and records `rev-parse HEAD` in its own log. Event binding, archive checks,
+bundle verification, stop-signal dispatch, terminal-record ordering and
+container waiting have injected-interface unit coverage. Live systemd/Docker/
+cancellation acceptance and the exec-mount probe remain host work; the
+host-mode event-file same-uid limitation is FD-066.
 
 **Rollback.** Each client owns one `legacy|agent` flag. The agent keeps legacy jobs charged during overlap. Downgrade within a major is safe because executors run in separate scopes; major mismatches refuse and minor additions are capability-advertised. Flag and legacy-path removal is separate.
 

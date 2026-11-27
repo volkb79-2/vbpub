@@ -6,10 +6,10 @@ All notable changes to this project are recorded here.
 
 ### Added
 - Add the standard-library host lane executor and worker, one transient systemd scope per confirmed job, runner-user checkout operations, bundle verification, seed/collect archives, Run-Gate verdict binding and host-written `result.json`.
-- Persist FD-061 executor result fields before releasing the admission charge; terminal status reads them after restart.
+- Persist FD-061 executor result fields before releasing the admission charge; terminal status reads them after restart. Store collection detail is preserved in the result (FD-068).
 
 ### Changed
-- Wire `fleetd-agent` to the executor. Lane submission still refuses while the C3b-2 legacy-job provider is unwired; C3b-1 does not install or enable host services. Cancellation refuses with a named deferral when guard presence is true or unknown and no merged deregister/thaw callable is available.
+- Wire `fleetd-agent` to the executor. Lane submission still refuses while the C3b-2 legacy-job provider is unwired; C3b-1 does not install or enable host services. The worker records and inspects lane-started containers as events arrive, and confirms its scope and exact-label containers before collection or release. Cancellation refuses with a named deferral when guard presence is true or unknown and no merged `deregister` callable is available. FD-064, FD-065, FD-066 and FD-067 remain enablement limits; live systemd and persistent-runner probes are still required.
 
 <!-- cmru: release history -->
 

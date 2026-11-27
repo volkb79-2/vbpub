@@ -66,6 +66,12 @@
 | FD-061 | Persist executor result details for terminal status | P2 | FIXED IN THIS BRANCH (C3b-1) | 2026-11-27 |
 | FD-062 | Retain and garbage-collect host upload objects | P2 | OPEN (C3b-2 follow-up) | 2026-11-27 |
 | FD-063 | Incrementally count large Assay progress files | P2 | OPEN | 2026-11-27 |
+| FD-064 | Close the short-lane event-observation race before enabling the executor | P1 | OPEN; BLOCKER BEFORE ENABLEMENT | 2026-11-27 |
+| FD-065 | Prove persistent exec-lane work stopped before cancellation releases its charge | P1 | OPEN; cancellation remains stopping | 2026-11-27 |
+| FD-066 | Protect host-owned Run-Gate events from a same-uid host lane | P1 | OPEN; transport limit | 2026-11-27 |
+| FD-067 | Verify exec checkout mount against a real persistent runner before enablement | P1 | OPEN; LIVE PROBE REQUIRED | 2026-11-27 |
+| FD-068 | Preserve store collection failure detail in the host result | P2 | FIXED IN THIS BRANCH (C3b-1) | 2026-11-27 |
+| FD-069 | Bind Run-Gate repo/project labels to the request | P2 | FIXED IN THIS BRANCH (C3b-1) | 2026-11-27 |
 
 ## FD-001 Lite campaign lifecycle
 
@@ -1199,3 +1205,74 @@ no-follow descriptor safety of the current reader. No checkpoint format or
 retention policy is defined here.
 
 Source: P-fd-05 C3a fix round 2 controller ruling (2026-11-27).
+
+## FD-064 Close the short-lane event-observation race before enabling the executor
+
+**State:** OPEN; BLOCKER BEFORE ENABLEMENT. **Priority:** P1. **Filed:** 2026-11-27.
+
+The worker follows the host-owned event file while Run-Gate is running and
+inspects and durably records each `lane-started` observation. If Run-Gate removes
+a very short-lived container before the worker can inspect it, the observation
+is an ERROR and the job cannot PASS. Close this race in Run-Gate or establish an
+equivalent host-observable handoff before enabling executor submissions. Do not
+relax the identity or checkout-mount checks.
+
+Source: P-fd-05 C3b-1 fix round 1 controller ruling for H3 (2026-11-27).
+
+## FD-065 Persistent exec cancellation cannot prove the in-runner process stopped
+
+**State:** OPEN; cancellation remains `stopping`. **Priority:** P1. **Filed:** 2026-11-27.
+
+The executor cannot prove that terminating the local `docker exec` client stopped
+the process inside a persistent runner. Cancellation of `mode = "exec"` and an
+end without the Run-Gate verdict proof therefore retain the checkout, containers
+and admission charge. Define and test a host-observable stop protocol before
+allowing either path to finalize.
+
+Source: P-fd-05 C3b-1 fix round 1 controller ruling for H4 (2026-11-27).
+
+## FD-066 Same-uid host lanes can modify the host-owned Run-Gate event file
+
+**State:** OPEN; transport limit. **Priority:** P1. **Filed:** 2026-11-27.
+
+The event file is outside the checkout and inaccessible to the lane container,
+but a host-mode lane runs as the configured runner uid that owns the file. It can
+rewrite that file and influence event binding. Before host-mode submissions are
+enabled, move event ownership behind a host-only writer or provide an equivalent
+mechanism that preserves the Run-Gate event contract.
+
+Source: P-fd-05 C3b-1 fix round 1 controller ruling for M6 (2026-11-27).
+
+## FD-067 Verify exec checkout mount against a persistent runner
+
+**State:** OPEN; live probe required. **Priority:** P1. **Filed:** 2026-11-27.
+
+The executor keeps the strict requirement that the inspected persistent runner
+has a bind mount whose source is this job's checkout. No real persistent runner
+has been probed to establish that the configured runner can satisfy that
+per-job source. Keep exec-mode enablement behind a live acceptance probe; do not
+weaken the mount check.
+
+Source: P-fd-05 C3b-1 fix round 1 controller ruling for M7 (2026-11-27).
+
+## FD-068 Preserve store collection failure detail in the host result
+
+**State:** FIXED IN THIS BRANCH (C3b-1). **Priority:** P2. **Filed:** 2026-11-27.
+
+Store transport/collection failures are included in the result's `collection`
+detail while leaving the Run-Gate verdict unchanged. Retryable infrastructure
+failures keep the job and charge in `stopping`; a semantic store failure is
+recorded alongside the final lane verdict.
+
+Source: P-fd-05 C3b-1 fix round 1 controller ruling for L5 (2026-11-27).
+
+## FD-069 Bind Run-Gate repository and project labels to the request
+
+**State:** FIXED IN THIS BRANCH (C3b-1). **Priority:** P2. **Filed:** 2026-11-27.
+
+Container binding requires the `run-gate.repo` and `run-gate.project` label
+values to equal the authenticated request, in addition to requiring the full
+Run-Gate label set. This prevents a correctly named job/lane/commit container
+from another repository or project from satisfying the binding.
+
+Source: P-fd-05 C3b-1 fix round 1 controller ruling for L2 (2026-11-27).

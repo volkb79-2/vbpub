@@ -158,9 +158,21 @@ remain readable; absent executor fields are unknown. Cancel of a terminal job
 refuses with exit 2. For an executed lane, PASS requires agreement among the
 request sha, host checkout line, Run-Gate event, exact-lane summary, process
 status, and inspected container identity and checkout mount.
-Cancellation records an absent guard before sending TERM. When guard presence
-is true or unknown, C3b-1 reports the missing merged deregister/thaw callable
-and keeps the job in `stopping` with its charge and checkout.
+The worker observes and persists each `lane-started` container while Run-Gate is
+running. A container gone at observation is an error; the short-lane race is
+FD-064 and must be closed before enabling submissions. The worker confirms that
+its scope contains only itself and that Docker has no running container with
+this exact job label before it collects or releases the charge. The strict
+persistent exec checkout-mount requirement still needs a real runner probe
+(FD-067).
+
+Cancel records intent only. The worker deregisters/thaws through the merged
+thrashguard interface, sends TERM and waits for the lane process itself. When
+guard presence is true but no callable `deregister` is injected, it keeps the
+job in `stopping` with its charge and checkout. Exec-mode cancellation or an
+end without the Run-Gate verdict proof cannot establish that the in-runner
+process stopped, so it also remains charged and stopping (FD-065). A host-mode
+lane shares the runner uid that owns the event file and can modify it (FD-066).
 
 ### Agent skills
 

@@ -271,11 +271,32 @@ those host-observed facts and collects the closed artifact set plus one
 `assay-store.tgz` and checksum. The admission and lease verbs still use the
 durable C2 book. A live lease connection holds its lease flock until disconnect;
 bind/reconnect verify the immutable container ID and host-inspected lease label.
-No run or lane wall-clock limit is added. On cancellation, a host with the guard
-absent records that fact and sends TERM. If guard presence is true or unknown,
-the executor refuses cancellation with a named reason because the merged
-thrashguard deregister/thaw callable is not available; it leaves the job in
-`stopping` with its checkout and charge retained.
+The worker follows the event file during the lane, inspects each
+`lane-started` container while it is present, and durably saves that observation.
+A container already gone at observation is an ERROR. The final binding uses the
+saved observation; each Run-Gate container must carry matching job, repo,
+project, lane and commit labels and mount this job's checkout. A short-lane race
+where Run-Gate removes the container before observation remains FD-064 and must
+be closed before executor enablement. The strict persistent exec mount check
+also requires a live acceptance probe (FD-067).
+
+No run or lane wall-clock limit is added. `request_stop` records cancellation
+intent; the worker owns deregistration/thaw, TERM and waiting, and writes the
+child status immediately after it exits. Before collection or charge release,
+the scope must contain only the worker and a Docker query by the exact job label
+must show no running job container; teardown removes only exact full IDs with
+that label. The worker retries transient store, Docker, removal and completion
+failures without an overall deadline. Cancellation on a guard-absent host
+records that fact before TERM. When guard presence is true but the merged
+`deregister` callable is unavailable, cancellation remains `stopping` with the
+checkout and charge retained. Cancellation or an unproved end in persistent
+`exec` mode also remains `stopping` because the in-runner process cannot be
+proven stopped (FD-065).
+
+Run-Gate's event file is outside the checkout and not writable by the lane
+container. A host-mode lane runs as the same uid that owns it and can modify it;
+that transport limit is FD-066. Event ownership must be hardened before
+host-mode submissions are enabled.
 
 Submits for the same job ID serialize the `request.json` write, admission,
 failure cleanup, and executor start under `jobs/<job_id>/submit.lock`. The lock
