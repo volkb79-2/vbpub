@@ -1865,6 +1865,47 @@ def test_wall_backstop_stops_an_armed_candidate_without_completed_events(
     assert proc.waited
 
 
+@pytest.mark.parametrize(
+    "with_window", [False, True], ids=("no-window", "open-window")
+)
+def test_wall_backstop_closes_an_open_window_before_killing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, with_window: bool
+) -> None:
+    actions: list[str] = []
+
+    class Window:
+        def close(self) -> None:
+            actions.append("close")
+
+    window = Window() if with_window else None
+    monkeypatch.setattr(
+        liveness.observer_windows, "open_for_root", lambda _pid: window
+    )
+    monkeypatch.setattr(
+        liveness.observer_windows, "exited_unreaped", lambda _pid: False
+    )
+    clock = _FakeClock()
+    proc = _ScriptedProc(pid=7030)
+    runner, cwd = _runner(
+        tmp_path,
+        proc=proc,
+        clock=clock,
+        cpu_reader=lambda _pid: 0.0,
+        cpu_without_progress_bound_s=2.0,
+        expect_next_event_within_s=600.0,
+    )
+    runner._kill = lambda _proc: actions.append("kill")
+
+    with pytest.raises(liveness.LivenessNoProgressWallExpired):
+        runner(("pytest", "-q"), env={}, cwd=cwd, timeout=30.0)
+
+    if window is None:
+        assert actions == ["kill"]
+    else:
+        assert actions[:2] == ["close", "kill"]
+        assert actions[2:] == ["close"]
+
+
 def test_stalled_pressure_intervals_do_not_advance_the_no_progress_stop(
     tmp_path: Path,
 ) -> None:

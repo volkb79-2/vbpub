@@ -1131,6 +1131,31 @@ def test_incremental_event_reader_treats_fstat_error_as_read_error(
     assert reader.stream_broken is True
 
 
+@pytest.mark.parametrize(
+    "invalid_fields",
+    [{}, {"nodeid": ""}, {"nodeid": 17}],
+    ids=("missing-nodeid", "empty-nodeid", "non-string-nodeid"),
+)
+def test_event_reader_does_not_open_a_test_window_for_an_invalid_nodeid(
+    invalid_fields: dict, tmp_path: Path
+) -> None:
+    events = tmp_path / "invalid-nodeid.ndjson"
+    records = [
+        {"event": "test_start", **invalid_fields},
+        {"event": "test_start", "nodeid": "valid::test"},
+    ]
+    events.write_text(
+        "".join(json.dumps(record) + "\n" for record in records),
+        encoding="utf-8",
+    )
+    reader = liveness._EventProgressReader(candidate_pid=100)
+
+    assert reader.read(events) == (2, False)
+    assert reader.in_flight is not None
+    assert reader.in_flight[0] == "valid::test"
+    assert reader.overlapping_tests is False
+
+
 def test_incremental_event_reader_marks_a_valid_unterminated_record_as_seen(
     tmp_path: Path,
 ) -> None:

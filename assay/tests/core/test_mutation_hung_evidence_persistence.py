@@ -183,6 +183,71 @@ def test_idle_hang_evidence_validator_refuses_eligible_time_in_a_stall() -> None
     assert mutation_store._valid_hung_resource_evidence(evidence) is False
 
 
+@pytest.mark.parametrize(
+    ("stalled_wall_delta", "accepted"),
+    [(1.0, False), (2.0, True)],
+    ids=("wall-shorter-than-eligible", "wall-covers-eligible"),
+)
+def test_idle_evidence_validator_checks_wall_span_of_compacted_stall(
+    stalled_wall_delta: float, accepted: bool
+) -> None:
+    evidence = _evidence()
+    pressured_snapshot = json.loads(json.dumps(_SNAPSHOT))
+    pressured_snapshot["host_psi"]["memory"]["full"] = 1
+    samples = []
+    for index in range(33):
+        if index == 0:
+            wall_elapsed = 10.0
+            eligible_elapsed = 0.0
+            eligible_interval = 0.0
+            resource_interval = "unknown"
+            resource_deltas = {}
+            resources = _SNAPSHOT
+            previous_resources = None
+        elif index == 1:
+            wall_elapsed = 10.0 + stalled_wall_delta
+            eligible_elapsed = 2.0
+            eligible_interval = 2.0
+            resource_interval = "stalled"
+            resource_deltas = {"host_psi.memory.full_us": 1}
+            resources = pressured_snapshot
+            previous_resources = None
+        else:
+            wall_elapsed = 10.0 + stalled_wall_delta + index - 1
+            eligible_elapsed = float(index + 1)
+            eligible_interval = 1.0
+            resource_interval = "clear"
+            resource_deltas = {}
+            resources = pressured_snapshot
+            previous_resources = None
+
+        sample = {
+            "wall_elapsed_s": wall_elapsed,
+            "eligible_elapsed_s": eligible_elapsed,
+            "eligible_interval_s": eligible_interval,
+            "candidate_cpu_s": 3.0,
+            "event_count": 0,
+            "stdout_bytes": 0,
+            "stderr_bytes": 0,
+            "resource_interval": resource_interval,
+            "resource_deltas": resource_deltas,
+            "resources": resources,
+        }
+        if index == 0:
+            sample["previous_resources"] = previous_resources
+        samples.append(sample)
+
+    evidence.update(
+        wall_elapsed_s=samples[-1]["wall_elapsed_s"],
+        eligible_elapsed_s=samples[-1]["eligible_elapsed_s"],
+        idle_eligible_s=samples[-1]["eligible_elapsed_s"],
+        trace_compacted=True,
+        samples=samples,
+    )
+
+    assert mutation_store._valid_hung_resource_evidence(evidence) is accepted
+
+
 def test_resource_trace_reset_without_a_sample_clears_all_trace_state() -> None:
     trace = liveness._ResourceTrace(max_samples=2)
     trace.reset({"resource_interval": "unknown"})
