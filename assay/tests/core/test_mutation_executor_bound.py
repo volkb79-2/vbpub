@@ -1009,6 +1009,35 @@ def test_deadline_expiring_during_snapshot_cleanup_leaves_candidate_unclassified
     assert list(state_root.glob("*.json")) == []
 
 
+def test_deadline_cut_before_first_record_commit_leaves_no_component_sidecar(
+    tmp_path, monkeypatch
+):
+    now = [0.0]
+    deadline = make_deadline(budget_seconds=10.0, monotonic=lambda: now[0])
+    state_root = tmp_path / "deadline-before-first-record-state"
+
+    def expire_during_candidate(argv, *, env, cwd, timeout):
+        now[0] = 11.0
+        return _always_pass(argv, env=env, cwd=cwd, timeout=timeout)
+
+    result = _run_queue_case(
+        tmp_path,
+        monkeypatch,
+        name="deadline-before-first-record",
+        targets=_TARGET_A,
+        text=_TEXT3,
+        jobs=1,
+        process_runner=expire_during_candidate,
+        state_root=state_root,
+        deadline=deadline,
+    )
+
+    assert result.budget_exceeded
+    assert not tuple(
+        (state_root / ".diagnostics" / "judge-components").glob("*.json")
+    )
+
+
 def test_deadline_is_rechecked_on_the_main_thread_before_candidate_state_commit(
     tmp_path, monkeypatch
 ):

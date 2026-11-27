@@ -1518,6 +1518,7 @@ def judge_sha256(
     coverage_runtime_fingerprint_sha256: str | None = None,
     equivalence_ledger_sha256: str | None = None,
     candidate_fail_fast: bool = False,
+    _component_digests: dict[str, Any] | None = None,
 ) -> str:
     """(B088) Return the identity of what JUDGES a mutant.
 
@@ -1556,8 +1557,12 @@ def judge_sha256(
       the value itself out of state identity material, while retaining the
       same low-entropy guessing limit documented for verdict fingerprints.
       Changed per-worktree paths and interactive ``TERM`` values therefore
-      cause a safe cache miss. Infrastructure values remain name-only under
-      B088's existing rule;
+      cause a safe cache miss. For ``PYTHONPATH``, assay fingerprints the
+      value captured before its per-run liveness and cold-witness plugin
+      paths are prepended; those injected paths remain in the child
+      environment but do not change identity. The consumer's own
+      ``PYTHONPATH`` value remains part of the fingerprint. Infrastructure
+      values remain name-only under B088's existing rule;
     * ``plan.cwd_declared`` and ``plan.project_prefix`` -- WHERE it runs,
       which decides what relative paths in argv even resolve to;
     * *link_paths* -- the lane's declared ``[isolation] link_paths``
@@ -1595,6 +1600,46 @@ def judge_sha256(
     field. Pairs and lists are sorted, so a mapping's iteration order never
     reaches the digest.
     """
+    # B577: only use the captured PYTHONPATH when the recorded assay insertions
+    # exactly reproduce the child plan's current value. An unrecorded rewrite
+    # falls back to that current value. Child execution always keeps the full
+    # `plan.env_effective` below the identity boundary.
+    identity_env_effective = dict(plan.env_effective)
+    pre_injection_env = getattr(plan, "pre_injection_env_effective", None)
+    if isinstance(pre_injection_env, Mapping):
+        original_has_pythonpath = "PYTHONPATH" in pre_injection_env
+        original_pythonpath = pre_injection_env.get("PYTHONPATH")
+        insertions = getattr(plan, "assay_pythonpath_insertions", ())
+        insertions_are_valid = isinstance(insertions, tuple) and all(
+            isinstance(path, str) and path for path in insertions
+        )
+        if insertions_are_valid and (
+            not original_has_pythonpath or isinstance(original_pythonpath, str)
+        ):
+            if insertions:
+                expected_pythonpath = os.pathsep.join(insertions)
+                if original_pythonpath:
+                    expected_pythonpath = os.pathsep.join(
+                        (expected_pythonpath, original_pythonpath)
+                    )
+                expected_has_pythonpath = True
+            else:
+                expected_pythonpath = original_pythonpath
+                expected_has_pythonpath = original_has_pythonpath
+            current_has_pythonpath = "PYTHONPATH" in plan.env_effective
+            current_pythonpath = plan.env_effective.get("PYTHONPATH")
+            if (
+                current_has_pythonpath == expected_has_pythonpath
+                and (
+                    not expected_has_pythonpath
+                    or current_pythonpath == expected_pythonpath
+                )
+            ):
+                if original_has_pythonpath:
+                    identity_env_effective["PYTHONPATH"] = original_pythonpath
+                else:
+                    identity_env_effective.pop("PYTHONPATH", None)
+
     parts: list[str] = [_JUDGE_DIGEST_LABEL, tree_sha256]
     parts.append(netstring("" if tool_version is None else tool_version))
     argv = tuple(plan.argv_effective)
@@ -1604,15 +1649,19 @@ def judge_sha256(
     parts.append(str(len(declared)))
     for name, value in declared:
         parts.extend((netstring(name), netstring(value)))
-    ambient = sorted(set(plan.env_effective) - set(plan.env_declared))
+    ambient = sorted(set(identity_env_effective) - set(plan.env_declared))
     parts.append(str(len(ambient)))
     passthrough = set(plan.env_passthrough)
+    passthrough_value_digests: dict[str, str] = {}
     for name in ambient:
         parts.append(netstring(name))
         if name in passthrough:
             value_sha256 = hashlib.sha256(
-                plan.env_effective[name].encode("utf-8", errors="surrogateescape")
+                identity_env_effective[name].encode(
+                    "utf-8", errors="surrogateescape"
+                )
             ).hexdigest()
+            passthrough_value_digests[name] = value_sha256
             parts.extend((netstring("passthrough-value"), netstring(value_sha256)))
         else:
             parts.append(netstring("name-only"))
@@ -1643,7 +1692,182 @@ def judge_sha256(
         # record resumed under it) is byte-identical.
         parts.append(netstring(CANDIDATE_FAIL_FAST_ID))
         parts.extend(netstring(token) for token in CANDIDATE_FAIL_FAST_APPENDED)
+    if _component_digests is not None:
+        def component_digest(fields: Sequence[str]) -> str:
+            encoded = "\0".join(netstring(field) for field in fields)
+            return hashlib.sha256(
+                encoded.encode("utf-8", errors="surrogateescape")
+            ).hexdigest()
+
+        passthrough_names = sorted(passthrough_value_digests)
+        special_passthrough_values = {
+            name: digest
+            for name, digest in sorted(passthrough_value_digests.items())
+            if name in {"PATH", "PYTHONPATH"}
+        }
+        other_passthrough = [
+            (name, identity_env_effective[name])
+            for name in passthrough_names
+            if name not in {"PATH", "PYTHONPATH"}
+        ]
+        other_passthrough_digest = component_digest(
+            (
+                "assay-passthrough-values/1",
+                str(len(other_passthrough)),
+                *(field for pair in other_passthrough for field in pair),
+            )
+        )
+        other_environment_names = sorted(name for name in ambient if name not in passthrough)
+        fingerprint_values = (
+            r2_transform,
+            r2_collection_sha256,
+            r2_hook_fingerprint_sha256,
+            runtime_fingerprint_sha256,
+            coverage_hook_fingerprint_sha256,
+            coverage_runtime_fingerprint_sha256,
+            equivalence_ledger_sha256,
+        )
+        candidate_fail_fast_fields = (
+            ("enabled", *CANDIDATE_FAIL_FAST_APPENDED)
+            if candidate_fail_fast
+            else ("disabled",)
+        )
+        _component_digests.update(
+            {
+                "tree": tree_sha256,
+                "argv": component_digest((str(len(argv)), *argv)),
+                "declared_env": component_digest(
+                    (str(len(declared)), *(field for pair in declared for field in pair))
+                ),
+                "environment_names": component_digest(
+                    (str(len(other_environment_names)), *other_environment_names)
+                ),
+                "passthrough_names_sha256": component_digest(
+                    (str(len(passthrough_names)), *passthrough_names)
+                ),
+                "passthrough_names": passthrough_names,
+                # Per-name value digests are restricted to the two path
+                # variables. Other passthrough values share one digest over
+                # sorted name/value pairs, encoded as counted netstrings.
+                "passthrough_values": special_passthrough_values,
+                "passthrough_other_values_sha256": other_passthrough_digest,
+                "cwd": component_digest(
+                    ("" if plan.cwd_declared is None else str(plan.cwd_declared),)
+                ),
+                "project_prefix": component_digest(
+                    ("" if plan.project_prefix is None else str(plan.project_prefix),)
+                ),
+                "link_paths": component_digest((str(len(links)), *links)),
+                "tool_version": component_digest(
+                    ("" if tool_version is None else tool_version,)
+                ),
+                "tool_fingerprints": component_digest(
+                    tuple("" if value is None else value for value in fingerprint_values)
+                ),
+                "cold_witness_kills": component_digest(
+                    ("1" if cold_witness_kills else "0",)
+                ),
+                "candidate_fail_fast": component_digest(candidate_fail_fast_fields),
+            }
+        )
     return hashlib.sha256("\0".join(parts).encode("utf-8")).hexdigest()
+
+
+MAX_JUDGE_MISMATCH_GENERATIONS = 32
+MAX_JUDGE_MISMATCH_DIAGNOSTIC_BYTES = 4096
+
+
+def _judge_component_differences(
+    current: Mapping[str, Any],
+    previous_by_judge: Mapping[str, Mapping[str, Any] | None],
+) -> dict[str, Any]:
+    """Describe bounded judge differences without exposing env digests."""
+    unavailable = {
+        "components_available": False,
+        "components": [],
+        "passthrough_names": [],
+        "passthrough_name_candidates": [],
+        "passthrough_name_diagnostic": "",
+    }
+    if (
+        not previous_by_judge
+        or len(previous_by_judge) > MAX_JUDGE_MISMATCH_GENERATIONS
+        or any(not isinstance(previous, Mapping) for previous in previous_by_judge.values())
+    ):
+        return unavailable
+    changed: set[str] = set()
+    exact_passthrough_names: set[str] = set()
+    passthrough_name_candidates: set[str] = set()
+    for previous in previous_by_judge.values():
+        for component in (
+            "tree",
+            "argv",
+            "declared_env",
+            "environment_names",
+            "cwd",
+            "project_prefix",
+            "link_paths",
+            "tool_version",
+            "tool_fingerprints",
+            "cold_witness_kills",
+            "candidate_fail_fast",
+        ):
+            if previous.get(component) != current.get(component):
+                changed.add(component)
+        old_names = set(previous.get("passthrough_names", ()))
+        new_names = set(current.get("passthrough_names", ()))
+        if old_names != new_names:
+            changed.add("passthrough_names")
+            exact_passthrough_names.update(old_names ^ new_names)
+        old_values = previous.get("passthrough_values", {})
+        new_values = current.get("passthrough_values", {})
+        if not isinstance(old_values, Mapping) or not isinstance(new_values, Mapping):
+            return unavailable
+        special_value_names = {
+            name
+            for name in {"PATH", "PYTHONPATH"}
+            if old_values.get(name) != new_values.get(name)
+        }
+        if special_value_names:
+            changed.add("passthrough_values")
+            exact_passthrough_names.update(special_value_names)
+        old_other_names = old_names - {"PATH", "PYTHONPATH"}
+        new_other_names = new_names - {"PATH", "PYTHONPATH"}
+        old_other_digest = previous.get("passthrough_other_values_sha256")
+        new_other_digest = current.get("passthrough_other_values_sha256")
+        if old_other_digest != new_other_digest:
+            changed.add("passthrough_values")
+            if old_other_names == new_other_names and len(old_other_names) == 1:
+                exact_passthrough_names.update(old_other_names)
+            else:
+                passthrough_name_candidates.update(
+                    old_other_names & new_other_names
+                )
+    exact_names = sorted(exact_passthrough_names)
+    candidates = sorted(passthrough_name_candidates)
+    name_details = []
+    if len(exact_names) == 1:
+        name_details.append(f"passthrough name: {exact_names[0]}")
+    elif exact_names:
+        name_details.append(f"passthrough names: {', '.join(exact_names)}")
+    if candidates:
+        name_details.append(
+            "passthrough value changed for one or more of: "
+            f"{', '.join(candidates)}"
+        )
+    result = {
+        "components_available": True,
+        "components": sorted(changed),
+        "passthrough_names": exact_names,
+        "passthrough_name_candidates": candidates,
+        "passthrough_name_diagnostic": "; ".join(name_details),
+    }
+    encoded_size = len(
+        json.dumps(result, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    )
+    if encoded_size > MAX_JUDGE_MISMATCH_DIAGNOSTIC_BYTES:
+        return unavailable
+    return result
 
 
 def _crash_diagnostic_tails(
@@ -2999,6 +3223,7 @@ def run_mutation(
                     schedule.memory_budget_bytes if schedule is not None else None
                 ),
             )
+        judge_components: dict[str, Any] = {}
         judge = (
             judge_sha256(
                 tree_sha256=(
@@ -3037,6 +3262,7 @@ def run_mutation(
                 ),
                 equivalence_ledger_sha256=equivalence_ledger_sha256,
                 candidate_fail_fast=candidate_fail_fast,
+                _component_digests=judge_components,
             )
             if state_root is not None
             else None
@@ -3093,6 +3319,21 @@ def run_mutation(
         promoted_total = combined.promoted_total
         imported_total = combined.imported_total
         locus_unavailable_total = combined.locus_unavailable_total
+        judge_mismatch_diagnostic: dict[str, Any] | None = None
+        if combined.rejected_judges and judge is not None and state_root is not None:
+            previous_components = {}
+            if len(combined.rejected_judges) <= MAX_JUDGE_MISMATCH_GENERATIONS:
+                previous_components = {
+                    previous_judge: mutation_store.read_judge_components(
+                        Path(state_root),
+                        judge=previous_judge,
+                        state_root_fd=state_root_fd,
+                    )
+                    for previous_judge in sorted(combined.rejected_judges)
+                }
+            judge_mismatch_diagnostic = _judge_component_differences(
+                judge_components, previous_components
+            )
         if resume:
             resumed_ids = {record["candidate_id"] for record in resumed_records}
             pending_jobs = tuple(
@@ -3109,23 +3350,68 @@ def run_mutation(
                 or rejudged_total
                 or resource_rejudged_total
             ):
-                write_progress(
-                    {
-                        "candidate_total": total,
-                        "event": "resume",
-                        "resumed_total": len(resumed_records),
-                        "rejected_total": rejected_total,
-                        "rejudged_total": rejudged_total,
-                        # (B529/B527/B530) additive diagnostics; `resumed_total`
-                        # includes promoted and carried-over records.
-                        "resource_rejudged_total": resource_rejudged_total,
-                        "promoted_total": promoted_total,
-                        "imported_total": imported_total,
-                        "locus_unavailable_total": locus_unavailable_total,
-                    }
-                )
+                resume_event = {
+                    "candidate_total": total,
+                    "event": "resume",
+                    "resumed_total": len(resumed_records),
+                    "rejected_total": rejected_total,
+                    "rejudged_total": rejudged_total,
+                    # (B529/B527/B530) additive diagnostics; `resumed_total`
+                    # includes promoted and carried-over records.
+                    "resource_rejudged_total": resource_rejudged_total,
+                    "promoted_total": promoted_total,
+                    "imported_total": imported_total,
+                    "locus_unavailable_total": locus_unavailable_total,
+                }
+                if judge_mismatch_diagnostic is not None:
+                    resume_event.update(
+                        {
+                            "judge_mismatch_components_available": (
+                                judge_mismatch_diagnostic["components_available"]
+                            ),
+                            "judge_mismatch_components": (
+                                judge_mismatch_diagnostic["components"]
+                            ),
+                            "judge_mismatch_passthrough_names": (
+                                judge_mismatch_diagnostic["passthrough_names"]
+                            ),
+                            "judge_mismatch_passthrough_name_candidates": (
+                                judge_mismatch_diagnostic[
+                                    "passthrough_name_candidates"
+                                ]
+                            ),
+                            "judge_mismatch_passthrough_name_diagnostic": (
+                                judge_mismatch_diagnostic[
+                                    "passthrough_name_diagnostic"
+                                ]
+                            ),
+                        }
+                    )
+                write_progress(resume_event)
         else:
             pending_jobs = selected_jobs
+        if judge_mismatch_diagnostic is not None:
+            if judge_mismatch_diagnostic["components_available"]:
+                changed = ", ".join(judge_mismatch_diagnostic["components"])
+                if not changed:
+                    changed = "no differing component was identified"
+                passthrough_name_diagnostic = judge_mismatch_diagnostic[
+                    "passthrough_name_diagnostic"
+                ]
+                passthrough_detail = (
+                    f"; {passthrough_name_diagnostic}"
+                    if passthrough_name_diagnostic
+                    else ""
+                )
+                sys.stderr.write(
+                    "assay: resume found a judge mismatch; differing components: "
+                    f"{changed}{passthrough_detail}\n"
+                )
+            else:
+                sys.stderr.write(
+                    "assay: resume found a judge mismatch; judge component "
+                    "digests are unavailable\n"
+                )
 
         # (B531) `--only-candidates`/`--exclude-candidates`: execute a subset of
         # what is still pending. A left-out candidate that no resumed or
@@ -3229,6 +3515,12 @@ def run_mutation(
         # Keep the executor's partial-campaign fact separate from its outcome
         # buckets: a terminal per-candidate timeout belongs in
         # `budget_exceeded` without making the campaign incomplete.
+        has_judge_records = bool(resumed_records)
+
+        def _record_commit_succeeded() -> None:
+            nonlocal has_judge_records
+            has_judge_records = True
+
         result_payload, complete_campaign = _execute_mutation_jobs(
             job_list=pending_jobs,
             deadline=deadline,
@@ -3251,6 +3543,7 @@ def run_mutation(
             state_root_fd=state_root_fd,
             state_root_guard=state_root_guard,
             judge=judge,
+            record_committed=_record_commit_succeeded,
             resource_sha256=(
                 projection.resource_sha256 if projection is not None else None
             ),
@@ -3376,6 +3669,18 @@ def run_mutation(
             )
             if complete_campaign:
                 deadline.remaining()
+        if state_root is not None and judge is not None and has_judge_records:
+            try:
+                mutation_store.write_judge_components(
+                    Path(state_root),
+                    judge=judge,
+                    components=judge_components,
+                    state_root_fd=state_root_fd,
+                )
+            except Exception:
+                # Diagnostic metadata must never affect record durability,
+                # rollback, deadline checks, or the campaign result.
+                pass
         return result_payload
 
 
@@ -3537,6 +3842,7 @@ def _execute_mutation_jobs(
     state_root: Path | str | None = None,
     state_root_fd: int | None = None,
     state_root_guard: Callable[[], None] | None = None,
+    record_committed: Callable[[], None] | None = None,
     #: (B088) This sweep's judge identity, resolved ONCE by the caller and
     #: written onto every record. Required whenever *state_root* is set --
     #: a record written without one would be indistinguishable from a
@@ -4598,6 +4904,8 @@ def _execute_mutation_jobs(
                 state_root_fd=state_root_fd,
                 commit_guard=deadline.remaining,
             )
+            if record_committed is not None:
+                record_committed()
         # What this candidate measured feeds the next campaign's predictions:
         # its own wall clock and the profile's peak RSS (none when the observer
         # produced no number).

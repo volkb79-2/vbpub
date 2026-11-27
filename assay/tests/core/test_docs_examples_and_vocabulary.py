@@ -191,11 +191,11 @@ def _assert_current_verdict_schema_is_documented(changes: str, version: int) -> 
 def test_consumers_covers_the_latest_two_verdict_schema_cuts():
     changes = (REPO_ROOT / "CHANGES.md").read_text(encoding="utf-8")
     consumer_text = CONSUMERS.read_text(encoding="utf-8")
-    # CMRU owns release history and requires [Unreleased] to remain empty in
-    # an untagged worktree. Before release, the adopter migration in
-    # CONSUMERS.md is the current-schema source. If the generated changelog
-    # already contains this schema note, require it in the current section so
-    # an older release cannot mask a stale generated entry.
+    # CMRU may fold [Unreleased] into the newest release section before the
+    # gate runs. Current notes may be in either location, so do not rely on an
+    # entry staying under [Unreleased]. If the generated changelog already
+    # contains this schema note, require it in the current section so an older
+    # release cannot mask a stale generated entry.
     if f"verdict schema v{VERDICT_SCHEMA_VERSION}" in changes:
         _assert_current_verdict_schema_is_documented(
             changes, VERDICT_SCHEMA_VERSION
@@ -203,6 +203,16 @@ def test_consumers_covers_the_latest_two_verdict_schema_cuts():
     _assert_recent_verdict_migrations_are_documented(
         consumer_text, VERDICT_SCHEMA_VERSION
     )
+
+
+def test_b577_migration_note_names_the_one_time_resume_miss():
+    changes = (REPO_ROOT / "CHANGES.md").read_text(encoding="utf-8")
+    consumer_text = CONSUMERS.read_text(encoding="utf-8")
+    current_changes = _current_changes_text(changes)
+    for text in (consumer_text, current_changes):
+        assert "run-local assay-injected `PYTHONPATH`" in text
+        assert "re-execute once" in text
+        assert "including when `PYTHONPATH` was absent before injection" in text
 
 
 def test_unreleased_history_structure_passes_cmru_checker():
