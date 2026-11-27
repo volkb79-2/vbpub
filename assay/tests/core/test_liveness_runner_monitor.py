@@ -2082,6 +2082,67 @@ def test_replaced_stream_disarms_progress_bounds_but_candidate_budget_binds(
     assert sum(1 for line in events_path.read_text(encoding="utf-8").splitlines()) >= 15
 
 
+def test_replacement_between_path_stat_and_open_disarms_bounds_in_that_poll(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The opened descriptor, not the earlier pathname stat, owns this poll."""
+    clock = _FakeClock()
+    proc = _ScriptedProc(pid=7029)
+    events_path = liveness.candidate_events_path(
+        tmp_path / "candidates", tmp_path / "cand"
+    )
+    initialized = False
+    event_opens = 0
+    replaced = False
+
+    def cpu_reader(_pid: int) -> float:
+        nonlocal initialized
+        if not initialized:
+            events_path.parent.mkdir(parents=True, exist_ok=True)
+            _append_event(
+                events_path, {"event": "test_start", "nodeid": "test::race"}
+            )
+            for _ in range(20):
+                _append_event(events_path, {"event": "phase"})
+            initialized = True
+        return 100.0 if clock.t >= 2.0 else 0.0
+
+    real_open = Path.open
+
+    def replace_at_open(path, mode="r", *args, **kwargs):
+        nonlocal event_opens, replaced
+        if path == events_path and mode == "rb":
+            event_opens += 1
+            if event_opens == 2:
+                replacement = events_path.with_suffix(".replacement")
+                replacement.write_text('{"event":"phase"}\n', encoding="utf-8")
+                replacement.replace(events_path)
+                replaced = True
+        return real_open(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", replace_at_open)
+    runner, cwd = _runner(
+        tmp_path,
+        proc=proc,
+        clock=clock,
+        cpu_reader=cpu_reader,
+        cpu_without_progress_bound_s=2.0,
+        per_test_cpu_baseline_s={"test::race": 0.1},
+        advisory_budget_s=12.0,
+        expect_next_event_within_s=1000.0,
+    )
+
+    with pytest.raises(subprocess.TimeoutExpired) as excinfo:
+        runner(("pytest", "-q"), env={}, cwd=cwd, timeout=30.0)
+
+    assert replaced
+    assert clock.t == 12.0
+    assert type(excinfo.value) is subprocess.TimeoutExpired
+    evidence = excinfo.value.liveness_resource_evidence
+    assert evidence["decision"] == "budget-expired-watch-unarmed"
+    assert "test_nodeid" not in evidence
+
+
 def test_truncated_stream_disarms_progress_bounds_and_candidate_budget_binds(
     tmp_path: Path,
 ) -> None:
@@ -2201,7 +2262,7 @@ def test_identical_replacement_without_new_completion_cannot_renew_bounds(
         clock=clock,
         cpu_reader=cpu_reader,
         cpu_without_progress_bound_s=2.0,
-        advisory_budget_s=8.0,
+        advisory_budget_s=12.0,
         expect_next_event_within_s=1000.0,
     )
 
@@ -2210,7 +2271,7 @@ def test_identical_replacement_without_new_completion_cannot_renew_bounds(
 
     assert type(excinfo.value) is subprocess.TimeoutExpired
     assert replacements >= 7
-    assert clock.t == 8.0
+    assert clock.t == 12.0
     assert excinfo.value.liveness_resource_evidence["decision"] == (
         "budget-expired-watch-unarmed"
     )
@@ -2340,7 +2401,7 @@ def test_read_error_after_records_makes_the_candidate_budget_bind(
         clock=clock,
         cpu_reader=cpu_reader,
         cpu_without_progress_bound_s=2.0,
-        advisory_budget_s=8.0,
+        advisory_budget_s=12.0,
         expect_next_event_within_s=1000.0,
     )
 
@@ -2348,7 +2409,7 @@ def test_read_error_after_records_makes_the_candidate_budget_bind(
         runner(("pytest", "-q"), env={}, cwd=cwd, timeout=100.0)
 
     assert type(excinfo.value) is subprocess.TimeoutExpired
-    assert clock.t == 8.0
+    assert clock.t == 12.0
     assert excinfo.value.liveness_resource_evidence["decision"] == (
         "budget-expired-watch-unarmed"
     )

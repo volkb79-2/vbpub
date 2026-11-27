@@ -1039,6 +1039,98 @@ def test_incremental_event_reader_resets_when_candidate_file_is_replaced_or_trun
     assert reader.stream_broken is True
 
 
+def test_incremental_event_reader_uses_open_descriptor_after_path_replacement(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    events = tmp_path / "open-replaced.ndjson"
+    events.write_text('{"event":"session_start","pid":100}\n', encoding="utf-8")
+    reader = liveness._EventProgressReader(candidate_pid=100)
+    assert reader.read(events) == (1, False)
+
+    replacement = tmp_path / "open-replacement.ndjson"
+    replacement_text = '{"event":"test","pid":100,"nodeid":"new::test"}\n'
+    real_open = Path.open
+    replaced = False
+
+    def replace_at_open(path, mode="r", *args, **kwargs):
+        nonlocal replaced
+        if path == events and mode == "rb" and not replaced:
+            replacement.write_text(replacement_text, encoding="utf-8")
+            os.replace(replacement, events)
+            replaced = True
+        return real_open(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", replace_at_open)
+
+    assert reader.read(events) == (1, False)
+    assert replaced
+    assert reader.stream_broken is True
+    assert reader.completed_events == 1
+
+
+def test_incremental_event_reader_uses_open_descriptor_size_after_truncate(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    events = tmp_path / "open-truncated.ndjson"
+    events.write_text(
+        '{"event":"session_start","pid":100}\n'
+        '{"event":"test","pid":100,"nodeid":"old::test"}\n',
+        encoding="utf-8",
+    )
+    reader = liveness._EventProgressReader(candidate_pid=100)
+    assert reader.read(events) == (2, False)
+    assert reader.completed_events == 1
+
+    shorter_text = '{"event":"session_start","pid":100}\n'
+    real_open = Path.open
+    truncated = False
+
+    def truncate_at_open(path, mode="r", *args, **kwargs):
+        nonlocal truncated
+        if path == events and mode == "rb" and not truncated:
+            events.write_text(shorter_text, encoding="utf-8")
+            truncated = True
+        return real_open(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", truncate_at_open)
+
+    assert reader.read(events) == (1, False)
+    assert truncated
+    assert reader.stream_broken is True
+    assert reader.completed_events == 0
+
+
+def test_incremental_event_reader_treats_fstat_error_as_read_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    events = tmp_path / "fstat-error.ndjson"
+    events.write_text('{"event":"phase"}\n', encoding="utf-8")
+    reader = liveness._EventProgressReader(candidate_pid=100)
+    assert reader.read(events) == (1, False)
+
+    real_open = Path.open
+    real_fstat = os.fstat
+    opened_fd = None
+
+    def record_open(path, mode="r", *args, **kwargs):
+        nonlocal opened_fd
+        stream = real_open(path, mode, *args, **kwargs)
+        if path == events and mode == "rb":
+            opened_fd = stream.fileno()
+        return stream
+
+    def fail_fstat(_fd):
+        if _fd == opened_fd:
+            raise OSError("scripted fstat failure")
+        return real_fstat(_fd)
+
+    monkeypatch.setattr(Path, "open", record_open)
+    monkeypatch.setattr(liveness.os, "fstat", fail_fstat)
+
+    assert reader.read(events) == (0, False)
+    assert reader.stream_broken is True
+
+
 def test_incremental_event_reader_marks_a_valid_unterminated_record_as_seen(
     tmp_path: Path,
 ) -> None:
