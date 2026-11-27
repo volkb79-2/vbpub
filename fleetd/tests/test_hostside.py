@@ -17,6 +17,82 @@ from fleetd.runner_layout import progress_home_path
 from test_campaign import _real_runner_home, _spec_for_project
 
 
+def test_open_beneath_checks_relative_components_and_file_types(tmp_path):
+    root = tmp_path / "trusted"
+    root.mkdir()
+    (root / "dir").mkdir()
+    (root / "dir" / "file").write_text("safe", encoding="utf-8")
+    (root / "file-link").symlink_to(root / "dir" / "file")
+    root_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        duplicate = hostside.open_beneath(root_fd, ".", directory=True)
+        os.close(duplicate)
+        file_fd = hostside.open_beneath(root_fd, "dir/file")
+        os.close(file_fd)
+        directory_fd = hostside.open_beneath(root_fd, "dir", directory=True)
+        os.close(directory_fd)
+        for relative in ("/etc/passwd", "dir\\file", "dir/../file", "dir//file"):
+            with pytest.raises(ValueError):
+                hostside.open_beneath(root_fd, relative)
+        with pytest.raises(ValueError, match="current directory"):
+            hostside.open_beneath(root_fd, ".")
+        with pytest.raises(ValueError, match="directory descriptor"):
+            hostside.open_beneath(-1, "dir/file")
+        with pytest.raises(OSError, match="not a regular file"):
+            hostside.open_beneath(root_fd, "dir")
+        with pytest.raises(OSError):
+            hostside.open_beneath(root_fd, "file-link")
+        real_open = os.open
+
+        def ignore_final_directory_flag(path, flags, *, dir_fd):
+            if path == "file" and flags & os.O_DIRECTORY:
+                return real_open(path, flags & ~os.O_DIRECTORY, dir_fd=dir_fd)
+            return real_open(path, flags, dir_fd=dir_fd)
+
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(hostside.os, "open", ignore_final_directory_flag)
+            with pytest.raises(NotADirectoryError, match="dir/file"):
+                hostside.open_beneath(root_fd, "dir/file", directory=True)
+    finally:
+        os.close(root_fd)
+
+
+def test_open_beneath_current_directory_requires_a_directory_descriptor(tmp_path):
+    file_path = tmp_path / "file"
+    file_path.write_text("x", encoding="utf-8")
+    file_fd = os.open(file_path, os.O_RDONLY)
+    try:
+        with pytest.raises(NotADirectoryError):
+            hostside.open_beneath(file_fd, ".", directory=True)
+    finally:
+        os.close(file_fd)
+
+
+def test_resolve_assay_lane_uses_trusted_root_descriptor(tmp_path):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    (checkout / "run-gate.root.toml").write_text(
+        '[lanes."r0-r1"]\nassay_lane = "root-assay"\n', encoding="utf-8",
+    )
+    root_fd = os.open(checkout, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        assert hostside.resolve_assay_lane(checkout, "project", "r0-r1", root_fd=root_fd) == "root-assay"
+    finally:
+        os.close(root_fd)
+
+
+def test_resolve_assay_lane_rejects_malformed_trusted_config(tmp_path):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    (checkout / "run-gate.root.toml").write_text("[lanes\n", encoding="utf-8")
+    root_fd = os.open(checkout, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        with pytest.raises(hostside.tomllib.TOMLDecodeError):
+            hostside.resolve_assay_lane(checkout, "project", "r0-r1", root_fd=root_fd)
+    finally:
+        os.close(root_fd)
+
+
 def _groups(*specs):
     return hostside.decode_payload(probe_payload({spec.name: spec for spec in specs}))
 

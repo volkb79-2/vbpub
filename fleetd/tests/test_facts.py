@@ -116,6 +116,16 @@ def test_facts_collector_reads_only_injected_root_and_emits_design_facts():
     assert _value(facts["policy"]["max_lane_containers"]) == 8
     assert _value(facts["policy"]["planning_cap"]) == 5
     assert _value(facts["policy"]["max_upload_bytes"]) == 1024**3
+    assert _value(facts["policy"]["max_upload_store_bytes"]) == 10 * 1024**3
+    assert _value(facts["policy"]["aging_s"]) == 60
+    assert facts["policy"]["aging_s"]["unit"] == "seconds"
+    assert facts["policy"]["aging_s"]["source"] == "/etc/fleetd/facts.toml"
+    assert _value(facts["policy"]["legacy_charge_bytes"]) == 536870912
+    assert facts["policy"]["legacy_charge_bytes"]["unit"] == "bytes"
+    assert facts["policy"]["legacy_charge_bytes"]["source"] == "/etc/fleetd/facts.toml"
+    assert _value(facts["policy"]["legacy_planned_cores"]) == 1.5
+    assert facts["policy"]["legacy_planned_cores"]["unit"] == "cores"
+    assert facts["policy"]["legacy_planned_cores"]["source"] == "/etc/fleetd/facts.toml"
     assert facts["queue"]["waiting"]["reason"] == "not-collected: admission book arrives with the host agent"
     assert facts["jobs"]["reason"] == "not-collected"
     assert facts["tools"]["v"] is None and facts["tools"]["reason"]
@@ -196,10 +206,15 @@ def test_facts_config_is_required_closed_and_versioned(tmp_path):
         ('planning_cap = 5', 'planning_cap = false', "finite number"),
         ('max_footprint = "large"', 'max_footprint = "huge"', "tiny, small, medium, or large"),
         ('max_planned_bytes = 7516192768', 'max_planned_bytes = 0', "positive integer bytes"),
+        ('aging_s = 60', 'aging_s = 0', "greater than zero"),
+        ('aging_s = 60', 'aging_s = true', "finite number"),
+        ('legacy_charge_bytes = 536870912', 'legacy_charge_bytes = true', "positive integer bytes"),
+        ('legacy_planned_cores = 1.5', 'legacy_planned_cores = 0', "greater than zero"),
         ('tiny = 67108864', 'tiny = true', "positive integer bytes"),
         ('worker = ["dev", "gate", "campaign"]', 'worker = ["unknown"]', "allowed priority classes"),
         ('checkout = 1073741824', 'checkout = 0', "positive integer bytes"),
         ('max_upload_bytes = 1073741824', 'max_upload_bytes = 0', "positive integer bytes"),
+        ('max_upload_store_bytes = 10737418240', 'max_upload_store_bytes = 0', "positive integer bytes"),
         ('queue_path = "/run/fleetd/queue"', 'queue_path = "relative"', "absolute path"),
         ('wait_s = 30', 'wait_s = 0', "greater than zero"),
     ],
@@ -222,6 +237,8 @@ def test_facts_config_optional_paths_and_policy_are_explicitly_absent(tmp_path):
     for line in (
         "host_reserve_bytes = 671088640\n", "planning_cap = 5\n", 'max_footprint = "large"\n',
         "max_planned_bytes = 7516192768\n", "max_upload_bytes = 1073741824\n",
+        "max_upload_store_bytes = 10737418240\n",
+        "aging_s = 60\n", "legacy_charge_bytes = 536870912\n", "legacy_planned_cores = 1.5\n",
     ):
         text = text.replace(line, "")
     for section in (
@@ -244,10 +261,16 @@ def test_facts_config_optional_paths_and_policy_are_explicitly_absent(tmp_path):
     assert facts["policy"]["max_lane_containers"]["reason"]
     for key in (
         "planning_cap", "max_footprint", "max_planned_bytes", "footprint_charges_bytes",
-        "priority_classes_by_principal", "disk_floors", "max_upload_bytes", "admission",
+        "priority_classes_by_principal", "disk_floors", "max_upload_bytes", "max_upload_store_bytes", "admission",
     ):
         assert _value(facts["policy"][key]) is None
         assert facts["policy"][key]["reason"]
+    for key, unit in (("aging_s", "seconds"), ("legacy_charge_bytes", "bytes"),
+                      ("legacy_planned_cores", "cores")):
+        assert _value(facts["policy"][key]) is None
+        assert facts["policy"][key]["reason"] == f"not-configured: facts.toml.policy.{key}"
+        assert facts["policy"][key]["unit"] == unit
+        assert facts["policy"][key]["source"] == "/etc/fleetd/facts.toml"
     assert _value(facts["memory"]["host_reserve_bytes"]) is None
     assert facts["memory"]["host_reserve_bytes"]["reason"]
 

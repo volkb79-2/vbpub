@@ -30,6 +30,8 @@ dynamic = ["version"]
 # standard library, so a missing cli-extended is reported as one actionable line
 # (exit 3) instead of a ModuleNotFoundError traceback on a managed host.
 fleet = "fleetd.entry:main"
+# Host agent modules and this entry point use only the Python standard library.
+fleetd-agent = "fleetd.agent_entry:main"
 
 [project.optional-dependencies]
 test = ["pytest>=8", "pytest-cov>=6"]

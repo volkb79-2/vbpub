@@ -5,7 +5,6 @@
   "partitioning": {
     "root": 160,
     "reserve_gb": 0,
-    "iobench_raw_gb": 8,
     "data": {
       "kind": "partitions",
       "volumes": [

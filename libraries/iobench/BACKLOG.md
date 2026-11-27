@@ -410,3 +410,23 @@ JSON does not satisfy it.
 **Close when.** Items 1-5 land as a reviewed lane/config change with the measured numbers recorded
 beside each value, item 6's campaign has run on P1's code, and survivors are filed. Until then, any
 release note that mentions R2 for iobench says "R2 pending (IOB-BL-55)".
+
+## IOB-BL-56 — `init_device` accepts a swap signature that `load_target` refuses
+
+**Source.** WP-10 P3 review r1 out-of-contract finding; controller ruling 11.
+
+**Finding.** `init_device(own=True)` can accept a target carrying a swap
+signature and write its marker, while the later `load_target` rejects that
+same target as a foreign signature. A successful init can therefore leave a
+target that every follow-up command refuses.
+
+**Do.** Make target initialization and target loading agree on whether a swap
+signature is acceptable. Preserve the existing device-identity and
+foreign-signature protections.
+
+**Acceptance idea.** A swap-signed device either refuses initialization without
+writing its marker or is accepted by the subsequent load path under the same
+identity checks.
+
+**Close when.** A focused test proves init and load agree for swap signatures,
+and the existing identity and foreign-signature tests remain green.

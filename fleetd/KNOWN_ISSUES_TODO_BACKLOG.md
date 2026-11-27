@@ -52,14 +52,20 @@
 | FD-047 | FakeTransport rewrites progress mtimes after the shared probe | P3 | OPEN | 2026-11-24 |
 | FD-048 | Malformed Run-Gate lane config can crash the host probe and fake start | P3 | OPEN | 2026-11-24 |
 | FD-049 | host-facts/2: guard_present reshape together with FD-012 | P2 | DONE in P-fd-05 C1 | 2026-11-24 |
-| FD-050 | Add admission queue and legacy charges to the host policy schema before deployment | P1 | OPEN | 2026-11-26 |
+| FD-050 | Add admission queue and legacy charges to the host policy schema before deployment | P1 | FIXED IN THIS BRANCH (C3a) | 2026-11-26 |
 | FD-051 | Retain and prune completed admission terminal records in host agent package C | P2 | OPEN | 2026-11-26 |
 | FD-052 | An inspector ERROR at a fitting lease waiter blocks every later waiter until expiry | P2 | OPEN (known limit) | 2026-11-26 |
-| FD-053 | Prevent overlapping authenticated group prefixes in package C policy | P2 | OPEN | 2026-11-26 |
-| FD-054 | Package C must bound every provider and inspector call made under the queue lock | P1 | OPEN | 2026-11-26 |
+| FD-053 | Prevent overlapping authenticated group prefixes in package C policy | P2 | FIXED IN THIS BRANCH (C3a) | 2026-11-26 |
+| FD-054 | Package C must bound every provider and inspector call made under the queue lock | P1 | FIXED IN THIS BRANCH (C3a) | 2026-11-26 |
 | FD-055 | A stray record after an unconfirmed rollback can leave a charge the waiter never claims | P2 | OPEN | 2026-11-26 |
 | FD-056 | The wait deadline is not rechecked after the queue lock is taken | P3 | OPEN | 2026-11-26 |
 | FD-057 | Admission subprocess tests have no timeout, and the two-process test is weak | P3 | OPEN | 2026-11-26 |
+| FD-058 | Aged-holder scan can skip queue-ordered merge-gate waiters | P1 | FIXED IN THIS BRANCH (C3a) | 2026-11-27 |
+| FD-059 | Measure and design PSI-aware admission before enforcing a prediction | P1 | OPEN (design only) | 2026-11-27 |
+| FD-060 | A granted lease client can stay connected forever without binding | P2 | FIXED IN THIS BRANCH (C3a) | 2026-11-27 |
+| FD-061 | Persist executor result details for terminal status | P2 | OPEN | 2026-11-27 |
+| FD-062 | Retain and garbage-collect host upload objects | P2 | OPEN (C3b follow-up) | 2026-11-27 |
+| FD-063 | Incrementally count large Assay progress files | P2 | OPEN | 2026-11-27 |
 
 ## FD-001 Lite campaign lifecycle
 
@@ -988,15 +994,15 @@ Source: .controller-state/design-review-2026-11-24/fleetd.md M1; FD-012
 
 ## FD-050 Add host admission policy keys before deployment writes them
 
-**State:** OPEN for design package C. **Priority:** P1. **Filed:** 2026-11-26.
+**State:** FIXED IN THIS BRANCH (C3a). **Priority:** P1. **Filed:** 2026-11-26.
 
-Design package C must add `policy.aging_s`, `policy.legacy_charge_bytes`, and
-`policy.legacy_planned_cores` to the `facts.toml.policy` closed key set in
-`fleetd/src/fleetd/facts.py` before any deployment writes those keys. Writing
-them first breaks fact collection. `aging_s` is required for every queue
-decision; the two legacy charge values are required when a listed job lacks an
-`EXIT` marker. Unknown `policy.legacy_planned_cores` returns 75 with that key
-in the refusal reason.
+`facts.py` and the `/2` validator accept `policy.aging_s`,
+`policy.legacy_charge_bytes`, and `policy.legacy_planned_cores`; the facts
+projection carries their units, source and unknown reasons. `aging_s` is
+required for every queue decision; the two legacy charge values are required
+when a listed job lacks an `EXIT` marker. Host configuration must still wait
+until a release containing this schema is installed. Unknown
+`policy.legacy_planned_cores` returns 75 with that key in the refusal reason.
 
 Source: P-fd-05 C2 controller ruling M4 and the package C host-facts/2 policy
 row.
@@ -1024,26 +1030,27 @@ Source: P-fd-05 review r1 Low 2 and controller ruling.
 
 ## FD-053 Prevent overlapping authenticated group prefixes
 
-**State:** OPEN for host agent package C. **Priority:** P2. **Filed:** 2026-11-26.
+**State:** FIXED IN THIS BRANCH (C3a). **Priority:** P2. **Filed:** 2026-11-26.
 
 The current id check is textual: group `ops` can claim `ops-ci-run-1`, which
-also has a valid-looking prefix for group `ops-ci`. Package C's authenticated
-group policy must prevent overlapping prefixes or assign an unambiguous
-group-specific id namespace. This package records the limit without changing
-the `/1` grammar.
+also has a valid-looking prefix for group `ops-ci`. `agent_policy._identities`
+rejects a policy with overlapping groups; the `/1` id grammar remains
+unchanged.
 
 Source: P-fd-05 C2 controller ruling for FU12 group-prefix ambiguity.
 
 ## FD-054 Bound every call made under the admission queue lock
 
-**State:** OPEN for host agent package C. **Priority:** P1. **Filed:** 2026-11-26.
+**State:** FIXED IN THIS BRANCH (C3a). **Priority:** P1. **Filed:** 2026-11-26.
 
 `capacity_provider`, `legacy_jobs_provider` and the Docker `inspector` run while
 `queue.lock` is held, and that flock blocks without a timeout. One hung call
 stops every submit, completion, status, cancel and wait expiry, so a merge gate
-waits for ever and a finished job keeps its charge. Nothing over-admits.
-Package C must bound each call and map a timeout to 75 or `ERROR`, before the
-book is wired to a host.
+waits forever and a finished job keeps its charge. C3a wraps each call in a
+single-outstanding daemon worker with the positive `agent.toml.query_timeout_s`:
+capacity and legacy-list timeout to 75, inspector timeout to `ERROR`. A timed
+out worker never owns `queue.lock`; later calls cannot create an unbounded
+backlog behind it.
 
 Source: P-fd-05 C2 review r2 M-2.
 
@@ -1078,3 +1085,117 @@ admission test detects a missing lock only when the interleaving is unlucky. It
 cannot fail spuriously.
 
 Source: P-fd-05 C2 review r2 L-8.
+
+## FD-058 Preserve queue order when merge gates pass an aged reservation
+
+**State:** FIXED IN THIS BRANCH (C3a). **Priority:** P1. **Filed:** 2026-11-27.
+
+`AdmissionBook._queue_allows` stops its scan as soon as it finds the aged
+reservation holder. It could therefore miss a fitting merge-gate waiter that
+must precede the candidate being polled, allowing admission order to depend on
+which waiter reacquires `queue.lock` first. `_queue_allows` now continues
+collecting queue-order blockers after identifying the reservation holder. The
+holder remains the first aged, statically eligible waiter; admitted merge gates
+may pass it only in the already-defined queue order. A regression test proves
+that the second fitting merge gate cannot pass the first while the aged holder
+is non-fitting.
+
+Source: P-fd-05 C3a controller ruling for FD-058.
+
+## FD-059 PSI-aware admission prediction
+
+**State:** OPEN; design only, not implemented. **Priority:** P1. **Filed:** 2026-11-27.
+
+The proposed sustained refusal uses `psi.memory.full_avg60_pct >= 10`; the 10%
+threshold is operator-specified and has no supporting measurement yet. A missing
+or unreadable full-avg60 value must refuse rather than become zero. This is
+separate from the configured `policy.psi_refuse_some_avg10` check against
+memory `some avg10`, and from the existing full-`avg10` admission check.
+
+The predictive rule has no model or reclaimable-memory input today. It needs
+`memory.available_bytes` (MemAvailable from `/proc/meminfo`, bytes), a separately
+defined non-overlapping reclaimable-memory input (source unresolved, bytes),
+`resources.declared_peak_bytes` (submitter declaration, bytes), or measured job
+warm use (`memory.current - memory.stat[inactive_file]`, cgroup v2, bytes), and
+`psi.memory.full_avg60_pct` (`/proc/pressure/memory`, percent). C3a must not
+invent a prediction or treat missing facts as zero. The design requires an
+observation-only calibration against real PSI and warm-use outcomes before any
+predictive refusal is enabled; no coefficients, sample counts, or error bounds
+have measurement support yet.
+
+The pressure response is also design only. Estimate an actual RAM shortfall
+from `psi.memory.{some,full}_avg{10,60}_pct` (`/proc/pressure/memory`, percent),
+`memory.available_bytes` (`/proc/meminfo:MemAvailable`, bytes), refault evidence,
+and admitted-job working sets (cgroup v2 `memory.current -
+memory.stat[inactive_file]`, bytes). `host-facts/2` does not collect refault
+counters or per-job working sets; the refault source and fact shape remain
+unresolved. Select one freeze candidate whose freeze can cover the measured
+shortfall, preferring the most recently admitted job when it covers it. Never
+freeze all dev work or all jobs considered causal; `wings` and the game server
+are never candidates. No formula, threshold or measurement-free constant is
+chosen.
+
+Thaw one job at a time only after the cause changes: a job finishes or freed
+memory covers the frozen job's working set. Do not thaw because a pressure
+number crosses a threshold. A freeze preserves the job and its charge; it does
+not automatically stop, tear down, reschedule or move it. Moving depends on
+progress, whether partial results resume, and another host being idle; fleetd
+decides. If other hosts are busy, retain a `frozen-queued` state on the current
+host.
+
+This refines DESIGN §3.3's `memory full avg10 >= 3` admission-only sentence and
+§3.5's frozen-time stall sentence. It clarifies that §4.3's cancel/TERM thaw and
+stop sequence requires explicit cancellation or TERM, not a pressure freeze;
+§3.4's `frozen_units > 0` check remains an admission refusal only.
+
+Source: operator ruling for P-fd-05 C3a subtask 6 (2026-11-27).
+
+## FD-060 Granted lease never binds while its connection stays alive
+
+**State:** FIXED IN THIS BRANCH (C3a). **Priority:** P2. **Filed:** 2026-11-27.
+
+The required positive `agent.toml.lease_bind_timeout_s` bounds the complete
+bind frame from grant on the monotonic clock; trickled bytes do not extend the
+deadline. Expiry tombstones before inspecting the exact name, releases the
+charge only on confirmed absence, and keeps it on inspector error or presence.
+The client receives an error and the connection ends. Late create attempts are
+refused by the tombstone. The deadline ends when the bind frame completes.
+
+Source: P-fd-05 C3a fix round 2 controller ruling (2026-11-27).
+
+## FD-061 Persist executor result details for terminal status
+
+**State:** OPEN; C3b follow-up. **Priority:** P2. **Filed:** 2026-11-27.
+
+C2's durable terminal record stores only job id, group, request digest,
+`state: completed`, and completion time. C3a status therefore returns only
+those durable facts and must not invent a verdict or exit code. C3b must decide
+which executor result fields are durable and atomically persist them before
+releasing the admission charge, then let terminal status answer from that
+record after restart. Cancel of this terminal record remains a refusal.
+
+## FD-062 Retain and garbage-collect host upload objects
+
+**State:** OPEN; C3b follow-up. **Priority:** P2. **Filed:** 2026-11-27.
+
+C3a bounds aggregate stored and in-flight upload bytes with
+`policy.max_upload_store_bytes`, but it does not delete committed objects.
+C3b must define retention and garbage collection for content-addressed upload
+objects. Collection must preserve objects referenced by admitted or terminal
+job records and coordinate with active uploads; no expiry or quota default is
+defined here.
+
+Source: P-fd-05 C3a round 2 controller ruling (2026-11-27).
+
+## FD-063 Incrementally count large Assay progress files
+
+**State:** OPEN. **Priority:** P2. **Filed:** 2026-11-27.
+
+C3a bounds the Assay candidate-count scan to the opened file's 8 MiB snapshot.
+Larger progress files report `done: null` with a reason rather than making the
+host rescan an unbounded JSONL history on every progress request. A future
+incremental design must preserve duplicate candidate de-duplication and the
+no-follow descriptor safety of the current reader. No checkpoint format or
+retention policy is defined here.
+
+Source: P-fd-05 C3a fix round 2 controller ruling (2026-11-27).

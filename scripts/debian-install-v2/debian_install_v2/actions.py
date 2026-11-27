@@ -55,8 +55,9 @@ _SAFE_COMMANDS = {
     # full-upgrade/-s: the notify-only install-time pending count (simulation).
     "apt-get": {"update", "install", "upgrade", "full-upgrade"},
     "bash": {"-c"},
-    # flag-checked since 2026-11-05 (div2-layout-tests): -s/-o value selectors, -t/-U/-L lookups, -p low-level probe
-    "blkid": {"-s", "-o", "-t", "-U", "-L", "-p"},
+    # flag-checked since 2026-11-05 (div2-layout-tests): value selectors,
+    # lookups, and the offset/size-bounded low-level span probe.
+    "blkid": {"-s", "-o", "-t", "-U", "-L", "-p", "-O", "-S"},
     "blockdev": {"--getsize64", "--rereadpt"},
     "btrfs": {"filesystem", "subvolume", "--raw"},
     "chattr": {"+C"},
@@ -96,8 +97,8 @@ _SAFE_COMMANDS = {
     "pvcreate": {"-y"},
     "vgcreate": {"-s"},  # non-empty so unknown options are refused
     "vgchange": {"-ay"},
-    # The only wipe path is the explicitly planned, unformatted iobench raw
-    # partition, immediately before the guarded installer benchmark runner.
+    # The only wipe path is the identity-checked temporary swap span, before
+    # the guarded installer benchmark runner and again before swap restoration.
     "wipefs": {"-a"},
     "iobench-install-runner": set(),
     "lvcreate": {"-y", "-n", "-L", "-l"},  # -L NG fixed, -l N extents, -l 100%FREE for the "*" LV

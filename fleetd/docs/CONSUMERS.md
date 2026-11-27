@@ -63,8 +63,10 @@ installed (`pip install -e .`).
 
 ### What a managed host needs
 
-A host that runs only `fleet facts collect` needs these two wheels and nothing
-from this repository. `fleet facts collect` reads
+A host that runs only `fleet facts collect` needs the fleetd wheel and its
+declared `cli-extended` dependency, plus nothing from this repository. The
+separate `fleetd-agent` entry point is also in the wheel; its runtime modules
+import only the Python standard library. `fleet facts collect` reads
 `/etc/fleetd/facts.toml` and the host's own `/proc`, `/sys`, `systemctl`
 service properties and Geekbench record; all of those are host-owned and
 absolute (see [the facts config below](#collect-and-validate-host-facts)).
@@ -74,6 +76,76 @@ The campaign commands are the *controller's*: `fleet run`, `status`, `tick` and
 wrapper, which must sit beside a repository checkout. A facts-only host needs
 neither the wrapper nor a checkout (FD-023 tracks the installed-wheel path for
 the wrapper).
+
+### Host agent package C3a
+
+`fleetd-agent serve --socket-path /run/fleetd-agent/agent.sock` binds a local
+Unix socket, while `fleetd-agent serve --listen-fd 3` accepts an inherited
+listening descriptor. The direct path form requires an existing real runtime
+directory and never creates or removes that directory. `fleetd-agent
+forced-command --group GROUP` serves one framed request on the ssh forced
+command's stdin/stdout. Package C3a supplies the protocol, admission wiring and
+CLI only; the systemd units, socket group and host mounts belong to C3c, and
+the executor belongs to C3b.
+
+`/etc/fleetd/agent.toml` is a closed host-owned config. It requires
+`schema_version`, `idle_connection_s`, `query_timeout_s`,
+`lease_reconcile_interval_s`, `lease_bind_timeout_s`, `max_connections`, `identities`,
+`repo_roots`, `requested_by_clients`, `extra_argv`, `dev_argv`, and
+`env_values`; none has a consumer-invented fallback. All four time values are
+positive. `lease_reconcile_interval_s` sets the exact-lease reconciliation
+period; there is no default. `lease_bind_timeout_s` is also positive with no
+default; it bounds the whole bind frame from grant on the monotonic clock, so
+trickling bytes cannot extend it. It has no effect after bind. `max_connections`
+is a positive integer with no default and bounds ordinary local connections.
+`query_timeout_s` bounds each capacity,
+legacy-job-list and object-inspector callback made while the admission queue lock is held. The peer
+table maps exact UID/primary-GID pairs to a principal and group;
+forced-command entries map their trusted group argument to the same identity
+shape. Request fields cannot choose either value. Loading the policy refuses
+overlapping authenticated group prefixes.
+
+The agent sends and receives four-byte big-endian length-prefixed UTF-8 JSON
+objects capped at 64 KiB. Each ordinary connection carries one request; the
+client half-closes its write side before dispatch, and `put` does so after its
+declared body. The server rejects trailing bytes or a second frame. `lease`
+keeps its write side open through bind and the held connection. The idle
+deadline applies while reading a request
+and while a response write makes no progress; it is not a total transfer limit,
+submit wait or run limit, and it does not apply to a lease after grant. An
+excess ordinary connection receives exit 3; after a lease admission handle is
+acquired, that held connection leaves the ordinary connection count. `probe`
+includes `agent_version` and the verb
+field capabilities. Clients refuse a major-version mismatch; a minor or patch
+mismatch requires the host to advertise the requested verb and every field.
+A failure uses the nested `error: {exit_code, reason}` object and has no
+top-level `exit_code` or `reason`; success omits `error`. The client looks only
+for `error`, so a status `exit_code` is returned as job data. A malformed
+`error` maps to exit 70. See the [response schema](agent-response.schema.json).
+A probe includes `lease` only when exact-object inspection, the legacy-job
+list, and container-identity inspection are configured. C3b wires these
+providers; the shipped C3a CLI has none and refuses lease with exit 2.
+A configured inspector reconciles pending and bound leases at startup and at
+the configured interval. Pre-bind disconnect tombstones before checking the
+exact name; bound leases are checked by immutable ID. Only a confirmed absence
+releases a charge. The granted-but-never-bound live-connection case has no
+deadline in §4.5; its held flock prevents pending reconciliation, so it remains
+charged until disconnect and exact-name reconciliation confirms absence.
+A missing or refusing local socket returns 3 with no fallback transport. The
+C3a wheel has no executor: submit refuses with exit 2 and a named reason before
+admission or a durable request write.
+
+Lane declarations and progress files are opened from trusted directory
+descriptors with no-follow traversal of every component. Progress replies cap
+each range at 8 MiB and return the matching `next_offset`; the client refuses a
+larger response body. The host counts Assay candidates only when the opened
+progress file is at most 8 MiB; larger files return `done: null` and a
+non-empty `done_reason`, while smaller files omit `done_reason`. The scan is
+bounded to the opened-size snapshot. Incremental counting remains FD-063.
+Terminal status reads only `fleet-admission-terminal/1`
+and returns `completed` plus its recorded completion time, without fabricating
+executor results. Cancel of a terminal job refuses with exit 2. C3b owns the
+durable executor result details (FD-061).
 
 ### Agent skills
 
@@ -179,6 +251,7 @@ planning_cap = 5
 max_footprint = "large"
 max_planned_bytes = 7516192768
 max_upload_bytes = 1073741824
+max_upload_store_bytes = 10737418240
 
 [policy.footprint_charges_bytes]
 tiny = 67108864
@@ -202,13 +275,26 @@ settle_s = 5
 `overcommit`, `oversubscribe_max`, and the PSI refusal threshold are explicit
 host policy inputs, so an incomplete file fails with a field-specific error.
 The added policy settings in this example are optional facts: omitting one
-does not supply a default and emits null with a `not-configured` reason. The
+does not supply a default and emits null with a `not-configured` reason. Install
+a fleetd release that accepts `policy.max_upload_store_bytes` before adding
+that key to the closed host config; configure it before enabling `put` on the
+host. Until it is configured, `put` refuses with exit 2. The
 `host_reserve_bytes` setting is emitted once as `memory.host_reserve_bytes`;
 the other policy settings remain under `policy.*`. `planning_cap` is the
 configured policy value; `cpu.planning_cap` is separately derived from the
 gate-slice CPU limit. Checkout and Docker roots enable `disks[]` collection;
 without either configured root, the disk list is null with a reason, and a
 missing per-disk floor is null in that disk's row.
+
+The optional admission policy keys `aging_s`, `legacy_charge_bytes`, and
+`legacy_planned_cores` are accepted by the C3a source. They are positive
+seconds, bytes, and cores respectively, and `/2` records their unit and
+`/etc/fleetd/facts.toml` source. Omission produces a null fact with a reason;
+it does not create an admission default. Add these keys to a host's config only
+after installing a released fleetd version that accepts them, because the
+config schema rejects unknown keys. In particular, do not copy the keys from
+this unreleased worktree into a host config before that release is installed.
+
 The host role is read from `host_setup_env`, which points to the existing
 host-owned `HOST_ROLE` setting. `max_lane_containers`, `guard_state`, and
 `ksm_optin_shim` may be omitted; their facts stay null with a reason. The

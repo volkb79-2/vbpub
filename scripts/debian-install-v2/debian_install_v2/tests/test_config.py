@@ -38,12 +38,12 @@ def test_known_shape_loads():
 
 
 def test_disk_layout_uses_one_plan_and_swap_defaults_are_automatic():
-    from debian_install_v2.layout_policy import DEFAULT_IOBENCH_RAW_GB, disk_spec
+    from debian_install_v2.layout_policy import disk_spec
 
     config = load_config(raw_json='{"schema_version":1}')
     assert not hasattr(config, "root_resize_policy")
     assert disk_spec(config.partitioning).root.is_star
-    assert disk_spec(config.partitioning).iobench_raw_gb == DEFAULT_IOBENCH_RAW_GB
+    assert disk_spec(config.partitioning).partition_count == 0
     assert config.swap_policy == "on"
     assert config.swap_disk_total_gb is None
     assert config.swap_partition_count == 4
@@ -108,20 +108,36 @@ def test_partitioning_is_optional_and_validated_at_load():
         load_config(raw_json='{"partitioning":[1]}')
 
 
-def test_raw_iobench_partition_can_only_be_disabled_when_benchmark_is_off():
+def test_removed_raw_iobench_key_accepts_absent_or_false_and_rejects_integers():
     config = load_config(raw_json='{"partitioning":{"iobench_raw_gb":false},"run_io_benchmark":false}')
     assert config.partitioning["iobench_raw_gb"] is False
-    with pytest.raises(ConfigError, match="run_io_benchmark requires partitioning.iobench_raw_gb"):
-        load_config(raw_json='{"partitioning":{"iobench_raw_gb":false},"run_io_benchmark":true}')
+    assert load_config(raw_json='{"run_io_benchmark":true}').partitioning == {}
+    with pytest.raises(ConfigError, match="iobench_raw_removed.*delete the key"):
+        load_config(raw_json='{"partitioning":{"iobench_raw_gb":8}}')
 
 
-def test_iobench_raw_upper_bound_is_checked_at_config_load():
-    from debian_install_v2.layout_policy import MAX_GIB
+def test_install_benchmark_requires_ext4_tail_swaps_in_the_resolved_plan():
+    from debian_install_v2.layout_policy import LayoutPolicyError, disk_spec
 
-    accepted = load_config(raw_json=json.dumps({"partitioning": {"iobench_raw_gb": MAX_GIB}}))
-    assert accepted.partitioning["iobench_raw_gb"] == MAX_GIB
-    with pytest.raises(ConfigError, match=rf"iobench_raw_gb must be an integer GiB value from 2 to {MAX_GIB}"):
-        load_config(raw_json=json.dumps({"partitioning": {"iobench_raw_gb": MAX_GIB + 1}}))
+    for schema in (1, 2):
+        for policy, count in (("off", 4), ("on", 0)):
+            config = load_config(raw_json=json.dumps({
+                "schema_version": schema,
+                "swap_policy": policy,
+                "swap_partition_count": count,
+                "run_io_benchmark": True,
+            }))
+            with pytest.raises(LayoutPolicyError, match="io_benchmark_requires_tail_swap_span"):
+                disk_spec(
+                    config.partitioning, root_fs="ext4", schema_version=config.schema_version,
+                    swap_policy=config.swap_policy, swap_partition_count=config.swap_partition_count,
+                    run_io_benchmark=config.run_io_benchmark,
+                )
+    spec = disk_spec(
+        {}, root_fs="ext4", schema_version=1, swap_policy="on",
+        swap_partition_count=1, run_io_benchmark=True,
+    )
+    assert spec.partition_count == 0
 
 
 @pytest.mark.parametrize("policy", ["on", "off"])

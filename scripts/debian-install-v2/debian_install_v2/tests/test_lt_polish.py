@@ -26,7 +26,7 @@ from debian_install_v2.state import StateStore
 from debian_install_v2.templates import APT_CUSTOM
 
 from .test_gstammtisch_incorporation import install_dry
-from .test_io_benchmark import make, step
+from .test_io_benchmark import SWAP_SPAN_PARTLABEL, make, make_span, step
 
 BOOTSTRAP_PATH = Path(__file__).resolve().parents[2] / "bootstrap-remote.py"
 
@@ -173,23 +173,23 @@ def test_status_lists_the_real_install_logs(tmp_path, monkeypatch):
     assert not (tmp_path / "absent-logs").exists()
 
 
-# --- planned raw benchmark partition --------------------------------------------------
+# --- temporary benchmark swap span ----------------------------------------------------
 
-def test_raw_benchmark_partition_remains_after_measurement(tmp_path):
+def test_benchmark_runner_leaves_span_for_stage_two_cleanup(tmp_path):
     installer, disk = make(tmp_path)
-    raw_number = next(number for number, entry in disk.table.items() if entry.get("name") == "iobench-raw")
+    span_number = make_span(installer, disk)
     installer._run_io_benchmark()
-    assert disk.table[raw_number]["name"] == "iobench-raw"
+    assert disk.table[span_number]["name"] == SWAP_SPAN_PARTLABEL
     assert step(installer, "io_benchmark")["status"] == "success"
     assert step(installer, "io_benchmark_cleanup") == {}
 
 
-def test_failed_benchmark_keeps_the_raw_partition_and_records_warning(tmp_path):
+def test_failed_benchmark_leaves_span_for_stage_two_cleanup_and_records_warning(tmp_path):
     installer, disk = make(tmp_path)
-    raw_number = next(number for number, entry in disk.table.items() if entry.get("name") == "iobench-raw")
+    span_number = make_span(installer, disk)
     disk.fail["iobench-install-runner"] = "simulated refusal"
     installer._run_io_benchmark()
-    assert disk.table[raw_number]["name"] == "iobench-raw"
+    assert disk.table[span_number]["name"] == SWAP_SPAN_PARTLABEL
     assert step(installer, "io_benchmark")["status"] == "warned"
     assert step(installer, "io_benchmark_cleanup") == {}
 

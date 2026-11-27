@@ -4,6 +4,27 @@ All notable changes to debian-install-v2 are recorded here.
 
 ## [Unreleased]
 
+### Changed (WP-10 P3: benchmark the temporary tail swap span)
+- Removed the permanent `iobench-raw` allocation. On ext4, install-time
+  iobench temporarily uses a guarded `vbpub-swap-span` partition covering the
+  contiguous tail swaps, then clears signatures and restores regular swaps.
+  Added resume handling for the live table/step state and fail-closed handling
+  for in-use, foreign-signed, or unreapable targets. Installer-written swap
+  fstab rows now include `nofail,x-systemd.device-timeout=5s`.
+- The legacy `partitioning.iobench_raw_gb` key is accepted only when absent or
+  `false`; integer values fail with `iobench_raw_removed`. The install runner
+  opts into iobench `raw_write` while retaining its exact size and PARTUUID
+  guard. Btrfs swap/benchmark and installed-host re-benchmarking remain outside
+  this package.
+- Fix round 1: probe the planned span extent before its first table write,
+  reject nested partition tables and foreign signatures, and clear
+  blank-or-swap signatures with `wipefs -a` before and after iobench. The
+  first-MiB zeroing command is removed; the marker remains in the last MiB of
+  the last swap and a later init overwrites it. Fresh installs can replace
+  eligible existing tail swaps; resume shapes remain strict. Btrfs benchmark
+  requests with the legacy raw key absent or false are accepted and skipped in
+  stage two. The GPT partition cap now counts both boot and root slots.
+
 ### Changed (R2 is a native Assay lane: shardable, resumable, load-independent)
 - `run-gate.toml`'s `[lanes.r2]` is `kind = "assay"` with `assay_lane = "r2"`
   instead of a `kind = "command"` lane that drove Assay by hand (DIV2-BL-22). A

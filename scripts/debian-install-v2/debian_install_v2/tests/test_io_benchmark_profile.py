@@ -29,7 +29,7 @@ from debian_install_v2.config import (
     validate_config,
 )
 from debian_install_v2.installer import IOBENCH_RESULT_KEYS
-from debian_install_v2.tests.test_io_benchmark import GIB, RESULTS, make, step
+from debian_install_v2.tests.test_io_benchmark import GIB, RESULTS, make, make_span, step
 
 PROJECT = Path(__file__).resolve().parents[2]
 RUNNER = PROJECT / "tools" / "iobench-install-runner"
@@ -151,7 +151,8 @@ def stub_install_root(tmp_path: Path, *, budgets: dict[str, int] | None = None) 
         "    tool_version: str\n"
         "    profile: str = 'standard'\n"
         "    state_dir: str | None = None\n"
-        "    installer: bool = False\n",
+        "    installer: bool = False\n"
+        "    raw_write: bool = False\n",
         encoding="utf-8",
     )
     model = {key: {"value": 100 + index, "status": "proven"}
@@ -206,7 +207,7 @@ def write_record(state_dir: Path, profile: str) -> None:
     )
 
 
-RAW_PARTITION = "/dev/vda5"
+SWAP_SPAN_TARGET = "/dev/vda4"
 RUNNER_PARTUUID = "12345678-1234-1234-1234-123456789012"
 # iobench's own short table, as the stub package publishes it.
 STUB_BUDGETS = {"veryquick": 210, "quick": 720, "standard": 3600}
@@ -217,8 +218,8 @@ def runner_argv(root: Path, *, profile: str, state_dir: Path, output: Path) -> l
     return [
         str(root / "tools" / "iobench-install-runner"),
         "--profile", profile,
-        "--target", RAW_PARTITION,
-        "--expect-size", str(8 * GIB),
+        "--target", SWAP_SPAN_TARGET,
+        "--expect-size", str(32 * GIB),
         "--expect-partuuid", RUNNER_PARTUUID,
         "--state-dir", str(state_dir),
         "--output", str(output),
@@ -238,13 +239,14 @@ def test_the_runner_main_hands_the_rung_to_iobench_and_records_it(tmp_path, prof
     # runner :104 — the rung iobench is handed is the requested one.
     seen = json.loads((root / "seen-config.json").read_text(encoding="utf-8"))
     assert seen["profile"] == profile
-    assert seen["target"] == RAW_PARTITION
+    assert seen["target"] == SWAP_SPAN_TARGET
     assert seen["state_dir"] == str(state_dir)
     assert seen["installer"] is True
+    assert seen["raw_write"] is True
     # runner :119 — the record names the rung that produced it.
     record = json.loads(output.read_text(encoding="utf-8"))
     assert record["profile"] == profile
-    assert record["target"] == RAW_PARTITION
+    assert record["target"] == SWAP_SPAN_TARGET
     assert record["calibration_id"] == "stub-run"
     # runner :126 — the file lands at --output, not at state_dir.parent/io-benchmark.json.
     assert output.parent == tmp_path / "state"
@@ -310,6 +312,7 @@ def _runner_argv(disk) -> tuple[str, ...]:
 @pytest.mark.parametrize("profile", IO_BENCHMARK_PROFILES)
 def test_each_rung_is_named_and_bounded_on_the_runner_called(tmp_path, profile):
     installer, disk = make(tmp_path, io_benchmark_profile=profile)
+    make_span(installer, disk)
     installer._run_io_benchmark()
 
     argv = _runner_argv(disk)
@@ -327,6 +330,7 @@ def test_each_rung_gets_its_own_state_dir(tmp_path):
     dirs = set()
     for profile in IO_BENCHMARK_PROFILES:
         installer, disk = make(tmp_path / profile, io_benchmark_profile=profile)
+        make_span(installer, disk)
         installer._run_io_benchmark()
         dirs.add(_runner_argv(disk)[10])
     assert dirs == {str(tmp_path / profile / "state" / "iobench" / profile) for profile in IO_BENCHMARK_PROFILES}
@@ -363,6 +367,7 @@ def test_the_runner_argv_passes_the_production_allowlist_and_the_old_shape_does_
 def test_a_failure_before_the_runner_starts_still_names_the_rung(tmp_path, profile):
     """The generic warned path (installer.py:3768) names the rung, not only its `started` detail."""
     installer, disk = make(tmp_path, io_benchmark_profile=profile)
+    make_span(installer, disk)
     disk.fail["apt-get"] = "simulated apt-get failure: install fio"   # before the runner starts
     sent: list[str] = []
     installer._notify = lambda message, **kwargs: sent.append(kwargs.get("event", message))  # type: ignore[method-assign]
@@ -371,11 +376,12 @@ def test_a_failure_before_the_runner_starts_still_names_the_rung(tmp_path, profi
 
     records = step(installer)
     assert records["status"] == "warned"
-    assert records["detail"].startswith(f"iobench {profile} failed (advisory)")
+    # The span identity stays in the final detail: the span wipe compares it.
+    assert records["detail"].startswith("PARTLABEL=vbpub-swap-span ")
+    assert f"profile={profile}; iobench {profile} failed (advisory)" in records["detail"]
     assert "simulated apt-get failure" in records["detail"]
-    assert "profile=" not in records["detail"]          # the started detail is overwritten
     assert len(sent) == 1 and f"iobench {profile} failed (advisory)" in sent[0]
-    # It failed before the runner: nothing was wiped and nothing was executed.
+    # Apt failed before the runner, so the span keeps its existing signature.
     assert not any(Path(action.argv[0]).name in {"wipefs", "iobench-install-runner"}
                    for action in disk.planned)
 
@@ -383,6 +389,7 @@ def test_a_failure_before_the_runner_starts_still_names_the_rung(tmp_path, profi
 @pytest.mark.parametrize("missing", [["rbps"], ["rbps", "wbps", "wseqiops"]])
 def test_a_rung_without_every_coefficient_warns_with_the_missing_names(tmp_path, missing):
     installer, disk = make(tmp_path)
+    make_span(installer, disk)
     seeded = {key: value for key, value in RESULTS.items() if key not in missing}
     disk.iobench_results = seeded
     sent: list[str] = []

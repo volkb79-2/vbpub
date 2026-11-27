@@ -72,6 +72,13 @@ must be a shipped module, not a string program (`fleetd/KNOWN_ISSUES_TODO_BACKLO
 Rejected: "try it and see" — an unknown grammar on the far side of an ssh call produces a wrong
 answer rather than no answer.
 
+Every answer uses the normal `{schema, agent_version, ...}` envelope. Errors
+put exactly `{exit_code, reason}` in the nested `error` object and omit
+top-level `exit_code` and `reason`; successes omit `error`. The client checks
+only for `error`, so a non-zero `exit_code` in a successful status remains the
+lane result. A malformed `error` is a protocol failure (70). The same rule
+applies to each frame on the held lease stream.
+
 ### 2.2 Verbs and the record
 
 B4 names `probe|start|stop|fetch|facts`; v1 uses `probe|facts|have|put|submit|status|progress|cancel|fetch|lease`.
@@ -115,8 +122,11 @@ files; the key is not a path. The host runs only the validated verb argv. `tty` 
 The payload has no `max_s`, removing today's timeout wrapper (`scripts/controller/dev:159`); `dev stop` remains available (`scripts/controller/dev:550`).
 
 **have** returns the refs the host already has. **put** takes `{name, sha256, bytes}` plus a
-streamed body; only `in.bundle`, indexed seed archives and the two dev patch archives are valid
-names. The agent checks length and checksum and creates the destination itself.
+streamed body; only `in.bundle`, indexed `assay-seed-<n>.tgz` archives and their checksum files,
+the two dev patch archives, and `candidates` are valid names. The agent checks length and checksum
+and creates the destination itself. A submit may use `--only-candidates` only when its path is the
+host-created `candidates` file uploaded by the same authenticated group; an arbitrary client path
+is refused.
 
 Controller-only **lease** takes `{lease_id, container_name, footprint, planned_cores, priority}`. The client supplies a group-prefixed
 idempotency key; the host reserves that id and the client binds the created container ID on that connection. A reconnect names the
@@ -124,8 +134,26 @@ existing `lease_id` and immutable container ID.
 
 Local framing: ordinary verbs use one request per connection, 4-byte big-endian byte length + UTF-8 JSON object, max 64 KiB.
 `lease` is controller-socket-only and keeps its connection open for the full gate-container lifetime; grant/bind/ack messages use the same frame size, then Run-Gate closes after removal.
-For `put`, exactly `bytes` follows,
-streamed and capped by required `policy.max_upload_bytes`; client half-closes after the request and server rejects truncation/extra input.
+For `put`, exactly `bytes` follows, streamed and capped by required
+`policy.max_upload_bytes`. Before reading the body, the agent reserves the
+declared size under a cross-process upload-store lock and requires
+`stored + in_flight + new <= policy.max_upload_store_bytes` and
+`upload_fs_available - in_flight - new >= max(policy.disk_floors)`.
+Both facts are required; unavailable facts refuse. The stored scan counts
+regular files across all groups without following symlinks and refuses an
+unreadable file. Each reservation holds its full declared size from admission
+through durable commit (file fsync, rename, and directory fsync) or, after
+abandonment, until its partial is removed. Buffered and written bytes do not
+reduce that reservation; bytes already on disk are counted twice during
+streaming, conservatively. The lock is not held while the body streams. Client
+half-closes after the request and server rejects truncation/extra input. A
+stable owner lock is held before the atomic reservation record is published
+(temporary file, fsync, rename, incoming-directory fsync). Recovery derives
+artifact names from the validated token and reclaims torn records or leftover
+record temporaries only after it acquires the owner lock; a partial with a live
+owner is retained. Missing or inaccessible owner locks and invalid live records
+refuse with the offending filename and an operator check. Retention and garbage
+collection are C3b follow-up FD-062.
 `fetch` ranges are at most 8 MiB; responses use the same frame + body.
 
 **Several clients, several ciu roots.** The record names `repo` and `requested_by`, and the host
@@ -140,11 +168,16 @@ verdict, reason, progress:{done,total,unit,last_utc}, container:{id,name,image},
 anchored line parsed exactly as `scripts/controller/remote-gate.sh:291-294` does (prefix at line start, never a
 substring).
 
-**progress** for assay lanes is read from `.assay/progress-<lane>.jsonl` in the job checkout and
-streamed by byte offset (`run-gate-project/SPEC.md:2321-2342`). Command lanes have no candidates
+**progress** for assay lanes is read from `.assay/progress-<assay_lane>.jsonl` in the job checkout,
+where `assay_lane` comes from `hostside.resolve_assay_lane(checkout, project, lane)`, and is streamed
+by byte offset (`run-gate-project/SPEC.md:2321-2342`). Command lanes have no candidates
 (`run-gate-project/SPEC.md:416-436`): `done` and `total` are null, with
 `unit: log_bytes` from the agent's `lane.log` offset. The executor records start, stage and end
-for `dev`. Answers include `{done,total,unit,last_progress_utc}`; `jobs[]` uses
+for `dev`. Assay done-counting reads at most the opened file size up to
+`MAX_ASSAY_PROGRESS_COUNT_BYTES` (8 MiB). Larger files return `done: null` and
+a non-empty `done_reason`; otherwise `done_reason` is absent. Appends after the
+opened-size snapshot do not extend the scan; incremental counting remains
+FD-063. Answers include `{done,total,unit,last_progress_utc}`; `jobs[]` uses
 `progress_unit` and `last_progress_utc` to match the draft (`.controller-state/platform/design/agctl-estate-snapshot-draft.md:44-45`).
 
 **cancel** takes `{job_id, reason}`. A queued job is atomically removed and needs no collector;
@@ -275,16 +308,20 @@ and fallbacks are hazards"). The agent answers `/2` only; `fleet facts validate`
 | `freeze.since_utc`, `freeze.by`, `freeze_reason` | time, strings | hostobs events | `null`+reason `not-collected until thrashguard P4` |
 | `freeze.queued` | int | none (agctl draft has no source, `agctl-estate-snapshot-draft.md:38-39`) | `null`+reason `not-collected` |
 | `policy.host_role`, `.psi_refuse_some_avg10`, `.max_lane_containers` | as /1 (`fleetd/src/fleetd/contracts.py:510-524`) | `/etc/fleetd/facts.toml` | role null → refuse (`fleetd/src/fleetd/plan.py:480-483`) |
-| `policy.planning_cap`, `.max_footprint`, `.max_planned_bytes`, `.footprint_charges_bytes`, `.priority_classes_by_principal`, `.disk_floors`, `.max_upload_bytes`, `.admission` | number, class, bytes, admission settings | optional `/etc/fleetd/facts.toml` host policy | missing value → `null`+reason; later host admission consumes these optional settings, current planner does not require them; requirement on the `put` verb, which package C adds: it must refuse (2) every upload while `policy.max_upload_bytes` is null |
+| `policy.planning_cap`, `.max_footprint`, `.max_planned_bytes`, `.footprint_charges_bytes`, `.priority_classes_by_principal`, `.disk_floors`, `.max_upload_bytes`, `.max_upload_store_bytes`, `.admission` | number, class, bytes, admission settings | optional `/etc/fleetd/facts.toml` host policy | missing value → `null`+reason; current planner does not require them; `put` refuses (2) when either upload cap or disk floors is unavailable |
 | `policy.aging_s`, `.legacy_charge_bytes`, `.legacy_planned_cores` | seconds, bytes per legacy job, planned cores per legacy job | `/etc/fleetd/facts.toml` host policy added by design package C | missing value → `null`+reason; `aging_s` is required for queue decisions; the two legacy values are required when a legacy job is listed; unknown needed values return 75 |
 | `queue.planned_cores`, `.charged_bytes`, `.waiting` | number, bytes, count | host agent's admission book | `null`+reason |
 | `jobs[]` | `{id,state,requested_by,resources,started_utc,progress_done,progress_total,progress_unit,last_progress_utc}` | `jobs/` dir | `null`+reason `not-collected` |
 | `tools[]` | as /1 | probes | `null`+reason |
 
-`facts.toml.policy` currently has a closed key set (`fleetd/src/fleetd/facts.py`, `_object`). Design package C must add acceptance for
-`aging_s`, `legacy_charge_bytes`, and `legacy_planned_cores` before any deployment writes those keys; writing one first breaks fact
-collection. This library requires `policy.legacy_planned_cores` when the legacy provider lists a job and returns 75 with that key in
-the reason when it is unknown.
+`facts.toml.policy` currently has a closed key set (`fleetd/src/fleetd/facts.py`, `_object`). Install a release that accepts an optional
+policy key before any deployment writes it; writing an unknown key first breaks
+fact collection. `aging_s`, `legacy_charge_bytes`, `legacy_planned_cores`, and
+`max_upload_store_bytes` have no default and emit null with a reason when
+unconfigured. A host must configure `max_upload_store_bytes` before relying on
+`put`. This library requires `policy.legacy_planned_cores` when the legacy
+provider lists a job and returns 75 with that key in the reason when it is
+unknown.
 
 **Changes this design asks of the draft's rows** (`.controller-state/platform/design/agctl-estate-snapshot-draft.md`), named for the agctl owner: the draft's
 `queue.*` row ("slots stay `source: remote-gate`/`run-gate`") is replaced by the agent's queue;
@@ -336,7 +373,101 @@ use plus only unconsumed reservations, so actual use is not counted twice. `max_
 For each eligible host, static plannable RAM is the minimum of total RAM minus host reserve, slice ceiling and planned-byte cap.
 If the class charge exceeds that value on every eligible host, `submit` refuses with 2; transient load still queues or returns 75.
 Swap is never added; fleetd's campaign overcommit factor (`fleetd/src/fleetd/plan.py:563-585`) is not used. A job may exceed its
-estimate; live `memory full avg10 >= 3` stops new admission but never kills a running job.
+estimate; live `memory full avg10 >= 3` stops new admission. That admission gate does not choose a freeze target. The design-only
+freeze policy in §3.3a can freeze one selected job, but does not kill or automatically reschedule it.
+
+### 3.3a PSI-aware admission and freeze response (design only; not implemented, FD-059)
+
+Add a sustained-pressure gate at the target host: do not admit while
+`psi.memory.full_avg60_pct >= 10`. An unreadable, malformed, or null
+`psi.memory.full_avg60_pct` is unknown capacity and refuses with 75; it is never
+treated as zero. This rule reads the kernel `full avg60` line from
+`/proc/pressure/memory`. The `avg60` window is the kernel field named by the
+contract; the proposed 10% threshold is operator-specified and has no supporting
+measurement yet. Short `avg10` spikes do not trip this sustained gate. Existing
+checks still apply independently: `policy.psi_refuse_some_avg10` is a configured
+threshold against the different `psi.memory.some_avg10_pct` metric, and the
+shipped full-`avg10` admission check remains in force. Neither is replaced by
+the new full-`avg60` rule, so an `avg10` spike can still be refused by an
+existing check.
+
+The predictive part should estimate whether a candidate's added RAM demand
+would move the host's memory `full avg60` across the refusal line. Compare the
+job's declared or measured RAM need against `memory.available_bytes` (MemAvailable)
+plus a separately defined, non-overlapping reclaimable-memory amount, then
+estimate the resulting PSI. Once calibrated, refuse a job predicted to push
+full `avg60` to or above 10%; if a required input is unknown, return 75 before
+starting rather than manufacturing a prediction. Its proposed inputs are:
+
+| input | source and unit | present state |
+|---|---|---|
+| `psi.memory.full_avg60_pct` | `/proc/pressure/memory`, percent | Collected in `host-facts/2`; the sustained refusal reads the current value. |
+| `memory.available_bytes` (MemAvailable) | `/proc/meminfo:MemAvailable`, bytes | Collected in `host-facts/2`. |
+| `memory.reclaimable_bytes` | A separately defined host kernel memory source, bytes | Not collected today. Its source and a non-overlapping definition are unresolved; MemAvailable already estimates reclaimable headroom, so blindly adding another reclaimable total could double-count it. |
+| `resources.declared_peak_bytes` | Submitter's lane declaration, bytes | Optional request hint; it may be null and is not a cgroup limit. |
+| measured job warm use | cgroup v2 `memory.current - memory.stat[inactive_file]`, bytes | The existing §3.3 sample; it can provide a lane/version p90 after measurements exist, but no PSI prediction currently consumes it. |
+
+Today the host has no `memory.reclaimable_bytes` fact and no fitted mapping
+from declared or measured RAM need to host PSI. The class charge and warm
+samples feed the current fit calculation, not a prediction of PSI. Therefore
+the predictive rule cannot refuse work yet; a missing input or model remains
+unknown and must not be synthesized.
+
+Before enforcement, run the predictor in observation-only mode. For each
+candidate admission, record the available-memory and PSI inputs, the declared
+need and available measured warm-use estimate, plus the host/job identity and
+concurrent admitted work. Compare its predicted PSI change with the actual
+`psi.memory.full_avg60_pct`, `memory.available_bytes`, and measured job warm use
+observed as the job starts, progresses, and completes. Evaluate the relationship
+against those real outcomes before allowing it to refuse; retain the observations
+so a model revision can be compared on the same data. No model form, coefficient,
+safety margin, sample count, or acceptable error bound is selected: each would
+need measurement before it could become a constant.
+
+Open design questions are the non-overlapping meaning and source of reclaimable
+memory alongside MemAvailable; whether declared peak or measured warm p90 should
+drive a prediction when both exist or either is missing; how to separate one
+job's effect from host-wide PSI under concurrent work; and what observations and
+prediction error justify enabling refusal. Until those are answered from host
+measurements, only the explicit sustained full-`avg60` rule above is proposed,
+and neither it nor the predictor is implemented by C3a.
+
+**Freeze, thaw and move response (design only; not implemented).** Estimate the
+actual host RAM shortfall from the current memory PSI and refault evidence,
+`memory.available_bytes` (MemAvailable), and the working sets of admitted jobs.
+The facts currently available are `psi.memory.{some,full}_avg{10,60}_pct` from
+`/proc/pressure/memory` (percent), `memory.available_bytes` from
+`/proc/meminfo:MemAvailable` (bytes), and each job's warm working set from its
+cgroup v2 `memory.current - memory.stat[inactive_file]` (bytes), as sampled in
+§3.3. `host-facts/2` does not collect refault counters, and it does not carry a
+per-job working-set fact; the counter source and its fact shape remain open.
+Use measured changes in PSI, refaults and available memory against those
+working sets to identify a concrete shortfall; no formula or threshold is
+selected. This is not a policy to freeze all dev work or every job believed to
+cause pressure: conditions were acceptable before the last job was admitted.
+Freeze one eligible job only when its freeze is estimated to cover the
+shortfall. If it covers the shortfall, prefer the most recently admitted job.
+`wings` and the game server are never freeze candidates.
+
+Thaw only after the cause changes: a job finishes, or measured freed memory
+covers the frozen job's working set. A pressure value dropping below a number
+does not trigger thaw. Thaw one job at a time and reassess before thawing another.
+
+A freeze preserves the job and its admission charge. It does not automatically
+stop, tear down, or reschedule the job. A move depends on its progress, whether
+its partial results can be resumed, and whether another host is idle; fleetd
+decides whether to move it. If every other host is busy, keep it in a
+`frozen-queued` state on its current host until fleetd can decide again.
+
+This policy refines §3.3's sentence that `memory full avg10 >= 3` stops new
+admission without killing a running job, and §3.5's sentence that progress
+judges stalls while pausing during thrashguard freezes. A pressure freeze is a
+separate, selected-job action; a verified frozen interval remains excluded
+from stall accounting. It also clarifies §4.3's `On cancel or TERM` thaw and
+stop sequence: that sequence is for an explicit cancel or TERM, not an
+automatic consequence of a pressure freeze. The §3.4 `frozen_units > 0`
+admission refusal remains an admission gate and does not choose a freeze or
+thaw target.
 
 ### 3.4 One admission mechanism on the host (B3), exit-75 parity
 
@@ -419,8 +550,9 @@ uses the `lease` verb for accounting, while fleetd-placed execution there is exc
 
 ### 3.5 No new wall-clock budget
 
-Nothing in §3 sets a run wall-clock limit. Wait limits cover admission; progress judges stalls, pausing during
-thrashguard freezes. D13 removes today's timeout (`scripts/controller/dev:159`; operator 2026-11-26);
+Nothing in §3 sets a run wall-clock limit. Wait limits cover admission; progress judges stalls and excludes a verified frozen
+interval from stall accounting. A pressure freeze preserves its job and charge and does not itself stop, move or reschedule it.
+D13 removes today's timeout (`scripts/controller/dev:159`; operator 2026-11-26);
 `--wait` is CTL-52's 900-second admission limit (`scripts/controller/dev:278`); `aging_s` only orders queue; `LOST_AFTER_SECONDS` is controller liveness, not a run budget (`fleetd/src/fleetd/campaign.py:25-29`).
 
 ## 4. Host executor and results
@@ -447,7 +579,7 @@ restart/downgrade cannot kill it (§4.5).
 
 On normal completion or lane failure, deregister the exited container, run `collect_once`, verify
 the archive, remove this job's containers by labels and checkout, then release its charge. On
-cancel or TERM, deregister and thaw it if frozen, send TERM to the lane, and wait for its process
+explicit cancel or TERM, deregister and thaw it if frozen, send TERM to the lane, and wait for its process
 or container to stop. Only then collect once and verify the archive. Collection is idempotent;
 store errors do not rewrite the lane verdict.
 
@@ -484,11 +616,23 @@ Today `run-job` detaches with `nohup` and writes `pid`/`EXIT` (`scripts/netcup/r
 |---|---|
 | socket absent/refuses; bad policy/impossible class; frozen/wait expiry | no create or start; exit 3, 2, or 75 respectively |
 | client dies before grant | remove its connection-bound waiter; no lease or container |
-| client dies after grant, before create/bind | inspect exact name; absent means revoke; a matching container is adopted by ID and remains charged; no start without ack |
+| client dies after grant, before create/bind | tombstone first, release the connection flock, then inspect the exact name; only confirmed absence releases the charge; a present container remains charged but cannot bind or start after tombstoning |
+| complete bind frame does not arrive before `lease_bind_timeout_s` | use the monotonic deadline from grant; trickled bytes do not extend it; tombstone first, release the connection flock, then inspect the exact name; return an error and close; only confirmed absence releases the charge |
 | delayed create after revoke | unique name and lease id stay tombstoned; stopped container has no bind ack, is removed when observed, and never starts |
-| EOF after bind or agent restart | keep charge while ID exists; reload StateDirectory; no start until same lease ID/ID reconnects, then continue or reattach |
-| container gone / Docker inspect error | events and periodic reconciliation inspect exact ID; only explicit no-such-object releases; other errors retain charge (current Run-Gate rule: `run-gate-project/run_gate.py:7601-7645`) |
+| EOF after bind or agent restart | keep charge while ID exists; startup and periodic reconciliation inspect the exact ID; reload StateDirectory; no start until same lease ID/ID reconnects, then continue or reattach |
+| container gone / Docker inspect error | events and periodic reconciliation inspect exact ID; only explicit no-such-object releases; `PRESENT`, `ERROR`, exceptions, and other answers retain charge (current Run-Gate rule: `run-gate-project/run_gate.py:7601-7645`) |
 | name collision or reuse | refuse collision; bind/release use lease ID plus immutable ID, so a reused name cannot steal or release a prior lease |
+
+The periodic reconciliation interval is required host policy with no default;
+each exact inspector call is bounded by `query_timeout_s`. There is no §4.5
+`agent.toml.lease_bind_timeout_s` is required positive host policy with no
+default. It starts as the grant is sent and bounds receipt of the complete bind
+frame, including its header and body. Expiry runs the same tombstone and exact
+name reconciliation as a pre-bind disconnect: confirmed absence releases the
+charge, while a present object or inspector error retains it. A delayed create
+after tombstoning cannot bind. After the bind frame completes, the deadline no
+longer applies; EOF after bind retains the charge until exact-ID reconciliation.
+This closes FD-060.
 
 - **Dead executor, lane still alive:** the reaper finds containers by this job's labels, stops
   the lane, waits for exit, collects from the surviving checkout, then removes those containers

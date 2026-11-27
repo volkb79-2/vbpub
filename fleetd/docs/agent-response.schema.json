@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "fleet-host-agent/1 response envelope",
+  "oneOf": [
+    {
+      "type": "object",
+      "required": ["schema", "agent_version", "error"],
+      "properties": {
+        "schema": {"const": "fleet-host-agent/1"},
+        "agent_version": {"type": "string"},
+        "error": {
+          "type": "object",
+          "required": ["exit_code", "reason"],
+          "properties": {
+            "exit_code": {"type": "integer", "enum": [0, 1, 2, 3, 4, 70, 71, 72, 75, 76, 77, 78, 79, 143]},
+            "reason": {"type": "string"}
+          },
+          "additionalProperties": false
+        }
+      },
+      "not": {
+        "anyOf": [
+          {"required": ["exit_code"]},
+          {"required": ["reason"]}
+        ]
+      }
+    },
+    {
+      "type": "object",
+      "required": ["schema", "agent_version"],
+      "properties": {
+        "schema": {"const": "fleet-host-agent/1"},
+        "agent_version": {"type": "string"}
+      },
+      "not": {"required": ["error"]}
+    }
+  ]
+}

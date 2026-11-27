@@ -1839,3 +1839,9 @@ needed later, the enforcement assets must be installed somewhere the agent UID
 cannot modify and mounted or owned read-only to that UID.
 
 Source: P-plat-26d final safety review H2; controller and main ruling, 2026-11-27.
+
+## CTL-66 — remote-gate admission line prints `slice_oom_kill_delta=-1` for "could not read"
+
+**Status:** OPEN (filed 2026-11-27 by vbpub-core on main's request). Do not fix with this entry.
+
+Run rgw-r2-20261127T021120-v1001 (cmru `r2`, shard 1) ended with `admission: weight=2048MiB slots=1/8 slice_oom_kill_delta=-1`. A counter delta cannot be negative. Read from `scripts/controller/remote-gate.sh`: `oomd` starts at `-1` and is replaced only when both readings of the `dev-gates.slice` `oom_kill` counter are non-negative integers; `oom_kill()` prints `-1` when the identity check or the probe fails. So `-1` is most likely the "unreadable" sentinel (not established for this run: the two readings are not logged). It is also indistinguishable from a real difference of -1, which a recreated slice could produce. Wanted: print an explicit `unknown` with the reason (which reading failed), and report a decreased counter by name instead of subtracting.

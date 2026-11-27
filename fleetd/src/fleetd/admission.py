@@ -140,8 +140,9 @@ class PolicyFacts:
     footprint_charges_bytes: Fact[Mapping[str, int]]
     priority_classes_by_principal: Fact[Mapping[str, tuple[str, ...]]]
     disk_floors: Fact[Mapping[str, int]]
+    max_upload_store_bytes: Fact[int]
     psi_refuse_some_avg10: Fact[float]
-    admission: Fact[Mapping[str, float]]
+    admission: Fact[Mapping[str, object]]
     aging_s: Fact[float]
     legacy_charge_bytes: Fact[int]
     legacy_planned_cores: Fact[float]
@@ -1057,6 +1058,15 @@ class AdmissionBook:
             raise AdmissionError(ExitCode.QUEUED_WITHDRAWN, f"cannot read lease records: {exc}") from exc
         return {path.stem: _read_lease_record(path, expected_id=path.stem) for path in paths}
 
+    def lease_records(self) -> tuple[Mapping[str, object], ...]:
+        """Return a stable snapshot of durable lease records for reconciliation."""
+
+        queue_fd = self._queue_lock()
+        try:
+            return tuple(dict(record) for record in self._lease_records_locked().values())
+        finally:
+            _unlock_close(queue_fd)
+
     @staticmethod
     def _inspection(inspector: Callable[[str], InspectorAnswer], target: str) -> InspectorAnswer | object:
         try:
@@ -1356,26 +1366,24 @@ class AdmissionBook:
             return False
         candidate_key = self._queue_key(candidate)
         # The reservation belongs to the first aged waiter in queue order, whether
-        # it fits now or not. Exactly one waiter holds it, so two waiters can
-        # never block each other.
+        # it fits now or not. Continue the scan after finding it: a fitting waiter
+        # ahead of the candidate must still block the candidate, even when the
+        # reservation holder sits between them in queue order.
         reservation_holder: Mapping[str, object] | None = None
         earlier_fitting: list[Mapping[str, object]] = []
         for row in ordered:
-            if row["job_id"] == candidate["job_id"]:
-                if now - float(candidate["submitted_at"]) >= aging_s:
-                    reservation_holder = candidate
-                    break
-                continue
             try:
                 static_eligibility(capacity, str(row["footprint"]), float(row["planned_cores"]))
             except AdmissionError:
                 # Candidate feasibility already established every shared host fact;
                 # a waiter-specific footprint or core request can only be refused.
                 continue
-            if now - float(row["submitted_at"]) >= aging_s:
+            if (
+                reservation_holder is None
+                and now - float(row["submitted_at"]) >= aging_s
+            ):
                 reservation_holder = row
-                break
-            if self._queue_key(row) < candidate_key:
+            if row["job_id"] != candidate["job_id"] and self._queue_key(row) < candidate_key:
                 row_fits, _row_metrics = self._candidate_fits(row, capacity, records, legacy_ids)
                 if row_fits:
                     earlier_fitting.append(row)
@@ -1439,6 +1447,7 @@ class AdmissionBook:
         legacy_jobs_provider: Callable[[], Iterable[str]],
         wait_s: float | None = None,
         inspector: Callable[[str], InspectorAnswer] | None = None,
+        waiter: Callable[[float], None] | None = None,
     ) -> AdmissionResult:
         """Queue one /1 request, holding its waiter flock until admission or withdrawal."""
 
@@ -1521,6 +1530,7 @@ class AdmissionBook:
             _unlock_close(queue_fd)
 
         deadline = submitted_at + wait_limit
+        wait_for_next_check = self.waiter if waiter is None else waiter
         # Why the latest decision did not admit; reported when the wait expires.
         last_refusal: str | None = None
         try:
@@ -1596,7 +1606,15 @@ class AdmissionBook:
                 now = _nonnegative_number(self.clock(), "clock")
                 if now >= deadline:
                     return self._expire_waiter(request.job_id, group, digest, last_refusal)
-                self.waiter(min(QUEUE_RECHECK_S, deadline - now))
+                try:
+                    wait_for_next_check(min(QUEUE_RECHECK_S, deadline - now))
+                except AdmissionError:
+                    cleanup_fd = self._queue_lock()
+                    try:
+                        self._remove_waiter_locked(request.job_id, digest, group)
+                    finally:
+                        _unlock_close(cleanup_fd)
+                    raise
         finally:
             if waiter_fd is not None:
                 _unlock_close(waiter_fd)
@@ -1610,6 +1628,7 @@ class AdmissionBook:
         legacy_jobs_provider: Callable[[], Iterable[str]],
         inspector: Callable[[str], InspectorAnswer],
         wait_s: float | None = None,
+        waiter: Callable[[float], None] | None = None,
     ) -> AdmissionResult:
         """Reserve a local-run-gate lease through the same priority and wait queue."""
 
@@ -1620,6 +1639,7 @@ class AdmissionBook:
             legacy_jobs_provider=legacy_jobs_provider,
             wait_s=wait_s,
             inspector=inspector,
+            waiter=waiter,
         )
 
     def bind_lease(
