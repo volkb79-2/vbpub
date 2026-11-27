@@ -200,6 +200,7 @@ caller_pi_run_mode=${PI_RUN_MODE-}
 caller_pi_run_mode_set=0
 [[ -v PI_RUN_MODE ]] && caller_pi_run_mode_set=1
 # shellcheck source=lib.sh
+# shellcheck disable=SC1091 # lib.sh is linted separately; the source path is resolved at runtime.
 . "$SCRIPT_DIR/lib.sh"
 controller_init
 
@@ -210,7 +211,7 @@ sanitize_bash_child_environment() {
   builtin unset BASH_ENV ENV
   local function_name
   while IFS= builtin read -r function_name; do
-    builtin export -n -f "$function_name"
+    builtin export -n -f "${function_name?}"
   done < <(builtin compgen -A function)
 }
 sanitize_bash_child_environment

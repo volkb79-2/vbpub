@@ -74,6 +74,7 @@ done
 umask 077
 scratch_dir=$(/usr/bin/mktemp -d /tmp/pi-pidns-bash.XXXXXXXX) \
   || fail_closed 'cannot create private namespace status storage'
+# shellcheck disable=SC2329 # Bash invokes this function indirectly via the EXIT trap below.
 cleanup() {
   /usr/bin/rm -rf -- "$scratch_dir"
 }

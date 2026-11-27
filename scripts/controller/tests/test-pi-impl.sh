@@ -278,27 +278,30 @@ launch() {
 launch_sequence() {
   local run=$1 route=$2 sequence=$3
   shift 3
+  local -a sequence_env=()
+  if [[ -n ${SEQUENCE_EXTRA_ENV:-} ]]; then
+    IFS=$' \t\n' read -r -a sequence_env <<< "$SEQUENCE_EXTRA_ENV"
+  fi
   if [[ ${1:-} == resume && -n ${2:-} ]]; then seed_resume_session "$2"; fi
   if [[ ${PIDNS_HOOK_ENV_TEST:-0} == 1 ]]; then
     local function_definition
     # shellcheck disable=SC2016 # The literal Bash function body is imported by the child Bash through env.
     printf -v function_definition '() { : > %q; builtin printf "$@"; }' "$PIDNS_FUNCTION_MARKER"
     env "BASH_FUNC_printf%%=$function_definition" \
+      "${sequence_env[@]}" \
       PIDNS_FUNCTION_MARKER="$PIDNS_FUNCTION_MARKER" \
       PIDNS_BASH_ENV_MARKER="$PIDNS_BASH_ENV_MARKER" \
       PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE="$route" \
       CONTROLLER_OD_STATE="${SEQUENCE_OD_STATE:-$STATE}" \
       FAKE_FIXTURE_DIR="$SCRIPT_DIR/fixtures" FAKE_PI_SEQUENCE="$sequence" \
       FAKE_PI_COUNTER="$ROOT/$run.counter" FAKE_PI_SESSION_ID="${run}-session" FAKE_PI_RC=0 \
-      ${SEQUENCE_EXTRA_ENV:-} \
       "$SRC" "$WORKTREE" "$PROMPT" "$run" "$@" \
       > "$ROOT/$run.launch.log" 2>&1 < /dev/null
   else
-    PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE="$route" \
+    env "${sequence_env[@]}" PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE="$route" \
       CONTROLLER_OD_STATE="${SEQUENCE_OD_STATE:-$STATE}" \
       FAKE_FIXTURE_DIR="$SCRIPT_DIR/fixtures" FAKE_PI_SEQUENCE="$sequence" \
       FAKE_PI_COUNTER="$ROOT/$run.counter" FAKE_PI_SESSION_ID="${run}-session" FAKE_PI_RC=0 \
-      ${SEQUENCE_EXTRA_ENV:-} \
       "$SRC" "$WORKTREE" "$PROMPT" "$run" "$@" \
       > "$ROOT/$run.launch.log" 2>&1 < /dev/null
   fi
