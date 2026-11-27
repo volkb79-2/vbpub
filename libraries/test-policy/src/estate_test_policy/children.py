@@ -117,15 +117,17 @@ def read_process(
     except (FileNotFoundError, ProcessLookupError):
         return None
     except OSError as exc:
-        if exc.errno == errno.EACCES:
-            # Under hidepid=1, a credential-changed child can be unreadable; procfs alone cannot establish ownership.
+        if exc.errno in (errno.EACCES, errno.EPERM):
+            # A hidepid procfs can refuse the read, also for a child of ours that changed credentials,
+            # so procfs alone cannot establish ownership.
             try:
                 _waitid(os.P_PID, pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
             except OSError as ownership_error:
                 if ownership_error.errno in (errno.ECHILD, errno.ESRCH):
                     return None
                 raise ProcessGuardError(
-                    f"cannot verify whether process {pid} is our child after EACCES reading {path}: {ownership_error}"
+                    f"cannot verify whether process {pid} is our child after {errno.errorcode[exc.errno]} "
+                    f"reading {path}: {ownership_error}"
                 ) from ownership_error
             raise ProcessGuardError(
                 f"cannot read process stat file {path}: {exc}; waitid confirms pid {pid} is our child, "
@@ -331,7 +333,8 @@ class ChildGuard:
 
     def check(self) -> list[str]:
         leaked = []
-        unreaped: dict[tuple[int, int], ProcessRecord] = {}
+        unreaped: set[tuple[int, int]] = set()
+        awaiting_retry: dict[tuple[int, int], ProcessRecord] = {}
         pass_bound_reached = True
         for _pass in range(MAX_CLEANUP_PASSES):
             current = wait_for_new_children(
@@ -344,34 +347,18 @@ class ChildGuard:
                 sleeper=self.sleeper,
             )
             if not current:
+                if self._retry_unreaped(awaiting_retry):
+                    continue  # a late exit can hand its own children to us: scan again
                 pass_bound_reached = False
                 break
             for record in sorted(current.values(), key=lambda item: item.pid):
-                outcome = remove_if_still_ours(
-                    record,
-                    root_pid=self.root_pid,
-                    proc_root=self.proc_root,
-                    reap_timeout=self.settle_seconds + REAP_GRACE_SECONDS,
-                    clock=self.clock,
-                    sleeper=self.sleeper,
-                    kill_live=True,
-                    pidfd_ops=self.pidfd_ops,
-                )
+                outcome = self._remove(record, kill_live=True)
                 if outcome is not None:
                     leaked.append(outcome.message)
                     if outcome.unreaped:
-                        unreaped[record.identity] = record
-        for record in sorted(unreaped.values(), key=lambda item: item.pid):
-            remove_if_still_ours(
-                record,
-                root_pid=self.root_pid,
-                proc_root=self.proc_root,
-                reap_timeout=self.settle_seconds + REAP_GRACE_SECONDS,
-                clock=self.clock,
-                sleeper=self.sleeper,
-                kill_live=False,
-                pidfd_ops=self.pidfd_ops,
-            )
+                        unreaped.add(record.identity)
+                        awaiting_retry[record.identity] = record
+        self._retry_unreaped(awaiting_retry)
         if not pass_bound_reached:
             return leaked
         remaining = new_children(self.before, root_pid=self.root_pid, proc_root=self.proc_root)
@@ -383,3 +370,25 @@ class ChildGuard:
         if details:
             leaked.append(f"child cleanup reached the {MAX_CLEANUP_PASSES}-pass bound; remaining new children: {details}")
         return leaked
+
+    def _remove(self, record: ProcessRecord, *, kill_live: bool) -> RemovalOutcome | None:
+        return remove_if_still_ours(
+            record,
+            root_pid=self.root_pid,
+            proc_root=self.proc_root,
+            reap_timeout=self.settle_seconds + REAP_GRACE_SECONDS,
+            clock=self.clock,
+            sleeper=self.sleeper,
+            kill_live=kill_live,
+            pidfd_ops=self.pidfd_ops,
+        )
+
+    def _retry_unreaped(self, awaiting: dict[tuple[int, int], ProcessRecord]) -> bool:
+        """Give each waiting identity one reap-only retry; True when at least one of them is gone."""
+        gone = False
+        for record in sorted(awaiting.values(), key=lambda item: item.pid):
+            outcome = self._remove(record, kill_live=False)
+            if outcome is None or not outcome.unreaped:
+                gone = True
+        awaiting.clear()
+        return gone

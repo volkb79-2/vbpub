@@ -273,6 +273,11 @@ def analyze_source(
         if tree is None:
             return []
         line_offset = 0
+    return _analyze_tree(tree, sleep_threshold, line_offset)
+
+
+def _analyze_tree(tree: ast.AST, sleep_threshold: float, line_offset: int = 0) -> list[Violation]:
+    """Apply every static rule to an already parsed tree or function node."""
     parents = _parents(tree)
     found = _check_sleeps(tree, parents, sleep_threshold) + _check_timeouts(tree) + _check_walltime(tree)
     shifted = [Violation(v.rule, v.lineno + line_offset, v.message) for v in found]

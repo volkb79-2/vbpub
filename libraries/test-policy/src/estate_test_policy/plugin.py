@@ -140,10 +140,11 @@ def _static_lines(item: pytest.Item, allowed: set[str], threshold: float) -> lis
         return []
     function_line = code.co_firstlineno
     try:
-        module = policy._module_tree(source)
-        if policy._function_at_line(module, function_line) is None:
+        node = policy._function_at_line(policy._module_tree(source), function_line)
+        if node is None:
             return [f"[source-analysis] cannot locate test function in {filename} at line {function_line}"]
-        violations = policy.analyze_source(source, sleep_threshold=threshold, function_line=function_line)
+        # Analyze the located node: consumer conftests wrap the public analyze_source with fragment rewrites.
+        violations = policy._analyze_tree(node, threshold)
     except (SyntaxError, tokenize.TokenError) as exc:
         return [f"[source-analysis] could not analyze {filename}: {exc}"]
     return [violation.render() for violation in violations if violation.rule not in allowed]

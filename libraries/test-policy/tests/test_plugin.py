@@ -251,6 +251,26 @@ def test_static_lines_reports_one_warning_when_no_function_matches(monkeypatch):
     ]
 
 
+def test_static_lines_does_not_pass_the_file_through_a_wrapped_analyze_source(monkeypatch):
+    ns = {}
+    exec("\n\ndef f():\n    pass\n", ns)
+    source = "\n\ndef f():\n    time.sleep(1)\n"
+    real_analyze = plugin.policy.analyze_source
+
+    def strips_blank_first_lines(text, **kwargs):
+        return real_analyze(text.lstrip("\n"), **kwargs)  # what a fragment-rewriting consumer shim can do
+
+    monkeypatch.setattr(plugin.policy, "analyze_source", strips_blank_first_lines)
+    monkeypatch.setattr(plugin.inspect, "getsourcefile", lambda function: "module.py")
+    monkeypatch.setattr(plugin.linecache, "checkcache", lambda filename: None)
+    monkeypatch.setattr(plugin.linecache, "getlines", lambda filename: source.splitlines(keepends=True))
+
+    assert plugin._static_lines(types.SimpleNamespace(function=ns["f"]), set(), 0.2) == [
+        "[fixed-sleep] line 4: time.sleep(1) is a fixed sleep used as synchronisation; "
+        "wait on an event, condition or poll loop"
+    ]
+
+
 @pytest.mark.parametrize("parse_error", [SyntaxError("invalid source"), tokenize.TokenError("invalid token", (2, 0))])
 def test_static_lines_reports_source_parse_failures(monkeypatch, parse_error):
     ns = {}

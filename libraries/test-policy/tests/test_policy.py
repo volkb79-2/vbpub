@@ -103,6 +103,7 @@ def test_function_line_analysis_caches_a_read_only_module_tree(monkeypatch):
         return real_parse(text, *args, **kwargs)
 
     monkeypatch.setattr(policy.ast, "parse", track_parse)
+    policy._module_tree.cache_clear()
     module = policy._module_tree(source)
     original_tree = ast.dump(module, include_attributes=True)
 
