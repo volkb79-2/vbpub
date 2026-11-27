@@ -181,6 +181,7 @@ def test_a_non_int_bool_negative_or_backwards_counter_is_unknown(path, key, old,
 _READER_DEFAULTS = {
     "_path": None,
     "_identity": None,
+    "_owner_pid": None,
     "_offset": 0,
     "_pending": b"",
     "_count": 0,
@@ -201,7 +202,7 @@ _READER_PROGRESS_DEFAULTS = {
 }
 
 
-def test_a_fresh_event_progress_reader_holds_exactly_these_eight_defaults_the_progress_counters_and_the_pid():
+def test_a_fresh_event_progress_reader_holds_exactly_these_nine_defaults_the_progress_counters_and_the_pid():
     reader = liveness._EventProgressReader(4242)
     assert vars(reader) == {
         "_candidate_pid": 4242,
@@ -220,7 +221,7 @@ def test_a_fresh_event_progress_reader_holds_exactly_these_eight_defaults_the_pr
     }
 
 
-def test_reset_restores_the_eight_defaults_the_progress_counters_and_keeps_the_pid():
+def test_reset_restores_the_nine_defaults_the_progress_counters_and_keeps_the_pid():
     reader = liveness._EventProgressReader(7)
     reader._offset = 9
     reader._pending = b"x"

@@ -10,7 +10,7 @@
       "reason": "TYPE_CHECKING imports CommandPlan only for annotations; importing runner here would create a runtime cycle."
     },
     "src/assay/mutation.py": {
-      "lines": [242, 249, 250],
+      "lines": [248, 255, 256],
       "reason": "TYPE_CHECKING imports four annotation names from adapters.base and runner; runtime imports would create the documented mutual dependencies."
     },
     "src/assay/mutation_store.py": {
