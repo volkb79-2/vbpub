@@ -6,6 +6,7 @@ import struct
 import pytest
 
 from fleetd.admission import AdmissionError, ExitCode
+from fleetd import agent_protocol
 from fleetd.agent_policy import load_agent_policy
 from fleetd.agent_protocol import (
     ARTIFACT_NAMES,
@@ -223,6 +224,152 @@ def test_read_frame_drops_an_idle_stream_without_waiting(monkeypatch):
         server.close()
 
 
+def test_read_frame_maps_descriptor_select_and_read_failures(monkeypatch):
+    class MissingDescriptor:
+        def fileno(self):
+            raise OSError("closed stream")
+
+    class InvalidDescriptor:
+        def fileno(self):
+            return -1
+
+    with pytest.raises(FrameError, match="must expose a file descriptor"):
+        read_frame(MissingDescriptor(), None)
+    with pytest.raises(FrameError, match="invalid file descriptor"):
+        read_frame(InvalidDescriptor(), None)
+
+    monkeypatch.setattr(
+        "fleetd.agent_protocol.select.select",
+        lambda *_args: (_ for _ in ()).throw(ValueError("bad select fd")),
+    )
+    with pytest.raises(FrameError, match="cannot wait for framed input"):
+        read_frame(123, None)
+
+    monkeypatch.setattr("fleetd.agent_protocol.select.select", lambda readers, *_args: (readers, [], []))
+    monkeypatch.setattr(
+        "fleetd.agent_protocol.os.read",
+        lambda *_args: (_ for _ in ()).throw(OSError("read denied")),
+    )
+    with pytest.raises(FrameError, match="cannot read framed input"):
+        read_frame(123, None)
+
+
+def test_untimed_frame_writes_map_os_errors_and_zero_progress(monkeypatch):
+    monkeypatch.setattr(
+        "fleetd.agent_protocol.os.write",
+        lambda *_args: (_ for _ in ()).throw(OSError("write denied")),
+    )
+    with pytest.raises(FrameError, match="cannot write framed response"):
+        agent_protocol._write_all(123, b"response", None)
+
+    monkeypatch.setattr("fleetd.agent_protocol.os.write", lambda *_args: 0)
+    with pytest.raises(FrameError, match="write made no progress"):
+        agent_protocol._write_all(123, b"response", None)
+
+
+@pytest.mark.parametrize("timeout", [True, "1", 0, -1, float("inf"), 10 ** 1000])
+def test_timed_frame_writes_reject_invalid_deadlines(timeout):
+    with pytest.raises(FrameError, match="response idle timeout"):
+        agent_protocol._write_all(123, b"response", timeout)
+
+
+def test_timed_frame_writes_restore_blocking_mode_after_partial_progress(monkeypatch):
+    written = bytearray()
+    attempts = [0]
+    blocking_changes = []
+
+    def write(_fd, content):
+        attempts[0] += 1
+        if attempts[0] == 1:
+            raise BlockingIOError("try again")
+        count = min(2, len(content))
+        written.extend(content[:count])
+        return count
+
+    monkeypatch.setattr("fleetd.agent_protocol.os.get_blocking", lambda _fd: True)
+    monkeypatch.setattr("fleetd.agent_protocol.os.set_blocking", lambda _fd, value: blocking_changes.append(value))
+    monkeypatch.setattr("fleetd.agent_protocol.select.select", lambda _r, writers, _e, _t: ([], writers, []))
+    monkeypatch.setattr("fleetd.agent_protocol.os.write", write)
+    monkeypatch.setattr("fleetd.agent_protocol.time.monotonic", lambda: 1.0)
+
+    agent_protocol._write_all(123, b"response", 5)
+
+    assert bytes(written) == b"response"
+    assert attempts[0] == 5
+    assert blocking_changes == [False, True]
+
+
+@pytest.mark.parametrize(
+    ("failure", "message"),
+    [
+        ("get-blocking", "cannot configure"),
+        ("set-nonblocking", "cannot configure"),
+        ("select", "cannot wait for framed response"),
+        ("not-writable", "write idle deadline"),
+        ("write", "cannot write framed response"),
+        ("no-progress", "write made no progress"),
+        ("deadline", "write idle deadline"),
+    ],
+)
+def test_timed_frame_write_failures_are_reported_and_restore_mode(monkeypatch, failure, message):
+    blocking_changes = []
+
+    def get_blocking(_fd):
+        if failure == "get-blocking":
+            raise OSError("cannot inspect mode")
+        return True
+
+    def set_blocking(_fd, value):
+        blocking_changes.append(value)
+        if failure == "set-nonblocking" and value is False:
+            raise OSError("cannot change mode")
+
+    def select_waiter(_readers, writers, _errors, _timeout):
+        if failure == "select":
+            raise ValueError("select rejected descriptor")
+        return ([], [], []) if failure == "not-writable" else ([], writers, [])
+
+    def write(_fd, _content):
+        if failure == "write":
+            raise OSError("write failed")
+        if failure == "no-progress":
+            return 0
+        return 1
+
+    clock_values = iter([1.0, 2.0])
+    monkeypatch.setattr("fleetd.agent_protocol.os.get_blocking", get_blocking)
+    monkeypatch.setattr("fleetd.agent_protocol.os.set_blocking", set_blocking)
+    monkeypatch.setattr("fleetd.agent_protocol.select.select", select_waiter)
+    monkeypatch.setattr("fleetd.agent_protocol.os.write", write)
+    monkeypatch.setattr("fleetd.agent_protocol.time.monotonic", lambda: next(clock_values))
+
+    with pytest.raises(FrameError, match=message):
+        agent_protocol._write_all(123, b"response", 1 if failure == "deadline" else 5)
+    expected_changes = {
+        "get-blocking": [], "set-nonblocking": [False],
+    }.get(failure, [False, True])
+    assert blocking_changes == expected_changes
+
+
+def test_timed_frame_write_reports_failure_to_restore_blocking_mode(monkeypatch):
+    calls = []
+
+    def set_blocking(_fd, value):
+        calls.append(value)
+        if value is True:
+            raise OSError("restore denied")
+
+    monkeypatch.setattr("fleetd.agent_protocol.os.get_blocking", lambda _fd: True)
+    monkeypatch.setattr("fleetd.agent_protocol.os.set_blocking", set_blocking)
+    monkeypatch.setattr("fleetd.agent_protocol.select.select", lambda _r, writers, _e, _t: ([], writers, []))
+    monkeypatch.setattr("fleetd.agent_protocol.os.write", lambda _fd, content: len(content))
+    monkeypatch.setattr("fleetd.agent_protocol.time.monotonic", lambda: 1.0)
+
+    with pytest.raises(FrameError, match="cannot restore framed response stream"):
+        agent_protocol._write_all(123, b"response", 5)
+    assert calls == [False, True]
+
+
 @pytest.mark.parametrize("timeout", [0, -1, True, float("inf")])
 def test_read_frame_rejects_invalid_idle_deadlines(timeout):
     with pytest.raises(FrameError, match="idle timeout"):
@@ -293,6 +440,34 @@ def test_write_frame_refuses_oversized_or_invalid_responses():
             write_frame(server, {"payload": float("nan")})
         with pytest.raises(FrameError, match="cannot encode"):
             write_frame(object(), {})
+        class InvalidDescriptor:
+            def fileno(self):
+                return -1
+
+        with pytest.raises(FrameError, match="invalid file descriptor"):
+            write_frame(InvalidDescriptor(), {"ok": True})
+    finally:
+        client.close()
+        server.close()
+
+
+def test_require_end_of_input_rejects_any_bytes_after_the_single_frame():
+    client, server = socket.socketpair()
+    try:
+        client.sendall(b"extra")
+        client.shutdown(socket.SHUT_WR)
+        with pytest.raises(FrameError, match="unexpected bytes after request frame"):
+            require_end_of_input(server, 1)
+    finally:
+        client.close()
+        server.close()
+
+
+def test_require_end_of_input_accepts_eof_after_the_one_request_frame():
+    client, server = socket.socketpair()
+    try:
+        client.shutdown(socket.SHUT_WR)
+        assert require_end_of_input(server, 1) is None
     finally:
         client.close()
         server.close()
@@ -500,3 +675,181 @@ def test_only_candidates_requires_an_allowlisted_host_created_file(tmp_path):
     assert validate_request(
         request, identity, policy, created_candidate_paths=frozenset({candidate_path}),
     )["extra_argv"] == ["--only-candidates", candidate_path]
+
+
+@pytest.mark.parametrize(
+    ("edit", "fragment"),
+    [
+        (lambda request: request.update(base="not-hex"), "base must be a hexadecimal commit id"),
+        (lambda request: request.update(lane="../bad"), "safe Run-Gate lane name"),
+        (lambda request: request["resources"].update(cpu_set="0"), "array of non-negative CPU ids"),
+        (lambda request: request["resources"].update(cpu_set=[1, 1]), "duplicate CPU ids"),
+        (lambda request: request["resources"].update(declared_peak_bytes=True), "declared_peak_bytes must be an integer"),
+        (lambda request: request["resources"].update(planned_cores=10 ** 400), "finite number"),
+        (lambda request: request["resources"].update(planned_cores=0), "finite positive number"),
+        (lambda request: request["requested_by"].update(version="v1"), "requested_by.version must be SemVer"),
+        (lambda request: request.update(stores={"collect": None, "seed": "bad"}), "stores.seed must be an object"),
+        (lambda request: request.update(stores={"collect": None, "seed": {}}), "stores.seed is missing field"),
+        (
+            lambda request: request.update(stores={
+                "collect": None, "seed": {"path": "seed.tgz", "sha256": SHA256, "bytes": 1, "extra": 1},
+            }),
+            "stores.seed has unknown field",
+        ),
+        (
+            lambda request: request.update(stores={
+                "collect": None, "seed": {"path": "../outside", "sha256": SHA256, "bytes": 1},
+            }),
+            "parent path",
+        ),
+        (
+            lambda request: request.update(stores={
+                "collect": None, "seed": {"path": "seed.tgz", "sha256": "bad", "bytes": 1},
+            }),
+            "stores.seed.sha256 must be a lowercase SHA-256",
+        ),
+        (
+            lambda request: request.update(stores={
+                "collect": None, "seed": {"path": "seed.tgz", "sha256": SHA256, "bytes": 0},
+            }),
+            "stores.seed.bytes must be an integer",
+        ),
+        (lambda request: request.update(extra_argv="--verbose"), "extra_argv must be an argv array"),
+        (lambda request: request.update(env="CI=1"), "env must be an object"),
+        (lambda request: request.update(env={"CI": "2"}), "env value for 'CI' is not on the host allow-list"),
+        (lambda request: request.update(kind="lane", dev={}), "dev payload is only allowed"),
+    ],
+)
+def test_validate_submit_rejects_remaining_closed_field_errors(tmp_path, edit, fragment):
+    policy, _checkout = _policy(tmp_path)
+    identity = policy.resolve_peer(1000, 100)
+    request = _submit()
+    edit(request)
+
+    with pytest.raises(AdmissionError, match=fragment) as raised:
+        validate_request(request, identity, policy)
+    assert raised.value.exit_code == ExitCode.REFUSAL
+
+
+def test_validate_request_covers_request_shape_argv_candidate_and_dev_errors(tmp_path):
+    policy, _checkout = _policy(tmp_path)
+    identity = policy.resolve_peer(1000, 100)
+    for request, fragment in (
+        ([], "request must be a JSON object"),
+        ({"verb": 1}, "request.verb must be a string"),
+        ({"verb": "nope"}, "unsupported agent verb"),
+    ):
+        with pytest.raises(AdmissionError, match=fragment) as raised:
+            validate_request(request, identity, policy)
+        assert raised.value.exit_code == ExitCode.REFUSAL
+    with pytest.raises(AdmissionError, match="lowercase SHA-256 digest") as bad_put_digest:
+        validate_request(
+            {"verb": "put", "name": "candidates", "sha256": "bad", "bytes": 1}, identity, policy,
+        )
+    assert bad_put_digest.value.exit_code == ExitCode.REFUSAL
+
+    with pytest.raises(AdmissionError, match="container_name is invalid") as bad_container_name:
+        validate_request({
+            "verb": "lease", "lease_id": "controller-lease-1", "container_name": "../runner",
+            "footprint": "tiny", "planned_cores": 1, "priority": "gate",
+        }, identity, policy)
+    assert bad_container_name.value.exit_code == ExitCode.REFUSAL
+
+    malformed_dev = _submit()
+    malformed_dev["kind"] = "dev"
+    malformed_dev["dev"] = {
+        "tracked": [], "untracked": {"sha256": SHA256, "bytes": 1},
+        "verb_argv": ["status"], "tty": False, "worktree_key": "main",
+    }
+    with pytest.raises(AdmissionError, match="dev.tracked must be an object"):
+        validate_request(malformed_dev, identity, policy)
+
+    malformed_argv = _submit()
+    malformed_argv["kind"] = "dev"
+    malformed_argv["dev"] = {
+        "tracked": {"sha256": SHA256, "bytes": 1}, "untracked": {"sha256": SHA256, "bytes": 1},
+        "verb_argv": "status", "tty": False, "worktree_key": "main",
+    }
+    with pytest.raises(AdmissionError, match="dev.verb_argv must be an argv array"):
+        validate_request(malformed_argv, identity, policy)
+
+    bad_tty = _submit()
+    bad_tty["kind"] = "dev"
+    bad_tty["dev"] = {
+        "tracked": {"sha256": SHA256, "bytes": 1}, "untracked": {"sha256": SHA256, "bytes": 1},
+        "verb_argv": ["status"], "tty": 1, "worktree_key": "main",
+    }
+    with pytest.raises(AdmissionError, match="dev.tty must be a boolean"):
+        validate_request(bad_tty, identity, policy)
+
+    bad_worktree = _submit()
+    bad_worktree["kind"] = "dev"
+    bad_worktree["dev"] = {
+        "tracked": {"sha256": SHA256, "bytes": 1}, "untracked": {"sha256": SHA256, "bytes": 1},
+        "verb_argv": ["status"], "tty": False, "worktree_key": "../main",
+    }
+    with pytest.raises(AdmissionError, match="dev.worktree_key is invalid"):
+        validate_request(bad_worktree, identity, policy)
+
+    candidates = _submit()
+    candidates["extra_argv"] = ["--only-candidates"]
+    with pytest.raises(AdmissionError, match="requires exactly one host-created file"):
+        validate_request(candidates, identity, policy)
+
+
+def test_validate_request_accepts_status_progress_cancel_and_lease_and_checks_required_strings(tmp_path):
+    policy, _checkout = _policy(tmp_path)
+    identity = policy.resolve_peer(1000, 100)
+    ordinary_requests = (
+        {"verb": "status", "job_id": "controller-run-1"},
+        {"verb": "progress", "job_id": "controller-run-1", "offset": 12},
+        {"verb": "cancel", "job_id": "controller-run-1", "reason": "operator request"},
+        {"verb": "fetch", "job_id": "controller-run-1", "artifact": "job.log", "offset": 1, "length": 2},
+    )
+    for request in ordinary_requests:
+        assert validate_request(request, identity, policy) is request
+
+    lease = {
+        "verb": "lease", "lease_id": "controller-lease-1", "container_name": "runner-1",
+        "footprint": "tiny", "planned_cores": 1, "priority": "gate",
+    }
+    assert validate_request(lease, identity, policy) is lease
+
+    with pytest.raises(AdmissionError, match="progress.offset must be an integer") as progress:
+        validate_request({"verb": "progress", "job_id": "controller-run-1", "offset": -1}, identity, policy)
+    assert progress.value.exit_code == ExitCode.REFUSAL
+    with pytest.raises(AdmissionError, match="cancel.reason must be a non-empty string") as cancel:
+        validate_request({"verb": "cancel", "job_id": "controller-run-1", "reason": ""}, identity, policy)
+    assert cancel.value.exit_code == ExitCode.REFUSAL
+    with pytest.raises(AdmissionError, match="fetch.artifact must be a non-empty string") as fetch:
+        validate_request({
+            "verb": "fetch", "job_id": "controller-run-1", "artifact": "", "offset": 0, "length": 1,
+        }, identity, policy)
+    assert fetch.value.exit_code == ExitCode.REFUSAL
+
+
+def test_validate_request_checks_successful_seed_environment_and_candidate_allowlist(tmp_path):
+    policy, _checkout = _policy(
+        tmp_path, extra_argv='[["--only-candidates", "<host-candidates>"]]',
+    )
+    identity = policy.resolve_peer(1000, 100)
+    request = _submit()
+    request["stores"] = {
+        "collect": None, "seed": {"path": "seed.tgz", "sha256": SHA256, "bytes": 2},
+    }
+    request["env"] = {"CI": "1"}
+    candidate_path = "/var/lib/fleetd-agent/uploads/controller/candidates/" + SHA256
+    request["extra_argv"] = ["--only-candidates", candidate_path]
+
+    assert validate_request(
+        request, identity, policy, created_candidate_paths=frozenset({candidate_path}),
+    ) is request
+
+    other_root = tmp_path / "other"
+    other_root.mkdir()
+    policy, _checkout = _policy(other_root, extra_argv='[["--verbose"]]')
+    identity = policy.resolve_peer(1000, 100)
+    request = _submit()
+    request["extra_argv"] = ["--only-candidates", candidate_path]
+    with pytest.raises(AdmissionError, match="extra_argv is not on the host allow-list"):
+        validate_request(request, identity, policy, created_candidate_paths=frozenset({candidate_path}))
