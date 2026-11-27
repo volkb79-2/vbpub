@@ -138,10 +138,21 @@ Use this order for each implementation task.
    [Pi section](#pi-on-open-design).
 
    Every pi launch runs under a **run mode**, `implementer` (the default) or
-   `review` (`PI_RUN_MODE`). An implementer launch gets pi's own tool set and
-   every prompt it sends carries `implementer-prompt-rules.md` — the no-pattern-
-   kill paragraph: signal and TERM-trap tests run only inside a capped container
-   with a private PID namespace, against PIDs the test recorded itself; no shell
+   `review` (`PI_RUN_MODE`). An implementer launch keeps pi's tool set, but its
+   built-in bash tool and user `!`/`!!` commands go through the tracked
+   `pi-pidns-extension.js` and `pi-pidns-bash`. With the tracked guard files
+   unchanged, each command starts in a fresh user and PID namespace.
+   The Python bootstrap starts as `/usr/bin/python3 -IS`: its interpreter
+   startup ignores `PYTHON*` settings and skips site initialization before
+   bwrap, while the original environment remains available to Bash commands.
+   `pi-impl.sh` passes the extension explicitly with
+   `--no-extensions -e`, so worktree and user extension settings cannot replace
+   it; `PI_EXTRA_ARGS` cannot load or disable extensions in implementer mode.
+   Before it claims the run name, the launcher probes the wrapper with
+   `-c true`; a missing extension or wrapper, missing bwrap, or failed
+   namespace setup refuses the launch with exit 2. Every prompt also carries
+   `implementer-prompt-rules.md` — signal and TERM-trap tests run only inside a
+   capped container against exact PIDs the test recorded itself; no shell
    experiments in the shared devcontainer. A review launch carries the read-only
    tool set from `pi-review-argv` in the wrapper's OWN argv (first run, resume
    and every automatic continuation), every prompt carries
@@ -424,13 +435,33 @@ credentials under `$HOME`, `/proc`, and the implementer's own run records. The
 review prompt and the rendered material are the only inputs the launcher
 controls; enforcing a filesystem boundary would need an OS-level mechanism, not
 this tool selection. A worktree whose `AGENTS.md` steers the reviewer is a real
-risk, and it is not closed here. **A review mode is a tool-set enforcement, not
-a sandbox:** the reviewer cannot execute anything because no tool it has can,
-and that is a fact of the argv — but an implementer under the implementer contract
-still has `bash`, and nothing there technically prevents the bash builtin
-`kill`, a TERM-trap script or a direct syscall. Those are instructed against,
-not prevented (see the `implementer-prompt-rules.md` paragraph every implementer
-prompt carries), and the mechanical part is the `pi-shims` PATH guard.
+risk, and it is not closed here. **A review mode is tool-set enforcement, not
+a sandbox:** the reviewer cannot execute anything because no tool in its argv
+can, while `read` can still read anything the wrapper's user can. Implementer
+bash has a per-command OS boundary for PID signals while the tracked launch
+guard files are unchanged: a shell in its new PID namespace cannot address
+outer processes, even though it can see their PIDs in the host `/proc`.
+`/proc` is intentionally not remounted: `--proc /proc` fails in the supported
+container. PID 1 inside is bwrap, so `kill -0 1` succeeds as expected; `sudo`
+fails inside, and background jobs end when their command ends.
+
+The namespace does not confine file writes, network access, or other Unix
+sockets. The wrapper hides the tmux socket directory and `/run/docker-api`,
+unsets `TMUX`, `TMUX_PANE`, and `DOCKER_HOST`, and covers an existing
+`/var/run/docker.sock` or an existing `DOCKER_HOST=unix://` socket outside
+`/run/docker-api`. Other Unix sockets remain available. The `pi-shims` PATH
+guard still refuses ordinary `pkill`, `killall`, and signalling `pgrep`
+spellings; it is not itself a security boundary. The implementer prompt still
+forbids experiments in the shared devcontainer, whose own shell does not run
+under this guard.
+
+**Guard limitation.** This stops accidental signal commands made through the
+current guarded path. It is not tamper-resistant: a same-user implementer can
+edit the tracked extension, Python bootstrap, worker, or launcher files and
+change how a later command starts. The bootstrap's Python interpreter startup
+uses `-I -S` before bwrap; the environment is still passed through to the
+commands. This limitation is tracked as CTL-65 in
+[`KNOWN_ISSUES_TODO_BACKLOG.md`](KNOWN_ISSUES_TODO_BACKLOG.md).
 
 **Review mode is sticky per run name and pi session.** Every launch records it as
 `<runs-dir>/<run>.mode` (`review` or `implementer`). A resume records its known
@@ -645,11 +676,14 @@ directory (`$PI_CODING_AGENT_DIR/bin`, default `$HOME/.pi/agent/bin`) holds a
 `pkill`, `killall` or `pgrep`, because pi puts that directory ahead of the
 agent's `PATH`; that value is resolved as pi resolves it (`~` and `~/x`
 against `$HOME`) and a value that is still relative is refused, not guessed.
-No variable switches the guard off. Known limits, which the shims cannot cover:
-the bash builtin `kill` (a negative group pid or a foreign pid), an absolute
-path such as `/usr/bin/pkill`, a shell loop over `/proc`, `xargs kill` or
-`python3 -c 'os.kill(...)'`, and a script that resets `PATH` itself. The guard
-is a mechanical refusal for the ordinary spellings, not a security boundary.
+No variable switches the PATH shims or namespace off. The shims are not a
+security boundary: absolute command paths, alternate tools, and a script that
+resets `PATH` can bypass their refusal. With the tracked guard assets unchanged,
+the current implementer bash command runs in its own PID namespace and cannot
+address outer processes by PID. The
+namespace does not restrict file writes, network access, or other Unix sockets;
+the exact mounts and measured namespace limits are in the
+[design guide](docs/DESIGN-GUIDE.md#why-implementer-bash-runs-in-a-user-and-pid-namespace).
 
 See the [design guide](docs/DESIGN-GUIDE.md#pi-open-design-route) for the
 reason Pi runs are classified from the event stream and how its session id

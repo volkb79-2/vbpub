@@ -11,6 +11,7 @@ unset CODEX_REVIEW_MODEL CODEX_REVIEW_EFFORT CODEX_SQLITE_HOME
 unset PI_TEST_FOCUS
 unset CONTROLLER_OD_STATE CONTROLLER_OD_PREFER_EXPIRING CONTROLLER_OD_UNKNOWN_BLOCK_SECONDS OPENDESIGN_API_KEY_VOLKER OPENDESIGN_API_KEY_GITHUB2
 unset CONTROLLER_OD_ACCOUNTS_SCRIPT OPENCODE_COMMAND OPENCODE_MODEL OPENCODE_PROVIDER OPENCODE_IMPL_SCRIPT
+unset PI_IMPL_SCRIPT PI_PIDNS_WORKER_SCRIPT PI_PIDNS_WRAPPER_SCRIPT
 # The pi seams pi-review.sh exports for its own child, and the review budget: an
 # ambient PI_EXTRA_ARGS (exactly what a review launcher exports) would refuse or
 # widen every launch these mutants are judged through.
@@ -27,20 +28,33 @@ if ! CONTROLLER_TEST_PARALLEL_OD_STARTS=0 bash "$SCRIPT_DIR/test-wrappers.sh" > 
   exit 1
 fi
 echo 'PASS unmutated wrapper tests before wrapper mutation checks'
-for baseline in test-job-check.sh test-hardening-tools.sh test-gate-slots.sh test-pi-impl.sh test-pi-review.sh; do
+for baseline in test-job-check.sh test-hardening-tools.sh test-gate-slots.sh test-pi-impl.sh test-pi-pidns.sh test-pi-review.sh; do
   if ! bash "$SCRIPT_DIR/$baseline" > "$ROOT/${baseline%.sh}-unmutated.log" 2>&1; then
     cat "$ROOT/${baseline%.sh}-unmutated.log" >&2
     echo "FAIL: unmutated $baseline must pass before its mutants are judged" >&2
     exit 1
   fi
 done
-echo 'PASS unmutated job-check, hardening, gate-slot, pi-impl and pi-review tests before their mutation checks'
+echo 'PASS unmutated job-check, hardening, gate-slot, pi-impl, pi-pidns and pi-review tests before their mutation checks'
 export CONTROLLER_TEST_PARALLEL_OD_STARTS=0
 expect_killed() {
   local label=$1; shift
+  local check_override_readability=0 arg
+  for arg in "$@"; do
+    case $arg in
+      PI_PIDNS_WORKER_SCRIPT=*|PI_PIDNS_WRAPPER_SCRIPT=*|PI_IMPL_SCRIPT=*)
+        check_override_readability=1
+        ;;
+    esac
+  done
   if "$@" > "$ROOT/$label.log" 2>&1; then
     echo "SURVIVED: $label" >&2
     exit 1
+  fi
+  if (( check_override_readability )) && grep -q '^ERROR: unreadable override ' "$ROOT/$label.log"; then
+    cat "$ROOT/$label.log" >&2
+    echo "ERROR: $label used an unreadable mutation override; this is not a killed mutant" >&2
+    exit 2
   fi
   echo "KILLED: $label"
   killed_count=$((killed_count + 1))
@@ -221,7 +235,7 @@ for pi_case in \
   pi-continue-bound-validation:retry-validation \
   pi-report-unset-skips:report-unset \
   pi-run-name-refusal-overwrites:refusal-own-record \
-  pi-run-name-refusal-overwrites:refusal-keeps-records \
+  pi-run-name-refusal-overwrites-records:refusal-keeps-records \
   pi-record-owner-before-accounts:refusal-keeps-records \
   pi-record-owner-before-credentials:refusal-keeps-records \
   pi-done-removed-before-credentials:refusal-keeps-records \
@@ -261,6 +275,46 @@ for pi_case in \
   pi_focus=${pi_case#*:}
   expect_killed "$pi_mutant" \
     env PI_TEST_FOCUS="$pi_focus" PI_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/$pi_mutant.sh" \
+      bash "$SCRIPT_DIR/test-pi-impl.sh"
+done
+for pi_pidns_case in \
+  pi-pidns-no-user-namespace:argv pi-pidns-no-pid-namespace:argv \
+  pi-pidns-no-die-with-parent:argv pi-pidns-no-root-bind:argv \
+  pi-pidns-tmux-perms-not-private:argv pi-pidns-no-tmux-tmpfs:argv \
+  pi-pidns-no-docker-api-tmpfs:argv pi-pidns-keeps-docker-host:argv \
+  pi-pidns-keeps-tmux:argv pi-pidns-keeps-tmux-pane:argv \
+  pi-pidns-docker-socket-uncovered:docker-socket \
+  pi-pidns-fail-open:fail-closed pi-pidns-command-status-zero:command-status; do
+  pi_pidns_mutant=${pi_pidns_case%%:*}
+  pi_pidns_focus=${pi_pidns_case#*:}
+  expect_killed "$pi_pidns_mutant" \
+    env PI_PIDNS_TEST_FOCUS="$pi_pidns_focus" \
+      PI_PIDNS_WORKER_SCRIPT="$ROOT/mutants/scripts/controller/$pi_pidns_mutant" \
+      bash "$SCRIPT_DIR/test-pi-pidns.sh"
+done
+for pi_pidns_wrapper_case in \
+  pi-pidns-signal-dispositions-dropped:signals \
+  pi-pidns-python-startup-unisolated:startup-env; do
+  pi_pidns_wrapper_mutant=${pi_pidns_wrapper_case%%:*}
+  pi_pidns_wrapper_focus=${pi_pidns_wrapper_case#*:}
+  expect_killed "$pi_pidns_wrapper_mutant" \
+    env PI_PIDNS_TEST_FOCUS="$pi_pidns_wrapper_focus" \
+      PI_PIDNS_WRAPPER_SCRIPT="$ROOT/mutants/scripts/controller/$pi_pidns_wrapper_mutant" \
+      bash "$SCRIPT_DIR/test-pi-pidns.sh"
+done
+for pi_launch_case in \
+  pi-pidns-args-dropped:pidns-argv \
+  pi-pidns-project-extensions-enabled:pidns-argv \
+  pi-pidns-preflight-dropped:pidns-preflight \
+  pi-pidns-extension-check-dropped:pidns-preflight \
+  pi-pidns-extension-args-allowed:pidns-extra-args \
+  pi-session-scan-python-not-isolated:pidns-python-stdin \
+  pi-run-inspection-python-not-isolated:pidns-python-stdin; do
+  pi_launch_mutant=${pi_launch_case%%:*}
+  pi_launch_focus=${pi_launch_case#*:}
+  expect_killed "$pi_launch_mutant" \
+    env PI_TEST_FOCUS="$pi_launch_focus" \
+      PI_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/$pi_launch_mutant.sh" \
       bash "$SCRIPT_DIR/test-pi-impl.sh"
 done
 for pi_live_case in \

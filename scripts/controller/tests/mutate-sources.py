@@ -791,6 +791,12 @@ pi_wrapper_with_lib_mutant(
 mutant("scripts/controller/pi-impl.sh", "pi-run-name-refusal-overwrites.sh",
        'controller_run_claim "$name" || exit 2',
        'controller_run_claim "$name" || exit 2\ncontroller_run_record_owner')
+# Keep the same owner-ordering defect under a distinct mutant name for the
+# accepted-record oracle; test-mutations.sh gives each named mutant one loop
+# entry even when two focused checks exercise the same weak source edge.
+mutant("scripts/controller/pi-impl.sh", "pi-run-name-refusal-overwrites-records.sh",
+       'controller_run_claim "$name" || exit 2',
+       'controller_run_claim "$name" || exit 2\ncontroller_run_record_owner')
 # CTL-23: the owner record belongs to a launch that is REAL. One mutant per
 # refusal the record must stay behind, so each clause is judged by its own case.
 mutant("scripts/controller/pi-impl.sh", "pi-record-owner-before-accounts.sh",
@@ -971,6 +977,79 @@ mutant("scripts/controller/pi-impl.sh", "pi-mode-prompt-dropped.sh",
 mutant("scripts/controller/pi-impl.sh", "pi-mode-local-env-flip.sh",
        'if (( caller_pi_run_mode_set == 1 )); then PI_RUN_MODE=$caller_pi_run_mode; fi',
        ': # the local environment file decides the mode')
+# P-plat-26d: every implementer shell has the fixed pi extension, a successful
+# preflight before the name is claimed, and no caller extension-control seam.
+mutant("scripts/controller/pi-impl.sh", "pi-pidns-args-dropped.sh",
+       '  base_pi_args+=(--no-extensions -e "$pidns_extension")',
+       '  : # the implementer shell extension is omitted')
+mutant("scripts/controller/pi-impl.sh", "pi-pidns-project-extensions-enabled.sh",
+       '  base_pi_args+=(--no-extensions -e "$pidns_extension")',
+       '  base_pi_args+=(-e "$pidns_extension")')
+mutant("scripts/controller/pi-impl.sh", "pi-pidns-preflight-dropped.sh",
+       '  if pidns_probe_output=$(/usr/bin/env -u SHELLOPTS -u BASHOPTS "$pidns_wrapper" -c true 2>&1); then',
+       '  if true; then')
+mutant("scripts/controller/pi-impl.sh", "pi-pidns-extension-check-dropped.sh",
+       '  if [[ ! -r $pidns_extension ]]; then\n'
+       '    echo "pi PID namespace extension is missing or unreadable: $pidns_extension" >&2\n'
+       '    exit 2\n'
+       '  fi\n',
+       '  : # the extension file is assumed present\n')
+mutant("scripts/controller/pi-impl.sh", "pi-pidns-extension-args-allowed.sh",
+       '    --extension | --extension=* | -e | --no-extensions | -ne) return 0 ;;',
+       '    --extension | --extension=* | -e | --no-extensions | -ne) return 1 ;;')
+mutant("scripts/controller/pi-impl.sh", "pi-session-scan-python-not-isolated.sh",
+       '  python3 -I - "$1" <<\'PY\'',
+       '  python3 - "$1" <<\'PY\'')
+mutant("scripts/controller/pi-impl.sh", "pi-run-inspection-python-not-isolated.sh",
+       '  python3 -I - "$out/$name.jsonl" "$out/$name.last.txt" <<\'PY\'',
+       '  python3 - "$out/$name.jsonl" "$out/$name.last.txt" <<\'PY\'')
+
+mutant("scripts/controller/pi-pidns-bash-worker.sh", "pi-pidns-no-user-namespace",
+       '  --unshare-user\n  --unshare-pid',
+       '  --unshare-pid')
+mutant("scripts/controller/pi-pidns-bash-worker.sh", "pi-pidns-no-pid-namespace",
+       '  --unshare-pid\n  --die-with-parent',
+       '  --die-with-parent')
+mutant("scripts/controller/pi-pidns-bash-worker.sh", "pi-pidns-no-die-with-parent",
+       '  --die-with-parent\n  --dev-bind / /',
+       '  --dev-bind / /')
+mutant("scripts/controller/pi-pidns-bash-worker.sh", "pi-pidns-no-root-bind",
+       '  --dev-bind / /\n  --perms 0700',
+       '  --perms 0700')
+mutant("scripts/controller/pi-pidns-bash-worker.sh", "pi-pidns-tmux-perms-not-private",
+       '  --perms 0700 --tmpfs "$tmux_socket_dir"',
+       '  --tmpfs "$tmux_socket_dir"')
+mutant("scripts/controller/pi-pidns-bash-worker.sh", "pi-pidns-no-tmux-tmpfs",
+       '  --perms 0700 --tmpfs "$tmux_socket_dir"\n',
+       '')
+mutant("scripts/controller/pi-pidns-bash-worker.sh", "pi-pidns-no-docker-api-tmpfs",
+       '  --perms 0700 --tmpfs /run/docker-api\n',
+       '')
+mutant("scripts/controller/pi-pidns-bash-worker.sh", "pi-pidns-keeps-docker-host",
+       'unset TMUX TMUX_PANE DOCKER_HOST',
+       'unset TMUX TMUX_PANE')
+mutant("scripts/controller/pi-pidns-bash-worker.sh", "pi-pidns-keeps-tmux",
+       'unset TMUX TMUX_PANE DOCKER_HOST',
+       'unset TMUX_PANE DOCKER_HOST')
+mutant("scripts/controller/pi-pidns-bash-worker.sh", "pi-pidns-keeps-tmux-pane",
+       'unset TMUX TMUX_PANE DOCKER_HOST',
+       'unset TMUX DOCKER_HOST')
+mutant("scripts/controller/pi-pidns-bash-worker.sh", "pi-pidns-docker-socket-uncovered",
+       '  bwrap_args+=(--bind /dev/null "$docker_socket")',
+       '  : # Docker socket remains visible')
+mutant("scripts/controller/pi-pidns-bash-worker.sh", "pi-pidns-fail-open",
+       'if [[ $(<"$status_file") != *\'"child-pid"\'* ]]; then',
+       'if false; then')
+mutant("scripts/controller/pi-pidns-bash-worker.sh", "pi-pidns-command-status-zero",
+       'exit "$command_rc"',
+       'exit 0')
+mutant("scripts/controller/pi-pidns-bash", "pi-pidns-python-startup-unisolated",
+       '#!/usr/bin/python3 -IS',
+       '#!/usr/bin/python3')
+mutant("scripts/controller/pi-pidns-bash", "pi-pidns-signal-dispositions-dropped",
+       'signal.signal(signal.SIGPIPE, signal.SIG_DFL)\n'
+       'signal.signal(signal.SIGXFSZ, signal.SIG_DFL)',
+       '')
 mutant("scripts/controller/codex-impl.sh", "codex-force-retire-early.sh",
        'controller_run_claim "$name" || exit 2\nretire_existing=0',
        'controller_run_claim "$name" || exit 2\n'

@@ -14,30 +14,25 @@ unset PI_RUN_MODE
 # ambient PI_EXTRA_ARGS (which is exactly what a review launcher leaves in a
 # controller shell) would refuse or widen every launch this check makes.
 unset PI_EXTRA_ARGS PI_REVIEW_MAX_SECONDS PI_REVIEW_MAX_STREAM_BYTES PI_REVIEW_POLL_SECONDS PI_REVIEW_KILL_WAIT_SECONDS
+unset BASH_ENV ENV
 # pi's agent directory decides a launch refusal (pi prepends its bin dir to the
 # agent's PATH), so the caller's ambient value must not decide these checks:
 # every check that cares names it explicitly.
-unset PI_CODING_AGENT_DIR
+unset PI_CODING_AGENT_DIR FAKE_PIDNS_WRAPPER_RC
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
-SRC=${PI_IMPL_SCRIPT:-$SCRIPT_DIR/../pi-impl.sh}
-# The shim directory of the wrapper under test: a mutant copy carries its own,
-# so it is resolved beside $SRC rather than from the suite's own directory.
-SHIM_DIR=$(cd -- "$(dirname -- "$SRC")" && pwd -P)/pi-shims
-if [[ ! -d $SHIM_DIR && -d $SCRIPT_DIR/../pi-shims ]]; then
-  # A mutant wrapper lives in a disposable tree that carries only the siblings it
-  # needs (mutate-sources.py copies continue-empty-completion.md the same way).
-  # Give that tree the real shims so a mutant is judged on its own change and not
-  # on a missing guard directory. This cannot mask a broken guard: fail-closed is
-  # proven separately (check_signal_guard_fail_closed) on a copy that deliberately
-  # lacks a shim, and test-entrypoints.sh requires the shims to be committed 100755.
-  cp -a -- "$SCRIPT_DIR/../pi-shims" "$SHIM_DIR" 2>/dev/null || :
-fi
+PI_IMPL_SOURCE=${PI_IMPL_SCRIPT:-$SCRIPT_DIR/../pi-impl.sh}
 JOB_STATUS=${JOB_STATUS_SCRIPT:-$SCRIPT_DIR/../job-status.sh}
 PILIVE=${PI_LIVE_SCRIPT:-$SCRIPT_DIR/../pi-live.py}
 ROOT=$(mktemp -d "${TMPDIR:-/tmp}/controller-pi-test.XXXXXX")
 cleanup() { [[ -n ${KEEP_TEST_ROOT:-} ]] || rm -rf -- "$ROOT"; }
 trap cleanup EXIT
 fail() { echo "FAIL: $*" >&2; exit 1; }
+if [[ ${PI_IMPL_SCRIPT+x} ]]; then
+  if [[ ! -f $PI_IMPL_SCRIPT || ! -r $PI_IMPL_SCRIPT ]]; then
+    printf 'ERROR: unreadable override PI_IMPL_SCRIPT: %s\n' "$PI_IMPL_SCRIPT" >&2
+    exit 2
+  fi
+fi
 contains() { grep -qF -- "$2" "$1" || fail "$3 (missing: $2)"; }
 not_contains() {
   local needle=$1 description=$2
@@ -54,6 +49,36 @@ PI_ARGV_LOG=$ROOT/pi-argv.log
 PI_ARGV0_LOG=$ROOT/pi-argv0.log
 PI_ENV_LOG=$ROOT/pi-env.log
 PI_PROMPT_LOG=$ROOT/pi-prompt.log
+TEST_CONTROLLER=$ROOT/controller-source
+PI_IMPL_SOURCE_DIR=$(cd -- "$(dirname -- "$PI_IMPL_SOURCE")" && pwd -P)
+mkdir -p "$TEST_CONTROLLER"
+for sibling in lib.sh pi-live.py opendesign-accounts.py pi-review-argv \
+  continue-empty-completion.md implementer-prompt-rules.md review-prompt-rules.md \
+  pi-pidns-extension.js; do
+  if [[ -e $PI_IMPL_SOURCE_DIR/$sibling ]]; then
+    cp -a -- "$PI_IMPL_SOURCE_DIR/$sibling" "$TEST_CONTROLLER/$sibling"
+  else
+    cp -a -- "$SCRIPT_DIR/../$sibling" "$TEST_CONTROLLER/$sibling"
+  fi
+done
+if [[ -d $PI_IMPL_SOURCE_DIR/pi-shims ]]; then
+  cp -a -- "$PI_IMPL_SOURCE_DIR/pi-shims" "$TEST_CONTROLLER/pi-shims"
+else
+  cp -a -- "$SCRIPT_DIR/../pi-shims" "$TEST_CONTROLLER/pi-shims"
+fi
+cp -a -- "$PI_IMPL_SOURCE" "$TEST_CONTROLLER/pi-impl.sh"
+cat > "$TEST_CONTROLLER/pi-pidns-bash" <<'SH'
+#!/usr/bin/env bash
+set -uo pipefail
+[[ $# == 2 && $1 == -c && $2 == true ]] || exit 91
+for arg in "$@"; do printf '%s\0' "$arg" >> "${PI_PIDNS_PROBE_LOG:?}"; done
+exit "${FAKE_PIDNS_WRAPPER_RC:-0}"
+SH
+chmod 0755 "$TEST_CONTROLLER/pi-pidns-bash"
+SRC=$TEST_CONTROLLER/pi-impl.sh
+# The copied wrapper resolves shims and PID namespace files beside itself.
+SHIM_DIR=$TEST_CONTROLLER/pi-shims
+PI_PIDNS_PROBE_LOG=$ROOT/pidns-probe.argv
 mkdir -p "$HOME_ROOT" "$ROOT/bin" "$CONTROLLER_ROOT" "$WORKTREE"
 printf 'brief\n' > "$PROMPT"
 # The outcome classifier reads a committed fact from git (a clean worktree and
@@ -174,6 +199,7 @@ if [[ -n ${FAKE_PI_PROBE_LOG:-} ]]; then
 fi
 # This blocks while stdin remains open. The wrapper must give pi /dev/null.
 if [[ -p /dev/stdin && -n ${FAKE_PI_STDIN_OPEN_MARKER:-} ]]; then
+  [[ -z ${FAKE_PI_STDIN_PID_FILE:-} ]] || printf '%s\n' "$$" > "$FAKE_PI_STDIN_PID_FILE"
   : > "$FAKE_PI_STDIN_OPEN_MARKER"
 fi
 while IFS= read -r _line; do :; done
@@ -191,7 +217,7 @@ if [[ -n ${FAKE_PI_SEQUENCE:-} ]]; then
   [[ -z ${FAKE_PI_COUNTER:-} ]] || printf '%s' "$((index + 1))" > "$FAKE_PI_COUNTER"
   stream=${FAKE_FIXTURE_DIR:?}/"${sequence[$index]}".jsonl
 fi
-python3 - "$stream" "${FAKE_PI_SESSION_ID:-}" <<'PY'
+python3 -I - "$stream" "${FAKE_PI_SESSION_ID:-}" <<'PY'
 import json
 import sys
 
@@ -221,7 +247,7 @@ chmod +x "$ROOT/bin/pi"
 
 export CONTROLLER_HOME=$CONTROLLER_ROOT CONTROLLER_REPO=$WORKTREE
 export CONTROLLER_OD_STATE=$STATE
-export PI_ARGV_LOG PI_ARGV0_LOG PI_ENV_LOG PI_PROMPT_LOG
+export PI_ARGV_LOG PI_ARGV0_LOG PI_ENV_LOG PI_PROMPT_LOG PI_PIDNS_PROBE_LOG
 
 launch() {
   local run=$1 route=$2 fixture=$3 input=$4
@@ -231,11 +257,25 @@ launch() {
     fake_session_id=$2
     seed_resume_session "$fake_session_id"
   fi
-  PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE="$route" \
-    FAKE_FIXTURE_DIR="$SCRIPT_DIR/fixtures" \
-    FAKE_PI_STREAM="$SCRIPT_DIR/fixtures/$fixture.jsonl" FAKE_PI_SESSION_ID="$fake_session_id" FAKE_PI_RC=0 \
-    "$SRC" "$WORKTREE" "$PROMPT" "$run" "$@" \
-    > "$ROOT/$run.launch.log" 2>&1 < "$input"
+  if [[ ${PIDNS_HOOK_ENV_TEST:-0} == 1 ]]; then
+    local function_definition
+    # shellcheck disable=SC2016 # The literal Bash function body is imported by the child Bash through env.
+    printf -v function_definition '() { : > %q; builtin printf "$@"; }' "$PIDNS_FUNCTION_MARKER"
+    env "BASH_FUNC_printf%%=$function_definition" \
+      PIDNS_FUNCTION_MARKER="$PIDNS_FUNCTION_MARKER" \
+      PIDNS_BASH_ENV_MARKER="$PIDNS_BASH_ENV_MARKER" \
+      PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE="$route" \
+      FAKE_FIXTURE_DIR="$SCRIPT_DIR/fixtures" \
+      FAKE_PI_STREAM="$SCRIPT_DIR/fixtures/$fixture.jsonl" FAKE_PI_SESSION_ID="$fake_session_id" FAKE_PI_RC=0 \
+      "$SRC" "$WORKTREE" "$PROMPT" "$run" "$@" \
+      > "$ROOT/$run.launch.log" 2>&1 < "$input"
+  else
+    PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE="$route" \
+      FAKE_FIXTURE_DIR="$SCRIPT_DIR/fixtures" \
+      FAKE_PI_STREAM="$SCRIPT_DIR/fixtures/$fixture.jsonl" FAKE_PI_SESSION_ID="$fake_session_id" FAKE_PI_RC=0 \
+      "$SRC" "$WORKTREE" "$PROMPT" "$run" "$@" \
+      > "$ROOT/$run.launch.log" 2>&1 < "$input"
+  fi
 }
 
 # Same launch driven by a per-invocation fixture sequence. The run's .live
@@ -244,14 +284,33 @@ launch() {
 launch_sequence() {
   local run=$1 route=$2 sequence=$3
   shift 3
+  local -a sequence_env=()
+  if [[ -n ${SEQUENCE_EXTRA_ENV:-} ]]; then
+    IFS=$' \t\n' read -r -a sequence_env <<< "$SEQUENCE_EXTRA_ENV"
+  fi
   if [[ ${1:-} == resume && -n ${2:-} ]]; then seed_resume_session "$2"; fi
-  PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE="$route" \
-    CONTROLLER_OD_STATE="${SEQUENCE_OD_STATE:-$STATE}" \
-    FAKE_FIXTURE_DIR="$SCRIPT_DIR/fixtures" FAKE_PI_SEQUENCE="$sequence" \
-    FAKE_PI_COUNTER="$ROOT/$run.counter" FAKE_PI_SESSION_ID="${run}-session" FAKE_PI_RC=0 \
-    ${SEQUENCE_EXTRA_ENV:-} \
-    "$SRC" "$WORKTREE" "$PROMPT" "$run" "$@" \
-    > "$ROOT/$run.launch.log" 2>&1 < /dev/null
+  if [[ ${PIDNS_HOOK_ENV_TEST:-0} == 1 ]]; then
+    local function_definition
+    # shellcheck disable=SC2016 # The literal Bash function body is imported by the child Bash through env.
+    printf -v function_definition '() { : > %q; builtin printf "$@"; }' "$PIDNS_FUNCTION_MARKER"
+    env "BASH_FUNC_printf%%=$function_definition" \
+      "${sequence_env[@]}" \
+      PIDNS_FUNCTION_MARKER="$PIDNS_FUNCTION_MARKER" \
+      PIDNS_BASH_ENV_MARKER="$PIDNS_BASH_ENV_MARKER" \
+      PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE="$route" \
+      CONTROLLER_OD_STATE="${SEQUENCE_OD_STATE:-$STATE}" \
+      FAKE_FIXTURE_DIR="$SCRIPT_DIR/fixtures" FAKE_PI_SEQUENCE="$sequence" \
+      FAKE_PI_COUNTER="$ROOT/$run.counter" FAKE_PI_SESSION_ID="${run}-session" FAKE_PI_RC=0 \
+      "$SRC" "$WORKTREE" "$PROMPT" "$run" "$@" \
+      > "$ROOT/$run.launch.log" 2>&1 < /dev/null
+  else
+    env "${sequence_env[@]}" PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE="$route" \
+      CONTROLLER_OD_STATE="${SEQUENCE_OD_STATE:-$STATE}" \
+      FAKE_FIXTURE_DIR="$SCRIPT_DIR/fixtures" FAKE_PI_SEQUENCE="$sequence" \
+      FAKE_PI_COUNTER="$ROOT/$run.counter" FAKE_PI_SESSION_ID="${run}-session" FAKE_PI_RC=0 \
+      "$SRC" "$WORKTREE" "$PROMPT" "$run" "$@" \
+      > "$ROOT/$run.launch.log" 2>&1 < /dev/null
+  fi
 }
 
 wait_launch_sequence() {
@@ -286,6 +345,21 @@ wait_launch() {
     cat "$ROOT/$run.launch.log" >&2
     fail "pi wrapper failed for $run"
   fi
+}
+
+# On the failure path of the closed-stdin assertions, signal only the fake Pi
+# child that recorded its PID immediately before it wrote the open-stdin marker.
+# The wrapper then reaps that child and performs its normal sidecar cleanup.
+signal_owned_stdin_child_and_wait() {
+  local wrapper_pid=$1 pid_file=$2 child_pid=''
+  [[ -r $pid_file ]] && IFS= read -r child_pid < "$pid_file"
+  if [[ ! $child_pid =~ ^[0-9]+$ ]]; then
+    kill -TERM -- "$wrapper_pid" 2>/dev/null || true
+    wait "$wrapper_pid" 2>/dev/null || true
+    fail "fake Pi did not record a numeric child pid in $pid_file"
+  fi
+  kill -TERM -- "$child_pid" 2>/dev/null || true
+  wait "$wrapper_pid" 2>/dev/null || true
 }
 
 expect_rc() {
@@ -347,6 +421,20 @@ REVIEW_ARGV_FILE=$SCRIPT_DIR/../pi-review-argv
 IMPLEMENTER_RULES=$SCRIPT_DIR/../implementer-prompt-rules.md
 REVIEW_RULES=$SCRIPT_DIR/../review-prompt-rules.md
 argv_reset() { : > "$PI_ARGV0_LOG"; }
+argv_has() {
+  local element
+  argv_elements
+  for element in "${ARGV[@]}"; do [[ $element == "$1" ]] && return 0; done
+  fail "$2 (argv: ${ARGV[*]})"
+}
+argv_has_pair() {
+  local i
+  argv_elements
+  for (( i = 0; i + 1 < ${#ARGV[@]}; i++ )); do
+    [[ ${ARGV[i]} == "$1" && ${ARGV[i+1]} == "$2" ]] && return 0
+  done
+  fail "$3 (argv: ${ARGV[*]})"
+}
 argv_absent() {
   local element
   argv_elements
@@ -2119,7 +2207,8 @@ check_implementer_mode_unchanged() {
   clean_worktree
   argv_reset
   PI_LIVE=0 wait_launch_sequence implementer-mode deepseek-pi-volker pi-success
-  argv_absent '--no-extensions' 'an implementer launch does not carry the review extension switch'
+  argv_has --no-extensions 'an implementer launch disables extension discovery for the fixed backend'
+  argv_has_pair -e "$TEST_CONTROLLER/pi-pidns-extension.js" 'an implementer launch loads the fixed namespace extension'
   argv_absent '--no-mcp' 'an implementer launch does not carry the review MCP switch'
   argv_absent 'read,grep,find,ls' 'an implementer launch does not carry the review tool list'
   assert_mode_prompt implementer 'implementer launch'
@@ -2159,7 +2248,7 @@ check_mode_value_refused() {
 # In review mode the seam may not add ANYTHING: adding a tool is a widening, and
 # a vocabulary of allowed additions is the kind of rule that does not hold.
 check_mode_extra_args_refused() {
-  local before line attempt=0
+  local before line attempt=0 runs=$CONTROLLER_ROOT/runs run_name
   before=$(pi_invocations)
   while IFS= read -r line; do
     [[ -n $line ]] || continue
@@ -2172,6 +2261,11 @@ check_mode_extra_args_refused() {
     contains "$ROOT/focused-command.out" \
       "PI_EXTRA_ARGS may not set '$line' in review mode" \
       "review mode refuses the widening spelling '$line'"
+    run_name=review-extra-$attempt
+    [[ ! -e $runs/$run_name.lock && ! -e $runs/$run_name.mode ]] \
+      || fail "a refused review extra argument '$line' claimed or wrote its run mode"
+    [[ ! -e $runs/session-modes/review-extra-session ]] \
+      || fail "a refused review extra argument '$line' wrote a session mode"
   done <<'CASES'
 --tools
 --tools=read,bash
@@ -2183,11 +2277,6 @@ check_mode_extra_args_refused() {
 -nt
 --no-builtin-tools
 -nbt
---extension
--e
---extension=/tmp/x.js
---no-extensions
--ne
 --no-mcp
 --skill
 --skill=/tmp/skill.md
@@ -2363,7 +2452,8 @@ check_mode_claimed_name_reread() {
   mkdir -p "$race_dir" "$runs/session-modes"
   src_dir=$(dirname -- "$SRC")
   for sibling in lib.sh opendesign-accounts.py continue-empty-completion.md \
-    implementer-prompt-rules.md review-prompt-rules.md pi-review-argv; do
+    implementer-prompt-rules.md review-prompt-rules.md pi-review-argv \
+    pi-pidns-bash pi-pidns-extension.js; do
     cp -- "$src_dir/$sibling" "$race_dir/$sibling"
   done
   cp -a -- "$src_dir/pi-shims" "$race_dir/pi-shims"
@@ -2622,6 +2712,7 @@ check_mode_session_record_resume() {
 
 check_mode_session_implementer_unchanged() {
   local runs=$CONTROLLER_ROOT/runs session=mode-session-implementer-only
+  local extension=$TEST_CONTROLLER/pi-pidns-extension.js
   clean_worktree
   mkdir -p "$runs/session-modes"
   printf 'implementer\n' > "$runs/session-modes/$session"
@@ -2636,9 +2727,10 @@ check_mode_session_implementer_unchanged() {
     "$SRC" "$WORKTREE" "$PROMPT" fresh-session-implementer resume "$session" \
     > "$ROOT/fresh-session-implementer.launch.log" 2>&1 < /dev/null \
     || fail 'a pre-existing implementer session was changed into a review'
-  argv_absent '--no-extensions' 'an implementer session does not acquire the review extension switch'
   argv_absent '--no-mcp' 'an implementer session does not acquire the review MCP switch'
   argv_absent 'read,grep,find,ls' 'an implementer session does not acquire the review tool set'
+  argv_has --no-extensions 'an implementer resume selected by the session record disables extension discovery'
+  argv_has_pair -e "$extension" 'an implementer resume selected by the session record loads the fixed extension'
   assert_mode_prompt implementer 'session implementer resume'
   [[ $(cat "$runs/fresh-session-implementer.mode") == implementer ]] \
     || fail 'a pre-existing implementer session recorded review mode'
@@ -2736,6 +2828,9 @@ check_rule_file_missing_refused() {
   local rules=$IMPLEMENTER_RULES
   [[ -r $rules ]] || fail 'the implementer rule paragraph file is missing'
   contains "$rules" 'private PID namespace' 'the implementer rule names the container the signal tests belong in'
+  contains "$rules" 'host procfs' 'the implementer rule states that /proc remains the host procfs'
+  # shellcheck disable=SC2016 # the backticks are the DOCUMENT's literal text
+  contains "$rules" '`kill -0 1` succeeds' 'the implementer rule documents the namespace PID 1 behavior'
   contains "$rules" 'Never kill by pattern' 'the implementer rule refuses pattern kills'
   contains "$rules" 'no shell experiment' 'the implementer rule refuses shell experiments in the devcontainer'
   [[ -r $REVIEW_RULES ]] || fail 'the review rule paragraph file is missing'
@@ -2787,6 +2882,9 @@ check_mode_rule_paragraph() {
   contains "$IMPLEMENTER_RULES" 'killall' 'the implementer rule names killall'
   contains "$IMPLEMENTER_RULES" 'recorded itself' 'the implementer rule pins the kill to recorded pids'
   contains "$IMPLEMENTER_RULES" 'TERM-trap' 'the implementer rule names the trap tests'
+  contains "$IMPLEMENTER_RULES" 'outer PIDs' 'the implementer rule explains the visible host procfs PIDs'
+  # shellcheck disable=SC2016 # the backticks are the DOCUMENT's literal text
+  contains "$IMPLEMENTER_RULES" '`kill -0 1` succeeds' 'the implementer rule documents the namespace PID 1 behavior'
   contains "$REVIEW_RULES" 'The review is read from' 'the review rule names what the review is read from'
   contains "$REVIEW_RULES" 'say that it is unknown' 'the review rule names the honest report of an unreadable fact'
 }
@@ -2857,6 +2955,221 @@ check_run_mode() {
   check_mode_record_missing_reads_review_evidence
   check_mode_review_material_unreadable
   check_implementer_mode_unchanged
+}
+
+pidns_probe_count() {
+  local -a probe_args=()
+  [[ -s $PI_PIDNS_PROBE_LOG ]] || { echo 0; return; }
+  mapfile -d '' -t probe_args < "$PI_PIDNS_PROBE_LOG"
+  echo "$(( ${#probe_args[@]} / 2 ))"
+}
+
+# The fixed extension must be selected on every pi invocation, while the
+# wrapper preflight runs once before the run-name claim. A worktree settings
+# file that names a bare shell or another extension cannot replace the CLI
+# selection because each implementer launch uses --no-extensions plus -e.
+check_pidns_launch_contract() {
+  local before after runs=$CONTROLLER_ROOT/runs
+  local extension=$TEST_CONTROLLER/pi-pidns-extension.js
+
+  clean_worktree
+  : > "$PI_ARGV_LOG"
+  argv_reset
+  : > "$PI_PIDNS_PROBE_LOG"
+  wait_launch pidns-first deepseek-pi-volker pi-success /dev/null
+  argv_has --no-extensions 'a first implementer launch disables extension discovery'
+  argv_has_pair -e "$extension" 'a first implementer launch loads the fixed PID namespace extension'
+  [[ $(pidns_probe_count) == 1 ]] || fail 'the first implementer launch did not probe its shell wrapper exactly once'
+
+  argv_reset
+  wait_launch pidns-resume deepseek-pi-volker pi-success /dev/null
+  argv_reset
+  wait_launch pidns-resume deepseek-pi-volker pi-success /dev/null resume pidns-resume-session
+  argv_has --no-extensions 'a resumed implementer launch disables extension discovery'
+  argv_has_pair -e "$extension" 'a resumed implementer launch loads the fixed PID namespace extension'
+
+  argv_reset
+  : > "$PI_ARGV_LOG"
+  before=$(pi_invocations)
+  launch_sequence pidns-continuation deepseek-pi-volker 'pi-empty-completion pi-success'
+  after=$(pi_invocations)
+  [[ $(( after - before )) == 2 ]] || fail 'the PID namespace continuation fixture did not produce two pi invocations'
+  [[ $(grep -Fc -- "--no-extensions -e $extension" "$PI_ARGV_LOG") == 2 ]] \
+    || fail 'the initial implementer run and its automatic continuation did not both carry the fixed extension'
+
+  mkdir -p "$WORKTREE/.pi"
+  cat > "$WORKTREE/.pi/settings.json" <<'JSON'
+{"shellPath":"/bin/bash","extensions":["./unsafe-extension.js"]}
+JSON
+  argv_reset
+  wait_launch pidns-project-settings deepseek-pi-volker pi-success /dev/null
+  argv_has --no-extensions 'worktree settings cannot enable discovered extensions'
+  argv_has_pair -e "$extension" 'worktree shellPath cannot replace the explicit extension backend'
+  rm -rf -- "$WORKTREE/.pi"
+
+  # A review continues to use only pi-review-argv. It neither probes nor loads
+  # the implementer shell extension, and its read-only tool set stays intact.
+  argv_reset
+  : > "$PI_PIDNS_PROBE_LOG"
+  PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker PI_RUN_MODE=review \
+    FAKE_FIXTURE_DIR="$SCRIPT_DIR/fixtures" FAKE_PI_STREAM="$SCRIPT_DIR/fixtures/pi-success.jsonl" \
+    FAKE_PI_SESSION_ID=pidns-review-session FAKE_PI_RC=0 \
+    "$SRC" "$WORKTREE" "$PROMPT" pidns-review > "$ROOT/pidns-review.launch.log" 2>&1 < /dev/null \
+    || { cat "$ROOT/pidns-review.launch.log" >&2; fail 'the PID namespace contract changed the review launch'; }
+  assert_review_argv 'review remains unchanged'
+  argv_has --no-extensions 'review keeps extension discovery disabled'
+  argv_absent -e 'review argv never loads an extension with -e'
+  argv_absent "$extension" 'review does not load the implementer PID namespace extension'
+  [[ $(pidns_probe_count) == 0 ]] || fail 'review mode ran an implementer shell preflight'
+}
+
+check_pidns_python_stdin_isolated() {
+  local marker=$ROOT/json-shadow-ran rc=0
+  clean_worktree
+  rm -f -- "$WORKTREE/json.py" "$marker"
+  cat > "$WORKTREE/json.py" <<'PY'
+import os
+from pathlib import Path
+
+Path(os.environ["PI_JSON_SHADOW_MARKER"]).write_text("ran", encoding="utf-8")
+PY
+
+  (
+    cd -- "$WORKTREE" || exit 1
+    PI_JSON_SHADOW_MARKER=$marker PI_LIVE=0 \
+      launch pidns-python-inspect deepseek-pi-volker pi-success /dev/null
+  ) || rc=$?
+  [[ $rc == 0 ]] || {
+    cat "$ROOT/pidns-python-inspect.launch.log" >&2
+    fail "a worktree json.py shadow affected run inspection (exit $rc)"
+  }
+  [[ ! -e $marker ]] || fail 'run inspection imported json.py from the worktree cwd'
+
+  rc=0
+  (
+    cd -- "$WORKTREE" || exit 1
+    PI_JSON_SHADOW_MARKER=$marker PI_LIVE=0 \
+      launch pidns-python-scan deepseek-pi-volker pi-success /dev/null \
+      resume pidns-python-inspect-session
+  ) || rc=$?
+  [[ $rc == 0 ]] || {
+    cat "$ROOT/pidns-python-scan.launch.log" >&2
+    fail "a worktree json.py shadow affected session scanning (exit $rc)"
+  }
+  [[ ! -e $marker ]] || fail 'session scanning imported json.py from the worktree cwd'
+  rm -f -- "$WORKTREE/json.py"
+}
+
+check_pidns_startup_environment_is_sanitized() {
+  local env_script=$ROOT/pidns-injected-bash-env
+  local config=$CONTROLLER_ROOT/controller.local.env saved_config=$ROOT/controller.local.env.saved
+  PIDNS_BASH_ENV_MARKER=$ROOT/pidns-bash-env-ran
+  PIDNS_FUNCTION_MARKER=$ROOT/pidns-exported-function-ran
+  cp -- "$config" "$saved_config"
+  cat > "$env_script" <<'SH'
+: > "${PIDNS_BASH_ENV_MARKER:?}"
+SH
+  printf 'BASH_ENV=%q\nENV=%q\n' "$env_script" "$env_script" >> "$config"
+  rm -f -- "$PIDNS_BASH_ENV_MARKER" "$PIDNS_FUNCTION_MARKER"
+
+  PIDNS_HOOK_ENV_TEST=1 wait_launch pidns-env-first deepseek-pi-volker pi-success /dev/null
+  [[ ! -e $PIDNS_BASH_ENV_MARKER && ! -e $PIDNS_FUNCTION_MARKER ]] \
+    || fail 'startup hooks ran during the first implementer preflight or launch'
+
+  PIDNS_HOOK_ENV_TEST=1 wait_launch pidns-env-resume deepseek-pi-volker pi-success /dev/null \
+    resume pidns-env-resume-session
+  [[ ! -e $PIDNS_BASH_ENV_MARKER && ! -e $PIDNS_FUNCTION_MARKER ]] \
+    || fail 'startup hooks ran during a manual implementer resume'
+
+  PIDNS_HOOK_ENV_TEST=1 launch_sequence pidns-env-continuation deepseek-pi-volker \
+    'pi-empty-completion pi-success'
+  [[ ! -e $PIDNS_BASH_ENV_MARKER && ! -e $PIDNS_FUNCTION_MARKER ]] \
+    || fail 'startup hooks ran during an automatic implementer continuation'
+  cp -- "$saved_config" "$config"
+}
+
+check_pidns_preflight_refused() {
+  local before runs=$CONTROLLER_ROOT/runs
+  clean_worktree
+  argv_reset
+  : > "$PI_PIDNS_PROBE_LOG"
+  before=$(pi_invocations)
+  expect_rc 2 env PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
+    FAKE_PIDNS_WRAPPER_RC=125 FAKE_PI_SESSION_ID=pidns-preflight-session \
+    "$SRC" "$WORKTREE" "$PROMPT" pidns-preflight-failed
+  contains "$ROOT/focused-command.out" 'pi implementer launch refused before run name claim: PID namespace preflight failed' \
+    'a failed namespace preflight refuses the implementer launch'
+  [[ $(pi_invocations) == "$before" ]] || fail 'pi started after the PID namespace preflight failed'
+  [[ ! -e $runs/pidns-preflight-failed.lock ]] || fail 'a failed PID namespace preflight claimed the run name'
+  [[ ! -e $runs/pidns-preflight-failed.mode ]] || fail 'a failed PID namespace preflight wrote a run mode'
+  [[ ! -e $runs/session-modes/pidns-preflight-session ]] || fail 'a failed PID namespace preflight wrote a session mode'
+
+  # The same ordering applies to a manual implementer resume: preserve its
+  # existing name mode and thread, but do not claim the name or write a session
+  # mode while the required shell wrapper fails preflight.
+  local resume_session=pidns-resume-preflight-session
+  printf 'implementer\n' > "$runs/pidns-resume-preflight.mode"
+  printf '%s\n' "$resume_session" > "$runs/pidns-resume-preflight.thread"
+  expect_rc 2 env PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
+    FAKE_PIDNS_WRAPPER_RC=125 FAKE_PI_SESSION_ID="$resume_session" \
+    "$SRC" "$WORKTREE" "$PROMPT" pidns-resume-preflight resume "$resume_session"
+  [[ $(pi_invocations) == "$before" ]] || fail 'pi started after the resumed PID namespace preflight failed'
+  [[ ! -e $runs/pidns-resume-preflight.lock ]] || fail 'a refused resumed preflight claimed the run name'
+  [[ $(cat "$runs/pidns-resume-preflight.mode") == implementer ]] \
+    || fail 'a refused resumed preflight changed the existing run mode'
+  [[ $(cat "$runs/pidns-resume-preflight.thread") == "$resume_session" ]] \
+    || fail 'a refused resumed preflight changed the existing thread record'
+  [[ ! -e $runs/session-modes/$resume_session ]] || fail 'a refused resumed preflight wrote a session mode'
+
+  mv -- "$TEST_CONTROLLER/pi-pidns-bash" "$TEST_CONTROLLER/pi-pidns-bash.saved"
+  expect_rc 2 env PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
+    FAKE_PI_SESSION_ID=pidns-wrapper-missing-session "$SRC" "$WORKTREE" "$PROMPT" pidns-wrapper-missing
+  mv -- "$TEST_CONTROLLER/pi-pidns-bash.saved" "$TEST_CONTROLLER/pi-pidns-bash"
+  contains "$ROOT/focused-command.out" 'pi PID namespace wrapper is missing or not executable' \
+    'an absent shell wrapper refuses before claim'
+  [[ $(pi_invocations) == "$before" ]] || fail 'pi started while its PID namespace wrapper was missing'
+  [[ ! -e $runs/pidns-wrapper-missing.lock ]] || fail 'a missing PID namespace wrapper claimed the run name'
+  [[ ! -e $runs/pidns-wrapper-missing.mode ]] || fail 'a missing PID namespace wrapper wrote a run mode'
+  [[ ! -e $runs/session-modes/pidns-wrapper-missing-session ]] \
+    || fail 'a missing PID namespace wrapper wrote a session mode'
+
+  mv -- "$TEST_CONTROLLER/pi-pidns-extension.js" "$TEST_CONTROLLER/pi-pidns-extension.js.saved"
+  expect_rc 2 env PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
+    FAKE_PI_SESSION_ID=pidns-extension-missing-session "$SRC" "$WORKTREE" "$PROMPT" pidns-extension-missing
+  mv -- "$TEST_CONTROLLER/pi-pidns-extension.js.saved" "$TEST_CONTROLLER/pi-pidns-extension.js"
+  contains "$ROOT/focused-command.out" 'pi PID namespace extension is missing or unreadable' \
+    'an absent namespace extension refuses before claim'
+  [[ $(pi_invocations) == "$before" ]] || fail 'pi started while its PID namespace extension was missing'
+  [[ ! -e $runs/pidns-extension-missing.lock ]] || fail 'a missing PID namespace extension claimed a run name'
+  [[ ! -e $runs/pidns-extension-missing.mode ]] || fail 'a missing PID namespace extension wrote a run mode'
+  [[ ! -e $runs/session-modes/pidns-extension-missing-session ]] \
+    || fail 'a missing PID namespace extension wrote a session mode'
+}
+
+check_pidns_extension_args_refused() {
+  local line run_mode attempt=0 runs=$CONTROLLER_ROOT/runs run_name session_id
+  local -a extension_controls=(--extension --extension=/tmp/override.js -e --no-extensions -ne)
+  for run_mode in implementer review; do
+    for line in "${extension_controls[@]}"; do
+      attempt=$(( attempt + 1 ))
+      run_name=pidns-extra-$run_mode-$attempt
+      session_id=pidns-extra-$run_mode-$attempt-session
+      expect_rc 2 env PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
+        PI_RUN_MODE="$run_mode" PI_EXTRA_ARGS="$line" FAKE_PI_SESSION_ID="$session_id" \
+        "$SRC" "$WORKTREE" "$PROMPT" "$run_name"
+      if [[ $run_mode == review ]]; then
+        contains "$ROOT/focused-command.out" "PI_EXTRA_ARGS may not set '$line' in review mode" \
+          "review PI_EXTRA_ARGS refuses extension control '$line' through the shared classification"
+      else
+        contains "$ROOT/focused-command.out" 'PI_EXTRA_ARGS may not load or disable extensions in implementer mode' \
+          "implementer PI_EXTRA_ARGS refuses extension control '$line' through the shared classification"
+      fi
+      [[ ! -e $runs/$run_name.lock && ! -e $runs/$run_name.mode ]] \
+        || fail "the refused $run_mode extension argument '$line' claimed or wrote its run mode"
+      [[ ! -e $runs/session-modes/$session_id ]] \
+        || fail "the refused $run_mode extension argument '$line' wrote a session mode"
+    done
+  done
 }
 
 check_input_validation() {
@@ -3271,6 +3584,11 @@ check_job_status_validation() {
 if [[ -n ${PI_TEST_FOCUS:-} ]]; then
   case $PI_TEST_FOCUS in
     default-thinking) check_pi_default_thinking_max ;;
+    pidns-argv) check_pidns_launch_contract ;;
+    pidns-python-stdin) check_pidns_python_stdin_isolated ;;
+    pidns-startup-env) check_pidns_startup_environment_is_sanitized ;;
+    pidns-preflight) check_pidns_preflight_refused ;;
+    pidns-extra-args) check_pidns_extension_args_refused ;;
     xtrace-key) check_xtrace_key ;;
     outcome-error) check_outcome_error ;;
     outcome-length) clean_worktree; check_outcome_length ;;
@@ -3703,11 +4021,13 @@ PY
       [[ $found_account == volker ]] || fail 'Pi session event recovered the wrong account'
       ;;
     stdin-closed)
+      stdin_pid_file=$ROOT/focused-stdin.pid
       mkfifo "$ROOT/focused-stdin.fifo"
       exec 9<> "$ROOT/focused-stdin.fifo"
       setsid env PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
         FAKE_PI_STREAM="$SCRIPT_DIR/fixtures/pi-success.jsonl" FAKE_PI_RC=0 \
         FAKE_PI_STDIN_OPEN_MARKER="$ROOT/focused-stdin-open.marker" \
+        FAKE_PI_STDIN_PID_FILE="$stdin_pid_file" \
         "$SRC" "$WORKTREE" "$PROMPT" focused-stdin \
         > "$ROOT/focused-stdin.launch.log" 2>&1 < "$ROOT/focused-stdin.fifo" &
       stdin_pid=$!
@@ -3715,8 +4035,8 @@ PY
         sleep 0.05
       done
       if [[ -e $ROOT/focused-stdin-open.marker ]]; then
-        kill -TERM -- "-$stdin_pid" 2>/dev/null || true
-        wait "$stdin_pid" 2>/dev/null || true
+        signal_owned_stdin_child_and_wait "$stdin_pid" "$stdin_pid_file"
+        exec 9>&-
         fail 'fake pi remained attached to caller stdin'
       fi
       if ! wait "$stdin_pid"; then
@@ -4002,11 +4322,13 @@ else rc=$?; [[ $rc == 3 ]] || fail "both-blocked resume exit was $rc, expected 3
 contains "$ROOT/both-blocked-resume.log" 'both Open Design accounts are blocked' 'both blocked pi resume accounts report their reset'
 [[ $(wc -l < "$PI_ARGV_LOG") == "$before" ]] || fail 'pi resume started while both accounts were blocked'
 
+stdin_pid_file=$ROOT/stdin-open.pid
 mkfifo "$ROOT/open-stdin.fifo"
 exec 9<> "$ROOT/open-stdin.fifo"
 setsid env PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
   FAKE_PI_STREAM="$SCRIPT_DIR/fixtures/pi-success.jsonl" FAKE_PI_RC=0 \
   FAKE_PI_STDIN_OPEN_MARKER="$ROOT/stdin-open.marker" \
+  FAKE_PI_STDIN_PID_FILE="$stdin_pid_file" \
   "$SRC" "$WORKTREE" "$PROMPT" stdin-closed > "$ROOT/stdin-closed.launch.log" 2>&1 \
   < "$ROOT/open-stdin.fifo" &
 stdin_pid=$!
@@ -4014,8 +4336,8 @@ while kill -0 "$stdin_pid" 2>/dev/null && [[ ! -e $ROOT/stdin-open.marker && ! -
   sleep 0.05
 done
 if [[ -e $ROOT/stdin-open.marker ]]; then
-  kill -TERM -- "-$stdin_pid" 2>/dev/null || true
-  wait "$stdin_pid" 2>/dev/null || true
+  signal_owned_stdin_child_and_wait "$stdin_pid" "$stdin_pid_file"
+  exec 9>&-
   fail 'fake pi remained attached to the caller stdin'
 fi
 if ! wait "$stdin_pid"; then
@@ -4164,6 +4486,11 @@ check_run_name_ownership
 check_refusal_keeps_records
 check_accepted_resume_records
 check_run_mode
+check_pidns_launch_contract
+check_pidns_python_stdin_isolated
+check_pidns_startup_environment_is_sanitized
+check_pidns_preflight_refused
+check_pidns_extension_args_refused
 
 not_contains test-key 'run evidence contains no key material' "$CONTROLLER_ROOT/runs"
 not_contains test-key 'account state contains no key material' "$STATE"
@@ -4188,8 +4515,7 @@ contains "$RULES_SOURCE" 'deepseek-pi-volker' 'controller rules list pinned pi r
 # The signal guard is a capability an adopter must be able to find: its limit is
 # documented where the pi route is, and the changelog records the change.
 contains "$README_SOURCE" '**Signal guard.**' 'README documents the pi signal guard'
-# shellcheck disable=SC2016 # the backticks are the DOCUMENT's literal text
-contains "$README_SOURCE" 'bash builtin `kill`' 'README documents the signal guard known limit'
+contains "$README_SOURCE" 'absolute command paths, alternate tools' 'README documents the signal guard known limit'
 # The guard has all THREE documents, and each one is checked where the reader
 # would look for it: WHAT (README), WHY (the design guide's own subsection) and
 # HOW (the consumer guide's two launch refusals).

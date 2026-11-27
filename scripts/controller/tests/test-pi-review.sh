@@ -531,11 +531,18 @@ check_extra_args_cannot_override_contract() {
 # controller.local.env, which lib.sh sources with `set -a`: an implementer that
 # silently lost `edit`/`write` would fail mid-task with no loud error.
 check_extra_args_announced() {
-  local rc=0
+  local rc=0 tree=$ROOT/announce-tree
+  # An implementer launch preflights the namespace wrapper beside the launcher,
+  # and the gate image has no bubblewrap: run a copy whose wrapper is a stub.
+  rm -rf -- "$tree"; mkdir -p "$tree"
+  ln -s "$(cd -- "$SCRIPT_DIR/.." && pwd -P)"/* "$tree"/
+  rm -f -- "$tree/pi-pidns-bash"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$tree/pi-pidns-bash"
+  chmod 0755 "$tree/pi-pidns-bash"
   PI_EXTRA_ARGS=$'--tools\nread,grep,find,ls' env PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" \
     CONTROLLER_OD_STATE="$STATE" PI_LIVE=0 PI_ROUTE=deepseek-pi-volker \
     FAKE_PI_STREAM="$SCRIPT_DIR/fixtures/pi-success.jsonl" \
-    "$SCRIPT_DIR/../pi-impl.sh" "$WORKTREE" "$PROMPT" rev-announce \
+    "$tree/pi-impl.sh" "$WORKTREE" "$PROMPT" rev-announce \
     > "$ROOT/rev-announce.launch.log" 2>&1 < /dev/null || rc=$?
   (( rc == 0 )) || fail "a launch with a two-element PI_EXTRA_ARGS exited $rc"
   contains "$ROOT/rev-announce.launch.log" 'PI_EXTRA_ARGS adds 2 pi argument(s)' \
