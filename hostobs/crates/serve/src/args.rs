@@ -1601,7 +1601,10 @@ mod tests {
             "ctx.lane"
         );
         assert_eq!(annotate_refused(&point_args("{\"a\":1}", "{}")), "attrs.a");
-        assert_eq!(annotate_refused(&point_args("{\"A\":\"x\"}", "{}")), "attrs.A");
+        assert_eq!(
+            annotate_refused(&point_args("{\"A\":\"x\"}", "{}")),
+            "attrs.A"
+        );
     }
 
     #[test]
