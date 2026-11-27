@@ -342,6 +342,62 @@ If the class charge exceeds that value on every eligible host, `submit` refuses 
 Swap is never added; fleetd's campaign overcommit factor (`fleetd/src/fleetd/plan.py:563-585`) is not used. A job may exceed its
 estimate; live `memory full avg10 >= 3` stops new admission but never kills a running job.
 
+### 3.3a PSI-aware admission (design only; not implemented, FD-059)
+
+Add a sustained-pressure gate at the target host: do not admit while
+`psi.memory.full_avg60_pct >= 10`. An unreadable, malformed, or null
+`psi.memory.full_avg60_pct` is unknown capacity and refuses with 75; it is never
+treated as zero. This rule reads the kernel `full avg60` line from
+`/proc/pressure/memory`. The `avg60` window is the kernel field named by the
+contract; the proposed 10% threshold is operator-specified and has no supporting
+measurement yet. Short `avg10` spikes do not trip this sustained gate. Existing
+checks still apply independently: `policy.psi_refuse_some_avg10` is a configured
+threshold against the different `psi.memory.some_avg10_pct` metric, and the
+shipped full-`avg10` admission check remains in force. Neither is replaced by
+the new full-`avg60` rule, so an `avg10` spike can still be refused by an
+existing check.
+
+The predictive part should estimate whether a candidate's added RAM demand
+would move the host's memory `full avg60` across the refusal line. Compare the
+job's declared or measured RAM need against `memory.available_bytes` (MemAvailable)
+plus a separately defined, non-overlapping reclaimable-memory amount, then
+estimate the resulting PSI. Once calibrated, refuse a job predicted to push
+full `avg60` to or above 10%; if a required input is unknown, return 75 before
+starting rather than manufacturing a prediction. Its proposed inputs are:
+
+| input | source and unit | present state |
+|---|---|---|
+| `psi.memory.full_avg60_pct` | `/proc/pressure/memory`, percent | Collected in `host-facts/2`; the sustained refusal reads the current value. |
+| `memory.available_bytes` (MemAvailable) | `/proc/meminfo:MemAvailable`, bytes | Collected in `host-facts/2`. |
+| `memory.reclaimable_bytes` | A separately defined host kernel memory source, bytes | Not collected today. Its source and a non-overlapping definition are unresolved; MemAvailable already estimates reclaimable headroom, so blindly adding another reclaimable total could double-count it. |
+| `resources.declared_peak_bytes` | Submitter's lane declaration, bytes | Optional request hint; it may be null and is not a cgroup limit. |
+| measured job warm use | cgroup v2 `memory.current - memory.stat[inactive_file]`, bytes | The existing §3.3 sample; it can provide a lane/version p90 after measurements exist, but no PSI prediction currently consumes it. |
+
+Today the host has no `memory.reclaimable_bytes` fact and no fitted mapping
+from declared or measured RAM need to host PSI. The class charge and warm
+samples feed the current fit calculation, not a prediction of PSI. Therefore
+the predictive rule cannot refuse work yet; a missing input or model remains
+unknown and must not be synthesized.
+
+Before enforcement, run the predictor in observation-only mode. For each
+candidate admission, record the available-memory and PSI inputs, the declared
+need and available measured warm-use estimate, plus the host/job identity and
+concurrent admitted work. Compare its predicted PSI change with the actual
+`psi.memory.full_avg60_pct`, `memory.available_bytes`, and measured job warm use
+observed as the job starts, progresses, and completes. Evaluate the relationship
+against those real outcomes before allowing it to refuse; retain the observations
+so a model revision can be compared on the same data. No model form, coefficient,
+safety margin, sample count, or acceptable error bound is selected: each would
+need measurement before it could become a constant.
+
+Open design questions are the non-overlapping meaning and source of reclaimable
+memory alongside MemAvailable; whether declared peak or measured warm p90 should
+drive a prediction when both exist or either is missing; how to separate one
+job's effect from host-wide PSI under concurrent work; and what observations and
+prediction error justify enabling refusal. Until those are answered from host
+measurements, only the explicit sustained full-`avg60` rule above is proposed,
+and neither it nor the predictor is implemented by C3a.
+
 ### 3.4 One admission mechanism on the host (B3), exit-75 parity
 
 The agent keeps one host book for all local and direct callers. Fleetd keeps one fair global queue

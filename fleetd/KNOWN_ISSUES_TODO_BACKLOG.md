@@ -61,6 +61,7 @@
 | FD-056 | The wait deadline is not rechecked after the queue lock is taken | P3 | OPEN | 2026-11-26 |
 | FD-057 | Admission subprocess tests have no timeout, and the two-process test is weak | P3 | OPEN | 2026-11-26 |
 | FD-058 | Aged-holder scan can skip queue-ordered merge-gate waiters | P1 | FIXED IN THIS BRANCH (C3a) | 2026-11-27 |
+| FD-059 | Measure and design PSI-aware admission before enforcing a prediction | P1 | OPEN (design only) | 2026-11-27 |
 
 ## FD-001 Lite campaign lifecycle
 
@@ -1096,3 +1097,26 @@ that the second fitting merge gate cannot pass the first while the aged holder
 is non-fitting.
 
 Source: P-fd-05 C3a controller ruling for FD-058.
+
+## FD-059 PSI-aware admission prediction
+
+**State:** OPEN; design only, not implemented. **Priority:** P1. **Filed:** 2026-11-27.
+
+The proposed sustained refusal uses `psi.memory.full_avg60_pct >= 10`; the 10%
+threshold is operator-specified and has no supporting measurement yet. A missing
+or unreadable full-avg60 value must refuse rather than become zero. This is
+separate from the configured `policy.psi_refuse_some_avg10` check against
+memory `some avg10`, and from the existing full-`avg10` admission check.
+
+The predictive rule has no model or reclaimable-memory input today. It needs
+`memory.available_bytes` (MemAvailable from `/proc/meminfo`, bytes), a separately
+defined non-overlapping reclaimable-memory input (source unresolved, bytes),
+`resources.declared_peak_bytes` (submitter declaration, bytes), or measured job
+warm use (`memory.current - memory.stat[inactive_file]`, cgroup v2, bytes), and
+`psi.memory.full_avg60_pct` (`/proc/pressure/memory`, percent). C3a must not
+invent a prediction or treat missing facts as zero. The design requires an
+observation-only calibration against real PSI and warm-use outcomes before any
+predictive refusal is enabled; no coefficients, sample counts, or error bounds
+have measurement support yet.
+
+Source: operator ruling for P-fd-05 C3a subtask 6 (2026-11-27).
