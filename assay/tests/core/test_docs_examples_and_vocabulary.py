@@ -232,8 +232,9 @@ def test_rust_baseline_docs_match_the_available_assay_surface():
     design = (REPO_ROOT / "docs/DESIGN-GUIDE.md").read_text(encoding="utf-8")
     consumers = CONSUMERS.read_text(encoding="utf-8")
     methodology = (REPO_ROOT / "docs/RUST-METHODOLOGY.md").read_text(encoding="utf-8")
+    # One-time entries stay in the release that shipped them, so they are read from
+    # the whole history: a "current sections" read fails the second release after them.
     changes = (REPO_ROOT / "CHANGES.md").read_text(encoding="utf-8")
-    current_changes = _current_changes_text(changes)
 
     assert "Rust is supported at **R1 natively; R2 only by ingestion**" in readme
     assert "hostobs keeps" in readme.casefold() and "90% line / 85% region" in readme
@@ -246,13 +247,13 @@ def test_rust_baseline_docs_match_the_available_assay_surface():
     assert "run-gate lint" in consumers and "run-gate selftest" in consumers
     assert "Status: R-2 registers the Assay adapter at R1." in methodology
     assert "R3 remains unregistered; Rust R2 only by\ncargo-mutants ingestion (B245)" in methodology
-    assert "R-1 `tester-unified-rust` image" in current_changes
-    assert "Rust R2 is a known issue, not a per-release waiver." in current_changes
+    assert "R-1 `tester-unified-rust` image" in changes
+    assert "Rust R2 is a known issue, not a per-release waiver." in changes
 
 
 def test_current_changes_text_reads_an_entry_folded_into_the_newest_release():
     # cmru's release step folds [Unreleased] into the new section before the gate
-    # runs; the Rust baseline entry then lives in the released section below.
+    # runs; a current entry then lives in the released section below.
     entry = "R-1 `tester-unified-rust` image and Rust R2 is a known issue, not a per-release waiver."
     changes = (
         "## [Unreleased]\n\n"
