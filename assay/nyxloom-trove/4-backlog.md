@@ -16360,17 +16360,20 @@ characterization and exclusion-pin refresh `c56273ab5`, L6/L7/nit/docs
 ## B599 — B105 RAM admission counts reclaimable file cache as used
 
 **Status: FIXED by b427d48d9; round-1 review HOLD closed by c93755545; red
-proof f94090150 and a6b9f193a at baseline 268725a06; severity: medium.**
+proof f94090150 and a6b9f193a at baseline 268725a06; Docker's real
+absent-object answer handled by efa9aae16, red proof 2ee5aa9a4; severity:
+medium.**
 
 Implementation: `assay/tools/cgroup-parent.sh:125` (verified probe identity and
-definite-absence classification), `:180` (ambiguous failure retains ownership),
-`:204` (bounded memory.stat reader), `:478` (validated reclaimable calculation),
-and `:553` (bounded admission). Behavioral tests:
-`assay/gate/tests/test_cgroup_parent.py:809` (admission), `:829` (single-file
-mount), `:869` (invalid stat fallback), `:909` (mount fallback), `:968`
-(definite absence), `:1002` (ambiguous inspect and EXIT cleanup), `:1027`
-(owner mismatch), `:1049` (execute generated probe script), `:1156` (dirty and
-writeback), `:1180` (clamp), and `:1201` (continued refusal). Documentation and
+definite-absence classification), `:191` (ambiguous failure retains ownership),
+`:215` (bounded memory.stat reader), `:489` (validated reclaimable calculation),
+and `:555` (bounded admission). Behavioral tests:
+`assay/gate/tests/test_cgroup_parent.py:820` (admission), `:840` (single-file
+mount), `:880` (invalid stat fallback), `:920` (mount fallback), `:988`
+(definite absence), `:1034` (other inspect failures), `:1056` (stderr warning),
+`:1070` (ambiguous inspect and EXIT cleanup), `:1095` (owner mismatch), `:1117`
+(execute generated probe script), `:1224` (dirty and writeback), `:1248`
+(clamp), and `:1269` (continued refusal). Documentation and
 changelog: `assay/docs/DESIGN-GUIDE.md:3119` and `assay/CHANGES.md:7`.
 
 Before the fix, `assay/tools/cgroup-parent.sh` computed the gates slice
