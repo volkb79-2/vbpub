@@ -1219,22 +1219,324 @@ version rendered. Drop-ins are mode 0644. A killed lane is an infrastructure eve
 zswap (zstd, `max_pool_percent` 25, writeback `yes` on every tier) is unchanged. Open and unmeasured (R3, MDT-072): `io.max` on dev.slice throttles swap writeback, so reclaim at a
 `memory.max` can exhaust its retries on pages under writeback; the acceptance run gates it.
 
-### Acceptance and measurement kit of the dedicated-dev memory model (P-plat-19g, `tools/accept/`)
+### Acceptance and measurement kit of the dedicated-dev memory model (P-plat-19m, v2: the squeeze test and the DAMON floors)
 
-Step 6 of the migration, root on the host (details: the header of each script, `accept-eval.py --help`). Keep admission and the edge demo stacks drained (section 8 step 0) and start exactly one gate lane by hand during each window.
+Step 6 of the migration, root on the host (details: the header of each script, its `usage` on an unknown argument, `accept-eval.py --help`). Keep admission and the edge demo stacks drained
+(section 8 step 0) and start exactly one gate lane by hand during the run; the run itself holds `flock /run/mdt-accept.lock` for its whole length, which pauses the reconcile's
+memory block with a NOTE and makes `install.sh` refuse (exit 3, nothing done) instead of writing a lower `memory.max` under a live squeeze.
 
-0. The accept checkout on the host (a copy of the commit under test, e.g. `/root/vbpub-accept-<sha>`) needs BOTH `mdt-cockpit/` AND `scripts/debian-install-v2/tools/` at their
-   repo-relative paths (see "Required checkout set"): copy or sparse-check-out both (`git sparse-checkout set mdt-cockpit scripts/debian-install-v2/tools`), not `mdt-cockpit/` alone, because
-   the `install.sh` run in step 4 reads the second one and exits 2 before changing anything without it. `tools/accept/accept-eval.py` also needs `mdt_capacity.py` next to `tools/`
-   (the same `host-setup/`), or its install.sh-limit check is skipped and a PASS becomes INCONCLUSIVE.
-1. Per run, twice (`EV` a fresh ABSOLUTE directory): launch DETACHED so an ssh drop cannot orphan it, e.g.
-   `systemd-run --unit mdt-accept-1 --collect "$PWD/tools/accept/accept-run.sh" --evidence "$EV" --warmup 600 --window 1800` (the unit runs in `/`, hence absolute paths; its
-   start hints are in `journalctl -u mdt-accept-1`). During the window start the operator part: the one gate lane, the cockpit attached and idle, an ssh login; write
-   `"<idle> <loaded>"` seconds of `ssh <host> true` into `$EV/ssh.txt`. The probes exit by themselves after warm-up + window + 300 s; after a SIGKILL run
-   `docker rm -f mdt-accept-probe-gates mdt-accept-probe-bg` at once. cgprofile sessions are not captured: the daemon refuses cgroup targets (CP-55).
-2. `tools/accept/accept-eval.py "$EV1" "$EV2"`: exit 0 PASS, 1 FAIL, 4 INCONCLUSIVE (missing data or a load that was not real: repeat; "install.sh would refuse these values" needs a decision on the floor row, not a repeat), 2 usage or crash (never a pin reason).
-3. `tools/accept/daemon-reload-check.sh`: it refuses (exit 3, nothing done) while `/run/mdt/reconcile/memory-deferred` exists or systemd and the kernel disagree on a dev `MemoryMax`.
-4. PASS: put the printed lines into `/etc/mdt/host-setup.env` and re-run `install.sh`. FAIL: raise the failing value and repeat, or pin `DEV_HOST_MEMORY_KEEP=` at the K that FAIL's `== host-setup.env` header prints (floors + measured margin; section 8).
+The design is `docs/DESIGN-ACCEPT-KIT-V2.md`. v1 (P-plat-19g) put two capped probes under a 30 min window and judged refaults; v2 inflates **one** dummy by 128M per step with
+`memory.min` keeping its protected part resident, judges **pressure and ssh/service latency** per step (refaults are now `INFO` only), and takes the floors from DAMON's
+`sz_ops_filter_passed` per leaf.
+
+DAMON scheme inputs are committed at setup, once after warm-up and before step 0's settle window, and at each later step boundary. Every setup or
+boundary retry takes a fresh leaf enumeration and rewrites the complete scheme set. A sample writes no scheme input and sends no `commit`; it updates
+stats and `tried_regions`, then checks the live leaf paths and directory inodes against the committed set before and after the apply. A changed unit
+gets no row for that step and a recorded drop reason, while other units continue; the next boundary can measure it again. If no unit retains its full
+committed leaf set, the sample is INCONCLUSIVE. A configured floored unit with no leaf still has its floor refused and its reason recorded. Because
+session scopes under `user.slice` change during the run, its floor may remain untested; the installed floor stays in force.
+
+Before step 0, stop the reconcile timer on r1002 and verify the reconcile service is inactive. Keep the timer stopped through setup, the run and restore. If any command
+refuses or exits before the post-run block, do not continue: finish `accept-restore.sh` first if the unit started or its WAL remains, then run
+`systemctl start mdt-dev-governance-reconcile.timer` and `systemctl start mdt-dev-governance-reconcile.service`; verify the timer with
+`systemctl is-active mdt-dev-governance-reconcile.timer`.
+
+If the setup process crashes after `kdamond_on` succeeds but before `damon_started=1` reaches the WAL, the WAL still says
+`damon_started=0` and automatic restore intentionally leaves the daemon on. Read `damon_kdamond` from the exact run's
+`squeeze-state.env` and confirm this is the daemon the interrupted kit started and it is still on; if ownership is
+uncertain, leave the WAL and do not write. When confirmed, manually write `off` only to
+`/sys/kernel/mm/damon/admin/kdamonds/<damon_kdamond>/state`. Read the state back as `off`, then run `accept-restore.sh`
+for that evidence directory. Do not change another kdamond or `nr_kdamonds`.
+
+   ```bash
+   set -euo pipefail
+   systemctl stop mdt-dev-governance-reconcile.timer
+   TIMER_STATE=$(systemctl is-active mdt-dev-governance-reconcile.timer 2>&1 || true)
+   [ "$TIMER_STATE" = inactive ] || { echo "reconcile timer state is $TIMER_STATE, expected inactive" >&2; exit 1; }
+   SERVICE_STATE=$(systemctl is-active mdt-dev-governance-reconcile.service 2>&1 || true)
+   [ "$SERVICE_STATE" = inactive ] || { echo "reconcile service state is $SERVICE_STATE, expected inactive" >&2; exit 1; }
+   ```
+
+0. **Deliver the exact source archive from the cockpit.** The host has no git checkout. Use the full commit SHA that will be run, and archive the three required trees from the cockpit checkout:
+
+   ```bash
+   set -euo pipefail
+   REPO=/workspaces/vbpub
+   SHA=<full-40-character-commit-sha>
+   ARCHIVE_NAME="vbpub-accept-$SHA.tar"
+   RESOLVED=$(git -C "$REPO" rev-parse "$SHA^{commit}" 2>/dev/null || true)
+   [ "$RESOLVED" = "$SHA" ] || { echo "commit $SHA is not present in $REPO" >&2; exit 1; }
+   git -C "$REPO" archive --format=tar "$SHA" mdt-cockpit scripts/debian-install-v2/tools scripts/damon-analysis/lib >"/tmp/$ARCHIVE_NAME"
+   (cd /tmp && sha256sum "$ARCHIVE_NAME" >"$ARCHIVE_NAME.sha256")
+   scp "/tmp/$ARCHIVE_NAME" "/tmp/$ARCHIVE_NAME.sha256" root@r1002:/root/
+   ```
+
+   On r1002, verify the transferred archive before extracting it. `sha256sum -c` is captured so an outer `set -e` does not stop before the explicit refusal:
+
+   ```bash
+   set -euo pipefail
+   SHA=<same-full-40-character-commit-sha>
+   ARCHIVE_NAME="vbpub-accept-$SHA.tar"
+   VERIFY=$(cd /root && sha256sum -c "$ARCHIVE_NAME.sha256" 2>&1 || true)
+   [ "$VERIFY" = "$ARCHIVE_NAME: OK" ] || { echo "archive checksum failed: $VERIFY" >&2; exit 1; }
+   CK="/root/vbpub-accept-${SHA:0:12}"
+   [ ! -e "$CK" ] || { echo "$CK already exists; inspect it and choose a fresh evidence checkout path" >&2; exit 1; }
+   mkdir -m 700 "$CK"
+   tar -xf "/root/$ARCHIVE_NAME" -C "$CK"
+   ```
+
+   This archive contains `mdt-cockpit/` (the kit and `mdt_capacity.py`), `scripts/debian-install-v2/tools/` (`install.sh` exits 2 without it) and
+   `scripts/damon-analysis/lib/` (the DAMON `SysfsInterface`). Do not substitute a host checkout or a different SHA.
+
+1. **One-time loopback SSH prerequisite.** Run on r1002 as root. This dedicated key is used only by the kit. Its `authorized_keys` entry is restricted to loopback and has no forwarding permissions;
+   the known-hosts key comes from this host's `/etc/ssh/ssh_host_ed25519_key.pub`:
+
+   ```bash
+   set -euo pipefail
+   ROOT_UID=$(id -u 2>/dev/null || true)
+   [ "$ROOT_UID" = 0 ] || { echo "run the SSH prerequisite as root" >&2; exit 1; }
+   SSH_KEYGEN=$(command -v ssh-keygen 2>/dev/null || true)
+   [ -n "$SSH_KEYGEN" ] || { echo "ssh-keygen is missing" >&2; exit 1; }
+   install -d -m 700 /root/.ssh
+   KEY=/root/.ssh/mdt-accept-loopback_ed25519
+   AUTH=/root/.ssh/authorized_keys
+   KNOWN=/root/.ssh/known_hosts
+   [ -s "$KEY" ] || "$SSH_KEYGEN" -q -t ed25519 -N '' -f "$KEY"
+   touch "$AUTH" "$KNOWN"
+   chmod 600 "$AUTH" "$KNOWN"
+   read -r KEY_TYPE KEY_DATA _ <"$KEY.pub" || { echo "the dedicated public key is unreadable" >&2; exit 1; }
+   AUTH_LINE="from=\"127.0.0.1,::1\",no-agent-forwarding,no-port-forwarding,no-X11-forwarding $KEY_TYPE $KEY_DATA mdt-accept-loopback"
+   AUTH_FOUND=$(grep -F -x -- "$AUTH_LINE" "$AUTH" 2>/dev/null || true)
+   [ "$AUTH_FOUND" = "$AUTH_LINE" ] || printf '%s\n' "$AUTH_LINE" >>"$AUTH"
+   [ -r /etc/ssh/ssh_host_ed25519_key.pub ] || { echo "host Ed25519 key is missing" >&2; exit 1; }
+   read -r HOST_TYPE HOST_DATA _ </etc/ssh/ssh_host_ed25519_key.pub || { echo "host Ed25519 key is unreadable" >&2; exit 1; }
+   HOST_LINE="127.0.0.1 $HOST_TYPE $HOST_DATA"
+   HOST_FOUND=$(grep -F -x -- "$HOST_LINE" "$KNOWN" 2>/dev/null || true)
+   [ "$HOST_FOUND" = "$HOST_LINE" ] || printf '%s\n' "$HOST_LINE" >>"$KNOWN"
+   LOCAL_BOOT=$(tr -d '[:space:]' </proc/sys/kernel/random/boot_id 2>/dev/null || true)
+   REMOTE_BOOT=$(ssh -i "$KEY" -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=10 root@127.0.0.1 cat /proc/sys/kernel/random/boot_id 2>/dev/null || true)
+   [ -n "$LOCAL_BOOT" ] && [ "$REMOTE_BOOT" = "$LOCAL_BOOT" ] || { echo "loopback SSH did not return this host's boot_id" >&2; exit 1; }
+   ```
+
+2. **Read-only preflight** (design §7 step 2). Keep admission and the edge demo stacks drained and **hold** the drain. Critical preconditions below stop explicitly; read-only
+   probes that can return non-zero are captured so the controller's outer `set -e` does not abort before the check:
+
+   ```bash
+   set -euo pipefail
+   SHA=<same-full-40-character-commit-sha>
+   CK="/root/vbpub-accept-${SHA:0:12}"
+   K="$CK/mdt-cockpit/host-setup/tools/accept"
+   KEY=/root/.ssh/mdt-accept-loopback_ed25519
+   PATH=/opt/mdt/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+   [ -f "$K/accept-hotset.py" ] || { echo "archived accept-hotset.py is missing from $K" >&2; exit 1; }
+   PYTHON=$(command -v python3 2>/dev/null || true)
+   [ -n "$PYTHON" ] || { echo "python3 is missing from PATH" >&2; exit 1; }
+   ENDPOINTS=/etc/host-endpoints.env
+   [ -r "$ENDPOINTS" ] || { echo "$ENDPOINTS is missing or unreadable" >&2; exit 1; }
+   for name in CGPROFILE_CONTROL_SOCKET CGPROFILE_CONTROL_SOCKET_DIR CGPROFILE_CONTROL_GID CGPROFILE_OBSERVER_SOCKET CGPROFILE_OBSERVER_SOCKET_DIR CGPROFILE_OBSERVER_GID; do unset "$name"; done
+   set -a
+   . "$ENDPOINTS" || { echo "could not read $ENDPOINTS" >&2; exit 1; }
+   set +a
+   [ -n "${CGPROFILE_CONTROL_SOCKET:-}" ] || { echo "$ENDPOINTS does not define CGPROFILE_CONTROL_SOCKET" >&2; exit 1; }
+   HOST_CHECK_CMD=$(command -v mdt-host-check.sh 2>/dev/null || true)
+   [ -n "$HOST_CHECK_CMD" ] || { echo "mdt-host-check.sh is missing from PATH" >&2; exit 1; }
+   HOST_FACTS=$(grep -E '^(HOST_ROLE|MDT_PSI_GUARD|DEV_MEMORY_MAX)=' /etc/mdt/host-setup.env 2>/dev/null || true)
+   printf '%s\n' "$HOST_FACTS"
+   grep -F -x 'HOST_ROLE=dedicated-dev' /etc/mdt/host-setup.env >/dev/null 2>&1 || { echo "HOST_ROLE must be dedicated-dev" >&2; exit 1; }
+   grep -F -x 'MDT_PSI_GUARD=report' /etc/mdt/host-setup.env >/dev/null 2>&1 || { echo "MDT_PSI_GUARD must be report" >&2; exit 1; }
+   grep -F -x 'DEV_MEMORY_MAX=' /etc/mdt/host-setup.env >/dev/null 2>&1 || { echo "DEV_MEMORY_MAX must be empty" >&2; exit 1; }
+   HOST_CHECK_RESULT=$({ mdt-host-check.sh; printf '\n__HOST_CHECK_RC=%s\n' "$?"; } 2>&1 || true)
+   HOST_CHECK_RC=$(printf '%s\n' "$HOST_CHECK_RESULT" | sed -n 's/^__HOST_CHECK_RC=//p' | tail -n 1 || true)
+   HOST_CHECK=$(printf '%s\n' "$HOST_CHECK_RESULT" | sed '/^__HOST_CHECK_RC=/d' || true)
+   printf '%s\n' "$HOST_CHECK"
+   [ "$HOST_CHECK_RC" = 0 ] || { echo "mdt-host-check.sh exited ${HOST_CHECK_RC:-unknown}" >&2; exit 1; }
+   HOST_FAILS=$(printf '%s\n' "$HOST_CHECK" | grep -E '(^|[[:space:]])FAIL([[:space:]]|$)' || true)
+   [ -z "$HOST_FAILS" ] || { echo "mdt-host-check.sh reported FAIL" >&2; exit 1; }
+   TIMER_STATE=$(systemctl is-active mdt-dev-governance-reconcile.timer 2>&1 || true)
+   [ "$TIMER_STATE" = inactive ] || { echo "reconcile timer state is $TIMER_STATE, expected inactive" >&2; exit 1; }
+   SERVICE_STATE=$(systemctl is-active mdt-dev-governance-reconcile.service 2>&1 || true)
+   [ "$SERVICE_STATE" = inactive ] || { echo "reconcile service state is $SERVICE_STATE, expected inactive" >&2; exit 1; }
+   for s in dev.slice dev-gates.slice dev-background.slice; do
+     RELOAD=$(systemctl show -p NeedDaemonReload --value "$s" 2>&1 || true)
+     [ "$RELOAD" = no ] || { echo "$s NeedDaemonReload=$RELOAD, expected no" >&2; exit 1; }
+   done
+   DEFERRED=$(ls /run/mdt/reconcile/memory-deferred 2>/dev/null || true)
+   [ -z "$DEFERRED" ] || { echo "memory reconcile is deferred: $DEFERRED" >&2; exit 1; }
+   DAMON_STAT=$(cat /sys/module/damon_stat/parameters/enabled 2>/dev/null || true)
+   [ -z "$DAMON_STAT" ] || [ "$DAMON_STAT" = N ] || { echo "DAMON_STAT=$DAMON_STAT, expected N or absent" >&2; exit 1; }
+   CGPROFILE_RESULT=$({ cgprofilectl --json status; printf '\n__CGPROFILE_RC=%s\n' "$?"; } 2>&1 || true)
+   CGPROFILE_RC=$(printf '%s\n' "$CGPROFILE_RESULT" | sed -n 's/^__CGPROFILE_RC=//p' | tail -n 1 || true)
+   CGPROFILE_STATUS=$(printf '%s\n' "$CGPROFILE_RESULT" | sed '/^__CGPROFILE_RC=/d' || true)
+   printf '%s\n' "$CGPROFILE_STATUS"
+   [ "$CGPROFILE_RC" = 0 ] || { echo "cgprofilectl --json status exited ${CGPROFILE_RC:-unknown}" >&2; exit 1; }
+   LIVE=$(printf '%s\n' "$CGPROFILE_STATUS" | sed -nE 's/.*"sessions_live"[[:space:]]*:[[:space:]]*"?([0-9]+)"?.*/\1/p' | tail -n 1 || true)
+   [ "$LIVE" = 0 ] || { echo "cgprofilectl did not confirm sessions_live=0" >&2; exit 1; }
+   LOCAL_BOOT=$(tr -d '[:space:]' </proc/sys/kernel/random/boot_id 2>/dev/null || true)
+   REMOTE_BOOT=$(ssh -i /root/.ssh/mdt-accept-loopback_ed25519 -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=10 root@127.0.0.1 cat /proc/sys/kernel/random/boot_id 2>/dev/null || true)
+   [ -n "$LOCAL_BOOT" ] && [ "$REMOTE_BOOT" = "$LOCAL_BOOT" ] || { echo "loopback SSH did not return this host's boot_id" >&2; exit 1; }
+   UNITS='docker.service=system.slice/docker.service ssh.service=system.slice/ssh.service containerd.service=system.slice/containerd.service systemd-journald.service=system.slice/systemd-journald.service mdt-psi-guard.service=system.slice/mdt-psi-guard.service cgprofiled.service=cgprofile.slice/cgprofiled.service user.slice=user.slice dev-interactive.slice=dev.slice/dev-interactive.slice'
+   "$PYTHON" "$K/accept-hotset.py" preflight --evidence /root/accept-preflight --units "$UNITS" 2>&1 || { echo "accept-kit read-only preflight refused; no acceptance run was started" >&2; exit 1; }
+   IMAGE_RC=0
+   IMAGE_ID=$(docker image inspect tester-unified:local --format '{{.Id}}' 2>&1) || IMAGE_RC=$?
+   [ "$IMAGE_RC" = 0 ] && [ -n "$IMAGE_ID" ] || { echo "tester-unified:local image inspect failed (rc $IMAGE_RC): $IMAGE_ID" >&2; exit 1; }
+   ```
+
+   The kit repeats its SSH, cgprofile, DAMON_STAT, and DAMON sysfs presence/ownership checks read-only immediately before setup. Preflight checks the
+   running kernel config for `CONFIG_DAMON_PADDR=y` when readable; after creating context 0, setup's `avail_operations` check is authoritative.
+
+   **Snapshot before the run.** This block is standalone; run it as root on r1002 after preflight:
+
+   ```bash
+   set -euo pipefail
+   snap() {
+     for s in dev.slice dev.slice/dev-gates.slice; do for f in memory.max memory.min memory.current; do V=$(cat "/sys/fs/cgroup/$s/$f" 2>&1 || true); echo "$s/$f=$V"; done; done
+     for s in dev.slice dev-gates.slice; do V=$(systemctl show -p MemoryMax -p MemoryMin -p NeedDaemonReload "$s" 2>&1 || true); printf '%s\n' "$V" | sed "s/^/$s /"; done
+     d=/sys/kernel/mm/damon/admin/kdamonds; NR=$(cat "$d/nr_kdamonds" 2>&1 || true); echo "nr_kdamonds=$NR"
+     for k in "$d"/[0-9]*; do V=$(cat "$k/state" 2>&1 || true); if [ -n "$V" ]; then echo "$k/state=$V"; fi; done
+     docker inspect mdt-accept-squeeze --format '{{.State.Status}}' 2>&1 | tail -n 1 || true
+     systemctl is-active mdt-dev-governance-reconcile.timer 2>&1 || true
+   }
+   snap > /root/accept-snap-before.txt
+   ```
+
+3. **The squeeze run**, launched detached through `systemd-run`. This gives the unit the host endpoint variables from `/etc/host-endpoints.env`; transient units do not inherit them.
+   The repository defines that record path in `.devcontainer/initialize_container_environment.py` (`ENDPOINT_RECORD_PATH`). The command requires `CGPROFILE_CONTROL_SOCKET` (the client-required key) and forwards every other published cgprofile endpoint key when present:
+
+   ```bash
+   set -euo pipefail
+   SHA=<same-full-40-character-commit-sha>
+   CK="/root/vbpub-accept-${SHA:0:12}"
+   K="$CK/mdt-cockpit/host-setup/tools/accept"
+   ENDPOINTS=/etc/host-endpoints.env
+   [ -r "$ENDPOINTS" ] || { echo "$ENDPOINTS is missing or unreadable" >&2; exit 1; }
+   for name in CGPROFILE_CONTROL_SOCKET CGPROFILE_CONTROL_SOCKET_DIR CGPROFILE_CONTROL_GID CGPROFILE_OBSERVER_SOCKET CGPROFILE_OBSERVER_SOCKET_DIR CGPROFILE_OBSERVER_GID; do unset "$name"; done
+   set -a
+   . "$ENDPOINTS" || { echo "could not read $ENDPOINTS" >&2; exit 1; }
+   set +a
+   [ -n "${CGPROFILE_CONTROL_SOCKET:-}" ] || { echo "$ENDPOINTS does not define CGPROFILE_CONTROL_SOCKET" >&2; exit 1; }
+   CGPROFILE_ENV=()
+   for name in CGPROFILE_CONTROL_SOCKET CGPROFILE_CONTROL_SOCKET_DIR CGPROFILE_CONTROL_GID CGPROFILE_OBSERVER_SOCKET CGPROFILE_OBSERVER_SOCKET_DIR CGPROFILE_OBSERVER_GID; do
+     value=${!name-}
+     [ -n "$value" ] && CGPROFILE_ENV+=(--setenv="$name=$value")
+   done
+   PATH_VALUE=/opt/mdt/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+   EV="/root/accept-$(date -u +%Y%m%dT%H%M%SZ)-1"
+   KEY=/root/.ssh/mdt-accept-loopback_ed25519
+   systemd-run --unit mdt-accept-1 --collect --slice=mdt-accept.slice -p WorkingDirectory=/ -p KillMode=mixed -p TimeoutStopSec=600 \
+     -p MemoryMin=64M "${CGPROFILE_ENV[@]}" --setenv=HOME=/root --setenv="PATH=$PATH_VALUE" --setenv="MDT_ACCEPT_SOURCE_SHA=$SHA" \
+     --setenv=MDT_ACCEPT_SSH_TARGET=root@127.0.0.1 --setenv="MDT_ACCEPT_SSH_KEY=$KEY" \
+     -p ExecStopPost="$K/accept-restore.sh --from-unit --lock-timeout 30 --evidence $EV" \
+     "$K/accept-run.sh" --evidence "$EV" --steps 6 --step 128M --dwell 300
+   journalctl -u mdt-accept-1 --no-pager -n 100 || true
+   ```
+
+   `HOME`, `PATH`, and `/` are explicit for the noninteractive unit. Operator part during the run: one gate lane, the cockpit attached and idle, one SSH login.
+   Progress is in `journalctl -u mdt-accept-1`; measured PASS/FAIL steps print `K=<K>M`, and INCONCLUSIVE steps print no K. **Duration ≈ 55 min** (warm-up 600 s,
+   seven 300 s dwells for steps 0–6, the DAMON-off control pass, plus margin); eval and apply add about 10 min. Exit codes: 0 a measured step passed and no blocking
+   inconclusive occurred, 1 step 0 failed, 4 INCONCLUSIVE, 3 refused.
+
+4. **Eval, restore, snapshot and restart the reconcile timer.** Run this as root on r1002 in a new shell after the unit ended. Replace `EV` with the exact directory printed by step 3. The EXIT trap starts the timer and reconcile service even if a later command fails:
+
+   ```bash
+   set -euo pipefail
+   PATH=/opt/mdt/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+   export PATH
+   UNIT_STATE=$(systemctl is-active mdt-accept-1 2>&1 || true)
+   if [ "$UNIT_STATE" != inactive ]; then
+     echo "mdt-accept-1 state is '$UNIT_STATE'; wait for the --collect unit to finish, then rerun this block until systemctl is-active prints exactly inactive. If a leftover unit is failed, run 'systemctl reset-failed mdt-accept-1' and check again." >&2
+     exit 1
+   fi
+   restart_reconcile() {
+     local status=$?
+     trap - EXIT
+     if ! systemctl start mdt-dev-governance-reconcile.timer; then
+       echo "could not restart mdt-dev-governance-reconcile.timer; restart it manually" >&2
+       [ "$status" -ne 0 ] || status=1
+     fi
+     if ! systemctl is-active --quiet mdt-dev-governance-reconcile.timer; then
+       echo "mdt-dev-governance-reconcile.timer is not active after restart" >&2
+       [ "$status" -ne 0 ] || status=1
+     fi
+     if ! systemctl start mdt-dev-governance-reconcile.service; then
+       echo "could not start mdt-dev-governance-reconcile.service; start it manually" >&2
+       [ "$status" -ne 0 ] || status=1
+     fi
+     exit "$status"
+   }
+   trap restart_reconcile EXIT
+   snap() {
+     for s in dev.slice dev.slice/dev-gates.slice; do for f in memory.max memory.min memory.current; do V=$(cat "/sys/fs/cgroup/$s/$f" 2>&1 || true); echo "$s/$f=$V"; done; done
+     for s in dev.slice dev-gates.slice; do V=$(systemctl show -p MemoryMax -p MemoryMin -p NeedDaemonReload "$s" 2>&1 || true); printf '%s\n' "$V" | sed "s/^/$s /"; done
+     d=/sys/kernel/mm/damon/admin/kdamonds; NR=$(cat "$d/nr_kdamonds" 2>&1 || true); echo "nr_kdamonds=$NR"
+     for k in "$d"/[0-9]*; do V=$(cat "$k/state" 2>&1 || true); if [ -n "$V" ]; then echo "$k/state=$V"; fi; done
+     docker inspect mdt-accept-squeeze --format '{{.State.Status}}' 2>&1 | tail -n 1 || true
+     systemctl is-active mdt-dev-governance-reconcile.timer 2>&1 || true
+   }
+   SHA=REPLACE_WITH_FINAL_40_CHARACTER_COMMIT_SHA
+   CK="/root/vbpub-accept-${SHA:0:12}"
+   K="$CK/mdt-cockpit/host-setup/tools/accept"
+   EV=/root/accept-REPLACE_WITH_EXACT_EVIDENCE_DIRECTORY
+   [ -d "$EV" ] || { echo "set EV to the exact evidence directory printed by step 3" >&2; exit 1; }
+   journalctl -u mdt-accept-1 --no-pager 2>&1 | grep -E 'Main process exited|status=|Deactivated|Succeeded|Failed' | tail -n 5 || true
+   EVAL_RC=0
+   "$K/accept-eval.py" "$EV" >"$EV/eval.txt" 2>&1 || EVAL_RC=$?
+   cat "$EV/eval.txt" || true
+   echo "eval rc=$EVAL_RC"
+   journalctl -u mdt-accept-1 --no-pager >"$EV/unit.log" 2>&1 || true
+   RESTORE_STATE=$(grep -E '^(restore|squeeze_|restore_)|RESTORE-PENDING|DAMON-RESTORE-PENDING' "$EV/manifest.env" 2>/dev/null || true)
+   printf '%s\n' "$RESTORE_STATE"
+   STATE_FILE=$(ls "$EV/squeeze-state.env" 2>/dev/null || true)
+   if [ -n "$STATE_FILE" ]; then RESTORE_OUT=$("$K/accept-restore.sh" --evidence "$EV" 2>&1 || true); printf '%s\n' "$RESTORE_OUT"; fi
+   snap > /root/accept-snap-after.txt
+   diff /root/accept-snap-before.txt /root/accept-snap-after.txt 2>&1 || true  # only memory.current and timer may differ; nr_kdamonds must match
+   cp /root/accept-snap-*.txt "$EV/"
+   tar -C /root -czf "$EV.tgz" "$(basename "$EV")"
+   ```
+
+   `accept-restore.sh` exits 0 when all kit-owned cgroup values and DAMON counts are restored, 1 when restoration is pending or a foreign value was left alone, and 3 when
+   there is nothing to do or it refuses. `restore=ok` is written only when every owned value is back at its start value; a pending WAL remains for a later restore. If restoration is still pending or reports a foreign value, keep the WAL and state untouched; never force a foreign cgroup value or DAMON count.
+   `accept-run.sh` removes the dummy by its exact name in every exit path. A run whose evidence has no `restore=ok` is not complete. If any earlier step refused, restore the WAL first if needed, then start the timer and service as described above.
+
+5. **Apply and verify** the eval's printed `DEV_HOST_MEMORY_MIN`/`DEV_HOST_MEMORY_MARGIN`/`DEV_HOST_MEMORY_MEASURED` in `/etc/mdt/host-setup.env` (**no KEEP pin**: K is derived again),
+   then run `install.sh`, `mdt-host-check.sh`, and `tools/accept/daemon-reload-check.sh`. The latter refuses while a lowering is deferred or systemd and the kernel disagree on a dev `MemoryMax`.
+   A third run at the proposed K is step 0 only (`accept-run.sh --evidence <EV3> --steps 0`). A FAIL there is R again and proposes no K to pin; the header names only the tested K0.
+
+6. **Clean the one-time loopback SSH prerequisite after the run and restore are complete.** This removes only its exact authorization, host-key line, and dedicated key files:
+
+   ```bash
+   set -euo pipefail
+   EV=/root/accept-REPLACE_WITH_EXACT_EVIDENCE_DIRECTORY
+   [ -d "$EV" ] || { echo "set EV to the exact evidence directory printed by step 3" >&2; exit 1; }
+   KEY=/root/.ssh/mdt-accept-loopback_ed25519
+   AUTH=/root/.ssh/authorized_keys
+   KNOWN=/root/.ssh/known_hosts
+   RESTORE_OK=$(grep -F -x 'restore=ok' "$EV/manifest.env" 2>/dev/null || true)
+   [ -n "$RESTORE_OK" ] || { echo "restore=ok is absent; finish restoration before SSH cleanup" >&2; exit 1; }
+   [ -r "$KEY.pub" ] && [ -r "$AUTH" ] && [ -r "$KNOWN" ] || { echo "loopback SSH cleanup inputs are missing" >&2; exit 1; }
+   read -r KEY_TYPE KEY_DATA _ <"$KEY.pub" || { echo "dedicated public key is unreadable" >&2; exit 1; }
+   AUTH_LINE="from=\"127.0.0.1,::1\",no-agent-forwarding,no-port-forwarding,no-X11-forwarding $KEY_TYPE $KEY_DATA mdt-accept-loopback"
+   read -r HOST_TYPE HOST_DATA _ </etc/ssh/ssh_host_ed25519_key.pub || { echo "host Ed25519 key is unreadable" >&2; exit 1; }
+   HOST_LINE="127.0.0.1 $HOST_TYPE $HOST_DATA"
+   AUTH_GREP_RC=0
+   grep -F -v -x -- "$AUTH_LINE" "$AUTH" >"$AUTH.tmp" 2>/dev/null || AUTH_GREP_RC=$?
+   case "$AUTH_GREP_RC" in
+     0|1) ;;
+     *) rm -f "$AUTH.tmp" "$KNOWN.tmp"; echo "authorized_keys filter grep failed (rc $AUTH_GREP_RC); no cleanup file was installed" >&2; exit 1 ;;
+   esac
+   KNOWN_GREP_RC=0
+   grep -F -v -x -- "$HOST_LINE" "$KNOWN" >"$KNOWN.tmp" 2>/dev/null || KNOWN_GREP_RC=$?
+   case "$KNOWN_GREP_RC" in
+     0|1) ;;
+     *) rm -f "$AUTH.tmp" "$KNOWN.tmp"; echo "known_hosts filter grep failed (rc $KNOWN_GREP_RC); no cleanup file was installed" >&2; exit 1 ;;
+   esac
+   chmod 600 "$AUTH.tmp" "$KNOWN.tmp"
+   mv "$AUTH.tmp" "$AUTH"
+   mv "$KNOWN.tmp" "$KNOWN"
+   AUTH_LEFT=$(grep -F -x -- "$AUTH_LINE" "$AUTH" 2>/dev/null || true)
+   KNOWN_LEFT=$(grep -F -x -- "$HOST_LINE" "$KNOWN" 2>/dev/null || true)
+   [ -z "$AUTH_LEFT" ] && [ -z "$KNOWN_LEFT" ] || { echo "exact loopback SSH lines remain; inspect before removing key material" >&2; exit 1; }
+   rm -f "$KEY" "$KEY.pub"
+   ```
 
 ### Shared tree cache of the dedicated-dev role (AD2-2, MDT-074)
 

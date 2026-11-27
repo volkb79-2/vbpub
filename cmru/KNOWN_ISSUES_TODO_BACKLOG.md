@@ -14,6 +14,7 @@
 
 | ID | Status | Fix commit |
 | --- | --- | --- |
+| KI-220 | CLOSED BY DESIGN (2026-11-27; controller ruling clarified the timeout contract, and the test now checks group disappearance with bounded polling) | branch |
 | KI-215 | CLOSED BY DESIGN (prose claims are checked by review; the structural test pins each CMRU Assay lane's mode and absence of `judge.base_source`) | — |
 | KI-214 | FIXED IN THIS BRANCH (the campaign test docstring names the repository root `.gitignore` as the source of the output-ignore patterns) | branch |
 | KI-213 | OPEN IN PART (2026-11-26: no child elapsed limits; output-growth heartbeat and bounded silence handling; sharding, resume, and merge; per-test control timing and a Run-Gate progress/admission bound remain) | `7b6090bcb`, `b3334b56b` |
@@ -4464,3 +4465,32 @@ The lanes under items 2 and 3 must stay byte-identical, because the whole-source
 
 - **Observed.** When the known-good control is stopped for silence during `--resume`, the tool writes inconclusive evidence with empty results over the file it resumed from, so the earlier kills must be judged again. It fails closed. The control-gap-too-wide path writes no evidence and does not have this effect.
 - **Close when:** a silent control leaves an existing resumable file in place and a test shows the kills survive a retry.
+
+## KI-220 - captured-probe timeout test expected synchronous descendant reaping
+
+**Status:** CLOSED BY DESIGN (2026-11-27, controller ruling); severity: low.
+
+- **Evidence.** The known-good control `rgw-r2-20261127T011500-v1001` failed
+  `test_captured_probe_timeout_reaps_its_lingering_grandchild` (1 of 5024). The
+  test required immediate disappearance of every group member after
+  `run_capture` returned. `reap_process_group` sends SIGTERM, then SIGKILL to
+  the child's whole group after the grace period if needed, and reaps its
+  leader. Before the final SIGKILL it returns early only once the leader has
+  exited and the group is empty; after that SIGKILL it waits for the leader
+  only, while other members exit and their parent reaps them asynchronously.
+- **Resolution.** The test uses bounded polling until the shell and holder are
+  gone and `os.killpg(shell, 0)` raises `ProcessLookupError`, and still asserts
+  both facts. It therefore fails if the group is never killed. In this harness
+  pytest is a child subreaper, so the orphaned holder's "parent" is pytest: the
+  poll reaps that one pid without blocking, and asserts before polling that the
+  leader is already reaped. The SPEC states this contract; CMRU and
+  `libraries/cli-extended` product code are unchanged.
+
+## KI-221 - the cmru r2 lane has no `--only` selector (it accepts `--shard K/N` only)
+
+**Status:** OPEN; severity: low.
+
+## KI-222 - `cmru/src/cmru/process_run.py` docstring says a timeout "reaps the child's process group"
+
+**Status:** OPEN; severity: low. It overstates the KI-220 contract (the group is signalled, the leader reaped);
+`cli_extended.procio` has the same wording.

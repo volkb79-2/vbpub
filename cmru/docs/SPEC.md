@@ -2412,7 +2412,11 @@ Streamed output uses the locale encoding and universal newlines with `errors="re
 bytes therefore become U+FFFD and do not change a child's success or failure (D-179); every
 complete line and unterminated tail is still written to the step log and aggregate mirror.
 Captured probes remain strict: `run_process(capture=True)` delegates to
-`cli_extended.procio.run_capture`, whose bounded drain and timeout reap the child's process group.
+`cli_extended.procio.run_capture` for bounded output capture; on timeout,
+`reap_process_group` sends SIGTERM to the child's whole process group and, after the grace period
+if needed, SIGKILL to that group and reaps its leader, returning early only once the leader has
+exited and the group is empty; after the final SIGKILL it waits for the leader only, while other
+members exit and are reaped asynchronously by their parent.
 Its `stdin` accepts exactly `None` or `subprocess.DEVNULL`; any other value raises `ValueError`.
 
 Cleanup preserves its historical contract (D-178): `cleanup --policy` copies only the resolved

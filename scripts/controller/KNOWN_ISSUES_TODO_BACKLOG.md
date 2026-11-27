@@ -75,6 +75,7 @@ together.
 | CTL-64 | `ctl-hygiene.sh` reads the backlogs (B1) of the checkout that holds the script, the state of the main checkout: a lagging worktree reports stale B1 numbers next to fresh state numbers | Nice-to-have | OPEN 2026-11-24 |
 | CTL-65 | The pi PID namespace guard's same-user-writable assets can be edited by an implementer, changing how later commands launch | Known limit | BY DESIGN 2026-11-27 (H2 ruling) |
 | CTL-67 | P-plat-26d review follow-ups: guard test gaps, no live isolation coverage, a process-group kill in a test, a missing mutant file counting as killed | Nice-to-have | OPEN |
+| CTL-68 | P-plat-35 review follow-ups: progress lines stop while the mutation queue drains; a missing runner mutant file counts as killed | Nice-to-have | OPEN |
 
 ---
 
@@ -1857,3 +1858,12 @@ From the static delta review of P-plat-26d:
 - The live PID namespace check is skipped in the gate image (no `/usr/bin/bwrap`): add bwrap to the image, or record one `PI_PIDNS_TEST_FOCUS=live` run in a capped container that has it. `CHANGES.md` names only the "gate forbids user namespaces" skip.
 - `tests/test-wrappers.sh` still sends `kill -TERM` to a process group, against the exact-recorded-PID rule.
 - `tests/test-mutations.sh` must report ERROR, not KILLED, when any mutant's target file is missing. Today only the three pi override variables are covered.
+
+## CTL-68 — P-plat-35 review follow-ups: queue progress and the missing runner mutant file
+
+**Status:** OPEN (filed 2026-11-27 by vbpub-platform on main's request).
+
+From the static re-review of P-plat-35 (head `eaabf89ea`), two Low findings:
+
+- `PROGRESS:` lines print only from `expect_killed`, which no longer blocks. All of them appear at submission with `reaped=0`, and `mutation_runner_finish`, where nearly the whole run happens, prints none. Call `mutation_runner_progress` after each reap in `finish`.
+- A missing or misspelled `CONTROLLER_MUTATION_RUNNER_SCRIPT` in `tests/test-mutation-runner.sh` fails at `source`, exits 1 and is counted as KILLED. Not live at that head (all names match). Print the `ERROR: unreadable override` line, exit 2, and add the variable to the override `case` in `tests/mutation-runner.sh`.
