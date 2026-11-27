@@ -172,16 +172,20 @@ no default or environment fallback. The job id matches
 `^[A-Za-z0-9][A-Za-z0-9._-]*$`, at most 128 characters. Its parent directory must already exist
 and be outside the judged checkout, repository, and every host path mounted into the lane or its
 environment probes;
-the final component is not a symlink and, if it exists, is a regular file. Run-Gate opens it
-append-only, without following the final symlink, at mode `0600`. The file is never mounted into a
+the final component is not a symlink and, if it exists, is a regular single-link file. Run-Gate
+opens it append-only, without following the final symlink, at mode `0600`. The file is never mounted into a
 lane container. An inherited descriptor is not used: it cannot cross `docker exec`.
 
-Each line is one compact JSON object written with one write and flushed to disk. Every object has
-`api: "fleet-host-agent/1"`, `event`, `job_id`, and `lane`. `lane-started` adds Docker's full
-`container_id`, full `image_id`, and `adopted`; it is written before lane output is relayed, once
+The host gives each Run-Gate invocation a fresh event path; the file is append-only, so a refusal
+after opening may leave it empty. Each line is one compact JSON object written until complete and
+flushed to disk. Every object has `api: "fleet-host-agent/1"`, `event`, `job_id`, and `lane`.
+`lane-started` adds Docker's full lowercase 64-hex `container_id` when recognized, full
+`image_id`, and `adopted`; an unrecognised ID is null with reason `container-id-unrecognised`.
+It is written before lane output is relayed, once
 per container used to execute the judged lane. Read-only preflight probes are not lane starts,
-but their mounts are included in the event-path exclusion check. A lane or environment that has
-no container writes null IDs and a `reason`. A reused name whose container id does not match the
+but their mounts are included in the event-path exclusion check. A mount-bearing token whose
+host source cannot be derived causes a named refusal before the lane starts. A lane or environment
+that has no container writes null IDs and a `reason`. A reused name whose container id does not match the
 inflight record is not reported as that run's container. Nested composite members, retries, and
 worker dispatches receive no event flags or file; their start facts are forwarded to the
 parent-owned event sink, which writes their `lane-started` lines.
@@ -195,17 +199,26 @@ The single normal `finish` path writes `lane-verdict` after printing the anchore
 `run-gate: lane '<lane>' verdict ...` line. It carries `verdict`, `exit_code` (the Run-Gate
 process status), and `lane_exit_code` (the raw lane status printed in the summary, or null). With
 `--json`, the result object stays on stdout and the anchored summary is printed to stderr before
-the event. A run that never reaches `finish` has no verdict event. A write failure after lane
-start emits one warning without changing the verdict or process status. Without both flags,
-lane behavior and output are byte-identical.
+the event. A run that never reaches `finish` has no verdict event. A write error after a partial
+write can leave an unparseable final line; the consumer ignores that last line and treats a
+missing verdict as not passed. A write failure after lane start emits one warning without
+changing the verdict or process status. Without both flags, lane behavior and output are
+byte-identical.
 
-The agent accepts a verdict only when the event, the last lane-log line beginning with the exact
-anchored prefix, and the process status agree: event `exit_code` equals the process status, event
+The agent accepts a verdict only when the file contains exactly one `lane-verdict` for its
+`job_id`; zero or multiple matching verdicts are not passed. The event, the last lane-log line
+beginning with the exact anchored prefix, and the process status agree: event `exit_code` equals
+the process status, event
 verdict equals the anchored verdict, event `lane_exit_code` equals the summary's raw `exit_code`
 (or both are null), and the process status matches Run-Gate's closed verdict table. Missing
-verdict events are never PASS. The agent accepts a container id only after `docker inspect`
-confirms the run-gate labels and this job's checkout path. The start event identifies the
-container for thrashguard registration. Rejected: parsing shared lane output or matching
+verdict events are never PASS. The consumer selects the container inspection rule from its own
+request's resolved lane environment mode and expected runner name, matched to the event's `lane`;
+`adopted` alone does not select the rule. For `mode = "exec"`, inspect the requested persistent
+runner name, require its inspected full ID to equal the event ID, and confirm the checkout mount;
+the external runner does not need `run-gate.*` labels. For a Run-Gate-started container lane,
+including an adopted container lane, require both the `run-gate.*` labels and the checkout mount.
+The checkout-mount check applies in both modes. A null ID has no container to inspect. The start
+event identifies the container for thrashguard registration. Rejected: parsing shared lane output or matching
 `docker ps` by name.
 
 ## 3. Placement and admission
@@ -446,9 +459,12 @@ run never silently discards its last writes.
 ### 4.4 Bind the verdict to the commit
 
 The agent verifies request `sha`; a host-written checkout line after `rev-parse HEAD` equals that
-sha (`scripts/netcup/runner/remote-gate.py:682-685`); the `lane-verdict` event, exact-lane anchored
-summary, and Run-Gate process status agree; and the `lane-started` container id is confirmed by
-`docker inspect` labels and the checkout path. It writes `result.json` from those facts only. A
+sha (`scripts/netcup/runner/remote-gate.py:682-685`); exactly one `lane-verdict` for the job id,
+the exact-lane anchored summary, and Run-Gate process status agree; and every non-null
+`lane-started` container id matches the inspected full ID and checkout mount. Require
+`run-gate.*` labels for a Run-Gate-started container lane; for `mode = "exec"`, the request's
+persistent runner name selects the check and labels are not required. The checkout-mount check
+applies in both modes. It writes `result.json` from those facts only. A
 missing or mismatched fact is transport/refusal, never PASS. Rejected: binding to the client's
 `--commit` echo (`scripts/controller/remote-gate.sh:283-285`).
 

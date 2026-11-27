@@ -44123,6 +44123,35 @@ class TestJobEventOptionsAndWriter:
             "--volume",
         ]) == ["/bind-a", "/bind-b", "/bind-c", "/bind-d", "/bind-e"]
 
+    @pytest.mark.parametrize(("flags", "token"), [
+        (["--mount", "type=bind,target=/container"], "--mount"),
+        (["--mount=type=bind,target=/container"], "--mount"),
+        (["--mount"], "--mount"),
+        (["--volume"], "--volume"),
+        (["--volume", "relative:/container"], "--volume"),
+        (["--volume=/host:/container"], "--volume"),
+        (["--volumes-from", "runner"], "--volumes-from"),
+        (["--device", "relative:/dev/null"], "--device"),
+        (["--tmpfs", "/tmp"], "--tmpfs"),
+    ])
+    def test_mount_source_parser_refuses_unknown_event_mounts_by_name(
+            self, flags, token):
+        # Without event-file validation, parsing remains permissive and
+        # byte-identical to the prior source list. With an event writer, an
+        # unresolvable mount token is named and refused.
+        assert run_gate.mount_flag_sources(flags) == []
+        with pytest.raises(run_gate.GateError) as exc:
+            run_gate.mount_flag_sources(flags, strict_sources=True)
+        assert token in str(exc.value)
+
+    def test_mount_source_parser_accepts_complete_sources_in_strict_mode(self):
+        assert run_gate.mount_flag_sources([
+            "-v", "/host/one:/container/one:ro",
+            "--mount", "type=bind,source=/host/two,target=/container/two",
+            "--mount=type=bind,src=/host/three,dst=/container/three",
+        ], strict_sources=True) == [
+            "/host/one", "/host/two", "/host/three"]
+
     def test_persistent_mount_inspection_reports_sources_and_refusal(
             self, monkeypatch):
         monkeypatch.setattr(
@@ -44300,6 +44329,44 @@ class TestJobEventOptionsAndWriter:
             run_gate._ACTIVE_JOB_EVENT_WRITER = previous_active
             run_gate._NESTED_JOB_EVENT_WRITER = previous_nested
             writer.close()
+
+    def test_unresolvable_probe_mount_refuses_only_with_event_writer(
+            self, tmp_path, monkeypatch):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        event_file = tmp_path / "probe-events.jsonl"
+        writer = run_gate.open_job_event_writer(
+            str(event_file), "job-probe-unknown-mount", "suite")
+        previous_active = run_gate._ACTIVE_JOB_EVENT_WRITER
+        previous_nested = run_gate._NESTED_JOB_EVENT_WRITER
+        run_gate._ACTIVE_JOB_EVENT_WRITER = writer
+        run_gate._NESTED_JOB_EVENT_WRITER = None
+        monkeypatch.setattr(run_gate, "validate_resource_mount_inputs",
+                            lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(run_gate, "extra_mount_flags",
+                            lambda: ["--volumes-from", "persistent-runner"])
+        monkeypatch.setattr(run_gate, "container_mount_flags",
+                            lambda *_args, **_kwargs: [])
+        monkeypatch.setattr(run_gate, "cowtree_mount_flags",
+                            lambda *_args, **_kwargs: [])
+        monkeypatch.setattr(run_gate, "resource_forwarded_env",
+                            lambda *_args, **_kwargs: {})
+        try:
+            with pytest.raises(run_gate.GateError) as exc:
+                run_gate.build_env_probe_argv(
+                    "docker", {"mode": "ephemeral", "image": "test"},
+                    "ci", repo, repo, "test", "slice", "true")
+            assert "--volumes-from" in str(exc.value)
+            run_gate._ACTIVE_JOB_EVENT_WRITER = None
+            argv = run_gate.build_env_probe_argv(
+                "docker", {"mode": "ephemeral", "image": "test"},
+                "ci", repo, repo, "test", "slice", "true")
+        finally:
+            run_gate._ACTIVE_JOB_EVENT_WRITER = previous_active
+            run_gate._NESTED_JOB_EVENT_WRITER = previous_nested
+            writer.close()
+        assert "--volumes-from" in argv
+        assert event_file.read_text() == ""
 
     @pytest.mark.parametrize(("inspect_mounts", "event_in_mount", "message"), [
         pytest.param(False, False, "cannot verify the host mounts",
@@ -44875,7 +44942,8 @@ class TestJobEventContainerEvents:
         image_id = "sha256:" + "e" * 64
         code, calls = self._run_ephemeral_event_lane(
             tmp_path, monkeypatch, event_file, container_id=container_id,
-            image_id=image_id, lane_stdout_id=False, inspect_id=True)
+            image_id=image_id, lane_stdout_id=False, inspect_id=True,
+            name_resolves=True)
         assert code == 0
         capsys.readouterr()
         [started] = [json.loads(line)
@@ -45640,7 +45708,8 @@ class TestJobEventContainerEvents:
         assert event["exit_code"] == 2
         assert event["lane_exit_code"] == 2
 
-    @pytest.mark.parametrize("failure_stage", ["write", "short-write", "fsync"])
+    @pytest.mark.parametrize("failure_stage", [
+        "write", "short-write", "zero-write", "fsync"])
     def test_event_write_and_fsync_failures_warn_once_and_keep_verdict(
             self, tmp_path, monkeypatch, capsys, failure_stage):
         event_file = tmp_path / f"{failure_stage}-failure.jsonl"
@@ -45659,7 +45728,10 @@ class TestJobEventContainerEvents:
                 event_writes += 1
                 if event_writes == 2 and failure_stage != "fsync":
                     if failure_stage == "short-write":
-                        return len(payload) - 1
+                        return real_write(
+                            fd, payload[:max(1, len(payload) // 2)])
+                    if failure_stage == "zero-write":
+                        return 0
                     raise OSError("fixture simulated event storage failure")
             return real_write(fd, payload)
 
@@ -45667,7 +45739,7 @@ class TestJobEventContainerEvents:
             nonlocal fsync_calls
             if fd == writer.fd:
                 fsync_calls += 1
-                if fsync_calls == 2:
+                if fsync_calls == 2 and failure_stage == "fsync":
                     raise OSError("fixture simulated event fsync failure")
             return real_fsync(fd)
 
@@ -45678,34 +45750,91 @@ class TestJobEventContainerEvents:
                         adopted=False, reason="bare-host")
             result_code = run_gate.finish(run_gate.LaneResult(
                 "FAIL", 7, _lane_name="suite"))
-            writer.emit("lane-started", container_id="must-not-appear",
-                        image_id="must-not-appear", adopted=False)
-            writer._warning(OSError("fixture second warning"))
+            if failure_stage == "short-write":
+                writer.emit("lane-started", container_id="e" * 64,
+                            image_id=None, adopted=False)
+            else:
+                writer.emit("lane-started", container_id="must-not-appear",
+                            image_id="must-not-appear", adopted=False)
+                writer._warning(OSError("fixture second warning"))
         finally:
             run_gate._ACTIVE_JOB_EVENT_WRITER = previous
             writer.close()
         assert result_code == 1
         captured = capsys.readouterr()
-        assert captured.err.count("run-gate: WARNING:") == 1
-        expected_error = ("fixture simulated event fsync failure"
-                          if failure_stage == "fsync"
-                          else "fixture simulated event storage failure"
-                          if failure_stage == "write"
-                          else "short event write")
-        assert expected_error in captured.err
         assert "verdict FAIL; exit_code 7" in captured.out
         events = [json.loads(line) for line in event_file.read_text().splitlines()]
         assert events[0]["event"] == "lane-started"
-        assert all(event.get("container_id") != "must-not-appear"
-                   for event in events)
+        if failure_stage == "short-write":
+            # The first syscall wrote only a prefix. The writer completed the
+            # same JSON line with a second syscall and remained usable.
+            assert captured.err.count("run-gate: WARNING:") == 0
+            assert [event["event"] for event in events] == [
+                "lane-started", "lane-verdict", "lane-started"]
+            assert events[1]["verdict"] == "FAIL"
+            assert events[1]["exit_code"] == result_code
+            assert events[1]["lane_exit_code"] == 7
+            assert events[2]["container_id"] == "e" * 64
+            assert writer.failed is False
+        else:
+            assert captured.err.count("run-gate: WARNING:") == 1
+            expected_error = ("fixture simulated event fsync failure"
+                              if failure_stage == "fsync"
+                              else "fixture simulated event storage failure"
+                              if failure_stage == "write"
+                              else "short event write")
+            assert expected_error in captured.err
+            assert all(event.get("container_id") != "must-not-appear"
+                       for event in events)
         if failure_stage == "fsync":
             assert [event["event"] for event in events] == [
                 "lane-started", "lane-verdict"]
             assert events[1]["verdict"] == "FAIL"
             assert events[1]["exit_code"] == result_code
             assert events[1]["lane_exit_code"] == 7
-        else:
+        elif failure_stage in ("write", "zero-write"):
             assert [event["event"] for event in events] == ["lane-started"]
+
+    def test_event_write_error_after_partial_write_leaves_a_torn_last_line(
+            self, tmp_path, monkeypatch, capsys):
+        event_file = tmp_path / "partial-write-error.jsonl"
+        writer = run_gate.open_job_event_writer(
+            str(event_file), "job-partial-write-error", "suite")
+        previous = run_gate._ACTIVE_JOB_EVENT_WRITER
+        run_gate._ACTIVE_JOB_EVENT_WRITER = writer
+        real_write = os.write
+        event_writes = 0
+
+        def partial_then_error(fd, payload):
+            nonlocal event_writes
+            if fd == writer.fd:
+                event_writes += 1
+                if event_writes == 2:
+                    return real_write(
+                        fd, payload[:max(1, len(payload) // 2)])
+                if event_writes == 3:
+                    raise OSError("fixture failed after partial write")
+            return real_write(fd, payload)
+
+        monkeypatch.setattr(run_gate.os, "write", partial_then_error)
+        try:
+            writer.emit("lane-started", container_id=None, image_id=None,
+                        adopted=False, reason="bare-host")
+            writer.emit("lane-verdict", verdict="PASS", exit_code=0,
+                        lane_exit_code=0)
+            writer.emit("lane-verdict", verdict="PASS", exit_code=0,
+                        lane_exit_code=0)
+        finally:
+            run_gate._ACTIVE_JOB_EVENT_WRITER = previous
+            writer.close()
+        raw = event_file.read_bytes()
+        complete, torn = raw.split(b"\n", 1)
+        assert json.loads(complete)["event"] == "lane-started"
+        assert torn and b"\n" not in torn
+        with pytest.raises(json.JSONDecodeError):
+            json.loads(torn)
+        assert writer.failed is True
+        assert capsys.readouterr().err.count("run-gate: WARNING:") == 1
 
     def test_abrupt_exit_after_forged_line_has_no_lane_verdict_event(
             self, tmp_path):

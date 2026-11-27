@@ -363,19 +363,27 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   at most `JOB_ID_MAX_LENGTH` (128) characters. The event path has an existing
   parent, is absolute, is not a symlink, and, after resolving symlinks, lies
   outside the judged worktree, repository, and every host path mounted into a
-  lane container in this run. An existing destination must be a regular file.
+  lane container in this run. An existing destination must be a regular,
+  single-link file.
   Run-Gate opens it append-only, without following the final symlink, at mode
   `0600`; the file is never passed to a lane container. These checks refuse
   before a lane or its environment starts. The flags cannot be combined with
   `--dry-run`, which has no judged lane execution to report.
+  With the event writer active, an unresolvable host source on a Docker
+  mount-bearing token is a named pre-start refusal; this source check is not
+  run without the event writer.
 
-  Each event is one compact JSON object per line with `api` equal to
+  The consumer supplies a fresh event path for each Run-Gate invocation; the
+  file is append-only, and a refusal after it opens can leave it empty. Each
+  event is one compact JSON object per line with `api` equal to
   `fleet-host-agent/1`, plus `event`, `job_id`, and `lane`. Run-Gate writes
-  each complete line with one write and flushes it to disk. `lane-started`
-  adds `container_id`, `image_id`, and `adopted`; the IDs are the full values
-  Docker reports. A no-container lane or environment writes both IDs as null
-  and includes a `reason` string. A same-named container whose ID does not
-  match the inflight record is never reported as that run's container.
+  until the whole line is complete, then flushes it to disk. `lane-started`
+  adds `container_id`, `image_id`, and `adopted`; a `container_id` is present
+  only when the source is a full lowercase 64-hex Docker id. An unrecognised
+  id is null with reason `container-id-unrecognised`. A no-container lane or
+  environment writes both IDs as null and includes a `reason` string. A
+  same-named container whose ID does not match the inflight record is never
+  reported as that run's container.
 
   `lane-verdict` adds `verdict`, `exit_code` (Run-Gate's process exit code),
   and `lane_exit_code` (the raw lane code printed as `exit_code` in the
@@ -383,22 +391,34 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   after printing `run-gate: lane '<lane>' verdict ...`; with `--json`, the
   JSON object remains on stdout and the anchored summary is printed to stderr
   before the event. An invocation that never reaches `finish()` has no
-  verdict event. An event write failure after lane start prints one
-  `run-gate: WARNING:` line and cannot change the verdict or process exit.
+  verdict event. A write error after a partial write can leave an
+  unparseable final line. Consumers ignore an unparseable last line, and a
+  missing verdict is never passed. An event write failure after lane start
+  prints one `run-gate: WARNING:` line and cannot change the verdict or
+  process exit.
   Composite members, nested dispatches, serial retries, and worker runs do not
   inherit these flags or the event file. Their container-start facts are
   forwarded to the parent-owned event sink, which writes those `lane-started`
   events; only the top-level invocation writes a verdict event. Without both
   flags, lane behavior and output remain byte-identical.
 
-  Consumers accept a verdict only when the `lane-verdict` event, the last
-  lane-log line beginning with the exact anchored prefix, and the process
-  status agree: event `exit_code` equals the process status, event verdict
+  Consumers accept a verdict only when the file contains exactly one
+  `lane-verdict` event for this `job_id`; zero or multiple matching verdicts
+  are not passed. The event, the last lane-log line beginning with the exact
+  anchored prefix, and the process status agree: event `exit_code` equals the
+  process status, event verdict
   equals the anchored verdict, event `lane_exit_code` equals the anchored
   summary's `exit_code` (or both are null), and the process status matches
   Run-Gate's closed verdict table. Missing verdict events are never PASS.
-  Consumers accept a container ID only after `docker inspect` confirms the
-  run-gate labels and the job's checkout path. See `CONSUMERS.md` for the
+  For each non-null container ID, the consumer selects its inspection rule
+  from its own request's resolved lane environment mode and expected runner
+  name, matched to the event's `lane`; `adopted` alone does not select the
+  rule. For `mode = "exec"`, inspect the requested persistent runner name,
+  require its full ID to equal the event ID, and verify the checkout mount;
+  `run-gate.*` labels are not required. For a Run-Gate-started container lane,
+  including an adopted container lane, require both the `run-gate.*` labels
+  and the checkout mount. The checkout-mount check applies to both modes.
+  A null ID has no container to inspect. See `CONSUMERS.md` for the
   integration contract.
 - `R-05` The tool prints, before executing: the selected project config path
   (`run-gate: config: <path>`), revision, lane name, environment source,

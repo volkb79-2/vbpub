@@ -657,9 +657,13 @@ class JobEventWriter:
         try:
             payload = (json.dumps(record, sort_keys=True,
                                   separators=(",", ":")) + "\n").encode()
-            written = os.write(self.fd, payload)
-            if written != len(payload):
-                raise OSError(f"short event write ({written}/{len(payload)} bytes)")
+            written = 0
+            while written < len(payload):
+                count = os.write(self.fd, payload[written:])
+                if count <= 0:
+                    raise OSError(
+                        f"short event write ({written}/{len(payload)} bytes)")
+                written += count
             os.fsync(self.fd)
         except Exception as exc:
             self.failed = True
@@ -751,25 +755,42 @@ def open_job_event_writer(event_file: str, job_id: str, lane: str,
     return JobEventWriter(fd, path, job_id, lane)
 
 
-def mount_flag_sources(flags: list[str]) -> list[str]:
-    """Read host sources from the Docker bind-mount flag shapes we emit."""
+def mount_flag_sources(flags: list[str], *,
+                       strict_sources: bool = False) -> list[str]:
+    """Read host sources from Docker mount flags; refuse unknown shapes when
+    a job event sink needs a complete visibility check."""
     sources: list[str] = []
+
+    def refuse(token: str) -> None:
+        fail(f"cannot derive host source from Docker mount token {token!r} "
+             "while validating --event-file")
+
     index = 0
     while index < len(flags):
         token = flags[index]
-        if token in ("-v", "--volume") and index + 1 < len(flags):
-            source = flags[index + 1].split(":", 1)[0]
-            if os.path.isabs(source):
-                sources.append(source)
-            index += 2
-            continue
-        if token == "--mount" and index + 1 < len(flags):
-            spec = flags[index + 1]
+        if token in ("-v", "--volume", "--mount"):
+            if index + 1 >= len(flags):
+                if strict_sources:
+                    refuse(token)
+                index += 1
+                continue
+            value = flags[index + 1]
+            if token in ("-v", "--volume"):
+                source = value.split(":", 1)[0]
+                if os.path.isabs(source):
+                    sources.append(source)
+                elif strict_sources:
+                    refuse(token)
+                index += 2
+                continue
+            spec = value
             source = next((part.split("=", 1)[1]
                            for part in spec.split(",")
                            if part.startswith(("source=", "src="))), None)
             if source is not None and os.path.isabs(source):
                 sources.append(source)
+            elif strict_sources:
+                refuse(token)
             index += 2
             continue
         if token.startswith("--mount="):
@@ -779,6 +800,15 @@ def mount_flag_sources(flags: list[str]) -> list[str]:
                            if part.startswith(("source=", "src="))), None)
             if source is not None and os.path.isabs(source):
                 sources.append(source)
+            elif strict_sources:
+                refuse("--mount")
+            index += 1
+            continue
+        if strict_sources and any(
+                token == name or token.startswith(f"{name}=")
+                for name in ("--volumes-from", "--device", "--tmpfs",
+                             "--volume", "-v")):
+            refuse(token.split("=", 1)[0])
         index += 1
     return sources
 
@@ -10479,7 +10509,7 @@ def build_env_probe_argv(docker: str, env: dict, env_name: str, repo: Path,
     if event_writer is not None:
         validate_job_event_destination(
             str(event_writer.path), worktree=worktree, repo=repo,
-            mount_sources=mount_flag_sources(argv))
+            mount_sources=mount_flag_sources(argv, strict_sources=True))
     return argv
 
 
@@ -19309,7 +19339,7 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
     if event_writer is not None:
         validate_job_event_destination(
             str(event_writer.path), worktree=worktree, repo=repo,
-            mount_sources=mount_flag_sources(mounts))
+            mount_sources=mount_flag_sources(mounts, strict_sources=True))
     verify_slice_loaded(slice_name)
     inner = build_assay_inner(lane, project_dir, repo, request_base,
                               worktree=worktree,
