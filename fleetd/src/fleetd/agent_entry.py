@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 from typing import Sequence
 
-from .admission import ExitCode
+from .admission import AdmissionError, ExitCode
 from .agent_policy import AgentPolicy, DEFAULT_AGENT_POLICY_PATH, load_agent_policy
 from .agent_server import AgentServer, serve_forced_command
 from .agent_verbs import AgentVerbService

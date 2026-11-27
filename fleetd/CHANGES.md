@@ -22,6 +22,9 @@ All notable changes to this project are recorded here.
 - Return terminal status only from its durable completion record and refuse cancel of completed jobs. C3b owns executor-backed terminal details (FD-061).
 - Advertise `lease` only when object, legacy-job and container-identity inspectors are configured; C3b wires those providers, so the shipped C3a CLI does not advertise it.
 
+### Fixed
+- Import the admission exception handled by `fleetd-agent`, so startup admission failures return their specified exit code instead of raising `NameError`.
+
 ### Changed
 - Assign prerequisite-missing exit code 79 (moved from 76); 73 is reserved by fleetd's runner. Map preflight exit 4 to refusal 2. In `/1`, refuse non-null `resources.cpu_set` with 2, reserved like `shard`.
 - The first aged waiter in queue order holds the reservation, fitting or not: nothing else is admitted before it except a strictly higher-priority merge gate. An expired wait names its last refusal, a raising capacity provider refuses with 75, and only the terminal record of a still-active job is read during admission. Lease reconciliation changes a record only on confirmed absence; explicit revoke tombstones while retaining its charge.

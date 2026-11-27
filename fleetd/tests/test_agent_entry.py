@@ -1,10 +1,12 @@
 import os
 import socket
 import threading
+from types import SimpleNamespace
 
 import pytest
 
 from fleetd import agent_entry
+from fleetd.admission import AdmissionError, ExitCode
 from fleetd.agent_entry import DEFAULT_AGENT_STATE_DIR, _parser, agent_semver
 from fleetd.agent_protocol import read_frame, write_frame
 from fleetd.contracts import ContractError
@@ -88,3 +90,135 @@ def test_shipped_cli_probe_omits_lease_and_lease_refuses_without_c3b_providers(t
     cli.join(timeout=3)
     assert not cli.is_alive(), "CLI worker remained alive after close"
     assert results == [0]
+
+
+def test_agent_semver_converts_all_supported_prerelease_and_postrelease_forms():
+    assert agent_semver("1.2.3a4") == "1.2.3-alpha.4"
+    assert agent_semver("1.2.3b5") == "1.2.3-beta.5"
+    assert agent_semver("1.2.3.post6") == "1.2.3-post.6"
+    assert agent_semver("1.2.3+local.7") == "1.2.3+local.7"
+
+
+def test_agent_semver_handles_an_empty_optional_pep440_suffix_from_parser(monkeypatch):
+    fields = {
+        "major": "2", "minor": "4", "patch": "6",
+        "dev": None, "alpha": None, "beta": None, "rc": None, "post": None, "local": None,
+    }
+
+    class Match:
+        def __getitem__(self, name):
+            return fields[name]
+
+    class Parser:
+        def __init__(self, result):
+            self.result = result
+
+        def fullmatch(self, _value):
+            return self.result
+
+    monkeypatch.setattr(agent_entry, "_VERSION_RE", Parser(None))
+    monkeypatch.setattr(agent_entry, "_PEP440_RE", Parser(Match()))
+    assert agent_semver("injected-version-shape") == "2.4.6"
+
+
+def test_installed_agent_version_requires_distribution_metadata(monkeypatch):
+    monkeypatch.setattr(
+        agent_entry.importlib.metadata, "version",
+        lambda _name: (_ for _ in ()).throw(agent_entry.importlib.metadata.PackageNotFoundError("fleetd")),
+    )
+    with pytest.raises(ContractError, match="requires the packaged fleetd distribution metadata"):
+        agent_entry.installed_agent_version()
+
+
+def test_service_loads_policy_and_converts_the_packaged_version(tmp_path, monkeypatch):
+    policy = object()
+    service = object()
+    calls = {}
+
+    def load_policy(path):
+        calls["policy_path"] = path
+        return policy
+
+    monkeypatch.setattr(agent_entry, "load_agent_policy", load_policy)
+    monkeypatch.setattr(agent_entry.importlib.metadata, "version", lambda _name: "1.2.3.dev4+local")
+
+    def build_service(state_dir, loaded_policy, facts_provider, *, agent_version):
+        calls["service_args"] = state_dir, loaded_policy, facts_provider, agent_version
+        return service
+
+    monkeypatch.setattr(agent_entry, "AgentVerbService", build_service)
+    built, loaded = agent_entry._service(tmp_path / "agent.toml", tmp_path / "state")
+    assert built is service
+    assert loaded is policy
+    assert calls["service_args"] == (
+        tmp_path / "state", policy, agent_entry.collect_host_facts, "1.2.3-dev.4+local",
+    )
+
+
+def test_main_serves_path_and_inherited_listeners_and_closes_both(tmp_path, monkeypatch):
+    service = object()
+    policy = object()
+    monkeypatch.setattr(agent_entry, "_service", lambda *_args: (service, policy))
+    instances = []
+
+    class Server:
+        def __init__(self):
+            self.closed = False
+
+        def serve_forever(self):
+            return None
+
+        def close(self):
+            self.closed = True
+
+    def new_server(*_args):
+        result = Server()
+        instances.append(result)
+        return result
+
+    monkeypatch.setattr(agent_entry.AgentServer, "on_path", staticmethod(new_server))
+    monkeypatch.setattr(agent_entry.AgentServer, "from_fd", staticmethod(new_server))
+    assert agent_entry.main(["serve", "--socket-path", str(tmp_path / "agent.sock")]) == ExitCode.PASS
+    assert agent_entry.main(["serve", "--listen-fd", "3"]) == ExitCode.PASS
+    assert len(instances) == 2
+    assert all(server.closed for server in instances)
+
+
+def test_main_forced_command_returns_transport_result_and_maps_startup_errors(tmp_path, monkeypatch, capsys):
+    service = object()
+    policy = object()
+    monkeypatch.setattr(agent_entry, "_service", lambda *_args: (service, policy))
+    monkeypatch.setattr(agent_entry, "serve_forced_command", lambda *_args: 23)
+    assert agent_entry.main(["forced-command", "--group", "worker"]) == 23
+
+    monkeypatch.setattr(
+        agent_entry, "_service",
+        lambda *_args: (_ for _ in ()).throw(AdmissionError(ExitCode.QUEUED_WITHDRAWN, "facts unavailable")),
+    )
+    assert agent_entry.main(["forced-command", "--group", "worker"]) == ExitCode.QUEUED_WITHDRAWN
+    assert "facts unavailable" in capsys.readouterr().err
+
+    monkeypatch.setattr(
+        agent_entry, "_service",
+        lambda *_args: (_ for _ in ()).throw(ContractError("bad configuration")),
+    )
+    assert agent_entry.main(["forced-command", "--group", "worker"]) == ExitCode.REFUSAL
+    assert "bad configuration" in capsys.readouterr().err
+
+    monkeypatch.setattr(
+        agent_entry, "_service",
+        lambda *_args: (_ for _ in ()).throw(OSError("state unavailable")),
+    )
+    assert agent_entry.main(["forced-command", "--group", "worker"]) == ExitCode.RUNNER_FAILURE
+    assert "state unavailable" in capsys.readouterr().err
+
+
+def test_main_closes_server_when_serve_fails(tmp_path, monkeypatch, capsys):
+    server = SimpleNamespace(closed=False)
+    server.serve_forever = lambda: (_ for _ in ()).throw(OSError("listen failed"))
+    server.close = lambda: setattr(server, "closed", True)
+    monkeypatch.setattr(agent_entry, "_service", lambda *_args: (object(), object()))
+    monkeypatch.setattr(agent_entry.AgentServer, "on_path", staticmethod(lambda *_args: server))
+    assert agent_entry.main(["serve", "--socket-path", str(tmp_path / "agent.sock")]) == ExitCode.RUNNER_FAILURE
+    assert server.closed is True
+    assert "listen failed" in capsys.readouterr().err
