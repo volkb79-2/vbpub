@@ -324,7 +324,7 @@ def test_schema_one_still_loads_and_means_ext4():
     {"root": "*", "reserve_gb": 0, "iobench_raw_gb": False},
 ])
 def test_btrfs_install_benchmark_request_is_accepted_but_stage_two_skips_it(
-    tmp_path, partitioning,
+    tmp_path, monkeypatch, partitioning,
 ):
     spec = layout_policy.disk_spec(
         partitioning,
@@ -342,6 +342,16 @@ def test_btrfs_install_benchmark_request_is_accepted_but_stage_two_skips_it(
         config_overrides={"run_io_benchmark": True},
     )
     installer._validate_root_config()
+    # The other stage-two steps write real host paths; only the benchmark step is under test.
+    for name in (
+        "_configure_control_plane_memory_min", "_packages", "_configure_zswap",
+        "_configure_cgroup2_flags", "_configure_ksm", "_configure_oomd",
+        "_configure_fstrim", "_configure_auto_reboot", "_configure_iocost",
+        "_configure_data_area", "_health_gate_swap_devices",
+        "_verify_control_plane_memory_min", "_run_cpu_benchmark",
+        "_release_apt_timers", "_cleanup_cloud_init_cache",
+    ):
+        monkeypatch.setattr(installer, name, lambda *args, **kwargs: None)
     installer._stage2()
     assert installer.state.data["steps"]["io_benchmark"]["status"] == "skipped"
     assert "iobench_raw_unavailable_on_btrfs" in installer.state.data["steps"]["io_benchmark"]["detail"]

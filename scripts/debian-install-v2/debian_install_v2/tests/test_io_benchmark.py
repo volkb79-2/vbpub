@@ -571,15 +571,25 @@ def test_benchmark_refuses_when_span_has_the_wrong_gpt_type(tmp_path):
     assert not disk.table_writes
 
 
-def test_span_identity_is_rechecked_after_fio_package_setup(tmp_path):
+@pytest.mark.parametrize(
+    ("changed", "refusal"),
+    [
+        ("start", "io_benchmark_swap_span_identity_mismatch"),
+        ("partuuid", "io_benchmark_swap_span_identity_changed"),
+    ],
+)
+def test_span_identity_is_rechecked_after_fio_package_setup(tmp_path, changed, refusal):
     installer, disk = make(tmp_path)
     span_number = make_span(installer, disk)
 
     def change_span(*_args):
-        disk.table[span_number]["start"] = str(int(disk.table[span_number]["start"]) + 2048)
+        if changed == "start":
+            disk.table[span_number]["start"] = str(int(disk.table[span_number]["start"]) + 2048)
+        else:
+            disk.partuuid_output = "87654321-4321-4321-4321-210987654321"
 
     installer._packages = change_span
-    with pytest.raises(InstallerError, match="io_benchmark_swap_span_identity_changed"):
+    with pytest.raises(InstallerError, match=refusal):
         installer._run_io_benchmark()
 
     assert not any(
@@ -694,6 +704,8 @@ def test_resume_refuses_a_partial_tail_swap_shape(tmp_path):
     before_root = installer._planned_before_root()
     last_tail_number = installer._tail_swap_numbers(len(partitions), before_root)[-1]
     disk.table.pop(last_tail_number)
+    # A fresh row may replace this layout; a resume row may not.
+    installer._mark_step("io_benchmark", "started", "resuming")
 
     with pytest.raises(InstallerError, match="io_benchmark_swap_span_state_mismatch"):
         installer._prepare_swap_span_benchmark()
@@ -1154,13 +1166,15 @@ def test_mixed_span_and_swap_table_is_refused_without_rewrite(tmp_path):
     span_number = make_span(installer, disk)
     partitions, target_root = installer._plan_swap_partitions()
     before_root = installer._planned_before_root()
-    swap_number = installer._tail_swap_numbers(len(partitions), before_root)[0]
+    # The first tail number is the span's own; the second leaves span and swap side by side.
+    swap_number = installer._tail_swap_numbers(len(partitions), before_root)[1]
+    assert swap_number != span_number
     disk.table[swap_number] = {
         "start": str(int(disk.table[span_number]["start"]) + 2048),
         "size": "2048", "type": installer_module.SWAP_TYPE_GUID,
     }
 
-    with pytest.raises(InstallerError, match="io_benchmark_swap_span_geometry_mismatch|io_benchmark_swap_span_state_mismatch"):
+    with pytest.raises(InstallerError, match="live span does not exactly replace"):
         installer._prepare_swap_span_benchmark()
 
     assert not disk.table_writes
@@ -1269,7 +1283,8 @@ def test_unrelated_data_geometry_is_refused_before_span_conversion(tmp_path):
     data_number = next(number for number, entry in disk.table.items() if entry.get("name") == "DATA")
     disk.table[data_number]["start"] = str(int(disk.table[data_number]["start"]) + 2048)
 
-    with pytest.raises(InstallerError, match="io_benchmark_swap_span_state_mismatch"):
+    # The moved data partition now reaches into the planned span.
+    with pytest.raises(InstallerError, match="another partition intersects the planned span"):
         installer._prepare_swap_span_benchmark()
 
     assert not disk.table_writes

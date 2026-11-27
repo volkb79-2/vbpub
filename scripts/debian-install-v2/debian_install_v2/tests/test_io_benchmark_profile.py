@@ -376,9 +376,10 @@ def test_a_failure_before_the_runner_starts_still_names_the_rung(tmp_path, profi
 
     records = step(installer)
     assert records["status"] == "warned"
-    assert records["detail"].startswith(f"iobench {profile} failed (advisory)")
+    # The span identity stays in the final detail: the span wipe compares it.
+    assert records["detail"].startswith("PARTLABEL=vbpub-swap-span ")
+    assert f"profile={profile}; iobench {profile} failed (advisory)" in records["detail"]
     assert "simulated apt-get failure" in records["detail"]
-    assert "profile=" not in records["detail"]          # the started detail is overwritten
     assert len(sent) == 1 and f"iobench {profile} failed (advisory)" in sent[0]
     # Apt failed before the runner, so the span keeps its existing signature.
     assert not any(Path(action.argv[0]).name in {"wipefs", "iobench-install-runner"}
