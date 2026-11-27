@@ -13,9 +13,14 @@ no separate version number, so entries are grouped by the work that landed.
 - Add `pi-ctl-launch.sh` and its pane script. The launcher supports either
   Open Design provider, keeps a per-role pi session, and loads only the matching
   key inside the tmux pane. It does not write project trust settings.
-- Await injected message-delivery adapters so rejected inbox delivery remains
-  in the processing queue for retry; serialize monitor batches while delivery
-  is pending. Pi 1.6.0's `ExtensionAPI.sendMessage()` itself returns `void`.
+- Give peer messages and wake-ups stable ids and retain their claims until pi's
+  persisted custom-message entry confirms delivery. Retry unconfirmed delivery
+  with bounded backoff, and use a tested main bridge with explicit id
+  acknowledgments and the same peer-trust header.
+- Wait for a PID-namespace readiness marker before reporting a monitor started,
+  and preserve the last resumable pi session id until a new pane signals
+  `session_start` readiness. Automatic compaction supplies a supported
+  `CompactionResult` summary.
 - Add fake-pi API coverage and four mutation checks to the registered controller
   suite. Live pi/provider behavior remains for an operator smoke run.
 

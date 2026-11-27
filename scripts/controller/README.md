@@ -777,8 +777,9 @@ for copyable setup and run examples.
 ### Pi sub-controllers (`pi-ctl-launch.sh`)
 
 `scripts/controller/pi-ctl-launch.sh <role>` starts a persistent pi session in
-tmux named `vbpub-<role>`. It reads the session id from the controller state
-root on later launches; `--fresh <role>` records a new id, and
+tmux named `vbpub-<role>`. It resumes the last session id after the extension
+signals a successful `session_start`; `--fresh <role>` selects a new id but
+keeps the previous id if the new pane fails to become ready, and
 `--print-command <role>` displays the resolved command without starting tmux or
 reading credentials. The state root defaults to `$HOME/controller/pi-ctl` and
 must stay outside the repository. Role names use letters, digits, `.`, `_`, and
@@ -810,17 +811,33 @@ catalogue remains the operator-owned `$HOME/.pi/agent/models.json`.
 
 The `pi-ctl/` extension provides `send_message`, persisted wake-up
 schedule/list/cancel tools, bounded monitor start/list/stop tools, inbox polling,
-an event log and context recovery. See the `Long-running controllers` section
-in the repository's `AGENTS.md` for the main inbox poll command and the defaults
-and limits. In short: inboxes are polled every second; peer messages are
-untrusted and never auto-replied to; send and receive limits default to 10 per
-peer per hour; inbox bodies default to 16 KiB and sends to 64 KiB; wake-ups are
-10 seconds to 24 hours with 32 pending; monitors use the private-PID-namespace
-wrapper and end within one hour. Compaction starts
-only from `agent_end` at 150,000 tokens by default and tells the session to run
-`scripts/controller/resume-read.sh <role>` afterward. Tests run in the
-registered `scripts/controller` suite with a fake pi API, not against a live
-provider.
+an event log and context recovery. Main receives peer messages through the
+tested bridge, which prints a fixed untrusted-peer header and id, replays
+unacknowledged claims after restart with persisted backoff, and removes a claim
+only after an explicit acknowledgment:
+
+```bash
+# Start this in the main controller's monitor, from the repository root.
+node scripts/controller/pi-ctl/bridge.mjs watch
+# Later, from a main shell after recording the message id:
+node scripts/controller/pi-ctl/bridge.mjs ack "$message_id"
+```
+
+After recording a message id in main's own state, set `message_id` from the
+header and run the `ack` command. The extension inbox follows the same
+at-least-once rule: it retains a claim until pi's persisted custom-message entry
+confirms the type and id, then retries at most three times before reporting to
+main. Wake-ups keep their persisted id until pi confirms delivery. Peer messages
+are untrusted and never auto-replied to; send and receive limits default to 10
+per peer per hour; inbox bodies default to 16 KiB and sends to 64 KiB; wake-ups
+are 10 seconds to 24 hours with 32 pending. Monitors use the private-PID-namespace
+wrapper, wait for its readiness marker, and end within one hour. Compaction
+starts only from `agent_end` at 150,000 tokens by default and tells the session
+to run `scripts/controller/resume-read.sh <role>` afterward. The launcher uses
+`--no-approve` to ignore trust-gated project-local resources without a prompt;
+explicit extensions load from argv and no project settings file is written.
+Tests run in the registered `scripts/controller` suite with a fake pi API, not
+against a live provider.
 
 ## Running the registered gate
 

@@ -928,44 +928,51 @@ corresponding defaults. Keep `PI_CTL_ROOT` outside every checkout; it defaults t
 `$HOME/controller/pi-ctl`. State directories are mode 0700 and state files mode 0600.
 
 The extension polls `inbox/<role>/` once per second. A peer message is renamed into a
-processing queue before injection and has a fixed header that marks it as untrusted peer
-input, not operator approval. `send_message` writes atomically to `inbox/<to>/`; use
-`to=main` to reach the Claude main controller. Main can watch `inbox/main/` without
-inotify using this poll loop (run it in the main controller's monitor):
+processing claim before injection and carries a stable id. Since pi's `sendMessage()`
+returns `void`, the claim remains until pi's `message_end` event is followed by a persisted
+`custom_message` entry with the same custom type and id. A restart replays unconfirmed
+claims with the same id, so duplicates are visible. Retries back off, stop after three
+attempts and report to main while preserving the claim. Wake-ups use the same id-confirmed
+delivery rule and stay on disk until pi records that wake-up id.
+
+`send_message` writes atomically to `inbox/<to>/`; use `to=main` to reach the Claude main
+controller. Main uses the tested bridge, which replays claims after restart, prints a fixed
+peer-message/not-operator-approval header and retains each claim until the explicit id ack:
 
 ```bash
-root=${PI_CTL_ROOT:-"$HOME/controller/pi-ctl"}
-umask 077
-mkdir -p -- "$root/inbox/main/claimed"
-while :; do
-  for message in "$root"/inbox/main/*.msg; do
-    [[ -f $message && ! -L $message ]] || continue
-    claimed="$root/inbox/main/claimed/${message##*/}"
-    if mv -- "$message" "$claimed" 2>/dev/null; then
-      if cat -- "$claimed"; then rm -- "$claimed"; else mv -- "$claimed" "$message"; fi
-    fi
-  done
-  sleep 2
-done
+# Start this in the main controller's monitor, from the repository root.
+node scripts/controller/pi-ctl/bridge.mjs watch
+# Later, from a main shell after recording the message id:
+node scripts/controller/pi-ctl/bridge.mjs ack "$message_id"
 ```
+
+Run `watch` in the main controller's monitor. Copy the id from the fixed header into
+`message_id`, record the message in main's own state, then run the one `ack` command above.
+The bridge preserves each claim across restart, respects persisted backoff and reports an
+unacknowledged message after three displays without deleting it.
 
 Inbox bodies are capped at 16 KiB and sends at 64 KiB by default. The send and inbound
 limits default to 10 messages per peer per hour; `PI_CTL_SEND_LIMIT`,
 `PI_CTL_INBOUND_LIMIT`, and `PI_CTL_LOOP_WINDOW_SECONDS` adjust them. Excess inbound
 messages stay queued with one notice per rate window. There is no automatic reply. Wake-ups
 persist across restarts, fire once, and allow 10 seconds through 24 hours with at most 32
-pending. Monitors run only through `pi-pidns-bash`, allow up to four watchers for at most
-one hour each, cap lines at 2 KiB, and batch/rate-limit output. Monitor processes are not
-persisted; a restart reports which ones ended and asks the controller to re-arm needed
-watchers. Stop affects only a child process started by that extension.
+pending. Monitors run only through `pi-pidns-bash`; `start_monitor` waits for an
+in-namespace readiness marker before reporting success. They allow up to four watchers for
+at most one hour each, cap lines at 2 KiB, and batch/rate-limit output. Monitor processes
+are not persisted; a restart reports which ones ended and asks the controller to re-arm
+needed watchers. Stop affects only a child process started by that extension.
 
 Self-compaction starts only from `agent_end` at 150,000 context tokens by default. Its
 instructions preserve the original goal, in-flight identifiers and up to 8 KiB of the
 role's `PI_CTL_PRIME` file; after completion the session runs
-`scripts/controller/resume-read.sh <role>`. The same instructions apply to pi's own
-automatic compaction. A compaction that fails or leaves context above the threshold backs
-off; after three failures the controller writes one notice to `inbox/main/`. The event log
-records lifecycle facts and token counts, never message bodies or environment values.
+`scripts/controller/resume-read.sh <role>`. Pi's automatic compaction hook accepts a
+`CompactionResult`, so the extension supplies a readback summary through that supported
+result instead of returning unsupported custom instructions. A compaction that fails or
+leaves context above the threshold backs off; after three failures the controller writes a
+stable-id notice to `inbox/main/`. The launcher only saves a new session id after the pi
+extension signals successful `session_start`; a failed pane leaves the previous resumable id
+intact. The event log records lifecycle facts and token counts, never message bodies or
+environment values.
 The controller suite covers the harness with a fake pi API; live provider and TUI behavior
 still need an operator smoke run after account access is available.
 
