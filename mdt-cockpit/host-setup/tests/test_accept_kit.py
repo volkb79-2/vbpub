@@ -1003,6 +1003,19 @@ class ShellKitTests(F.ShellKitBase):
         self.assertIn('[ "$i" = 1 ]', tick, "step 0 and every later judged window sample on their first tick")
         self.assertLess(tick.index("hotset sample --step"), tick.index('write_row "$ph" "$s"'))
 
+    def test_post_run_block_requires_the_collected_run_unit_to_be_inactive_before_its_trap(self) -> None:
+        readme = (ROOT / "README.md").read_text()
+        section = readme.index("4. **Eval, restore, snapshot and restart the reconcile timer.**")
+        fence = readme.index("```bash", section)
+        end = readme.index("```", fence + len("```bash"))
+        block = readme[fence:end]
+        check = block.index("UNIT_STATE=$(systemctl is-active mdt-accept-1")
+        self.assertLess(check, block.index("restart_reconcile()"))
+        self.assertLess(check, block.index("trap restart_reconcile EXIT"))
+        self.assertLess(check, block.index("snap()"))
+        self.assertIn("wait for the --collect unit to finish", block)
+        self.assertIn("systemctl reset-failed mdt-accept-1", block)
+
     def test_cgprofile_environment_refusal_happens_before_any_host_write(self) -> None:
         r = self.run_kit("--steps", "0", "--dwell", "0", ticks="2", FAKE_SESSIONS_LIVE="1",
                          **self.judge_env("PASS"))

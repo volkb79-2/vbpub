@@ -1426,6 +1426,11 @@ refuses or exits before the post-run block, do not continue: finish `accept-rest
    set -euo pipefail
    PATH=/opt/mdt/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
    export PATH
+   UNIT_STATE=$(systemctl is-active mdt-accept-1 2>&1 || true)
+   if [ "$UNIT_STATE" != inactive ]; then
+     echo "mdt-accept-1 state is '$UNIT_STATE'; wait for the --collect unit to finish, then rerun this block until systemctl is-active prints exactly inactive. If a leftover unit is failed, run 'systemctl reset-failed mdt-accept-1' and check again." >&2
+     exit 1
+   fi
    restart_reconcile() {
      local status=$?
      trap - EXIT
@@ -1457,8 +1462,6 @@ refuses or exits before the post-run block, do not continue: finish `accept-rest
    K="$CK/mdt-cockpit/host-setup/tools/accept"
    EV=/root/accept-REPLACE_WITH_EXACT_EVIDENCE_DIRECTORY
    [ -d "$EV" ] || { echo "set EV to the exact evidence directory printed by step 3" >&2; exit 1; }
-   UNIT_STATE=$(systemctl is-active mdt-accept-1 2>&1 || true)
-   echo "unit active state: $UNIT_STATE"
    journalctl -u mdt-accept-1 --no-pager 2>&1 | grep -E 'Main process exited|status=|Deactivated|Succeeded|Failed' | tail -n 5 || true
    EVAL_RC=0
    "$K/accept-eval.py" "$EV" >"$EV/eval.txt" 2>&1 || EVAL_RC=$?
