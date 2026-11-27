@@ -40,7 +40,6 @@ pub struct EventRequest {
     /// Validated point-only `(boot_id, seq)` idempotency key.
     pub idempotency: Option<(String, u64)>,
 }
-
 /// One successful annotation reply.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct EventReply {
@@ -358,7 +357,7 @@ fn ceil_ms(ns: u64) -> u32 {
     let milliseconds = ns
         .saturating_add(NS_PER_MILLISECOND.saturating_sub(1))
         / NS_PER_MILLISECOND;
-    u32::try_from(milliseconds).unwrap_or(u32::MAX)
+    u32::try_from(milliseconds).expect("annotation retry delay fits u32")
 }
 
 #[cfg(test)]
@@ -779,4 +778,3 @@ mod tests {
         assert_eq!(annotator.bucket_count(), 1);
     }
 }
-

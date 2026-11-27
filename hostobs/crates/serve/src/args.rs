@@ -519,7 +519,12 @@ fn is_event_name(name: &str) -> bool {
         })
 }
 
-fn event_string(object: &Obj<'_>, name: &str, max: usize, nonempty: bool) -> Result<String, ArgError> {
+fn event_string(
+    object: &Obj<'_>,
+    name: &str,
+    max: usize,
+    nonempty: bool,
+) -> Result<String, ArgError> {
     let value = object.string(name, max)?;
     if (nonempty && value.is_empty()) || has_control(&value) {
         return Err(fail(&join(&object.path, name)));
@@ -1418,7 +1423,7 @@ mod tests {
             ("\"ctx\":{},", "ctx"),
             ("\"outcome\":null,", "outcome"),
             ("\"code\":null,", "code"),
-            ("\"attrs\":{}", "attrs"),
+            (",\"attrs\":{}", "attrs"),
         ] {
             assert_eq!(
                 annotate_refused(&point.replace(member, "")),

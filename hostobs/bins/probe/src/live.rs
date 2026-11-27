@@ -83,7 +83,7 @@ impl EventSink for TimedEventSink<'_> {
         let started = (self.clock)();
         let result = self.store.record_event(event, payload, real_ns);
         let elapsed_ns = (self.clock)().saturating_sub(started);
-        let elapsed_ms = elapsed_ns.checked_div(1_000_000).unwrap_or(0);
+        let elapsed_ms = elapsed_ns / 1_000_000;
         match &result {
             Ok(outcome) => {
                 if let Some(line) = seal_stall_line(outcome.sealed.as_deref(), elapsed_ns) {

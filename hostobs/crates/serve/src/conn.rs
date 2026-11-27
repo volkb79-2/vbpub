@@ -1231,7 +1231,7 @@ mod tests {
                 bytes,
                 self.now,
                 &mut self.hub,
-                &self.backend,
+                &mut self.backend,
                 &mut self.streams,
             );
         }
@@ -1255,7 +1255,7 @@ mod tests {
                 &dispatch,
                 self.now,
                 &mut self.hub,
-                &self.backend,
+                &mut self.backend,
                 &mut self.streams,
             );
         }
@@ -2267,7 +2267,7 @@ mod tests {
             cgroup: None,
         };
         let mut conn = Conn::new(id, Level::Observe, peer, &limits, 0);
-        let backend = CountingBackend::new();
+        let mut backend = CountingBackend::new();
         let mut streams = SelectionStreams::new(StreamLimits {
             bounds: BlockBounds {
                 max_rows: limits.probe.max_rows,
@@ -2276,7 +2276,7 @@ mod tests {
         });
         let mut input = client_prefix(2);
         input.extend_from_slice(&req(1, "hello"));
-        conn.on_bytes(&input, 0, &mut hub, &backend, &mut streams);
+        conn.on_bytes(&input, 0, &mut hub, &mut backend, &mut streams);
         let _ = drain_hub(&mut hub, id, 0);
         assert_eq!(conn.state(), State::Ready);
 
@@ -2290,7 +2290,7 @@ mod tests {
             },
             0,
             &mut hub,
-            &backend,
+            &mut backend,
             &mut streams,
         );
         assert_eq!(backend.current_calls.get(), 0);
