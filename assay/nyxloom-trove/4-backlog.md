@@ -16399,3 +16399,22 @@ stream-break exception in both comments is accurate.
 
 **Close when.** Both comments say "was never readable", or the runtime policy
 changes to bind on a later loss and a test pins that behaviour.
+
+## B601 — the `tooling-tests` lane runs only part of `gate/tests`
+
+**Status: OPEN, filed 2026-11-27 (found while gating B599); severity:
+medium.**
+
+The `tooling-tests` lane in `assay/run-gate.toml` names its test files one by
+one. From `gate/tests` it lists `test_b105_report_check.py`,
+`test_distribution_gate.py`, `test_release_gate.py`,
+`test_self_qualification_container.py` and `test_self_lane.py`. Other files
+there, `test_cgroup_parent.py` among them, are collected only by the
+`tester-unified` lane (`pytest tests gate/tests` in `assay/assay.toml`). A
+`tooling-tests` PASS therefore says nothing about a change to
+`assay/tools/cgroup-parent.sh`: the B599 PASS
+`rgw-tooling-tests-20261127T141630-v1001` did not run its new tests.
+
+**Close when.** The lane collects every `gate/tests` file it can run, with each
+exclusion named and explained, or a check fails when a `gate/tests` file is in
+neither the lane's list nor that exclusion list.
