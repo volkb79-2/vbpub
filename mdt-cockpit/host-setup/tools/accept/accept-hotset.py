@@ -654,6 +654,7 @@ def setup(args) -> int:
     # creates contexts/0; the restore uses only the object explicitly named.
     append_wal(args.state, f"damon_owner={owner}", f"damon_nr_kdamonds={original_nr}",
                f"damon_kdamond={idx}", "damon_nr_contexts=0", "damon_started=0", f"kdamond={idx}")
+    daemon_started_here = False
     try:
         nrd = os.path.join(args.admin, "kdamonds")
         if owner == "created":
@@ -677,6 +678,7 @@ def setup(args) -> int:
         if not state_before_on or state_before_on[0].strip() != "off":
             raise Refusal(f"kdamond {idx} became {state_before_on[0].strip() if state_before_on else 'unreadable'} before setup could start it")
         da.SysfsInterface.kdamond_on(idx)
+        daemon_started_here = True
         # Record successful ownership only after the sysfs transition succeeds. If the
         # process dies between on and this fsynced WAL append, restore leaves an on
         # daemon alone and reports pending rather than stopping a possible foreign owner.
@@ -695,6 +697,19 @@ def setup(args) -> int:
                                            "leaves": topology_record_leaves(current_topology)})
     except Exception as exc:
         try:
+            if daemon_started_here:
+                state_path = os.path.join(args.admin, "kdamonds", str(idx), "state")
+                current_state = read_lines(state_path)
+                if not current_state:
+                    raise Refusal(f"{state_path} is unreadable after this process started kdamond {idx}; leaving the WAL for manual restore")
+                state = current_state[0].strip()
+                if state == "on":
+                    write_text(state_path, "off")
+                    stopped = read_lines(state_path)
+                    if not stopped or stopped[0].strip() != "off":
+                        raise Refusal(f"kdamond {idx} did not become off after setup failed; leaving the WAL for manual restore")
+                elif state != "off":
+                    raise Refusal(f"kdamond {idx} has unexpected state {state!r} after setup failed; leaving the WAL for manual restore")
             restore_owned_kdamond(args.admin, args.state)
         except Exception as restore_exc:
             raise Refusal(f"setup failed ({exc}); immediate DAMON restore is pending ({restore_exc}); WAL kept at {args.state}") from exc

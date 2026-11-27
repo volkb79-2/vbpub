@@ -1234,6 +1234,13 @@ refuses or exits before the post-run block, do not continue: finish `accept-rest
 `systemctl start mdt-dev-governance-reconcile.timer` and `systemctl start mdt-dev-governance-reconcile.service`; verify the timer with
 `systemctl is-active mdt-dev-governance-reconcile.timer`.
 
+If the setup process crashes after `kdamond_on` succeeds but before `damon_started=1` reaches the WAL, the WAL still says
+`damon_started=0` and automatic restore intentionally leaves the daemon on. Read `damon_kdamond` from the exact run's
+`squeeze-state.env` and confirm this is the daemon the interrupted kit started and it is still on; if ownership is
+uncertain, leave the WAL and do not write. When confirmed, manually write `off` only to
+`/sys/kernel/mm/damon/admin/kdamonds/<damon_kdamond>/state`. Read the state back as `off`, then run `accept-restore.sh`
+for that evidence directory. Do not change another kdamond or `nr_kdamonds`.
+
    ```bash
    set -euo pipefail
    systemctl stop mdt-dev-governance-reconcile.timer

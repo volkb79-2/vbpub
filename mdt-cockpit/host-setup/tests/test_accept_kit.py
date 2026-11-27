@@ -491,6 +491,26 @@ class HotsetTests(unittest.TestCase):
         model.write(str(regions_count), 1)
         self.assertTrue((regions_count.parent / "0" / "start").is_file())
 
+    def test_setup_turns_off_its_kdamond_if_the_started_wal_append_fails(self) -> None:
+        self.sysfs_model()
+        append = hs.append_wal
+
+        def fail_started_append(state: str, *lines: str) -> None:
+            if lines == ("damon_started=1",):
+                raise hs.Refusal("injected start-record WAL failure")
+            append(state, *lines)
+
+        output = io.StringIO()
+        with mock.patch.object(hs, "append_wal", side_effect=fail_started_append), \
+                contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
+            rc = hs.main(["setup", *self.args()])
+        self.assertEqual(rc, 3, output.getvalue())
+        self.assertIn("injected start-record WAL failure", output.getvalue())
+        self.assertEqual((self.kd / "0" / "state").read_text().strip(), "off")
+        self.assertEqual((self.kd / "nr_kdamonds").read_text().strip(), "0")
+        self.assertIn("damon_started=0", self.wal.read_text())
+        self.assertNotIn("damon_started=1", self.wal.read_text())
+
     def restore_model(self) -> subprocess.CompletedProcess:
         env = dict(os.environ, MDT_ACCEPT_SQUEEZE_STATE=str(self.wal), MDT_ACCEPT_MANIFEST=str(self.ev / "manifest.env"),
                    MDT_ACCEPT_DAMON_ADMIN=str(self.admin), MDT_ACCEPT_LOCK=str(self.tmp / "accept.lock"))
@@ -1002,6 +1022,22 @@ class ShellKitTests(F.ShellKitBase):
         tick = src[src.index('tick() { # <phase>'):src.index('dwell() { # <phase>')]
         self.assertIn('[ "$i" = 1 ]', tick, "step 0 and every later judged window sample on their first tick")
         self.assertLess(tick.index("hotset sample --step"), tick.index('write_row "$ph" "$s"'))
+
+    def test_product_warmup_formula_and_dummy_deadline_include_the_rounded_warmup(self) -> None:
+        src = (KIT / "accept-run.sh").read_text()
+        override = src.index('if [ -n "${MDT_ACCEPT_WARMUP_TICKS:-}" ]; then')
+        zero_interval = src.index('elif [ "$INTERVAL" = 0 ]; then', override)
+        formula = src.index('WARMUP_TICKS=$(( (WARMUP + INTERVAL - 1) / INTERVAL ))', zero_interval)
+        elapsed = src.index('WARMUP_RUN_SECONDS=$((WARMUP_TICKS * INTERVAL))', formula)
+        warmup_branch = src[override:elapsed]
+        self.assertLess(override, zero_interval)
+        self.assertIn('else\n  WARMUP_TICKS=$(( (WARMUP + INTERVAL - 1) / INTERVAL ))', warmup_branch,
+                      "without the override and with INTERVAL > 0, round the product warm-up up to full ticks")
+        self.assertIn('WARMUP_RUN_SECONDS=$((WARMUP_TICKS * INTERVAL))', warmup_branch)
+        self.assertEqual((600 + 5 - 1) // 5, 120)
+        self.assertEqual(120 * 5, 600)
+        self.assertIn('dummy_budget=$((WARMUP_RUN_SECONDS + (STEPS + 2) * DWELL))', src)
+        self.assertIn('dummy_deadline=$((2 * dummy_budget))', src)
 
     def test_post_run_block_requires_the_collected_run_unit_to_be_inactive_before_its_trap(self) -> None:
         readme = (ROOT / "README.md").read_text()
