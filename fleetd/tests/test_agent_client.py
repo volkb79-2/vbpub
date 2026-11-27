@@ -1,3 +1,4 @@
+import json
 import os
 import socket
 import threading
@@ -221,13 +222,82 @@ def test_agent_response_validation_and_remote_exit_documents_are_closed():
     assert changed.value.exit_code == ExitCode.REFUSAL
 
     assert _validate_agent_response(_probe("1.0.0"), expected_version="1.0.0") == "1.0.0"
-    assert _raise_remote_error({"state": "running"}) is None
+    assert _raise_remote_error({"state": "failed", "exit_code": 7}) is None
     with pytest.raises(AdmissionError, match="malformed error response") as malformed_error:
-        _raise_remote_error({"exit_code": "2", "reason": "bad"})
+        _raise_remote_error({"error": {"exit_code": "2", "reason": "bad"}})
     assert malformed_error.value.exit_code == ExitCode.RUNNER_FAILURE
     with pytest.raises(AdmissionError, match="remote refusal") as remote_error:
-        _raise_remote_error({"exit_code": 2, "reason": "remote refusal"})
+        _raise_remote_error({"error": {"exit_code": 2, "reason": "remote refusal"}})
     assert remote_error.value.exit_code == ExitCode.REFUSAL
+
+
+@pytest.mark.parametrize(
+    "document",
+    [
+        {"error": None},
+        {"error": []},
+        {"error": {"exit_code": 2}},
+        {"error": {"exit_code": 2, "reason": "bad", "extra": True}},
+        {"error": {"exit_code": True, "reason": "bad"}},
+        {"error": {"exit_code": 999, "reason": "bad"}},
+        {"error": {"exit_code": 2, "reason": None}},
+        {"error": {"exit_code": 2, "reason": "bad"}, "exit_code": 2},
+        {"error": {"exit_code": 2, "reason": "bad"}, "reason": "bad"},
+    ],
+)
+def test_client_maps_malformed_nested_errors_to_exit_70(document):
+    with pytest.raises(AdmissionError, match="malformed error response") as malformed:
+        _raise_remote_error(document)
+    assert malformed.value.exit_code == ExitCode.RUNNER_FAILURE
+
+
+def test_response_schema_closes_error_object_and_keeps_status_exit_code_as_data():
+    schema_path = Path(__file__).parents[1] / "docs" / "agent-response.schema.json"
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    error_shape, success_shape = schema["oneOf"]
+
+    assert error_shape["properties"]["error"]["required"] == ["exit_code", "reason"]
+    assert error_shape["properties"]["error"]["additionalProperties"] is False
+    assert error_shape["not"]["anyOf"] == [
+        {"required": ["exit_code"]}, {"required": ["reason"]},
+    ]
+    assert success_shape["not"] == {"required": ["error"]}
+
+
+def test_client_returns_status_with_nonzero_lane_exit_code_as_success():
+    client_stream, server_stream = socket.socketpair()
+    client = AgentClient(Path("/unused"), "1.0.0")
+    client._check_version = lambda _request: "1.0.0"
+    client.connect = lambda: client_stream
+    failures = []
+    finished = threading.Event()
+
+    def serve_status():
+        try:
+            assert read_frame(server_stream, None) == {"verb": "status", "job_id": "job-1"}
+            write_frame(server_stream, {
+                "schema": "fleet-host-agent/1", "agent_version": "1.0.0",
+                "job_id": "job-1", "state": "failed", "exit_code": 7,
+            })
+        except BaseException as exc:
+            failures.append(exc)
+        finally:
+            server_stream.close()
+            finished.set()
+
+    worker = threading.Thread(target=serve_status)
+    worker.start()
+    reply = client.request({"verb": "status", "job_id": "job-1"})
+    assert reply.document == {
+        "schema": "fleet-host-agent/1", "agent_version": "1.0.0",
+        "job_id": "job-1", "state": "failed", "exit_code": 7,
+    }
+    assert "error" not in reply.document
+    assert finished.wait(3), "status response worker did not finish before the failure watchdog"
+    worker.join(timeout=3)
+    assert not worker.is_alive(), "status response worker remained alive after completion"
+    assert failures == []
+    client_stream.close()
 
 
 def test_read_body_validates_length_and_detects_truncation():
@@ -355,7 +425,7 @@ def test_lease_client_closes_on_invalid_request_frame_errors_and_remote_refusal(
     client.connect = lambda: stream
     monkeypatch.setattr("fleetd.agent_client.read_frame", lambda *_args: {
         "schema": "fleet-host-agent/1", "agent_version": "1.0.0",
-        "exit_code": 2, "reason": "lease refused",
+        "error": {"exit_code": 2, "reason": "lease refused"},
     })
     with pytest.raises(AdmissionError, match="lease refused") as refusal:
         client.open_lease({"verb": "lease", "lease_id": "lease-1"})

@@ -115,6 +115,10 @@ acquired, that held connection leaves the ordinary connection count. `probe`
 includes `agent_version` and the verb
 field capabilities. Clients refuse a major-version mismatch; a minor or patch
 mismatch requires the host to advertise the requested verb and every field.
+A failure uses the nested `error: {exit_code, reason}` object and has no
+top-level `exit_code` or `reason`; success omits `error`. The client looks only
+for `error`, so a status `exit_code` is returned as job data. A malformed
+`error` maps to exit 70. See the [response schema](agent-response.schema.json).
 A probe includes `lease` only when exact-object inspection, the legacy-job
 list, and container-identity inspection are configured. C3b wires these
 providers; the shipped C3a CLI has none and refuses lease with exit 2.

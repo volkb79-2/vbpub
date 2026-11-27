@@ -32,6 +32,18 @@ def _round_trip(server, path):
         client.close()
 
 
+def _assert_error_response(document, exit_code, reason_contains=None):
+    assert document["schema"] == "fleet-host-agent/1"
+    assert isinstance(document["agent_version"], str)
+    assert document["error"]["exit_code"] == exit_code
+    assert isinstance(document["error"]["reason"], str)
+    assert set(document["error"]) == {"exit_code", "reason"}
+    assert "exit_code" not in document
+    assert "reason" not in document
+    if reason_contains is not None:
+        assert reason_contains in document["error"]["reason"]
+
+
 def test_socket_server_serves_probe_restarts_on_same_path_and_keeps_directory(tmp_path):
     service, _identity, _checkout = _service(
         tmp_path, peer_credentials=(os.geteuid(), os.getegid()),
@@ -231,8 +243,7 @@ def test_connection_limit_refuses_excess_and_close_unparks_ordinary_worker(tmp_p
     parked.connect(str(socket_path))
     excess.connect(str(socket_path))
     refusal = read_frame(excess, 3)
-    assert refusal["exit_code"] == ExitCode.IDENTITY_OR_TRANSPORT
-    assert "connection limit" in refusal["reason"]
+    _assert_error_response(refusal, ExitCode.IDENTITY_OR_TRANSPORT, "connection limit")
     assert len(server._ordinary_connections) == 1
     workers = tuple(server._client_threads)
     assert len(workers) == 1
@@ -353,7 +364,7 @@ def test_server_returns_protocol_exit_codes_on_the_wire(tmp_path):
     result = serve_connection(server_socket, server_socket, service, policy, identity)
     response = read_frame(client_socket, None)
     assert result == ExitCode.REFUSAL
-    assert response["exit_code"] == ExitCode.REFUSAL
+    _assert_error_response(response, ExitCode.REFUSAL)
     server_socket.close()
     client_socket.close()
 
@@ -363,7 +374,24 @@ def test_server_returns_protocol_exit_codes_on_the_wire(tmp_path):
     result = serve_connection(server_socket, server_socket, service, policy, identity)
     response = read_frame(client_socket, None)
     assert result == ExitCode.IDENTITY_OR_TRANSPORT
-    assert response["exit_code"] == ExitCode.IDENTITY_OR_TRANSPORT
+    _assert_error_response(response, ExitCode.IDENTITY_OR_TRANSPORT)
+    server_socket.close()
+    client_socket.close()
+
+
+def test_lease_stream_errors_use_the_nested_error_envelope(tmp_path):
+    service, identity, _checkout = _service(tmp_path)
+    client_socket, server_socket = socket.socketpair()
+    write_frame(client_socket, {
+        "verb": "lease", "lease_id": "controller-lease-1", "container_name": "rg-test",
+        "footprint": "small", "planned_cores": 1.0, "priority": "gate",
+    })
+
+    result = serve_connection(server_socket, server_socket, service, service.policy, identity)
+    response = read_frame(client_socket, None)
+
+    assert result == ExitCode.REFUSAL
+    _assert_error_response(response, ExitCode.REFUSAL, "injected object inspector")
     server_socket.close()
     client_socket.close()
 
@@ -379,7 +407,7 @@ def test_server_rejects_data_after_one_ordinary_request(tmp_path):
     response = read_frame(client_socket, None)
 
     assert result == ExitCode.IDENTITY_OR_TRANSPORT
-    assert response["exit_code"] == ExitCode.IDENTITY_OR_TRANSPORT
+    _assert_error_response(response, ExitCode.IDENTITY_OR_TRANSPORT)
     server_socket.close()
     client_socket.close()
 
@@ -637,8 +665,7 @@ def test_serve_once_handles_wake_limit_and_peer_authentication_refusal(tmp_path,
     limited._select_waiter = lambda *_args: ([limited.listener], [], [])
     limited.serve_once()
     refusal = read_frame(client_stream, 1)
-    assert refusal["exit_code"] == ExitCode.IDENTITY_OR_TRANSPORT
-    assert "connection limit" in refusal["reason"]
+    _assert_error_response(refusal, ExitCode.IDENTITY_OR_TRANSPORT, "connection limit")
     client_stream.close()
     limited.close()
 
@@ -664,8 +691,7 @@ def test_serve_once_handles_wake_limit_and_peer_authentication_refusal(tmp_path,
     )
     identity_server.serve_once()
     refusal = read_frame(client_stream, 1)
-    assert refusal["exit_code"] == ExitCode.IDENTITY_OR_TRANSPORT
-    assert refusal["reason"] == "unknown peer"
+    _assert_error_response(refusal, ExitCode.IDENTITY_OR_TRANSPORT, "unknown peer")
     client_stream.close()
     identity_server.close()
 
@@ -799,8 +825,7 @@ def test_serve_forever_reports_worker_start_failure_and_releases_connection(tmp_
     server._select_waiter = select_waiter
     server.serve_forever()
     refusal = read_frame(client_stream, 1)
-    assert refusal["exit_code"] == ExitCode.RUNNER_FAILURE
-    assert "cannot start" in refusal["reason"]
+    _assert_error_response(refusal, ExitCode.RUNNER_FAILURE, "cannot start")
     assert server._ordinary_connections == set()
     assert server._client_threads == set()
     client_stream.close()
@@ -856,8 +881,7 @@ def test_server_worker_releases_connection_after_peer_refusal_and_transport_oser
     )
     worker._serve_connection(server_stream)
     refusal = read_frame(client_stream, 1)
-    assert refusal["exit_code"] == ExitCode.IDENTITY_OR_TRANSPORT
-    assert refusal["reason"] == "unknown peer"
+    _assert_error_response(refusal, ExitCode.IDENTITY_OR_TRANSPORT, "unknown peer")
     assert worker._ordinary_connections == set()
     assert worker._client_threads == set()
     client_stream.close()
@@ -936,8 +960,7 @@ def test_server_error_writer_and_catchall_return_bounded_wire_documents(tmp_path
     result = serve_connection(server_stream, server_stream, service, service.policy, identity)
     reply = read_frame(client_stream, 1)
     assert result == ExitCode.RUNNER_FAILURE
-    assert reply["exit_code"] == ExitCode.RUNNER_FAILURE
-    assert "unexpected agent failure: provider exploded" == reply["reason"]
+    _assert_error_response(reply, ExitCode.RUNNER_FAILURE, "unexpected agent failure: provider exploded")
     client_stream.close()
     server_stream.close()
 
@@ -948,7 +971,6 @@ def test_forced_command_refuses_unknown_transport_group_on_wire(tmp_path):
     result = serve_forced_command(client_stream, server_stream, service, service.policy, "unknown")
     refusal = read_frame(client_stream, 1)
     assert result == ExitCode.IDENTITY_OR_TRANSPORT
-    assert refusal["exit_code"] == ExitCode.IDENTITY_OR_TRANSPORT
-    assert refusal["reason"] == "unknown forced-command group"
+    _assert_error_response(refusal, ExitCode.IDENTITY_OR_TRANSPORT, "unknown forced-command group")
     client_stream.close()
     server_stream.close()

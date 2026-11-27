@@ -29,6 +29,7 @@ All notable changes to this project are recorded here.
 - Wake an active synchronous `serve_once` during shutdown and let it close its listener descriptors after leaving the wait.
 - Replay terminal submits from the durable completion record, matching `status` without consulting executor memory.
 - Refuse lease records at the job `status` and `cancel` boundary before they can reach executor methods.
+- Separate error envelopes from successful status data with the nested `error` object, including on held lease connections.
 
 ### Changed
 - Assign prerequisite-missing exit code 79 (moved from 76); 73 is reserved by fleetd's runner. Map preflight exit 4 to refusal 2. In `/1`, refuse non-null `resources.cpu_set` with 2, reserved like `shard`.

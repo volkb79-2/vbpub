@@ -224,11 +224,21 @@ def test_probe_facts_and_have_return_host_owned_data(tmp_path):
     have = service.handle({"verb": "have", "repo": "vbpub"}, identity)
 
     assert probe.document["schema"] == "fleet-host-agent/1"
+    assert "error" not in probe.document
     assert "submit" in probe.document["capabilities"]
     assert facts.document["schema"] == "fleet-host-agent/1"
+    assert "error" not in facts.document
     assert facts.document["facts"]["schema"] == "host-facts/2"
     assert facts.document["facts"]["policy"]["max_upload_bytes"]["v"] == 1073741824
     assert have.document["refs"] == ["a" * 40]
+    assert "error" not in have.document
+
+
+def test_success_envelope_refuses_the_reserved_error_field(tmp_path):
+    service, _identity, _checkout = _service(tmp_path)
+
+    with pytest.raises(ValueError, match="success response cannot contain the reserved error field"):
+        service._envelope(error={"exit_code": ExitCode.REFUSAL, "reason": "refused"})
 
 
 def test_submit_without_executor_refuses_before_admission_or_durable_write(tmp_path):

@@ -294,8 +294,7 @@ def _write_error(stream: object, service: AgentVerbService, exit_code: int, reas
         write_frame(stream, {
             "schema": AGENT_SCHEMA,
             "agent_version": service.agent_version,
-            "exit_code": int(exit_code),
-            "reason": reason,
+            "error": {"exit_code": int(exit_code), "reason": reason},
         }, service.policy.idle_connection_s)
     except FrameError:
         return

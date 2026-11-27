@@ -16,6 +16,10 @@ _SEMVER_RE = re.compile(
     r"(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?\Z"
 )
 AGENT_SCHEMA = "fleet-host-agent/1"
+_REMOTE_EXIT_CODES = frozenset(
+    value for name, value in vars(ExitCode).items()
+    if name.isupper() and type(value) is int
+)
 
 
 @dataclass(frozen=True)
@@ -133,11 +137,19 @@ class AgentLeaseSession:
 
 
 def _raise_remote_error(document: Mapping[str, object]) -> None:
-    if "exit_code" not in document:
+    if "error" not in document:
         return
-    code = document["exit_code"]
-    reason = document.get("reason")
-    if type(code) is not int or not isinstance(reason, str):
+    error = document["error"]
+    if (
+        type(error) is not dict
+        or set(error) != {"exit_code", "reason"}
+        or "exit_code" in document
+        or "reason" in document
+    ):
+        raise AdmissionError(ExitCode.RUNNER_FAILURE, "host agent returned a malformed error response")
+    code = error["exit_code"]
+    reason = error["reason"]
+    if type(code) is not int or code not in _REMOTE_EXIT_CODES or type(reason) is not str:
         raise AdmissionError(ExitCode.RUNNER_FAILURE, "host agent returned a malformed error response")
     raise AdmissionError(code, reason)
 

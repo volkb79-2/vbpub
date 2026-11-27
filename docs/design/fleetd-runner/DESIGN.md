@@ -72,6 +72,13 @@ must be a shipped module, not a string program (`fleetd/KNOWN_ISSUES_TODO_BACKLO
 Rejected: "try it and see" — an unknown grammar on the far side of an ssh call produces a wrong
 answer rather than no answer.
 
+Every answer uses the normal `{schema, agent_version, ...}` envelope. Errors
+put exactly `{exit_code, reason}` in the nested `error` object and omit
+top-level `exit_code` and `reason`; successes omit `error`. The client checks
+only for `error`, so a non-zero `exit_code` in a successful status remains the
+lane result. A malformed `error` is a protocol failure (70). The same rule
+applies to each frame on the held lease stream.
+
 ### 2.2 Verbs and the record
 
 B4 names `probe|start|stop|fetch|facts`; v1 uses `probe|facts|have|put|submit|status|progress|cancel|fetch|lease`.

@@ -165,6 +165,8 @@ class AgentVerbService:
         return self.admission.reconcile_leases()
 
     def _envelope(self, **fields: object) -> dict[str, object]:
+        if "error" in fields:
+            raise ValueError("success response cannot contain the reserved error field")
         return {"schema": AGENT_SCHEMA, "agent_version": self.agent_version, **fields}
 
     def _capabilities(self) -> dict[str, list[str]]:

@@ -163,7 +163,13 @@ frames use the same cap. `put` streams its declared body after the request and
 connection deadline applies while the first request is being read, not while a
 submit waits for admission or after a lease is granted. The same framing is
 used on the socket and forced-command stdin/stdout. A server error response
-carries `exit_code` and `reason` from `admission.ExitCode`.
+carries `error: {exit_code, reason}` inside the normal envelope; `error` has
+exactly those fields, with an integer exit code and string reason. Error
+responses omit top-level `exit_code` and `reason`. Success responses omit
+`error`. The client discriminates only on `error`, and maps a malformed error
+object to exit 70. A successful status may carry a non-zero top-level
+`exit_code`; it remains job data. The formal envelope schema is
+[`agent-response.schema.json`](agent-response.schema.json).
 
 Every ordinary verb uses exactly one request frame and the client half-closes
 its write side before dispatch. `put` instead reads exactly its declared body
