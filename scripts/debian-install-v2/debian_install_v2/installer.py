@@ -143,7 +143,7 @@ _APT_SERVICES = ("apt-daily.service", "apt-daily-upgrade.service")
 # with it are ever pruned by a successful stage2.
 CONTROLLER_KEY_MARKER = "vbpub-controller-ephemeral-"
 
-# Installer iobench runs against the planned, unformatted raw partition.
+# Installer iobench temporarily uses the planned, unformatted tail-swap span.
 # The rung is config.io_benchmark_profile; its outer bound is iobench's own
 # hard budget for that rung plus 60 s (config.IO_BENCHMARK_OUTER_TIMEOUT_S, the
 # one table). That bound only stops an unbounded wait; it is not the budget.
@@ -376,7 +376,11 @@ class Installer:
 
     def _validate_root_config(self) -> None:
         """Apply the discovered root filesystem before state or host mutation."""
-        if self.root_fs == "ext4" and self.config.schema_version == 1:
+        if (
+            self.root_fs == "ext4"
+            and self.config.schema_version == 1
+            and not self.config.run_io_benchmark
+        ):
             # Legacy ext4 plans keep their pre-btrfs validation and error
             # ordering, including direct Config construction in old tests.
             return
@@ -443,7 +447,7 @@ class Installer:
             else:
                 plan_lines.append(
                     f"Partitioning: {_code(json.dumps(plan['partitioning'], sort_keys=True))}; "
-                    f"{len(plan['data_partitions'])} planned data/raw partition(s) in front of the end-of-disk swap "
+                    f"{len(plan['data_partitions'])} planned data-area partition(s) in front of the end-of-disk swap "
                     "(see README \"Disk layout\")"
                 )
         if plan.get("root_fs") == "btrfs":
@@ -840,6 +844,10 @@ class Installer:
         }
 
     def show_plan(self) -> dict[str, object]:
+        preview_partitioning = {
+            key: value for key, value in (self.config.partitioning or {}).items()
+            if key != "iobench_raw_gb"
+        }
         if self._is_btrfs_root():
             spec = self._disk_spec()
             subvolumes = [
@@ -853,10 +861,9 @@ class Installer:
                 "new_root_size_sectors": 0,
                 "root_shrink_check": "not_applicable",
                 "root_policy": "untouched",
-                "partitioning": self.config.partitioning or {},
+                "partitioning": preview_partitioning,
                 "data_partitions": [],
                 "data_subvolumes": subvolumes,
-                "iobench_partition": None,
                 "plan_table": [],
                 "swap_policy": "off",
                 "swap_total_gb": None,
@@ -906,8 +913,7 @@ class Installer:
         add_row("root", self.root_number, root_start, new_root_size,
                 f"PARTLABEL={root_name}" if root_name else "")
         for (number, start, size), data in zip(planned, spec.entries()):
-            add_row("iobench raw" if data.partlabel == layout_policy.IOBENCH_PARTLABEL else "data",
-                    number, start, size, f"PARTLABEL={data.partlabel}")
+            add_row("data", number, start, size, f"PARTLABEL={data.partlabel}")
         if self.config.swap_policy == "on":
             planned_swaps = [
                 (number, int(entry["start"]), int(entry["size"]), f"vbpub-swap-pre{offset}")
@@ -928,7 +934,7 @@ class Installer:
         # Represent free space between planned extents explicitly. This is
         # normally the intentional reserve or the alignment gap after a kept root.
         managed = sorted(
-            (row for row in table_rows if row["entry"] in {"root", "data", "iobench raw", "swap"}),
+            (row for row in table_rows if row["entry"] in {"root", "data", "swap"}),
             key=lambda row: int(row["start"]),
         )
         for left, right in zip(managed, managed[1:]):
@@ -963,19 +969,12 @@ class Installer:
                 else "not required"
             ),
             "root_policy": self._root_policy(),
-            "partitioning": self.config.partitioning or {},
+            "partitioning": preview_partitioning,
             "data_partitions": [
                 {"device": f"{self._partition_base}{number}", "start": start, "sectors": size,
                  "partlabel": data.partlabel}
                 for (number, start, size), data in zip(planned, spec.entries())
-                if data.partlabel != layout_policy.IOBENCH_PARTLABEL
             ],
-            "iobench_partition": next((
-                {"device": f"{self._partition_base}{number}", "start": start, "sectors": size,
-                 "partlabel": data.partlabel}
-                for (number, start, size), data in zip(planned, spec.entries())
-                if data.partlabel == layout_policy.IOBENCH_PARTLABEL
-            ), None),
             "plan_table": table_rows,
             "swap_policy": self.config.swap_policy,
             "swap_total_gb": swap_total,
@@ -2076,13 +2075,12 @@ MaxFileSec=1month
     def _configure_iocost(self) -> None:
         """io.cost for the root disk from the benchmark; skipped (not failed) without a result."""
         if self._is_btrfs_root():
-            # IC-M1a has no raw benchmark target and does not import a Q-A
+            # IC-M1a has no supported install benchmark target and does not import a Q-A
             # result. A stale file from another run must not configure io.cost
             # behind that contract.
             self._remove_iocost_units()
             note = (
-                "iocost_not_configured_btrfs: no iobench-raw partition on a btrfs root; "
-                "the Q-A benchmark import is pending"
+                "iocost_not_configured_btrfs: install-time benchmark import on a btrfs root is pending"
             )
             self._mark_step("iocost", "skipped", note)
             self._iocost_note = note
@@ -2270,10 +2268,11 @@ MaxFileSec=1month
         return entries
 
     @staticmethod
-    def _geometry_for_comparison(attrs: dict[str, str]) -> dict[str, str | None]:
-        """Project a parsed partition-entry dict down to the fields a
-        write plan actually controls (start/size/type), case-folding
-        type. Live-confirmed 2026-09-09 (v1001 round 9, this same
+    def _geometry_for_comparison(
+        attrs: dict[str, str], *, include_name: bool = True,
+    ) -> dict[str, str | None]:
+        """Project parsed entries to controlled geometry, optionally including the GPT name.
+        Type is case-folded. Live-confirmed 2026-09-09 (v1001 round 9, this same
         readback-verification diagnostic's own first live outing): a
         raw dict `!=` between the in-memory plan and a real `sfdisk
         --dump` readback flags EVERY real write as a mismatch, not just
@@ -2284,11 +2283,14 @@ MaxFileSec=1month
         differences, undoing otherwise-successful partitioning. Compare
         only what the plan itself constrains.
         """
-        return {
+        geometry: dict[str, str | None] = {
             "start": attrs.get("start"),
             "size": attrs.get("size"),
             "type": (attrs.get("type") or "").upper(),
         }
+        if include_name:
+            geometry["name"] = attrs.get("name")
+        return geometry
 
     @staticmethod
     def _partition_number_ranges(numbers: Iterable[int]) -> list[str]:
@@ -2311,6 +2313,9 @@ MaxFileSec=1month
         current: dict[int, dict[str, str]],
         plan: dict[int, dict[str, str]],
         new_root_size: int,
+        *,
+        allow_swap_span: bool = False,
+        expected_swap_span: tuple[int, int, int] | None = None,
     ) -> None:
         root_current = current.get(self.root_number)
         root_plan = plan.get(self.root_number)
@@ -2347,6 +2352,7 @@ MaxFileSec=1month
             if (
                 number != self.root_number and start >= before_end
                 and not self._is_swap_partition(entry) and not self._is_data_partition(entry)
+                and not (allow_swap_span and self._is_swap_span_partition(entry))
             ):
                 raise InstallerError(
                     f"unsupported disk layout: non-swap partition {number} follows root"
@@ -2377,6 +2383,24 @@ MaxFileSec=1month
             expected_numbers = self._tail_swap_numbers(len(tail_numbers), before_root)
             if tail_numbers != expected_numbers:
                 raise InstallerError(f"partition plan has unexpected swap numbering: {tail_numbers!r}")
+        current_spans = [(number, entry) for number, entry in current.items() if self._is_swap_span_partition(entry)]
+        planned_spans = [(number, entry) for number, entry in plan.items() if self._is_swap_span_partition(entry)]
+        if current_spans or planned_spans:
+            if not allow_swap_span or expected_swap_span is None:
+                raise InstallerError("io_benchmark_swap_span_geometry_mismatch: unplanned swap-span entry")
+            expected_number, expected_start, expected_size = expected_swap_span
+            for number, entry in [*current_spans, *planned_spans]:
+                if (
+                    number != expected_number
+                    or entry.get("name") != layout_policy.SWAP_SPAN_PARTLABEL
+                    or (entry.get("type") or "").lower() != layout_policy.LINUX_FS_TYPE_GUID.lower()
+                    or entry.get("start") != str(expected_start)
+                    or entry.get("size") != str(expected_size)
+                ):
+                    raise InstallerError(
+                        "io_benchmark_swap_span_geometry_mismatch: the span must replace exactly "
+                        "the planned tail swaps"
+                    )
 
     def _plan_swap_partitions(
         self,
@@ -2403,8 +2427,10 @@ MaxFileSec=1month
             ]
             if incomplete_swap:
                 raise InstallerError(
-                    "cannot safely retain or replace swap partition(s) with incomplete geometry: "
-                    + ", ".join(map(str, sorted(incomplete_swap)))
+                    self._swap_span_geometry_refusal(
+                        "cannot safely retain or replace swap partition(s) with incomplete geometry: "
+                        + ", ".join(map(str, sorted(incomplete_swap)))
+                    )
                 )
         spec = self._disk_spec()
         policy = self._root_policy()
@@ -2415,8 +2441,10 @@ MaxFileSec=1month
         ]
         if unknown_geometry:
             raise InstallerError(
-                "cannot safely resize root because partition geometry is missing for "
-                + ", ".join(map(str, sorted(unknown_geometry)))
+                self._swap_span_geometry_refusal(
+                    "cannot safely resize root because partition geometry is missing for "
+                    + ", ".join(map(str, sorted(unknown_geometry)))
+                )
             )
         overlapping_root = [
             number for number, entry in entries.items()
@@ -2427,17 +2455,25 @@ MaxFileSec=1month
         ]
         if overlapping_root:
             raise InstallerError(
-                "partition(s) overlap the current root extent "
-                f"({', '.join(map(str, sorted(overlapping_root)))}); refusing disk changes"
+                self._swap_span_geometry_refusal(
+                    "partition(s) overlap the current root extent "
+                    f"({', '.join(map(str, sorted(overlapping_root)))}); refusing disk changes"
+                )
             )
         unknown_after_root = [
             number for number, entry in entries.items()
             if number != self.root_number
             and not self._is_swap_partition(entry)
             and not self._is_data_partition(entry)
+            and not self._is_swap_span_partition(entry)
             and "start" in entry and int(entry["start"]) >= root_end
         ]
         if unknown_after_root:
+            if self.config.run_io_benchmark:
+                raise InstallerError(
+                    "io_benchmark_swap_span_state_mismatch: non-swap partition(s) follow root "
+                    f"({', '.join(map(str, sorted(unknown_after_root)))}); refusing to move or overwrite them"
+                )
             raise InstallerError(
                 "unsupported disk layout: non-swap partition(s) follow root "
                 f"({', '.join(map(str, sorted(unknown_after_root)))}); refusing to move or overwrite them"
@@ -2583,6 +2619,12 @@ MaxFileSec=1month
                 )
         return partitions, target_root_size
 
+    def _swap_span_geometry_refusal(self, message: str) -> str:
+        """Name malformed live geometry as a swap-span refusal when benchmarking."""
+        if self.config.run_io_benchmark:
+            return f"io_benchmark_swap_span_geometry_mismatch: {message}"
+        return message
+
     def _disk_spec(self) -> layout_policy.DiskSpec:
         """The only supported root/data/swap geometry plan."""
         try:
@@ -2667,6 +2709,11 @@ MaxFileSec=1month
         wanted = {(e.type_guid.lower(), e.partlabel) for e in self._disk_spec().entries()}
         return ((entry.get("type") or "").lower(), entry.get("name", "")) in wanted
 
+    @staticmethod
+    def _is_swap_span_partition(entry: dict[str, str]) -> bool:
+        """The temporary, unformatted GPT partition that occupies the planned tail-swap extent."""
+        return entry.get("name") == layout_policy.SWAP_SPAN_PARTLABEL
+
     def _pool_end(self, swap_partitions: list[tuple[int, int]]) -> int:
         """End of root/data/raw pool: first swap start or shared GPT-safe disk boundary."""
         if swap_partitions:
@@ -2676,9 +2723,7 @@ MaxFileSec=1month
         return layout_policy.pool_end(disk_sectors)
 
     def _planned_before_root(self) -> dict[int, dict[str, str]]:
-        """Partitions wholly before root (they keep their numbers); empty when no data area needs numbering."""
-        if not self._disk_spec().partition_count:
-            return {}
+        """Partitions wholly before root (they keep their numbers), even without a data area."""
         disk_sectors, root_start, root_size = self._disk_facts()
         before_root = self._partitions_before_root(
             self._live_partition_entries(disk_sectors, root_start, root_size), root_start
@@ -3054,7 +3099,13 @@ MaxFileSec=1month
             f"stopping before swap placement rather than guessing"
         )
 
-    def _write_sfdisk_plan(self, partitions: list[tuple[int, int]], new_root_size: int) -> str:
+    def _write_sfdisk_plan(
+        self,
+        partitions: list[tuple[int, int]],
+        new_root_size: int,
+        *,
+        tail_swap_span: bool = False,
+    ) -> str:
         prefix = self._partition_base
         if self.actions.dry_run:
             _disk_sectors, root_start, root_size = self._disk_facts()
@@ -3139,13 +3190,282 @@ MaxFileSec=1month
                 f"{prefix}{number} : start={start}, size={size}, type={data.type_guid}, "
                 f'name="{data.partlabel}"'
             )
-        for number, (start, size) in zip(
-            self._tail_swap_numbers(len(partitions), preserved_before_root), partitions
-        ):
-            lines.append(f"{prefix}{number} : start={start}, size={size}, type={SWAP_TYPE_GUID}")
+        swap_numbers = self._tail_swap_numbers(len(partitions), preserved_before_root)
+        if tail_swap_span and partitions:
+            if len(swap_numbers) != len(partitions):
+                raise InstallerError(
+                    "io_benchmark_swap_span_geometry_mismatch: no partition number for the planned tail span"
+                )
+            start = partitions[0][0]
+            end = partitions[-1][0] + partitions[-1][1]
+            if any(
+                next_start != previous_start + previous_size
+                for (previous_start, previous_size), (next_start, _next_size)
+                in zip(partitions, partitions[1:])
+            ):
+                raise InstallerError(
+                    "io_benchmark_swap_span_geometry_mismatch: planned tail swaps are not contiguous"
+                )
+            lines.append(
+                f'{prefix}{swap_numbers[0]} : start={start}, size={end - start}, '
+                f'type={layout_policy.LINUX_FS_TYPE_GUID}, name="{layout_policy.SWAP_SPAN_PARTLABEL}"'
+            )
+        else:
+            for number, (start, size) in zip(swap_numbers, partitions):
+                lines.append(f"{prefix}{number} : start={start}, size={size}, type={SWAP_TYPE_GUID}")
         return "\n".join(lines) + "\n"
 
-    def _apply_known_swap_shape(self) -> None:
+    def _planned_tail_swap_span(
+        self,
+        partitions: list[tuple[int, int]],
+        before_root: dict[int, dict[str, str]],
+    ) -> tuple[int, int, int] | None:
+        """Return (first swap number, start, full span size) for a contiguous tail."""
+        if not partitions:
+            return None
+        numbers = self._tail_swap_numbers(len(partitions), before_root)
+        if len(numbers) != len(partitions) or any(
+            next_start != previous_start + previous_size
+            for (previous_start, previous_size), (next_start, _next_size)
+            in zip(partitions, partitions[1:])
+        ):
+            raise InstallerError(
+                "io_benchmark_swap_span_geometry_mismatch: planned tail swaps are not one contiguous span"
+            )
+        start = partitions[0][0]
+        end = partitions[-1][0] + partitions[-1][1]
+        return numbers[0], start, end - start
+
+    def _validate_swap_span_table_replacement(
+        self,
+        current: dict[int, dict[str, str]],
+        partitions: list[tuple[int, int]],
+        before_root: dict[int, dict[str, str]],
+        new_root_size: int,
+        *,
+        allow_replaceable_tail_swaps: bool = False,
+    ) -> tuple[str, tuple[int, int, int]]:
+        """Accept only a fresh tail, the exact planned swaps, or their exact span replacement."""
+        expected_span = self._planned_tail_swap_span(partitions, before_root)
+        if expected_span is None:
+            raise InstallerError(
+                "io_benchmark_requires_tail_swap_span: the current plan has no tail swaps to benchmark"
+            )
+        span_number, span_start, span_size = expected_span
+        spans = [(number, entry) for number, entry in current.items() if self._is_swap_span_partition(entry)]
+        if len(spans) > 1:
+            raise InstallerError(
+                "io_benchmark_swap_span_state_mismatch: more than one vbpub-swap-span partition exists"
+            )
+        _disk_sectors, root_start, root_size = self._disk_facts()
+        root_end = root_start + root_size
+        actual_tail_swaps = {
+            number: entry for number, entry in current.items()
+            if number != self.root_number and self._is_swap_partition(entry)
+            and int(entry.get("start", "-1")) >= root_end
+        }
+        expected_tail_swaps = {
+            number: (start, size, SWAP_TYPE_GUID)
+            for number, (start, size) in zip(
+                self._tail_swap_numbers(len(partitions), before_root), partitions
+            )
+        }
+        actual_swap_shape = {
+            number: (
+                int(entry.get("start", "-1")),
+                int(entry.get("size", "-1")),
+                (entry.get("type") or "").lower(),
+            )
+            for number, entry in actual_tail_swaps.items()
+        }
+        expected_swap_shape = {
+            number: (start, size, type_guid.lower())
+            for number, (start, size, type_guid) in expected_tail_swaps.items()
+        }
+        replaced_numbers: set[int]
+        if spans:
+            number, entry = spans[0]
+            if (
+                number != span_number
+                or entry.get("start") != str(span_start)
+                or entry.get("size") != str(span_size)
+                or (entry.get("type") or "").lower() != layout_policy.LINUX_FS_TYPE_GUID.lower()
+                or actual_tail_swaps
+            ):
+                raise InstallerError(
+                    "io_benchmark_swap_span_geometry_mismatch: live span does not exactly replace "
+                    "the planned tail swaps"
+                )
+            shape = "span"
+            replaced_numbers = {number}
+        elif actual_swap_shape == expected_swap_shape:
+            shape = "swaps"
+            replaced_numbers = set(actual_tail_swaps)
+        else:
+            data_after_root = [
+                entry for number, entry in current.items()
+                if number != self.root_number and self._is_data_partition(entry)
+                and int(entry.get("start", "-1")) >= root_end
+            ]
+            if data_after_root or (actual_tail_swaps and not allow_replaceable_tail_swaps):
+                raise InstallerError(
+                    "io_benchmark_swap_span_state_mismatch: live tail is neither the planned swaps nor their exact span"
+                )
+            if actual_tail_swaps:
+                shape = "replaceable-swaps"
+                replaced_numbers = set(actual_tail_swaps)
+            else:
+                shape = "fresh"  # root and preserved pre-root entries exist
+                replaced_numbers = set()
+
+        span_end = span_start + span_size
+        for other_number, other in current.items():
+            if other_number in replaced_numbers or other_number == self.root_number:
+                continue
+            if "start" not in other or "size" not in other:
+                raise InstallerError(
+                    "io_benchmark_swap_span_geometry_mismatch: another partition has incomplete geometry"
+                )
+            other_start = int(other["start"])
+            other_end = other_start + int(other["size"])
+            if other_start < span_end and other_end > span_start:
+                raise InstallerError(
+                    "io_benchmark_swap_span_geometry_mismatch: another partition intersects the planned span"
+                )
+        if shape in {"swaps", "span"}:
+            current_root_size = int(current[self.root_number]["size"])
+            regular_plan = self._parse_partition_entries(
+                self._write_sfdisk_plan(partitions, min(new_root_size, current_root_size))
+            )
+            tail_numbers = set(self._tail_swap_numbers(len(partitions), before_root))
+            expected_unaffected = {
+                number: self._geometry_for_comparison(entry)
+                for number, entry in regular_plan.items()
+                if number not in tail_numbers
+            }
+            current_excluded = tail_numbers if shape == "swaps" else {span_number}
+            current_unaffected = {
+                number: self._geometry_for_comparison(entry)
+                for number, entry in current.items()
+                if number not in current_excluded
+            }
+            if current_unaffected != expected_unaffected:
+                raise InstallerError(
+                    "io_benchmark_swap_span_state_mismatch: non-tail partition geometry differs from the plan"
+                )
+        return shape, expected_span
+
+    def _assert_swap_span_partitions_quiescent(
+        self,
+        current: dict[int, dict[str, str]],
+        affected_numbers: Iterable[int],
+    ) -> None:
+        """Refuse a span conversion while any affected device is mounted, active, or foreign-signed."""
+        if self.actions.dry_run:
+            return
+        devices = {
+            f"{self._partition_base}{number}"
+            for number in set(affected_numbers)
+            if number in current and (
+                self._is_swap_partition(current[number])
+                or self._is_swap_span_partition(current[number])
+            )
+        }
+        if not devices:
+            return
+        mounted = self._run(
+            ["/usr/bin/findmnt", "-rn", "-o", "SOURCE,TARGET,FSTYPE"],
+            "verify affected swap-span partitions are not mounted",
+            dangerous=False,
+        )
+        for line in mounted.splitlines():
+            fields = line.split()
+            if fields and any(os.path.realpath(fields[0]) == os.path.realpath(device) for device in devices):
+                raise InstallerError(
+                    f"io_benchmark_swap_span_partition_in_use: refusing table conversion while {fields[0]} is mounted"
+                )
+        active = self._active_swap_sources()
+        for source in active:
+            if any(os.path.realpath(source) == os.path.realpath(device) for device in devices):
+                raise InstallerError(
+                    f"io_benchmark_swap_span_partition_in_use: refusing table conversion while {source} is in /proc/swaps"
+                )
+        for device in sorted(devices):
+            signature = self._blkid_value(device, "TYPE")
+            if signature and signature.lower() != "swap":
+                raise InstallerError(
+                    f"io_benchmark_swap_span_foreign_signature: refusing table conversion; {device} has {signature}"
+                )
+            partition_table = self._blkid_value(device, "PTTYPE")
+            if partition_table:
+                raise InstallerError(
+                    "io_benchmark_swap_span_foreign_signature: refusing table conversion; "
+                    f"{device} contains a nested {partition_table} partition table"
+                )
+
+    @staticmethod
+    def _swap_span_extent_recovery(disk_device: str, offset_bytes: int, size_bytes: int) -> str:
+        """Operator recovery bound to one disk extent; the planned partition may not exist."""
+        return (
+            f"manual recovery (never run `wipefs -a` on {disk_device}: it erases the disk's partition table): "
+            "preserve any needed data in this extent; attach only the extent with "
+            f"`losetup --find --show --offset {offset_bytes} --sizelimit {size_bytes} {disk_device}` "
+            "(it prints a /dev/loopN); list its signatures, which changes nothing, with `wipefs /dev/loopN`; "
+            "only then erase them on that loop device with `wipefs -a /dev/loopN`; "
+            "detach it with `losetup -d /dev/loopN`; resume"
+        )
+
+    def _probe_swap_span_extent(self, start: int, size: int) -> None:
+        """Read-only low-level signature probe over the planned disk extent."""
+        if self.actions.dry_run:
+            return
+        disk_device = f"/dev/{self.root_disk}"
+        offset_bytes = start * 512
+        size_bytes = size * 512
+        try:
+            output = self._run(
+                [
+                    "/usr/sbin/blkid", "-p", "-o", "export",
+                    "-O", str(offset_bytes), "-S", str(size_bytes), disk_device,
+                ],
+                "probe the planned swap-span extent for existing signatures",
+                dangerous=False,
+            )
+        except ActionError as exc:
+            if "action failed (2)" in str(exc):
+                return
+            raise InstallerError(
+                f"cannot probe planned swap-span extent on {disk_device} bytes "
+                f"{offset_bytes}-{offset_bytes + size_bytes - 1}: {exc}; "
+                f"{self._swap_span_extent_recovery(disk_device, offset_bytes, size_bytes)}"
+            ) from exc
+        tags = {
+            key: value
+            for line in output.splitlines()
+            if "=" in line
+            for key, _separator, value in (line.partition("="),)
+        }
+        signature = tags.get("TYPE", "")
+        partition_table = tags.get("PTTYPE", "")
+        if (signature and signature.lower() != "swap") or partition_table:
+            detail = ", ".join(
+                f"{key}={value}"
+                for key, value in (("TYPE", signature), ("PTTYPE", partition_table))
+                if value
+            )
+            raise InstallerError(
+                "io_benchmark_swap_span_foreign_signature: refusing to write the span over "
+                f"{disk_device} bytes {offset_bytes}-{offset_bytes + size_bytes - 1} ({detail}); "
+                f"{self._swap_span_extent_recovery(disk_device, offset_bytes, size_bytes)}"
+            )
+
+    def _apply_known_swap_shape(
+        self,
+        *,
+        tail_swap_span: bool = False,
+        record_in_dry_run: bool = False,
+        allow_replaceable_tail_swaps: bool = False,
+    ) -> None:
         partitions, new_root_size = self._plan_swap_partitions()
         _disk_sectors, _root_start, current_root_size = self._disk_facts()
         if not self.actions.dry_run and new_root_size < current_root_size:
@@ -3157,30 +3477,107 @@ MaxFileSec=1month
         # through an exact per-partition sfdisk update. Never publish a larger mounted-root partition in
         # this raw full-table write.
         write_root_size = min(new_root_size, current_root_size)
-        preflight = self._preflight_disk_transaction()
         if self.actions.dry_run:
             _disk_sectors, root_start, root_size = self._disk_facts()
             current_dump = self._current_partition_dump(root_start, current_root_size)
         else:
             current_dump = self._run(["/usr/sbin/sfdisk", "--dump", f"/dev/{self.root_disk}"], dangerous=False)
         current_entries = self._parse_partition_entries(current_dump)
-        plan_text = self._write_sfdisk_plan(partitions, write_root_size)
+        before_root = self._partitions_before_root(
+            current_entries, int(current_entries[self.root_number]["start"])
+        )
+        current_has_span = any(self._is_swap_span_partition(entry) for entry in current_entries.values())
+        expected_swap_span = None
+        if current_has_span and not tail_swap_span and not self.config.run_io_benchmark:
+            raise InstallerError(
+                "io_benchmark_swap_span_state_mismatch: a temporary span exists while benchmarking is disabled"
+            )
+        if tail_swap_span or current_has_span:
+            _current_shape, expected_swap_span = self._validate_swap_span_table_replacement(
+                current_entries,
+                partitions,
+                before_root,
+                new_root_size,
+                allow_replaceable_tail_swaps=allow_replaceable_tail_swaps,
+            )
+            affected_numbers = self._tail_swap_numbers(len(partitions), before_root)
+            current_root_end = int(current_entries[self.root_number]["start"]) + int(
+                current_entries[self.root_number]["size"]
+            )
+            affected_numbers.extend(
+                number for number, entry in current_entries.items()
+                if self._is_swap_partition(entry)
+                and int(entry.get("start", "-1")) >= current_root_end
+            )
+            if expected_swap_span:
+                affected_numbers.append(expected_swap_span[0])
+            if tail_swap_span and not current_has_span and expected_swap_span:
+                self._probe_swap_span_extent(*expected_swap_span[1:])
+            self._assert_swap_span_partitions_quiescent(current_entries, affected_numbers)
+        # Check the affected devices first so a mounted, active or foreign-signed
+        # swap/span gets the specific refusal below instead of the broader disk
+        # transaction mount diagnostic. The full disk preflight still runs before
+        # any backup or table write.
+        preflight = self._preflight_disk_transaction()
+        plan_text = self._write_sfdisk_plan(
+            partitions, write_root_size, tail_swap_span=tail_swap_span
+        )
         plan_entries = self._parse_partition_entries(plan_text)
-        self._validate_plan_geometry(current_entries, plan_entries, write_root_size)
+        self._validate_plan_geometry(
+            current_entries,
+            plan_entries,
+            write_root_size,
+            allow_swap_span=tail_swap_span or current_has_span,
+            expected_swap_span=expected_swap_span,
+        )
         backup_dir = Path(self.config.state_dir) / "backups"
-        timestamp = int(time.time())
+        timestamp = time.time_ns()
         backup_name = f"ptable-{timestamp}.sfdisk"
         checksum_name = f"{backup_name}.sha256"
-        plan_path = str(Path(self.config.state_dir) / "partition-plan.sfdisk")
+        plan_name = "partition-plan-iobench-span.sfdisk" if tail_swap_span else "partition-plan.sfdisk"
+        plan_path = str(Path(self.config.state_dir) / plan_name)
         if self.actions.dry_run:
             self.actions.write_file(plan_path, plan_text)
+            old_numbers = {
+                number for number, entry in current_entries.items()
+                if self._is_swap_partition(entry) or self._is_data_partition(entry)
+                or self._is_swap_span_partition(entry)
+            }
+            new_numbers = {
+                number for number, entry in plan_entries.items()
+                if self._is_swap_partition(entry) or self._is_data_partition(entry)
+                or self._is_swap_span_partition(entry)
+            }
+            changed_numbers = {
+                number for number in old_numbers & new_numbers
+                if self._geometry_for_comparison(
+                    current_entries[number], include_name=tail_swap_span or current_has_span
+                ) != self._geometry_for_comparison(
+                    plan_entries[number], include_name=tail_swap_span or current_has_span
+                )
+            }
+            if tail_swap_span or record_in_dry_run:
+                self._write_and_verify_partition_plan(
+                    current_dump=current_dump,
+                    plan_text=plan_text,
+                    plan_entries=plan_entries,
+                    new_numbers=new_numbers - old_numbers,
+                    delete_numbers=old_numbers - new_numbers,
+                    update_numbers=changed_numbers,
+                    backup_path=str(backup_dir / backup_name),
+                    record_in_dry_run=True,
+                )
         else:
             current_geometry = {
-                number: self._geometry_for_comparison(entry)
+                number: self._geometry_for_comparison(
+                    entry, include_name=tail_swap_span or current_has_span
+                )
                 for number, entry in current_entries.items()
             }
             plan_geometry = {
-                number: self._geometry_for_comparison(entry)
+                number: self._geometry_for_comparison(
+                    entry, include_name=tail_swap_span or current_has_span
+                )
                 for number, entry in plan_entries.items()
             }
             if current_geometry != plan_geometry:
@@ -3192,15 +3589,20 @@ MaxFileSec=1month
                 old_numbers = {
                     number for number, entry in current_entries.items()
                     if self._is_swap_partition(entry) or self._is_data_partition(entry)
+                    or self._is_swap_span_partition(entry)
                 }
                 new_numbers = {
                     number for number, entry in plan_entries.items()
                     if self._is_swap_partition(entry) or self._is_data_partition(entry)
+                    or self._is_swap_span_partition(entry)
                 }
                 changed_numbers = {
                     number for number in old_numbers & new_numbers
-                    if self._geometry_for_comparison(current_entries[number])
-                    != self._geometry_for_comparison(plan_entries[number])
+                    if self._geometry_for_comparison(
+                        current_entries[number], include_name=tail_swap_span or current_has_span
+                    ) != self._geometry_for_comparison(
+                        plan_entries[number], include_name=tail_swap_span or current_has_span
+                    )
                 }
                 self._write_and_verify_partition_plan(
                     current_dump=current_dump,
@@ -3268,9 +3670,10 @@ MaxFileSec=1month
     ) -> None:
         """Forward sfdisk write + partx -a + udevadm settle + readback verify.
 
-        Shared by _apply_known_swap_shape() for the final planned pool and
-        swap entries, so there is exactly ONE raw-sfdisk write path. On a readback
-        mismatch it restores ``current_dump`` through _restore_partition_table()
+        Shared by _apply_known_swap_shape() for the planned pool, tail-swap
+        span, and regular swap entries, so there is exactly ONE raw-sfdisk
+        write path. On a readback mismatch it restores ``current_dump`` through
+        _restore_partition_table()
         and raises. Extracted verbatim from _apply_known_swap_shape(); the
         live-bug annotations below belong to that original block.
 
@@ -3485,8 +3888,8 @@ MaxFileSec=1month
         self._run(["/usr/bin/udevadm", "settle"], "wait for udev after rollback")
 
     # ------------------------------------------------------------------
-    # Installer benchmark: iobench uses the planned raw partition in place.
-    # It is never formatted, mounted, added temporarily, or removed.
+    # Installer benchmark: iobench temporarily uses the full tail-swap span.
+    # The stage-two transaction later wipes it and restores the regular swaps.
     # ------------------------------------------------------------------
 
     def _current_partition_dump(self, root_start: int, root_size: int) -> str:
@@ -3632,47 +4035,104 @@ MaxFileSec=1month
         except OSError:
             return "unknown"
 
-    def _raw_iobench_partition(self) -> tuple[int, int, int, str]:
-        """Resolve the raw benchmark partition from the plan and verify its PARTLABEL."""
-        spec = self._disk_spec()
-        if spec.iobench_raw_gb is None:
-            raise InstallerError("run_io_benchmark requires the planned iobench raw partition")
-        entries = spec.entries()
-        raw_index = next((i for i, item in enumerate(entries) if item.partlabel == layout_policy.IOBENCH_PARTLABEL), None)
-        if raw_index is None:
-            raise InstallerError("the disk plan has no iobench raw partition")
-        live: dict[int, dict[str, str]] | None = None
+    def _swap_span_partition(self) -> tuple[int, int, int, str, str]:
+        """Resolve the exact temporary span entry and its nonblank PARTUUID."""
+        partitions, _target_root = self._plan_swap_partitions()
+        before_root = self._planned_before_root()
+        expected = self._planned_tail_swap_span(partitions, before_root)
+        if expected is None:
+            raise InstallerError(
+                "io_benchmark_requires_tail_swap_span: the plan has no end-of-disk swap span"
+            )
+        number, start, size = expected
+        device = f"{self._partition_base}{number}"
+        if self.actions.dry_run:
+            return number, start, size, device, "dry-run"
+        disk_sectors, root_start, root_size = self._disk_facts()
+        live = self._live_partition_entries(disk_sectors, root_start, root_size)
+        labelled = [
+            (part_number, entry) for part_number, entry in live.items()
+            if entry.get("name") == layout_policy.SWAP_SPAN_PARTLABEL
+        ]
+        if len(labelled) != 1:
+            raise InstallerError(
+                "io_benchmark_swap_span_identity_mismatch: expected exactly one partition with "
+                f"PARTLABEL={layout_policy.SWAP_SPAN_PARTLABEL}; found {len(labelled)}"
+            )
+        actual_number, entry = labelled[0]
+        if (
+            actual_number != number
+            or (entry.get("type") or "").lower() != layout_policy.LINUX_FS_TYPE_GUID.lower()
+            or entry.get("start") != str(start)
+            or entry.get("size") != str(size)
+        ):
+            raise InstallerError(
+                "io_benchmark_swap_span_identity_mismatch: live partition does not match the planned "
+                f"number, Linux type, start and size for {device}"
+            )
+        end = start + size
+        for other_number, other in live.items():
+            if other_number == number:
+                continue
+            if "start" not in other or "size" not in other:
+                raise InstallerError(
+                    "io_benchmark_swap_span_geometry_mismatch: another partition has incomplete geometry"
+                )
+            other_start = int(other["start"])
+            other_end = other_start + int(other["size"])
+            if other_start < end and other_end > start:
+                raise InstallerError(
+                    "io_benchmark_swap_span_geometry_mismatch: another partition intersects the planned span"
+                )
+        partuuid = self._run(
+            ["/usr/sbin/blkid", "-s", "PARTUUID", "-o", "value", device],
+            "read the temporary swap-span PARTUUID",
+            dangerous=False,
+        ).strip()
+        if not partuuid:
+            raise InstallerError(
+                f"io_benchmark_swap_span_identity_mismatch: planned span {device} has no PARTUUID"
+            )
+        return number, start, size, device, partuuid
+
+    @staticmethod
+    def _swap_span_detail_identity(detail: str) -> tuple[str, int, int] | None:
+        match = re.search(r"PARTUUID=([^\s;]+) start=(\d+) size=(\d+)", detail)
+        if not match:
+            return None
+        return match.group(1), int(match.group(2)), int(match.group(3))
+
+    def _wipe_swap_span(self) -> None:
+        """Erase filesystem signatures only after the runner has finished or warned."""
+        number, start, size, device, partuuid = self._swap_span_partition()
+        step = self.state.load().get("steps", {}).get("io_benchmark", {})
+        status = step.get("status")
+        if not self.actions.dry_run and status not in IOBENCH_FINAL_STATUSES:
+            raise InstallerError(
+                "io_benchmark_swap_span_resume_state: refusing to wipe before the benchmark step is final"
+            )
+        recorded = self._swap_span_detail_identity(str(step.get("detail", "")))
+        if not self.actions.dry_run and recorded != (partuuid, start, size):
+            raise InstallerError(
+                "io_benchmark_swap_span_identity_changed: the live span identity differs from the benchmark record"
+            )
+        live = None
         if not self.actions.dry_run:
             disk_sectors, root_start, root_size = self._disk_facts()
             live = self._live_partition_entries(disk_sectors, root_start, root_size)
-            labelled = [entry for entry in live.values() if entry.get("name") == layout_policy.IOBENCH_PARTLABEL]
-            if len(labelled) != 1:
-                raise InstallerError(
-                    f"expected exactly one disk partition with PARTLABEL={layout_policy.IOBENCH_PARTLABEL}; "
-                    f"found {len(labelled)}"
-                )
-        partitions, _target_root = self._plan_swap_partitions()
-        before_root = self._planned_before_root()
-        geometry = self._data_area_layout(partitions, before_root)
-        numbers = self._tail_numbers(spec.partition_count, before_root)
-        if raw_index >= len(geometry) or raw_index >= len(numbers):
-            raise InstallerError("the iobench raw partition is outside the resolved plan")
-        number = numbers[raw_index]
-        _planned_number, start, size = geometry[raw_index]
-        device = f"{self._partition_base}{number}"
+        affected = [number]
         if live is not None:
-            entry = live.get(number, {})
-            if (
-                entry.get("name") != layout_policy.IOBENCH_PARTLABEL
-                or (entry.get("type") or "").lower() != layout_policy.LINUX_FS_TYPE_GUID.lower()
-                or entry.get("start") != str(start)
-                or entry.get("size") != str(size)
-            ):
-                raise InstallerError(
-                    f"planned raw benchmark partition {device} does not match PARTLABEL="
-                    f"{layout_policy.IOBENCH_PARTLABEL} and its expected geometry"
-                )
-        return number, start, size, device
+            affected.extend(
+                part_number for part_number, entry in live.items()
+                if self._is_swap_partition(entry)
+                and int(entry.get("start", "-1")) >= root_start + root_size
+            )
+        self._assert_swap_span_partitions_quiescent(live or {}, affected)
+        self._run(
+            ["/usr/sbin/wipefs", "-a", device],
+            f"wipe benchmark signatures from temporary swap span {device}",
+            dangerous=True,
+        )
 
     @staticmethod
     def _format_iocost_summary(results: dict[str, int]) -> str:
@@ -3686,8 +4146,15 @@ MaxFileSec=1month
         """One iobench state directory per rung: a rung never reuses another rung's record."""
         return Path(self.config.state_dir) / "iobench" / self.config.io_benchmark_profile
 
+    def _unreapable_iobench_recovery(self) -> str:
+        return (
+            "operator recovery: reboot, confirm no iobench-install-runner or fio child remains, "
+            f"then set steps.io_benchmark.status to 'warned' in {Path(self.config.state_dir) / 'state.json'} "
+            "and resume; this skips io.cost calibration and restores the planned swaps"
+        )
+
     def _run_io_benchmark(self) -> None:
-        """Run the configured iobench rung on the planned, unformatted raw partition."""
+        """Run the configured iobench rung on the unformatted temporary tail-swap span."""
         if not self.config.run_io_benchmark:
             return
         profile = self.config.io_benchmark_profile
@@ -3695,37 +4162,73 @@ MaxFileSec=1month
         previous = state.get("steps", {}).get("io_benchmark")
         if previous and previous.get("status") in IOBENCH_FINAL_STATUSES:
             return
-        _number, _start, size, device = self._raw_iobench_partition()
+        partitions, _target_root = self._plan_swap_partitions()
+        if not partitions:
+            self._mark_step(
+                "io_benchmark", "warned",
+                "no_tail_swap_span: all configured swap capacity is retained before root",
+            )
+            return
+        number, start, size, device, partuuid = self._swap_span_partition()
         size_gib = size * 512 / GIB
+        identity = (
+            f"PARTLABEL={layout_policy.SWAP_SPAN_PARTLABEL} {device} PARTUUID={partuuid} "
+            f"start={start} size={size} sectors profile={profile}"
+        )
+        disk_sectors, root_start, root_size = self._disk_facts()
+        live = self._live_partition_entries(disk_sectors, root_start, root_size)
+        before_root = self._partitions_before_root(live, root_start)
+        expected_span = self._planned_tail_swap_span(partitions, before_root)
+        if expected_span is None or number != expected_span[0]:
+            raise InstallerError(
+                "io_benchmark_swap_span_geometry_mismatch: benchmark target is outside the planned tail span"
+            )
+        affected = self._tail_swap_numbers(len(partitions), before_root)
+        affected.append(number)
+        try:
+            self._assert_swap_span_partitions_quiescent(live, affected)
+        except InstallerError as exc:
+            detail = str(exc)
+            self._mark_step("io_benchmark", "failed", f"{identity}; {detail}")
+            raise
         self._mark_step(
             "io_benchmark", "started",
-            f"PARTLABEL={layout_policy.IOBENCH_PARTLABEL} {device} profile={profile}",
+            identity,
         )
         try:
-            if not self.actions.dry_run:
-                mounted = self._run(
-                    ["/usr/bin/findmnt", "-rn", "-o", "SOURCE,TARGET,FSTYPE"],
-                    "verify the raw benchmark partition is not mounted",
-                    dangerous=False,
-                )
-                if any(line.split() and os.path.realpath(line.split()[0]) == os.path.realpath(device)
-                       for line in mounted.splitlines()):
-                    raise InstallerError(f"refusing to wipe mounted raw benchmark partition {device}")
-                if device in self._active_swap_sources():
-                    raise InstallerError(f"refusing to wipe active swap partition {device}")
             self._packages(["fio"], "io_benchmark")
-            self._run(
-                ["/usr/sbin/wipefs", "-a", device],
-                f"wipe signatures from planned raw benchmark partition {device}",
-                dangerous=True,
+        except ActionUnreapable as exc:
+            detail = (
+                f"fio package installation could not be reaped: {exc}; the span is not wiped and "
+                "the iobench runner has not started; operator recovery: wait for apt/dpkg to exit "
+                "or reboot, then resume stage two"
             )
-            partuuid = (
-                "00000000-0000-0000-0000-000000000000"
-                if self.actions.dry_run
-                else self._run(["/usr/sbin/blkid", "-s", "PARTUUID", "-o", "value", device])
+            self._mark_step("io_benchmark_packages", "failed", detail)
+            raise InstallerError(detail) from exc
+        except Exception as exc:
+            detail = (
+                f"{identity}; iobench {profile} failed (advisory): {str(exc).splitlines()[0][:400]}; "
+                f"{self._write_advisory_log('io_benchmark', exc)}"
             )
-            if not partuuid:
-                raise InstallerError(f"planned raw benchmark partition has no PARTUUID: {device}")
+            self._mark_step("io_benchmark", "warned", detail)
+            if not self.config.telegram_verbose_progress:
+                self._notify(f"<b>io benchmark</b>: {_code(detail)}", event=detail, status="run")
+            return
+
+        verified = self._swap_span_partition()
+        if verified != (number, start, size, device, partuuid):
+            raise InstallerError(
+                "io_benchmark_swap_span_identity_changed: the live span changed during fio package setup"
+            )
+        disk_sectors, root_start, root_size = self._disk_facts()
+        live = self._live_partition_entries(disk_sectors, root_start, root_size)
+        self._assert_swap_span_partitions_quiescent(live, affected)
+        self._run(
+            ["/usr/sbin/wipefs", "-a", device],
+            f"clear blank-or-swap signatures from temporary span before iobench {device}",
+            dangerous=True,
+        )
+        try:
             runner = Path(__file__).resolve().parents[1] / "tools" / "iobench-install-runner"
             self._run(
                 [
@@ -3743,7 +4246,7 @@ MaxFileSec=1month
             )
             if self.actions.dry_run:
                 summary = (
-                    f"dry-run: would run iobench {profile} on {device} "
+                    f"{identity}; dry-run would run iobench {profile} on {device} "
                     f"({size_gib:.1f} GiB, outer timeout {IO_BENCHMARK_OUTER_TIMEOUT_S[profile]} s)"
                 )
                 self._mark_step("io_benchmark", "planned", summary)
@@ -3757,17 +4260,23 @@ MaxFileSec=1month
                     f"iobench {profile} produced no usable io.cost coefficient(s): "
                     f"{', '.join(missing)} missing or invalid; io.cost stays unconfigured"
                 )
-            summary = f"{self._format_iocost_summary(results)} on {device} ({size_gib:.1f} GiB, iobench {profile})"
+            summary = (
+                f"{identity}; {self._format_iocost_summary(results)} on {device} "
+                f"({size_gib:.1f} GiB, iobench {profile})"
+            )
             self._mark_step("io_benchmark", "success", summary)
             if not self.config.telegram_verbose_progress:
                 self._notify(f"<b>io benchmark</b>: {summary}", event=f"io benchmark: {summary}", status="ok")
         except ActionUnreapable as exc:
-            detail = f"iobench could not be reaped; raw partition {device} may still be in use: {exc}"
+            detail = (
+                f"{identity}; iobench could not be reaped; span {device} may still be in use: {exc}; "
+                f"{self._unreapable_iobench_recovery()}"
+            )
             self._mark_step("io_benchmark", "failed", detail)
             raise InstallerError(detail) from exc
         except Exception as exc:
             detail = (
-                f"iobench {profile} failed (advisory): {str(exc).splitlines()[0][:400]}; "
+                f"{identity}; iobench {profile} failed (advisory): {str(exc).splitlines()[0][:400]}; "
                 f"{self._write_advisory_log('io_benchmark', exc)}"
             )
             self._mark_step("io_benchmark", "warned", detail)
@@ -4101,7 +4610,8 @@ MaxFileSec=1month
                 and line.split()[1] in wanted
             )
         ]
-        self.actions.write_file("/etc/fstab", "\n".join(retained + entries + [""]), 0o644)
+        safe_rows = [self._swap_fstab_entry(line) for line in [*retained, *entries]]
+        self.actions.write_file("/etc/fstab", "\n".join(safe_rows + [""]), 0o644)
         self._run(["/usr/bin/systemctl", "daemon-reload"], "reload fstab-generated units")
         for volume in area.volumes:
             mount = volume.mount or ""
@@ -4238,7 +4748,8 @@ MaxFileSec=1month
             if not (line.strip() and not line.lstrip().startswith("#") and len(line.split()) >= 2 and line.split()[1] in wanted)
         ]
         entries = [self._data_mount_entry(source, mount, fs) for source, mount, fs in mounts]
-        self.actions.write_file("/etc/fstab", "\n".join(retained + entries + [""]), 0o644)
+        safe_rows = [self._swap_fstab_entry(line) for line in [*retained, *entries]]
+        self.actions.write_file("/etc/fstab", "\n".join(safe_rows + [""]), 0o644)
         self._run(["/usr/bin/systemctl", "daemon-reload"], "reload fstab-generated units")
         for _source, mount, _fs in mounts:
             self._run(["/usr/bin/mkdir", "-p", mount], f"create {mount}")
@@ -4402,7 +4913,7 @@ MaxFileSec=1month
         disk_sectors, root_start, root_size = self._disk_facts()
         current_dump = self._current_partition_dump(root_start, root_size)
         preflight = self._preflight_disk_transaction()
-        timestamp = int(time.time())
+        timestamp = time.time_ns()
         backup_dir = Path(self.config.state_dir) / "backups"
         backup_name = f"ptable-{timestamp}.sfdisk"
         checksum_name = f"{backup_name}.sha256"
@@ -4623,8 +5134,22 @@ MaxFileSec=1month
             line for line in existing_lines
             if not (line.strip() and len(line.split()) >= 3 and line.split()[2].lower() == "swap")
         ]
-        content = "\n".join(retained + entries + [""])
+        safe_rows = [self._swap_fstab_entry(line) for line in [*retained, *entries]]
+        content = "\n".join(safe_rows + [""])
         self.actions.write_file("/etc/fstab", content, 0o644)
+
+    @staticmethod
+    def _swap_fstab_entry(entry: str) -> str:
+        """Make installer-written swap rows non-fatal while a later table write is recovered."""
+        fields = entry.split()
+        if len(fields) < 4 or fields[2].lower() != "swap":
+            return entry
+        options = fields[3].split(",")
+        for required in ("nofail", "x-systemd.device-timeout=5s"):
+            if required not in options:
+                options.append(required)
+        fields[3] = ",".join(options)
+        return " ".join(fields)
 
     def _install_stage2(self) -> None:
         python = shutil.which("python3") or "/usr/bin/python3"
@@ -5291,6 +5816,81 @@ MaxFileSec=1month
         )
         self.actions.write_file("/etc/growroot-disabled", "")
 
+    def _prepare_swap_span_benchmark(self) -> None:
+        """Resume from the live table and leave the regular planned swaps installed."""
+        partitions, _target_root_size = self._plan_swap_partitions()
+        if not partitions:
+            disk_sectors, root_start, root_size = self._disk_facts()
+            live = self._live_partition_entries(disk_sectors, root_start, root_size)
+            if any(self._is_swap_span_partition(entry) for entry in live.values()):
+                raise InstallerError(
+                    "io_benchmark_swap_span_state_mismatch: a span exists but the plan has no tail swaps"
+                )
+            if any(
+                self._is_swap_partition(entry) and int(entry.get("start", "-1")) >= root_start + root_size
+                for entry in live.values()
+            ):
+                raise InstallerError(
+                    "io_benchmark_swap_span_state_mismatch: tail swaps exist but the plan has no tail span"
+                )
+            if not self._swap_partitions_already_planned_in_table():
+                self._apply_known_swap_shape()
+            self._mark_step(
+                "io_benchmark", "warned",
+                "no_tail_swap_span: all configured swap capacity is retained before root",
+            )
+            return
+
+        disk_sectors, root_start, root_size = self._disk_facts()
+        live = self._live_partition_entries(disk_sectors, root_start, root_size)
+        before_root = self._partitions_before_root(live, root_start)
+        step = self.state.load().get("steps", {}).get("io_benchmark", {})
+        if step.get("status") == "failed" and "iobench could not be reaped" in str(step.get("detail", "")):
+            raise InstallerError(
+                "io_benchmark_unreapable_span: prior runner could not be reaped; preserving the live span; "
+                f"{self._unreapable_iobench_recovery()}"
+            )
+        shape, _expected_span = self._validate_swap_span_table_replacement(
+            live,
+            partitions,
+            before_root,
+            _target_root_size,
+            allow_replaceable_tail_swaps=not bool(step),
+        )
+        final = step.get("status") in IOBENCH_FINAL_STATUSES
+
+        if self.actions.dry_run:
+            self._apply_known_swap_shape(tail_swap_span=True)
+            self._run_io_benchmark()
+            self._wipe_swap_span()
+            self._apply_known_swap_shape(record_in_dry_run=True)
+            return
+
+        if shape == "swaps":
+            if final:
+                return
+            self._apply_known_swap_shape(tail_swap_span=True)
+        elif shape == "replaceable-swaps":
+            self._apply_known_swap_shape(
+                tail_swap_span=True,
+                allow_replaceable_tail_swaps=True,
+            )
+        elif shape == "fresh":
+            if final:
+                raise InstallerError(
+                    "io_benchmark_swap_span_resume_state: a final benchmark has no matching span or swap table"
+                )
+            self._apply_known_swap_shape(tail_swap_span=True)
+        elif shape != "span":
+            raise InstallerError(
+                "io_benchmark_swap_span_state_mismatch: unsupported live partition-table state"
+            )
+
+        if not final:
+            self._run_io_benchmark()
+        self._wipe_swap_span()
+        self._apply_known_swap_shape()
+
     def _stage2(self) -> None:
         if self._is_btrfs_root():
             self._stage2_btrfs()
@@ -5325,12 +5925,13 @@ MaxFileSec=1month
             self._configure_fstrim()
         if self.config.run_auto_reboot:
             self._configure_auto_reboot()
-        if not swap_partitions_already_written:
+        if self.config.run_io_benchmark:
+            self._prepare_swap_span_benchmark()
+        elif not swap_partitions_already_written:
             self._apply_known_swap_shape()
         self._ensure_disk_transaction_manifest()
-        # Run against the final, already-planned raw partition before any data
-        # volume or swap partition is formatted or activated.
-        self._run_io_benchmark()
+        if not self.config.run_io_benchmark:
+            self._run_io_benchmark()
         # The iocost model consumes the coefficients produced by the install
         # benchmark. Configure it only after that result is available.
         self._configure_iocost()
@@ -5387,7 +5988,7 @@ MaxFileSec=1month
             self._configure_auto_reboot()
         self._mark_step(
             "io_benchmark", "skipped",
-            "iobench_raw_unavailable_on_btrfs: no raw iobench partition; Q-A import is pending",
+            "iobench_raw_unavailable_on_btrfs: no supported temporary benchmark span on btrfs; Q-A import is pending",
         )
         self._configure_iocost()
         self._mark_step(

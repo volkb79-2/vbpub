@@ -51,10 +51,8 @@ def make_case_b_installer(tmp_path: Path, **config_overrides) -> tuple[Installer
         "auto_reboot_after_stage1": False,
         "swap_disk_total_gb": 32,
         "swap_partition_count": 8,
-        # This fixture exercises a 50 GiB shrink plan with 32 GiB swap; the
-        # benchmark partition is explicitly disabled to leave that test shape
-        # physically feasible.
-        "partitioning": {"iobench_raw_gb": False},
+        # This fixture exercises a 50 GiB shrink plan with 32 GiB swap.
+        "partitioning": {},
     }
     defaults.update(config_overrides)
     config = Config(

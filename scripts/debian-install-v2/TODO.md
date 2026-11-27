@@ -1,20 +1,22 @@
 <!-- Evidence scrub 2026-11-10: environment-specific host identities, addresses, controller paths, and key material were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 # debian-install-v2 — TODO / backlog
 
-## OPEN (IC-M1a follow-ups, 2026-11-24): btrfs swap, raw benchmark import, and integration
+## OPEN (IC-M1a follow-ups, 2026-11-24): btrfs swap, installed-host re-benchmark, and integration
 
 **Status:** open by the IC-M1a package split; no host or VM work belongs here.
 
-- WP-10 P3 owns swap on btrfs. The operator decision supersedes C6's `@swap`
-  swapfile and C9's btrfs swap row: the end-of-disk span is first one
-  unformatted raw partition for iobench, then regular swap partitions; a re-bench
-  frees the span and reinstates the swaps. Until P3, a btrfs config must use
-  `swap_policy: off` and `swap_partition_count: 0`, otherwise v2 refuses with
-  `btrfs_swap_needs_p3`.
-- Q-A option (c) owns import of the raw benchmark result into io.cost. Until it
-  lands, a btrfs root has no `iobench-raw` partition and v2 records the
-  benchmark and io.cost as skipped (`iobench_raw_unavailable_on_btrfs` /
-  `iocost_not_configured_btrfs`).
+- WP-10 P3 implements the ext4 install-time span transaction: one temporary
+  `vbpub-swap-span` partition replaces the contiguous tail swaps for iobench,
+  then the markers are wiped and the regular swaps are restored. It creates no
+  permanent `iobench-raw` partition or `@swap` swapfile. Its resume table and
+  refusal rules are in `IO-BENCHMARK-DESIGN.md`.
+- Btrfs swap remains open: a btrfs config must use `swap_policy: off` and
+  `swap_partition_count: 0`; otherwise v2 refuses with `btrfs_swap_needs_p3`.
+- Btrfs benchmark support remains open. Planning retains
+  `btrfs_iobench_raw_unavailable`, and stage two records
+  `iobench_raw_unavailable_on_btrfs`; io.cost stays unconfigured there.
+- Re-benchmarking an installed ext4 host remains open. The existing
+  `tools/swap-bench-window.sh` behavior is unchanged by WP-10 P3.
 - IC-M1b owns the dr first-boot hook/bundle handoff, the ISO netcup console
   option, and `/.top` mode 0700. IC-M1c owns the `r1-vm-iso-btrfs` lane and the
   runner's btrfs CoW mount/acceptance. IC-M1a must not add those files or claim
@@ -219,11 +221,11 @@ today. Closing it needs a decision between a host-independent value and a
 host-accurate one; the current over-reservation (5 MiB) is inside the bound, so
 this is not urgent.
 
-## OPEN (div2-data-area-v2, 2026-11-05): explicit `partitioning` plan
+## DONE (div2-data-area-v2, updated by WP-10 P3): explicit `partitioning` plan
 
 Replaces the predecessor rule-sized layout and separate root-cap setting with
-one whole-disk `partitioning` plan. It reserves an 8 GiB raw `iobench-raw`
-partition by default, numbers partitions by physical order, and refuses
+one whole-disk `partitioning` plan. It has no permanent benchmark partition,
+numbers partitions by physical order, and refuses
 unaccounted plans. See README "Disk layout" and
 `docs/DESIGN-data-area-v2.md`. Unit tests cover the current planner; the
 `r1-vm-real-commit` lane remains the real-disk-image validation and was not run
@@ -254,7 +256,7 @@ mdt-cockpit `mdt-io-baseline.py` and
 `IO_BASELINE_ROTATIONAL_FLAG=ignore` for a fast virtio disk). NOT done (too large, touches the vendored patch series and the sha256): redesign the
 generator to use `--fsync`/`--end_fsync` for writes, a working set larger than the cache the host can
 see, and a steady-state tail measurement (ramp then measure only the last N seconds), recorded in the
-output. Installer benchmarking now uses iobench `veryquick` against the planned raw partition and
+output. Installer benchmarking uses the configured iobench rung against the temporary tail swap span and
 does not use this generator; its measurements are also advisory and may reflect the guest-visible
 virtual-disk cache. Tracked in mdt-cockpit as MDT-017.
 
@@ -269,15 +271,14 @@ is the fstab swap filter, and the lens catalog has no deb822 lens. The
 evaluation's code sketches were never executed; proving them in a throwaway
 container remains the first step of any installer-side trial.
 
-## IMPLEMENTED (LT-IOB, updated by div2-data-area-v2): io.cost benchmark step
+## IMPLEMENTED (LT-IOB, updated by WP-10 P3): io.cost benchmark step
 
-`Installer._run_io_benchmark()` runs iobench `veryquick` on the planned
-`iobench-raw` partition. It checks the PARTLABEL and geometry, refuses a
-mounted or active-swap device, wipes signatures before the run, and leaves the
-partition in place and raw. The default reservation is 8 GiB; config can set
-2–10240 GiB or `false` when the benchmark is disabled. The temporary-tail
-partition path, scratch filesystem, and delete-table transaction are removed.
-See `IO-BENCHMARK-DESIGN.md`; unit coverage is in
+`Installer._prepare_swap_span_benchmark()` temporarily writes the contiguous
+tail swap span as `vbpub-swap-span`, runs the configured rung, wipes markers
+after a final result, and restores the regular swap table through the existing
+guarded transaction. The removed `iobench_raw_gb` key is accepted only when
+absent or false. Installed-host re-benchmarking and btrfs swap/benchmark
+support remain open above. See `IO-BENCHMARK-DESIGN.md`; fake-boundary coverage is in
 `debian_install_v2/tests/test_io_benchmark.py`. The VM lane remains the real
 partition-table validation and was not run in this fix round. Writing
 `io.cost.model`/`io.cost.qos` remains a separate feature.
@@ -451,7 +452,7 @@ TNT-60 and TNT-61 (`truenas/tnt/BACKLOG.md`).
 
 **Close when.** A test with a failing advisory command shows the log file with the stderr and the path in the `warned` detail.
 
-## OPEN — KNOWN ISSUE (DIV2-BL-03, 2026-11-08; operator decision 2026-11-10): io.cost remains unconfigured until a safe benchmark target exists, and the installer must record a named refusal
+## OPEN — KNOWN ISSUE (DIV2-BL-03, 2026-11-08; operator decision 2026-11-10): Debian 13 fio can still refuse the installer benchmark
 
 **Priority:** major for the installer's measured io.cost path. Source: [div2-reinstall-host-RESULT.md](docs/evidence/div2-reinstall-host-RESULT.md) (benchmark step), [host-reinstall-EXEC-LOG.md](docs/evidence/host-reinstall-EXEC-LOG.md) (17:25Z diagnostic; logs `<host>/iobench-diag-20261108/`).
 
@@ -459,9 +460,9 @@ TNT-60 and TNT-61 (`truenas/tnt/BACKLOG.md`).
 
 **Fix.** After iobench fixes the exclusive-open mechanism, add a Debian 13 VM acceptance case (the `r1-vm-real-commit` style lane) where the step must reach `success` or fail with a named, recorded cause. Until then document that io.cost stays unconfigured on Debian 13 installs and must be measured later.
 
-**Operator decision 2026-11-10.** io.cost stays unconfigured on both <host> and <host> as an explicit KNOWN ISSUE until a safe benchmark target exists. The installer benchmark must record a named refusal; it must not substitute generic earlier output, cache-inflated values, or a guessed model.
+**Operator decision 2026-11-10.** io.cost stays unconfigured on both <host> and <host> as an explicit KNOWN ISSUE when the selected iobench rung refuses or produces no usable coefficients. WP-10 P3 now supplies the temporary end-of-disk swap span; the installer must not substitute generic earlier output, cache-inflated values, or a guessed model.
 
-**Minimal solution.** Keep the raw-write refusal as the default. In the persisted install result and step detail, record a stable named reason such as `io.cost_unconfigured_no_safe_benchmark_target`, together with the exact runner refusal or missing prerequisite that produced it. Do not emit a vague "no valid result" or silently mark io.cost configured. Once WP-10 provides the held-claim writer for the `iobench-raw` target and DIV2-BL-05 supplies the revised `veryquick`/`quick`/`standard` ladder, revisit the decision in a separate reviewed change; until then the hosts are explicitly known-unconfigured.
+**Minimal solution.** Keep iobench's raw-write refusal as the default for general callers. The installer runner opts in only after it owns the exact planned span and verifies its size and PARTUUID. In the persisted install result and step detail, record a stable named reason together with any exact runner refusal or missing coefficient. Do not emit a vague "no valid result" or silently mark io.cost configured.
 
 **Close when.** An install on a Debian 13 image completes the `io_benchmark` step or records a documented, named refusal in the README and persisted result, and both designated hosts show that named known-unconfigured state rather than an inferred io.cost setup.
 
@@ -480,38 +481,38 @@ TNT-60 and TNT-61 (`truenas/tnt/BACKLOG.md`).
 
 **Close when.** Each item is applied to the adopted wrapper or runbook, or struck out with a reason; the wrapper is in the repo with its rehearsal evidence referenced.
 
-## OPEN (DIV2-BL-05, 2026-11-10): the install benchmark needs the rev 4.1 profile ladder and a safe target/fallback boundary
+## OPEN (DIV2-BL-05, 2026-11-10): the install benchmark still needs measurement controls, bounded study, and live validation
 
-**Priority:** major; blocks the default install benchmark and the live raw-target acceptance tracked by IOB-BL-39. Source: operator decisions 2026-11-10 and `reports/iobench-iogovmon-DESIGN-2026-11.md` rev 4.1, sections 3, 5, 6, 8 and 9.
+**Priority:** major; blocks the measurement study and live acceptance. Source: operator decisions 2026-11-10 and `reports/iobench-iogovmon-DESIGN-2026-11.md` rev 4.1, sections 3, 5, 6, 8 and 9.
 
-**Problem.** The installer benchmark is currently advisory and does not implement one selectable rung family. The current raw writer correctly refuses unless it can retain its exclusive claim through I/O (`Host.write_range`), so raw-target runs cannot begin safely until WP-10 closes that gap. The earlier target proposal is superseded by design rev 4.1: install-time measurement must use a selectable profile ladder and provision the model conservatively, while iogovmon handles the moving target after install.
+**Problem.** The installer benchmark is advisory and uses one selectable rung family. WP-10 P3 now supplies its temporary ext4 target by replacing the contiguous end-of-disk swap span with one unformatted Linux-type partition, then wiping markers and restoring swaps. Remaining work is the bounded study, measurement controls, model policy, and installed-host adjustment; this package does not add btrfs swap or installed-host re-benchmarking.
 
 **Operator decision 2026-11-10 (design rev 4.1, binding).**
 
 1. `run_io_benchmark` defaults to true. Every install selects one profile from `veryquick` (about 3 min), `quick` (about 7.5 min, the DEFAULT), or `standard` (about 30-35 min), with outer timeouts of 5, 12 and 45 min — the sizes the 2026-11-10 design then stated; the quick and standard wall times and all three outer timeouts are superseded by WP-10 P2 (below), which sets the outer timeouts from the rung budgets and documents about 11 and 59 min for quick and standard. All rungs use the same nested cell family and measure the same quantities at increasing length. **Superseded in WP-10 P2 (2026-11-24):** the key is `io_benchmark_profile` and the timeout table is `config.IO_BENCHMARK_OUTER_TIMEOUT_S` = veryquick 270 s, quick 780 s, standard 3660 s (each rung's iobench budget — 210, 720, 3600 s — plus 60 s). The old 45 min bound sat *below* standard's own 3600 s budget and would have killed a run iobench considers on time.
-2. After WP-10, the benchmark target is the reserved `iobench-raw` partition, with the writer holding the `O_EXCL` claim for the complete raw stages. <host> sets `iobench_raw_gb: 32`.
-3. Before WP-10, an ext4-root file may supply only the derived numbers whose ext4 verdict in the bounded study table is `✓` live-with or `⚠` iogovmon-must-correct. A btrfs file is never used for the model. If no permitted target exists for a number, keep the stable named `io.cost_unconfigured_no_safe_benchmark_target` refusal; never substitute cache-inflated output, generic earlier output, or a guessed model.
+2. **Done in WP-10 P3:** on ext4, benchmark the contiguous tail swap span and restore its planned swap partitions afterward. There is no permanent benchmark partition or swapfile.
+3. WP-10 P3 measures the ext4 tail-swap span directly. It adds no file-backed fallback, and a btrfs file is never used for the model. Future fallback choices remain gated on the bounded study; never substitute cache-inflated output, generic earlier output, or a guessed model.
 4. During every run, `io.cost` is unconfigured and every cgroup IO control is off, with the state asserted by WP-3. The interim io.cost model is coarse and QoS stays off.
 5. The bounded host study determines the verdict table and each rung's measured error by number and target type. It runs on <host> after the planned D2 install with host safety and identity checks; it is capped at 500 GB written, about 3 h active IO and 12 h elapsed, and uses adaptive repeats. No install or host change proceeds without the required operator GO.
-6. iogovmon supplies continuous adjustment after install: it re-benches the configured rung on `iobench-raw` (default `quick`) weekly and on events, at most once per 24 h and only in a quiet window. Adoption is bounded to ±25 % per step unless two confirming runs agree; `capability_shift` freezes, re-benches, re-baselines, and only unfreezes after `stable_days`. Distress-gated adjustments retain their bounds, cooldown and rollback.
+6. Installed-host re-benchmarking remains a later package. It must use the existing guarded window workflow or a separately reviewed design; WP-10 P3 does not alter `tools/swap-bench-window.sh`.
 
 **Minimal solution.** Implement the installer side in coordination with its owning dependencies:
 
 1. Add `io_benchmark_profile = "quick"` with the allowed `veryquick` and `standard` values and the design's timeout table. Preserve explicit operator selection; no install silently changes rungs. **Done in WP-10 P2** (`config.IO_BENCHMARK_PROFILES`, `IO_BENCHMARK_OUTER_TIMEOUT_S`, one state dir per rung); the remaining items 2-5 stay open.
-2. Route `quick`, or the selected rung, through the iobench runner on `iobench-raw` once WP-10 exists. Until then choose the ext4 fallback per derived number from the study verdict table, or record the named refusal when the number has no permitted target.
+2. **Done in WP-10 P3:** route the selected rung through the iobench runner on the temporary tail-swap span; advisory failures retain their named detail and leave io.cost unconfigured.
 3. Assert `io.cost` and every cgroup IO control are off before measurement, keep QoS off for the interim model, and retain the complete redacted result and refusal in the persisted install result.
 4. Expose the rung summary line from the study table in the wizard. Add the final `fstrim -av` and keep `autodefrag` off.
 5. Depend on the bounded study and WP-20's implementation of the nested cell family; do not infer rung accuracy or fallback eligibility from old file-target results. IOB-BL-39 owns the live rung and raw-target evidence; WP-21 owns the iogovmon scheduler and bounded adoption implementation.
 
 **Where.**
 
-- `scripts/debian-install-v2/debian_install_v2/config.py`, `installer.py`, `wizard.py`, and `tools/iobench-install-runner`: profile selection, target/fallback choice, guards, and persisted result.
-- `scripts/debian-install-v2/debian_install_v2/tests/`: default/selection, timeout, target, refusal, IO-control-off, fallback-verdict and no-I/O-mutation tests.
-- `scripts/debian-install-v2/README.md`, `docs/CONSUMERS.md`, `docs/DESIGN-GUIDE.md` and `CHANGES.md`: rung meanings, default, safe-target boundary, allowed fallback numbers and operator sequence.
+- `scripts/debian-install-v2/debian_install_v2/config.py`, `installer.py`, `wizard.py`, and `tools/iobench-install-runner`: profile selection, measurement guards, and persisted result.
+- `scripts/debian-install-v2/debian_install_v2/tests/`: default/selection, timeout, span identity and resume, refusal, IO-control-off, and no-I/O-mutation tests.
+- `scripts/debian-install-v2/README.md`, `docs/CONSUMERS.md`, `docs/DESIGN-GUIDE.md` and `CHANGES.md`: rung meanings, temporary-span model, later study, and operator sequence.
 
-**Acceptance idea.** Fake-root tests prove `quick` is the default, each named rung is selectable with its timeout, `iobench-raw` is preferred through WP-10, the ext4 fallback is offered only for numbers whose study verdict permits it, and every other number records the named refusal. They assert `io.cost` and all cgroup IO controls are off for the full measurement and that the step changes no host IO policy. Removing the default, bypassing WP-10 when available, allowing an unlisted fallback, or skipping an IO-control assertion must fail a focused test. After WP-10, a live <host> install completes the selected rung on `iobench-raw`; before then, <host> records either the allowed fallback for its exact permitted results or the named refusal.
+**Acceptance idea.** Fake-boundary tests prove `quick` is the default, each named rung is selectable with its timeout, the temporary span is the only target, and every missing coefficient or runner refusal leaves io.cost unconfigured. They assert `io.cost` and all cgroup IO controls are off for the full measurement and that the step changes no host IO policy. The current package's controller lanes validate the table transaction; no live-host benchmark or btrfs target is claimed here.
 
-**Close when.** The default and selectable ladder, WP-10 target, study-gated ext4 fallback, IO-control-off assertions, named refusal, final fstrim and iogovmon handoff are covered by focused tests; live evidence on both designated hosts completes the selected rung or records the named refusal; and the operator decision is reflected in README, CONSUMERS, DESIGN-GUIDE and CHANGES `## [Unreleased]`.
+**Close when.** The bounded study and IO-control-off assertions establish permitted coefficients, any later fallback is study-gated, the final fstrim and iogovmon handoff are implemented, live evidence on both designated hosts completes the selected rung or records the named refusal, and the operator decision is reflected in README, CONSUMERS, DESIGN-GUIDE and CHANGES `## [Unreleased]`.
 
 ## OPEN (DIV2-BL-14, 2026-11-17): the installed `vbpub-docker-cleanup.service` fails on `docker builder prune` because of the mdt buildx shim
 
@@ -612,4 +613,52 @@ TNT-60 and TNT-61 (`truenas/tnt/BACKLOG.md`).
 **Still owed (not provable here: no host access, no mutation run).** The 3-shard campaign plus `--merge-shards 3` on two hosts, and a second run that resumes (`resumed_total > 0` in the progress stream). Each shard takes 2 of a host's 4 admission slots, so the campaign needs two hosts. Also unverified live: the image's `cli_extended-0.8.0` wheel import and Assay's editable install from the judged worktree (both fail loudly as an early lane ERROR, never a false pass). Both causes are removed (`liveness = false`, `PYTHONPATH` declared), so resume across checkouts is stable BY CONSTRUCTION, but no run has yet observed `resumed_total > 0` on this lane.
 
 **Close when.** A 3-shard run with `--merge-shards` passes on two hosts, a second run resumes finished records, and the verdict does not change with host load.
+
+## OPEN (DIV2-BL-23, 2026-11-27): the span cleanup overwrites the original disk transaction manifest
+
+**Source.** WP-10 P3 review r1 finding L-5; controller ruling 8.
+
+**Finding.** The second table write replaces the manifest's reference to the
+original checksummed table backup with the temporary span table.
+
+**Do.** Preserve the original manifest reference and both table-write backups.
+
+**Acceptance idea.** After both writes, the manifest and checksum identify the
+original table; span and final plans remain available.
+
+**Close when.** A test verifies that reference after both writes.
+
+## OPEN (DIV2-BL-24, 2026-11-27): canary source copy can fail during a concurrent project change
+
+**Source.** `r3` gate `rgw-r3-20261127T002023-v1001`; this package did not edit
+`tools/canary-run.sh`.
+
+**Finding.** Concurrent project changes can make the copy fail with
+`tar: .: file changed as we read it`.
+
+**Do.** Make the copy tolerate or avoid concurrent project changes.
+
+**Acceptance idea.** An overlapping copy completes or retries from a stable
+snapshot without omitting changes.
+
+**Close when.** The concurrent-change regression passes in `r3`.
+
+## OPEN (DIV2-BL-25, 2026-11-27): swap-span review leftovers
+
+**Source.** WP-10 P3 review r2, findings L-3 to L-5 and its out-of-contract items.
+
+**Findings.**
+- No test asserts the `Resolved capacity table` refusal in `plan_preview.py`.
+- The resize-policy test in `test_disk_policy.py` no longer pins the swap
+  position at the disk end.
+- The GPT partition cap in `config.py` assumes the root number is at most two
+  above the data start (fail-closed at the boundary only).
+- After a `partx` failure, a resume without reboot runs on a stale kernel table,
+  so the benchmark can end `warned`.
+- The extent probe sees signatures at the span's start and end only.
+- `_validate_btrfs_raw_plan` keeps an unused `run_io_benchmark` parameter.
+
+**Do.** Fix or document each item.
+
+**Close when.** Each item has a test or a documented limit.
 

@@ -122,7 +122,7 @@ def test_previously_unchecked_flags_are_now_refused(argv):
     ["/usr/sbin/resize2fs", "-P", "/dev/vda3"],
     ["/usr/sbin/blkid", "-s", "PARTUUID", "-o", "value", "/dev/vda4"],
     ["/usr/sbin/blkid", "-p", "-s", "TYPE", "-o", "value", "/dev/vda8"],
-    ["/usr/bin/dd", "if=/dev/zero", "of=/dev/vda9", "bs=1M", "count=1", "conv=fsync"],
+    ["/usr/sbin/blkid", "-p", "-o", "export", "-O", "123456", "-S", "654321", "/dev/vda"],
 ])
 def test_the_flags_the_installer_uses_stay_accepted(argv):
     HostActions._validate(argv)
@@ -234,7 +234,7 @@ def test_stage_two_layout_walk_validates_every_argv_and_ends_in_the_planned_layo
     # no hole behind root: data starts at the planned root end; root grows to exactly that end with sfdisk -N
     assert tools.index("sfdisk") < tools.index("partx") < tools.index("resize2fs") and "growpart" not in tools
     assert tools.count("mkswap") == 4 and tools.count("swapon") >= 4
-    assert host.swapped == [f"/dev/vda{n}" for n in (6, 7, 8, 9)]  # swaps follow data (4) and raw iobench (5)
+    assert host.swapped == [f"/dev/vda{n}" for n in (5, 6, 7, 8)]  # swaps follow data (4); no raw partition remains
     assert host.formatted == {"/dev/vda4": "btrfs"} and host.labels == {"/dev/vda4": lp.COW_LABEL}
     assert host.mounted == ["/srv/cow"]
     assert host.table == host.kernel == TARGET

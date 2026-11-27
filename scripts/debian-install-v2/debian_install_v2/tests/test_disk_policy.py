@@ -79,9 +79,8 @@ def test_resize_policy_shrinks_to_make_requested_swap_and_keeps_four_devices(tmp
     assert target_root * 512 >= installer.config.preserve_root_size_gb * GIB
     assert len(partitions) == 4
     assert all(size == partitions[0][1] for _start, size in partitions)
-    _raw_number, raw_start, raw_size = installer._data_area_layout(partitions, [])[0]
-    assert raw_start == root_start + target_root
-    assert partitions[0][0] == raw_start + raw_size
+    assert installer._data_area_layout(partitions, []) == []
+    assert partitions[0][0] >= root_start + target_root
     assert partitions[-1][0] + partitions[-1][1] <= _disk_sectors - 2048
 
 
@@ -105,12 +104,10 @@ def test_fixed_root_leaves_the_remaining_pool_free_after_raw_and_swap(tmp_path):
     aligned_root_end = (
         (root_start + target_root + 2048 - 1) // 2048
     ) * 2048
-    raw_start = installer._data_area_layout(partitions, [])[0][1]
     # Swap sits at the END of the disk; the gap after root stays unallocated.
     assert partitions[0][0] > aligned_root_end
     end_of_swap = partitions[-1][0] + partitions[-1][1]
     assert (disk_sectors - end_of_swap) * 512 <= 2 * 1024 * 1024
-    assert (raw_start - aligned_root_end) * 512 >= 71 * GIB
     assert (partitions[0][0] - aligned_root_end) * 512 >= 79 * GIB
     assert installer.show_plan()["partitioning"] == cap(40)
 
@@ -224,7 +221,7 @@ def test_pre_root_swap_is_retained_and_counts_toward_total_size_and_partition_co
     assert len(partitions) == 3
     assert sum(size for _start, size in partitions) * 512 == pytest.approx(3 * GIB, abs=4 * 1024 * 1024)
     assert plan[2] == live[2]
-    assert [number for number in plan if plan[number].get("type") == "0657fd6d-a4ab-43c4-84e5-0933c84b4f4f"] == [2, 5, 6, 7]
+    assert [number for number in plan if plan[number].get("type") == "0657fd6d-a4ab-43c4-84e5-0933c84b4f4f"] == [2, 4, 5, 6]
     assert report["swap_partition_count"] == 4
     assert report["swap_retained_before_root_gb"] == pytest.approx(1.0)
     assert report["swap_after_root_gb"] == pytest.approx(3.0, abs=4 / 1024)
@@ -245,10 +242,10 @@ def test_pre_root_swap_is_activated_and_formatted_with_tail_swaps(tmp_path, monk
     installer._activate_swap_partitions()
 
     assert [argv[-1] for argv in commands if argv[0] == "/usr/sbin/mkswap"] == [
-        "/dev/vda2", "/dev/vda5", "/dev/vda6", "/dev/vda7",
+        "/dev/vda2", "/dev/vda4", "/dev/vda5", "/dev/vda6",
     ]
     assert [argv[-1] for argv in commands if argv[0] == "/usr/sbin/swapon"] == [
-        "/dev/vda2", "/dev/vda5", "/dev/vda6", "/dev/vda7",
+        "/dev/vda2", "/dev/vda4", "/dev/vda5", "/dev/vda6",
     ]
     assert len(fstab_entries) == 4
     assert "vbpub-swap-pre1" in commands[0][commands[0].index("-L") + 1]
@@ -271,7 +268,7 @@ def test_a_plan_needs_no_tail_swap_when_a_pre_root_swap_meets_the_target(tmp_pat
         tmp_path,
         pre_root_gib=4,
         swap_total_gib=4,
-        partitioning=cap(8) | {"iobench_raw_gb": False},
+        partitioning=cap(8),
     )
 
     partitions, target_root = installer._plan_swap_partitions()
@@ -301,7 +298,7 @@ def test_root_shrink_uses_pre_cleanup_usage_snapshot_instead_of_post_delete_usag
         swap_disk_total_gb=8,
         preserve_root_size_gb=2,
         root_used_gib=2,
-        partitioning={"root": "*", "iobench_raw_gb": False},
+        partitioning={"root": "*"},
     )
     installer.actions.dry_run = False
     installer._root_used_bytes = lambda: 2 * GIB  # after deleting a large swapfile
@@ -399,14 +396,14 @@ sector-size: 512
     assert sorted(
         number for number, entry in plan.items()
         if installer._is_swap_partition(entry)
-    ) == [3, 4, 5, 6]
+    ) == [2, 3, 4, 5]
 
 
 def test_tail_swap_numbers_skip_any_preserved_pre_root_partition(tmp_path):
     installer = make_planner(tmp_path)
     installer.root_number = 1
 
-    assert installer._tail_swap_numbers(3, {2, 14, 15}) == [4, 5, 6]
+    assert installer._tail_swap_numbers(3, {2, 14, 15}) == [3, 4, 5]
 
 
 def test_swap_off_leaves_no_planned_swap_and_uses_reclaimed_disk_space(tmp_path):
@@ -429,7 +426,7 @@ def test_swap_off_leaves_no_planned_swap_and_uses_reclaimed_disk_space(tmp_path)
     partitions, target_root = installer._plan_swap_partitions()
 
     assert partitions == []
-    assert target_root == lp.gpt_safe_end(installer._disk_facts()[0]) - root_start - 8 * GIB // 512
+    assert target_root == lp.gpt_safe_end(installer._disk_facts()[0]) - root_start
 
 
 def test_show_plan_reports_swap_off_as_disabled(tmp_path):
@@ -577,11 +574,10 @@ def test_plan_overlap_check_uses_physical_order_not_partition_number(tmp_path):
     }
     plan = {
         **current,
-        4: {"start": "10240", "size": "2048", "type": linux_type, "name": lp.IOBENCH_PARTLABEL},
+        4: {"start": "10240", "size": "2048", "type": swap_type},
         5: {"start": "12288", "size": "2048", "type": swap_type},
         6: {"start": "14336", "size": "2048", "type": swap_type},
         7: {"start": "16384", "size": "2048", "type": swap_type},
-        8: {"start": "18432", "size": "2048", "type": swap_type},
     }
 
     installer._validate_plan_geometry(current, plan, 4096)

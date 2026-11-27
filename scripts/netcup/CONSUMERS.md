@@ -293,19 +293,23 @@ starting at sector `2500608` (root number 3):
 ```
 
 Percentage sizes may share the pool with a numeric fixed reserve; the percent
-pool is calculated after that reserve, raw iobench, and swap are removed.
+pool is calculated after that reserve and tail swap are removed.
 
-The raw benchmark partition defaults to 8 GiB, has PARTLABEL `iobench-raw`,
-and remains unformatted and unmounted. Set
-`partitioning.iobench_raw_gb` to 2–10240 GiB, or `false` only when
-`run_io_benchmark` is off. The runner finds the CoW volume by GPT PARTLABEL
+There is no permanent benchmark partition. `partitioning.iobench_raw_gb` is
+removed; absence or `false` is accepted for old profiles, and an integer is
+refused as `iobench_raw_removed` with instructions to delete the key. When
+`run_io_benchmark` is enabled on ext4, the installer temporarily represents
+the contiguous tail swaps as one `vbpub-swap-span` Linux filesystem type
+partition, then wipes its markers and restores regular swaps. Retained
+pre-root swaps stay outside the span. Re-benchmarking an installed host is
+not implemented, and btrfs swap/benchmark remain refused. The runner finds the CoW volume by GPT PARTLABEL
 `MDT_COW`; it does not use a fixed partition number or create a partition.
 A missing/duplicate label, incompatible filesystem, or mount that disagrees
 with `COW_MOUNT` is refused. The install plan must mount the CoW filesystem at
 the configured `COW_MOUNT` (default `/srv/cow`).
 
 Example portion of a 512 GiB host config with 160 GiB root, a CoW partition,
-four 4 GiB swaps, and the default raw benchmark partition:
+and four 4 GiB swaps:
 
 ```json
 {
@@ -316,10 +320,11 @@ four 4 GiB swaps, and the default raw benchmark partition:
 }
 ```
 
-For the saved 512 GiB layout, the physical order is vda3 root at sector
-`2500608`, vda4 `MDT_COW`, vda5 `iobench-raw`, then swaps vda6-vda9.
-Partition numbers follow their disk position; the runner uses PARTLABEL so a
-changed plan does not require an environment-file device-number edit.
+For the saved 512 GiB layout, the permanent physical order is vda3 root at
+sector `2500608`, vda4 `MDT_COW`, then swaps vda5-vda8. During an install
+benchmark, `vbpub-swap-span` temporarily reuses vda5 and covers the full tail
+swap span. Partition numbers follow their disk position; the CoW runner uses
+PARTLABEL so a changed plan does not require an environment-file device-number edit.
 
 ## Guarded data-area-v2 reinstall
 

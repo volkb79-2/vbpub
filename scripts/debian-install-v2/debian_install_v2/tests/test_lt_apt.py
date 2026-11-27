@@ -16,7 +16,7 @@ from debian_install_v2.installer import APT_LOCK_OPTION, Installer
 from debian_install_v2.templates import APT_UPDATE_NOTIFY_SCRIPT
 
 from .test_gstammtisch_incorporation import install_dry
-from .test_io_benchmark import make
+from .test_io_benchmark import make, make_span
 
 APT = "/usr/bin/apt-get"
 LOCK_OPT = ("-o", "DPkg::Lock::Timeout=600")
@@ -282,7 +282,8 @@ def test_io_benchmark_result_is_posted_exactly_once(tmp_path):
     """LT-F-r1002-01b: telegram_verbose_progress made _mark_step AND the explicit
     notify both post the result (two Mattermost posts)."""
     for verbose in (True, False):
-        installer, _ = make(tmp_path / str(verbose), telegram_verbose_progress=verbose)
+        installer, disk = make(tmp_path / str(verbose), telegram_verbose_progress=verbose)
+        make_span(installer, disk)
         sent: list[str] = []
         installer._notify = lambda message, **kw: sent.append(kw.get("event", message))  # type: ignore[method-assign]
         installer._run_io_benchmark()
@@ -294,6 +295,7 @@ def test_io_benchmark_result_is_posted_exactly_once(tmp_path):
 @pytest.mark.parametrize("verbose", [True, False])
 def test_io_benchmark_advisory_failure_is_posted_exactly_once(tmp_path, verbose):
     installer, disk = make(tmp_path / str(verbose), telegram_verbose_progress=verbose)
+    make_span(installer, disk)
     disk.fail["iobench-install-runner"] = "simulated iobench refusal"
     sent: list[str] = []
     installer._notify = lambda message, **kw: sent.append(kw.get("event", message))  # type: ignore[method-assign]

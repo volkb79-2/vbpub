@@ -168,7 +168,6 @@ def test_wizard_summary_accepts_schema_two_subvolumes():
         partitioning={
             "root": "*",
             "reserve_gb": 0,
-            "iobench_raw_gb": False,
             "data": {
                 "kind": "subvolumes",
                 "volumes": [{"name": "@cow", "mount": "/srv/cow", "nocow": False}],
@@ -183,7 +182,8 @@ def test_wizard_summary_accepts_schema_two_subvolumes():
 
     assert "schema_version: 2" in summary
     assert "'@cow'" in summary
-    assert "iobench-raw=disabled" in summary
+    assert "iobench-raw" not in summary
+    assert "tail swap span" in summary
 
 
 def test_save_config_writes_valid_mode_0600_json_and_refuses_clobber(tmp_path):
