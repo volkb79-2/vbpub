@@ -44,13 +44,23 @@ _CANDIDATE_CLEANUP_SECONDS = 10.0
 _CANDIDATE_OUTPUT_TAIL_BYTES = 1 << 20
 _MUTATION_PROGRESS_INTERVAL_SECONDS = 30.0
 # The 2026-11-26 relay measured controls at 1684s and 1794s and candidates at
-# 26s to 1855s (cmru-r2lane-review-r1.md:67), but did not record output gaps.
-# Until a control gap is measured, its silence window is fixed at 600s; each
-# candidate gets at least 300s or twice the measured control gap, capped at
-# 600s so 180s remains available for RG-320-style pressure credit. These are
+# 26s to 1855s (run rgw-r2-20261126T195900-v1001 and its sibling shard), but
+# did not record output gaps. Until a control gap is measured, its silence window
+# is fixed at 600s. A candidate window stays a margin above both silent stretches
+# known before the candidate runs: the longest subprocess timeout the tracked
+# suite declares (a mutant that hangs there must reach that timeout and fail the
+# test) and the longest output gap the control measured. It is twice that gap
+# when larger, capped at 600s so 180s remains for RG-320-style pressure credit.
+# A control gap that leaves no margin under the cap judges nothing. These are
 # silence bounds, never elapsed-time limits.
 _CONTROL_IDLE_WINDOW_SECONDS = 600.0
-_CANDIDATE_IDLE_FLOOR_SECONDS = 300.0
+# cmru/tests/test_release_end_to_end_real_git.py declares timeout=300; a test
+# fails when a tracked test declares a longer one.
+_SUITE_SILENT_TIMEOUT_SECONDS = 300.0
+# Room for the test's setup and teardown around that stretch (pytest prints only
+# when a test ends) and for slowdown that memory PSI credit does not see.
+_CANDIDATE_IDLE_MARGIN_SECONDS = 120.0
+_CANDIDATE_IDLE_FLOOR_SECONDS = _SUITE_SILENT_TIMEOUT_SECONDS + _CANDIDATE_IDLE_MARGIN_SECONDS
 _CANDIDATE_IDLE_WINDOW_MAX_SECONDS = 600.0
 _CANDIDATE_IDLE_CONTROL_GAP_MULTIPLIER = 2.0
 # RG-320 pauses an automatic stall clock only while memory PSI full avg10 > 5
@@ -67,6 +77,8 @@ _R2_STALL_TIMEOUT_SECONDS = 900.0
 _IDLE_BOUND_POLICY = {
     "version": "output-growth/1",
     "control_idle_window_seconds": _CONTROL_IDLE_WINDOW_SECONDS,
+    "suite_silent_timeout_seconds": _SUITE_SILENT_TIMEOUT_SECONDS,
+    "candidate_idle_margin_seconds": _CANDIDATE_IDLE_MARGIN_SECONDS,
     "candidate_idle_floor_seconds": _CANDIDATE_IDLE_FLOOR_SECONDS,
     "candidate_idle_window_max_seconds": _CANDIDATE_IDLE_WINDOW_MAX_SECONDS,
     "candidate_control_gap_multiplier": _CANDIDATE_IDLE_CONTROL_GAP_MULTIPLIER,
@@ -204,10 +216,20 @@ def _read_memory_pressure_full_avg10() -> float | None:
     return None
 
 
+class ControlGapTooWide(ValueError):
+    """The control was silent so long that no capped candidate window can sit a margin above it."""
+
+
 def candidate_idle_window_seconds(control_gap_seconds: float) -> float:
     """Give candidates at least the floor and twice the measured control gap."""
     if not math.isfinite(control_gap_seconds) or control_gap_seconds < 0:
         raise ValueError("control output-gap measurement must be finite and non-negative")
+    if control_gap_seconds + _CANDIDATE_IDLE_MARGIN_SECONDS > _CANDIDATE_IDLE_WINDOW_MAX_SECONDS:
+        raise ControlGapTooWide(
+            f"known-good control output gap of up to {control_gap_seconds:g}s leaves less than "
+            f"{_CANDIDATE_IDLE_MARGIN_SECONDS:g}s under the {_CANDIDATE_IDLE_WINDOW_MAX_SECONDS:g}s "
+            "candidate silence cap"
+        )
     derived = max(
         _CANDIDATE_IDLE_FLOOR_SECONDS,
         _CANDIDATE_IDLE_CONTROL_GAP_MULTIPLIER * control_gap_seconds,
@@ -431,9 +453,10 @@ def _run(
                                         _copy_full_output(output, full_output_log)
                                     if progress_label is not None:
                                         print(
-                                            f"mutation: {progress_label} ended after "
-                                            f"{silence_evidence['longest_output_gap_upper_bound_seconds']:g}s "
-                                            "without output growth",
+                                            f"mutation: {progress_label} ended without output growth "
+                                            f"for the {silence_evidence['idle_window_seconds']:g}s window "
+                                            f"plus {silence_evidence['pressure_credit_seconds']:g}s "
+                                            "pressure credit",
                                             flush=True,
                                         )
                                     idle_error = NoOutputGrowthExpired(
@@ -753,8 +776,16 @@ def _validate_silence_evidence(
         or evidence["output_bytes"] < 0
     ):
         raise ValueError(f"{source}: inconsistent silence-bound evidence")
-    if not allow_control_window and evidence["idle_window_seconds"] < _CANDIDATE_IDLE_FLOOR_SECONDS:
+    if allow_control_window:
+        return evidence
+    if evidence["idle_window_seconds"] < _CANDIDATE_IDLE_FLOOR_SECONDS:
         raise ValueError(f"{source}: candidate silence window is below its policy floor")
+    if evidence["idle_window_seconds"] > _CANDIDATE_IDLE_WINDOW_MAX_SECONDS or not math.isclose(
+        evidence["pressure_credit_cap_seconds"],
+        _pressure_credit_cap(evidence["idle_window_seconds"]),
+        rel_tol=0.0, abs_tol=2e-3,
+    ):
+        raise ValueError(f"{source}: candidate silence bounds are not ones the policy derives")
     return evidence
 
 
@@ -964,7 +995,10 @@ def merge_shard_evidence(
             )
             result_bounds = result["silence_evidence"]
             candidate_bounds = document["candidate_silence_bounds"]
-            if any(
+            # A kill is a failed test and does not depend on the silence window; a
+            # kill reused by a resumed run keeps the window of the control that judged
+            # it. Every other outcome must carry this shard's bounds.
+            if result["outcome"] != "killed" and any(
                 result_bounds[field] != candidate_bounds[field]
                 for field in (
                     "idle_window_seconds", "pressure_credit_cap_seconds",
@@ -1833,11 +1867,13 @@ def _resume_results(
             allow_control_window=False,
         )
         candidate_bounds = previous.get("candidate_silence_bounds")
-        if not isinstance(candidate_bounds, dict) or any(
-            prior["silence_evidence"].get(field) != candidate_bounds.get(field)
-            for field in (
-                "idle_window_seconds", "pressure_credit_cap_seconds",
-                "max_effective_idle_seconds",
+        if prior.get("outcome") != "killed" and (
+            not isinstance(candidate_bounds, dict) or any(
+                prior["silence_evidence"].get(field) != candidate_bounds.get(field)
+                for field in (
+                    "idle_window_seconds", "pressure_credit_cap_seconds",
+                    "max_effective_idle_seconds",
+                )
             )
         ):
             raise ValueError(
@@ -1965,7 +2001,7 @@ def _run_campaign(
             return 1
         print(
             "mutation: merged complete shards; whole-campaign status=passed; "
-            f"evidence={args.merge_output}",
+            f"head={merged['head']} base={merged['base']} evidence={args.merge_output}",
             flush=True,
         )
         return 0
@@ -2229,9 +2265,24 @@ def _run_campaign(
             f"{project_fixture.failure_excerpt(baseline.stdout, 1000)}"
         )
     control_log.close()
-    candidate_idle_window = candidate_idle_window_seconds(
-        baseline.silence_evidence["longest_output_gap_upper_bound_seconds"]
-    )
+    try:
+        candidate_idle_window = candidate_idle_window_seconds(
+            baseline.silence_evidence["longest_output_gap_upper_bound_seconds"]
+        )
+    except ControlGapTooWide as exc:
+        # No evidence write: a resumed run keeps its earlier file and its kills.
+        _append_progress(args.progress, {
+            "event": "complete",
+            "status": "inconclusive",
+            "reason": str(exc),
+            "baseline_silence_evidence": baseline.silence_evidence,
+            "campaign_elapsed_seconds": round(time.monotonic() - started, 3),
+        })
+        print(
+            f"mutation: INCONCLUSIVE {exc}; exit=2 (retry; no candidates judged)",
+            flush=True,
+        )
+        return 2
     candidate_pressure_credit_cap = _pressure_credit_cap(candidate_idle_window)
     candidate_silence_bounds = {
         "idle_window_seconds": round(candidate_idle_window, 3),

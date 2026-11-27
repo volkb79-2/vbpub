@@ -38,10 +38,12 @@ the campaign in `tester-unified`; the publisher token is not forwarded into the
 test container. Run `mutation` directly only when you have supplied fresh
 `CMRU_ASSAY_BASELINE_FACTS` from the host preflight. The known-good full-suite
 control has a 600-second no-output window; candidates use
-`min(600, max(300, 2 * control_longest_output_gap_upper_bound))` seconds,
-including the 30-second sampling resolution. The longest concrete silent
-subprocess timeout found in the tracked test suite is 300 seconds
-(`cmru/tests/test_release_end_to_end_real_git.py:212`). There is no elapsed-time
+`min(600, max(420, 2 * control_longest_output_gap_upper_bound))` seconds,
+including the 30-second sampling resolution. The floor is the longest silent
+subprocess timeout the tracked test suite declares, 300 seconds
+(`cmru/tests/test_release_end_to_end_real_git.py:212`), plus a 120-second
+margin. A control gap bound above 480 seconds leaves no such margin: the run is
+INCONCLUSIVE (exit 2), judges nothing and writes no evidence; retry it. There is no elapsed-time
 limit: a child that keeps printing can run indefinitely. The tool samples
 output growth at most every 30 seconds with `os.fstat`; it prints a
 still-running line only after output grows. Memory-pressure credit follows
@@ -132,8 +134,8 @@ any difference in HEAD, base, manifest, or campaign identity. Its output is the
 only evidence with `scope: whole`; a surviving, crashed, or timed-out mutant
 makes the merged campaign fail. Resume accepts a descendant HEAD only when
 the campaign identity, source and test closure, fixture, configuration,
-Assay source, silence policy, and recorded bounds still validate; it reuses
-only validated killed outcomes. A local Run-Gate session may delegate command
+Assay source and silence policy still validate; it reuses
+only validated killed outcomes, each with the window it was judged under. A local Run-Gate session may delegate command
 lane liveness to cgprofile instead of watching log output, but CMRU's own
 silence bound applies in either mode. `remote-gate cancel` stops before store
 collection, so use it only when the current shard's on-host evidence can be

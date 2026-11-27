@@ -809,10 +809,14 @@ the latest-published-ancestor selection for that flow. An empty source diff
 records skip evidence bound to the candidate HEAD. There is no elapsed-time
 limit on the known-good control or any candidate. The control has a fixed
 600-second no-output window; after a successful control, candidates use
-`min(600, max(300, 2 * control_longest_output_gap_upper_bound))` seconds. The
-measured gap upper bound includes the 30-second sampling resolution. The
-longest concrete silent subprocess timeout found in the tracked suite is 300
-seconds (`cmru/tests/test_release_end_to_end_real_git.py:212`). Full memory PSI
+`min(600, max(420, 2 * control_longest_output_gap_upper_bound))` seconds. The
+measured gap upper bound includes the 30-second sampling resolution. The floor is
+the suite's longest declared silent subprocess timeout, 300 seconds
+(`cmru/tests/test_release_end_to_end_real_git.py:212`), plus a 120-second margin:
+without it the tool stops a hung mutant before the test that would kill it can
+time out, and records a timeout no retry can clear. A control gap bound above 480
+seconds leaves no such margin under the cap, so the run is INCONCLUSIVE and
+judges nothing. Full memory PSI
 pressure (`full avg10 > 5`) pauses the silence clock under the Run-Gate RG-320
 pattern; credit is capped by the lesser of 1800 seconds or the remaining
 allowance under the 780-second effective silence bound. Polling and process
@@ -822,7 +826,9 @@ stops at its first failing test (`--maxfail=1`). Mutation outcomes live in
 `.assay/mutation-cmru.json`; the append-only
 `.assay/progress-mutation-cmru.jsonl` stream reports progress. Evidence schema
 8 records the silence policy and measured bounds. Resume requires the exact
-test, copied-fixture, silence-policy, and bound fingerprints. An added test can
+test, copied-fixture and silence-policy fingerprints. A kill does not depend on
+the window, so a reused kill keeps the window it was judged under while the new
+control derives the bounds for everything run now. An added test can
 change pytest collection or install an autouse fixture, so even an additive
 suite cannot reuse older kills.
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import builtins
 import hashlib
 import importlib
@@ -983,7 +984,7 @@ def _process_tree_evidence(
     }
 
 
-def _silence_evidence(*, idle_window=300.0, pressure_cap=480.0, gap=30.0, output_bytes=12):
+def _silence_evidence(*, idle_window=420.0, pressure_cap=360.0, gap=30.0, output_bytes=12):
     return {
         "idle_window_seconds": idle_window,
         "pressure_credit_cap_seconds": pressure_cap,
@@ -2111,7 +2112,7 @@ def test_stream_control_output_writes_the_complete_log_to_stderr(tmp_path, capfd
 
 @pytest.mark.parametrize(
     ("control_gap", "expected"),
-    [(0, 300), (50, 300), (150, 300), (151, 302), (390, 600), (500, 600)],
+    [(0, 420), (50, 420), (210, 420), (211, 422), (390, 600), (480, 600)],
 )
 def test_candidate_idle_window_scales_from_measured_control_output_gap(
     control_gap, expected,
@@ -2119,7 +2120,106 @@ def test_candidate_idle_window_scales_from_measured_control_output_gap(
     assert mutation_campaign.candidate_idle_window_seconds(control_gap) == expected
 
 
-@pytest.mark.parametrize(("idle_window", "pressure_cap"), [(300, 480), (600, 180)])
+@pytest.mark.parametrize("control_gap", [0.0, 30.0, 150.0, 300.0, 301.0, 450.0, 480.0])
+def test_candidate_window_stays_a_margin_above_every_known_silent_stretch(control_gap):
+    longest = max(control_gap, mutation_campaign._SUITE_SILENT_TIMEOUT_SECONDS)
+    window = mutation_campaign.candidate_idle_window_seconds(control_gap)
+
+    assert window >= control_gap + mutation_campaign._CANDIDATE_IDLE_MARGIN_SECONDS
+    assert window > longest
+    assert window >= (
+        mutation_campaign._SUITE_SILENT_TIMEOUT_SECONDS
+        + mutation_campaign._CANDIDATE_IDLE_MARGIN_SECONDS
+    )
+
+
+@pytest.mark.parametrize("control_gap", [480.001, 500.0, 600.0, 780.0])
+def test_control_gap_without_margin_under_the_cap_derives_no_candidate_window(control_gap):
+    with pytest.raises(mutation_campaign.ControlGapTooWide, match="candidate silence cap"):
+        mutation_campaign.candidate_idle_window_seconds(control_gap)
+
+
+def test_no_tracked_test_declares_a_longer_silent_timeout_than_the_policy_assumes():
+    declared = {
+        (path.name, keyword.value.value)
+        for path in (REPO_ROOT / "cmru" / "tests").rglob("*.py")
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8")))
+        if isinstance(node, ast.Call)
+        for keyword in node.keywords
+        if keyword.arg == "timeout"
+        and isinstance(keyword.value, ast.Constant)
+        and isinstance(keyword.value.value, (int, float))
+    }
+
+    assert max(value for _name, value in declared) == \
+        mutation_campaign._SUITE_SILENT_TIMEOUT_SECONDS
+
+
+def test_resumed_kill_with_an_earlier_window_merges_with_the_new_control(tmp_path):
+    documents = [_shard_evidence_document(index, 3) for index in range(3)]
+    # Shard 0 was resumed: its control measured a wider gap than the control that
+    # judged its first, reused kill (which keeps the 420s window).
+    resumed = documents[0]
+    window = mutation_campaign.candidate_idle_window_seconds(250.0)
+    cap = mutation_campaign._pressure_credit_cap(window)
+    resumed["baseline_silence_evidence"]["longest_output_gap_upper_bound_seconds"] = 250.0
+    resumed["candidate_silence_bounds"] = {
+        "idle_window_seconds": window,
+        "pressure_credit_cap_seconds": cap,
+        "max_effective_idle_seconds": window + cap,
+    }
+    first, second = resumed["candidate_indices"][:2]
+    resumed["results"][second]["silence_evidence"] = _silence_evidence(
+        idle_window=window, pressure_cap=cap,
+    )
+    assert resumed["results"][first]["silence_evidence"]["idle_window_seconds"] != window
+    paths = [
+        _write_shard_document(tmp_path / f"shard-{index}.json", document)
+        for index, document in enumerate(documents)
+    ]
+
+    merged = mutation_campaign.merge_shard_evidence(
+        shard_count=3, evidence_paths=paths, output_path=tmp_path / "merged.json",
+    )
+
+    assert merged["status"] == "passed"
+
+
+def test_merge_refuses_an_unjudged_candidate_with_foreign_silence_bounds(tmp_path):
+    documents = [_shard_evidence_document(index, 3, timeout_candidate=0) for index in range(3)]
+    documents[0]["results"][0]["silence_evidence"] = _silence_evidence(
+        idle_window=500.0, pressure_cap=280.0,
+    )
+    paths = [
+        _write_shard_document(tmp_path / f"shard-{index}.json", document)
+        for index, document in enumerate(documents)
+    ]
+
+    with pytest.raises(ValueError, match="does not match the shard's candidate bounds"):
+        mutation_campaign.merge_shard_evidence(
+            shard_count=3, evidence_paths=paths, output_path=tmp_path / "merged.json",
+        )
+
+
+@pytest.mark.parametrize(("idle_window", "pressure_cap"), [(420, 360), (500, 200), (601, 179)])
+def test_candidate_evidence_with_bounds_the_policy_cannot_derive_is_refused(
+    idle_window, pressure_cap,
+):
+    evidence = _silence_evidence(idle_window=idle_window, pressure_cap=pressure_cap)
+
+    def validate():
+        return mutation_campaign._validate_silence_evidence(
+            evidence, source="candidate", allow_control_window=False,
+        )
+
+    if (idle_window, pressure_cap) == (420, 360):
+        assert validate() is evidence
+    else:
+        with pytest.raises(ValueError, match="not ones the policy derives"):
+            validate()
+
+
+@pytest.mark.parametrize(("idle_window", "pressure_cap"), [(420, 360), (600, 180)])
 def test_pressure_credit_is_capped_inside_the_r2_stall_window(idle_window, pressure_cap):
     credit = mutation_campaign._pressure_credit_cap(idle_window)
 
@@ -2319,12 +2419,21 @@ def test_resume_reuses_killed_candidates_and_retries_other_outcomes(tmp_path):
     assert resumed[1] is None
     assert resumed[2] is None  # timeout outcomes are retried, never reused.
 
+    # A candidate that was not killed must carry the file's own bounds.
     document = json.loads(evidence.read_text(encoding="utf-8"))
+    document["results"][2]["silence_evidence"]["idle_window_seconds"] += 1
+    document["results"][2]["silence_evidence"]["pressure_credit_cap_seconds"] -= 1
+    evidence.write_text(json.dumps(document), encoding="utf-8")
+    with pytest.raises(ValueError, match="mismatched silence bounds for candidate 2"):
+        resume_results()
+    # A kill reused from an earlier run keeps that run's window.
+    document = json.loads(evidence.read_text(encoding="utf-8"))
+    document["results"][2]["silence_evidence"]["idle_window_seconds"] -= 1
+    document["results"][2]["silence_evidence"]["pressure_credit_cap_seconds"] += 1
     document["results"][0]["silence_evidence"]["idle_window_seconds"] += 1
     document["results"][0]["silence_evidence"]["pressure_credit_cap_seconds"] -= 1
     evidence.write_text(json.dumps(document), encoding="utf-8")
-    with pytest.raises(ValueError, match="mismatched silence bounds for candidate 0"):
-        resume_results()
+    assert resume_results()[0] == document["results"][0]
     evidence.write_text(json.dumps(_with_process_tree_contract(previous)), encoding="utf-8")
 
     with pytest.raises(ValueError, match="does not match this campaign"):

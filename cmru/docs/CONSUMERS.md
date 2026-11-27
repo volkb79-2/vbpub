@@ -1161,10 +1161,13 @@ from its full ancestry for the existing aggregate release flow. There is no
 elapsed-time limit on the known-good control or any candidate. The control
 has a fixed 600-second no-output window; after a successful control, each
 candidate uses
-`min(600, max(300, 2 * control_longest_output_gap_upper_bound))` seconds. The
-measured gap upper bound includes the 30-second sampling resolution. The
-longest concrete silent subprocess timeout found in the tracked suite is 300
-seconds (`cmru/tests/test_release_end_to_end_real_git.py:212`). Full memory PSI
+`min(600, max(420, 2 * control_longest_output_gap_upper_bound))` seconds. The
+measured gap upper bound includes the 30-second sampling resolution. The floor
+is the suite's longest declared silent subprocess timeout, 300 seconds
+(`cmru/tests/test_release_end_to_end_real_git.py:212`), plus a 120-second
+margin. A control gap bound above 480 seconds leaves no such margin under the
+cap: the run is INCONCLUSIVE (exit 2), judges nothing and leaves an existing
+evidence file untouched. Full memory PSI
 pressure (`full avg10 > 5`) pauses the silence clock under the Run-Gate RG-320
 pattern; credit is capped by the lesser of 1800 seconds or the remaining
 allowance under the 780-second effective silence bound. Polling and process
@@ -1173,8 +1176,10 @@ cleanup add at most 40 seconds, below the R2 lane's 900-second
 failed candidate stops after its first failing test (`--maxfail=1`). Mutation outcomes are in
 `.assay/mutation-cmru.json`; the append-only
 `.assay/progress-mutation-cmru.jsonl` stream reports progress. Resume reuses killed outcomes only
-when the tests, copied fixture closure, Assay source, silence policy, and
-recorded bounds exactly match the campaign. A control ended for silence writes
+when the tests, copied fixture closure, Assay source and silence policy exactly
+match the campaign. A reused kill keeps the silence window of the run that judged
+it (it must be one the policy derives); every other recorded outcome must carry
+the file's own candidate bounds. A control ended for silence writes
 `status: inconclusive`, `baseline_exit_code: 124`, and
 `baseline_termination: no-output`, with no candidate judgment; the tool exits
 2 and Run-Gate reports `ERROR`. A candidate ended for silence has its own

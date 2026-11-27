@@ -3711,11 +3711,16 @@ latest-published-ancestor selection until the R2 lane transition is complete.
 An empty source diff writes skip evidence bound to HEAD. Neither the known-good
 control nor a candidate has an elapsed-time limit. The control ends after 600
 seconds without output growth; after a successful control, each candidate's
-idle window is `min(600, max(300, 2 * control_longest_output_gap_upper_bound))`
+idle window is `min(600, max(420, 2 * control_longest_output_gap_upper_bound))`
 seconds, where the measured upper bound includes the 30-second sampling
-resolution. The longest concrete silent subprocess timeout found in the
-tracked test suite is 300 seconds
-(`cmru/tests/test_release_end_to_end_real_git.py:212`). Memory-pressure credit
+resolution. The floor MUST be the longest silent subprocess timeout the tracked
+test suite declares, 300 seconds
+(`cmru/tests/test_release_end_to_end_real_git.py:212`), plus a 120-second
+margin. A control gap bound above 480 seconds leaves no such margin under the
+cap: the run MUST be INCONCLUSIVE (exit 2), judge no candidate and leave an
+existing evidence file untouched. A resumed kill keeps the window of the run that
+judged it, which MUST be one the policy derives; every other recorded outcome
+MUST carry the file's own candidate bounds. Memory-pressure credit
 uses the Run-Gate RG-320 pattern and is capped by the lesser of 1800 seconds
 or the remaining allowance under the 780-second effective silence bound. The
 effective per-child window is at most 780 seconds; polling

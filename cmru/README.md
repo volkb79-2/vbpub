@@ -1262,14 +1262,18 @@ See the [Assay baseline design](docs/DESIGN-GUIDE.md#whole-target-assay-and-expl
 Mutation runs stop each failing candidate at its first failed test
 (`--maxfail=1`). The known-good control has a 600-second no-output window.
 For a completed control, each candidate's window is
-`min(600, max(300, 2 * control_longest_output_gap_upper_bound))` seconds; the
-gap upper bound includes the 30-second sampling resolution. The longest
-concrete silent subprocess timeout found in the tracked test suite is 300
-seconds (`cmru/tests/test_release_end_to_end_real_git.py:212`). Historic
-campaign logs measured control wall times of 1684 and 1794 seconds and
-candidate wall times up to 1855 seconds, but did not record output gaps
-(`cmru-r2lane-review-r1.md:67`); those observations support removing elapsed
-limits, not estimating quiet gaps. The control's bound is therefore a
+`min(600, max(420, 2 * control_longest_output_gap_upper_bound))` seconds; the
+gap upper bound includes the 30-second sampling resolution. The 420-second floor
+is the longest silent subprocess timeout the tracked test suite declares, 300
+seconds (`cmru/tests/test_release_end_to_end_real_git.py:212`, held by a test),
+plus a 120-second margin, so a mutant that hangs there reaches the test's own
+timeout. A control gap bound above 480 seconds leaves less than that margin under
+the 600-second cap: the run is then INCONCLUSIVE (exit 2), judges no candidate
+and leaves an existing evidence file untouched. Campaign logs of runs
+`rgw-r2-20261126T195900-v1001` and its sibling shard measured control wall times
+of 1684 and 1794 seconds and candidate wall times up to 1855 seconds, but did not
+record output gaps; those observations support removing elapsed limits, not
+estimating quiet gaps. The control's bound is therefore a
 600-second policy choice. During full memory PSI pressure (avg10 above 5),
 credited silence uses the Run-Gate RG-320 pattern and is capped by the lesser
 of 1800 seconds or the remaining allowance under the 780-second effective
@@ -1279,7 +1283,8 @@ silence bound. The per-child effective silence bound is at most 780 seconds;
 900-second Run-Gate stall timeout. A child that keeps printing has no elapsed
 limit and can continue indefinitely. Resume reuses killed outcomes from
 `.assay/mutation-cmru.json` only while the suite, copied fixture closure,
-silence policy and recorded bounds are unchanged. Resume also requires the
+silence policy are unchanged; a reused kill keeps the window it was judged
+under. Resume also requires the
 selected Assay source tree to be clean
 and unchanged across every packaged source root declared in its `pyproject.toml`.
 A package root may be a sibling library directory inside the same Git worktree,
