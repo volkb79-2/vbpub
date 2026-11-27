@@ -302,10 +302,15 @@ class EvalTests(unittest.TestCase):
         with (d / "hotset.csv").open("w", newline="") as fh:
             writer = csv.DictWriter(fh, F.HOT_HEAD)
             writer.writeheader()
-            writer.writerows(row for row in rows if not (row["unit"] == "docker.service" and row["step"] == "1"))
-        (d / "hotset-topology.jsonl").write_text(json.dumps({"kind": "dropped", "step": 1,
-                                                              "unit": "docker.service", "path": "system.slice/docker.service",
-                                                              "reason": "directory identity changed after commit"}) + "\n")
+            writer.writerows(row for row in rows if not (
+                (row["unit"] == "docker.service" and row["step"] == "1") or row["unit"] == "ssh.service"))
+        drops = [
+            {"kind": "dropped", "step": 1, "unit": "docker.service", "path": "system.slice/docker.service",
+             "reason": "directory identity changed after commit"},
+            {"kind": "dropped", "step": 0, "unit": "ssh.service", "path": "system.slice/ssh.service",
+             "reason": "leaf identity changed before apply"},
+        ]
+        (d / "hotset-topology.jsonl").write_text("".join(json.dumps(record) + "\n" for record in drops))
 
         evaluated = ev.evaluate(d, None)
         self.assertEqual(ev.run_verdict(evaluated), "PASS", "the cgroup ladder verdict stays independent")
@@ -313,8 +318,9 @@ class EvalTests(unittest.TestCase):
         self.assertEqual(evaluated["floors"]["docker.service"]["steps"], [0])
         rc, out = run_eval(str(d))
         self.assertEqual(rc, 0, out)
-        self.assertIn("FLOOR docker.service=220M source=damon candidate (installed 220M, "
+        self.assertIn("FLOOR docker.service=220M source=damon candidate (installed 231M, "
                       "untested: dropped at step 1: directory identity changed after commit)", out)
+        self.assertRegex(out, r"FLOOR ssh\.service=.*source=table candidate \(installed .*untested: dropped at step 0: leaf identity changed before apply\)")
 
     def test_a_damon_refusal_names_the_table_row(self) -> None:
         d = F.write_run(self.tmp / "refused", steps=(0,), verdicts=("PASS",))
@@ -491,7 +497,7 @@ class HotsetTests(unittest.TestCase):
         self.assertTrue((regions_count.parent / "0" / "start").is_file())
 
     def test_setup_turns_off_its_kdamond_if_the_started_wal_append_fails(self) -> None:
-        self.sysfs_model()
+        model = self.sysfs_model()
         append = hs.append_wal
 
         def fail_started_append(state: str, *lines: str) -> None:
@@ -505,7 +511,9 @@ class HotsetTests(unittest.TestCase):
             rc = hs.main(["setup", *self.args()])
         self.assertEqual(rc, 3, output.getvalue())
         self.assertIn("injected start-record WAL failure", output.getvalue())
-        self.assertEqual((self.kd / "0" / "state").read_text().strip(), "off")
+        state_writes = [value.strip() for path, value in model.writes if path.endswith("/state")]
+        self.assertEqual(state_writes[-2:], ["on", "off"], "setup turns its created daemon off before restoring it")
+        self.assertFalse((self.kd / "0").exists(), "the newly created daemon is removed by the owned restore")
         self.assertEqual((self.kd / "nr_kdamonds").read_text().strip(), "0")
         self.assertIn("damon_started=0", self.wal.read_text())
         self.assertNotIn("damon_started=1", self.wal.read_text())
@@ -791,7 +799,7 @@ class HotsetTests(unittest.TestCase):
                 mock.patch.object(hs, "configure", side_effect=hs.Refusal("a leaf vanished")) as configure:
             rc, out = run_hotset("refresh-schemes", *self.args("--step", "1"))
         self.assertEqual(rc, 4, out)
-        self.assertIn("scheme refresh failed after 3 attempts", out)
+        self.assertIn("scheme refresh failed after 3 attempts; no topology commit was confirmed", out)
         self.assertEqual(configure.call_count, 3)
 
     def test_setup_reenumerates_and_rewrites_every_input_after_a_leaf_vanishes(self) -> None:
@@ -853,7 +861,7 @@ class HotsetTests(unittest.TestCase):
         self.assertEqual(sample_writes, [], "a sample must not stage or commit inputs after a leaf appears")
         self.assertEqual(set(rows), {"docker.service"})
         self.assertTrue(any(row["kind"] == "dropped" and row["unit"] == "user.slice"
-                            and "appeared after commit" in row["reason"] for row in self.topology_records()))
+                            and "appeared before apply" in row["reason"] for row in self.topology_records()))
 
     def test_dropped_unit_is_measured_again_after_the_next_boundary(self) -> None:
         self.setup_user_topology(["session-a.scope"])
@@ -865,7 +873,8 @@ class HotsetTests(unittest.TestCase):
         self.assertEqual(rc, 0, out)
         rows0 = {row["unit"] for row in csv.DictReader((self.ev / "hotset.csv").open())}
         self.assertNotIn("user.slice", rows0)
-        self.assertFalse((self.ev / "hotset-refused").exists(), "a step-local topology drop is not a run refusal")
+        refused = set((self.ev / "hotset-refused").read_text().split()) if (self.ev / "hotset-refused").exists() else set()
+        self.assertNotIn("user.slice", refused, "a step-local topology drop is not a run refusal")
 
         rc, out = run_hotset("refresh-schemes", *self.args("--step", "1", "--kdamond", "0"))
         self.assertEqual(rc, 0, out)
@@ -952,9 +961,10 @@ class HotsetTests(unittest.TestCase):
         rows = {row["unit"]: row for row in csv.DictReader((self.ev / "hotset.csv").open())}
         self.assertEqual(set(rows), {"docker.service"})
         dropped = [row for row in self.topology_records() if row["kind"] == "dropped"]
-        self.assertTrue(any(row["path"] == "user.slice/session-b.scope" and "appeared after commit" in row["reason"]
+        self.assertTrue(any(row["path"] == "user.slice/session-b.scope" and "appeared after apply" in row["reason"]
                             for row in dropped))
-        self.assertFalse((self.ev / "hotset-refused").exists(), "a sample-local drop does not poison later steps")
+        refused = set((self.ev / "hotset-refused").read_text().split()) if (self.ev / "hotset-refused").exists() else set()
+        self.assertNotIn("user.slice", refused, "a sample-local drop does not poison later steps")
 
     def test_boundary_commit_retries_all_inputs_after_a_leaf_is_removed(self) -> None:
         model = self.setup_user_topology(["session-a.scope"])
@@ -1647,7 +1657,7 @@ fi
     def test_a_blocked_psi_guard_systemctl_call_is_bounded_and_records_timeout(self) -> None:
         # L2: a fake systemctl blocks only this call. The reader's timeout records its 124 status as `timeout`;
         # the assertion is the recorded result, never a wall-clock duration.
-        r = self.run_kit("--steps", "0", "--dwell", "0", ticks="2",
+        r = self.run_kit("--steps", "0", "--dwell", "0", ticks="12",
                          MDT_ACCEPT_PROBE_CMD_PSI_GUARD=None, MDT_ACCEPT_SYSTEMCTL_TIMEOUT="1",
                          FAKE_SYSTEMCTL_BLOCK_MATCH="is-active mdt-psi-guard.service",
                          FAKE_SYSTEMCTL_BLOCK_ONCE=str(self.tmp / "systemctl-blocked"),
@@ -1662,7 +1672,7 @@ fi
     def test_a_missing_containerd_restart_count_stays_blank_and_blocks_probe_pass(self) -> None:
         # L2: both the sample and the liveness observation time out. A blank count and `nrestarts_rc=timeout` remain
         # missing data; they cannot be normalized to zero or let the liveness criterion PASS.
-        r = self.run_kit("--steps", "0", "--dwell", "0", ticks="2",
+        r = self.run_kit("--steps", "0", "--dwell", "0", ticks="12",
                          MDT_ACCEPT_PROBE_CMD_CONTAINERD=None, MDT_ACCEPT_SYSTEMCTL_TIMEOUT="1",
                          FAKE_SYSTEMCTL_BLOCK_MATCH="show -p NRestarts --value containerd.service",
                          FAKE_SYSTEMCTL_BLOCK="1", FAKE_SYSTEMCTL_BLOCK_SLEEP="5",

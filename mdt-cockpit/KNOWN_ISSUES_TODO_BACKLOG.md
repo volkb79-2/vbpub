@@ -2059,4 +2059,18 @@ Close when check.sh on a runner host reports no WARN for the runner's cockpit an
 
 **Status:** OPEN. Found by the P-plat-19h r1 review (F7); predates that package, which sets the derived tier Max to dev.slice's.
 
-On `HOST_ROLE=dedicated-dev`, `DEV_{GATES,BACKGROUND}_MEMORY_MAX=-` or `0` goes through `pick` (`host-setup/mdt_capacity.py:565`, called at `:623`) to `None`; install.sh then renders an empty `MemoryMax=` and the kernel shows `max`. check.sh accepts it (`want=max`, `scripts/check.sh:351`) and the accept kit refuses such a tier (`tools/accept/accept-run.sh:37`). dev.slice stays finite, so the effect today equals the derived value (tier Max = dev Max), but it is a path to a tier without a MemoryMax and the estate rule is never `MemoryMax=infinity`. Fix: on dedicated-dev, refuse `-`/`0` for the two tier MAX pins in `dedicated_memory` (omitting one has no purpose now that the derived value equals dev's), with a test, and make check.sh FAIL a tier `max` on this role.
+
+## MDT-114 - the `user.slice` floor may remain untested when session scopes change during a step (2026-11-27)
+
+**Status:** OPEN (accepted limitation; main controller ruling for P-plat-19m fix round 8).
+
+The accept kit measures one DAMON scheme per committed leaf cgroup. Session scopes under `user.slice` can appear, disappear, gain children or be
+re-created with a different directory inode between a step boundary and a sample. The sample is read-only: if that unit's live leaf path/inode set
+differs from its committed set before or after the apply, it writes no row for the unit for that step and records a drop reason. Other units continue,
+and the next boundary commits a fresh complete scheme set. A drop is step-scoped and does not add `user.slice` to the run-wide refusal marker; eval
+still leaves the floor unproved unless every passing step has a measured row with no drop. The installed floor remains in force whenever eval prints a
+candidate as untested.
+
+This is accepted because samples must not stage sysfs scheme inputs or issue a commit. A future live acceptance run may therefore leave `user.slice`
+untested if its session topology changes during a step. No host-memory reserve may be lowered from an untested candidate; record the existing installed
+floor in the result and keep it in `host-setup.env`.

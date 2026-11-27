@@ -359,6 +359,27 @@ def topology_dropped_steps(evidence: Path) -> dict[str, set[int]]:
     return dropped
 
 
+def topology_drop_reason(evidence: Path, unit: str, passing: set[int]) -> str | None:
+    path = evidence / "hotset-topology.jsonl"
+    if not path.is_file():
+        return None
+    details = []
+    try:
+        with path.open(encoding="utf-8") as fh:
+            for line in fh:
+                record = json.loads(line)
+                if (isinstance(record, dict) and record.get("kind") == "dropped" and record.get("unit") == unit
+                        and isinstance(record.get("step"), int) and record.get("step") in passing
+                        and isinstance(record.get("reason"), str)):
+                    details.append((record["step"], record["reason"]))
+    except (OSError, ValueError) as exc:
+        raise Inconclusive(f"cannot read topology drop reason from {path}: {exc}") from exc
+    if not details:
+        return None
+    step, reason = sorted(details)[0]
+    return f"dropped at step {step}: {reason}"
+
+
 def damon_floors(evidence: Path, installed: dict[str, int], passing: set[int]) -> dict[str, dict]:
     """4.3: H_unit = the p95 of the one-apply values in the judged window, max over the passing steps; floor =
     ceil(1.10 x H_unit). A floor >= the installed row that passed every step with it in force is **proved**; one
@@ -545,14 +566,20 @@ def print_run(run: dict) -> str:
             print(f"FLOOR {unit}={size(v['floor'])} source=damon:{v['hot'] / MIB:.1f}M x{FLOOR_FACTOR:.2f} "
                   f"tested=every step")
         else:
-            print(f"FLOOR {unit}={size(v['floor'])} source=damon candidate (installed {size(v['installed'])}, untested)")
+            reason = topology_drop_reason(Path(run["dir"]), unit, set(run["passed"]))
+            untested = f"untested: {reason}" if reason else "untested"
+            print(f"FLOOR {unit}={size(v['floor'])} source=damon candidate (installed {size(v['installed'])}, {untested})")
     for unit in FLOORED:
         if unit in run["floors"]:
             continue
         why = hotset_refusal(run["dir"], unit)
+        if why:
+            detail = f"DAMON refused: {why}"
+        else:
+            dropped = topology_drop_reason(Path(run["dir"]), unit, set(run["passed"]))
+            detail = f"untested: {dropped}" if dropped else "no DAMON data"
         print(f"FLOOR {unit}={size(run['installed'].get(unit, 0))} source=table candidate "
-              f"(installed {size(run['installed'].get(unit, 0))}, "
-              + (f"DAMON refused: {why})" if why else "no DAMON data)"))
+              f"(installed {size(run['installed'].get(unit, 0))}, {detail})")
     refused, keep, f_new, tested = proposal(run)
     if refused or keep is None or f_new is None:
         print(f"INCONCLUSIVE proposal: {refused}")

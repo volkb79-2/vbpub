@@ -587,7 +587,7 @@ def configure_topology(da, args, units: list[tuple[str, str]], kd: int, ranges: 
     """Commit fresh schemes and retain only identities that survived the commit."""
     before, _before_gaps = topology_snapshot(units, args.cgroup)
     if not before:
-        raise Inconclusive(f"no configured leaf memcg remains under {args.cgroup}; the sample is INCONCLUSIVE")
+        raise Inconclusive(f"no configured leaf memcg remains under {args.cgroup}; cannot commit an empty scheme set")
     configure(da, args.admin, kd, [(row["unit"], row["path"]) for row in before], ranges, commit=True)
     after, after_gaps = topology_snapshot(units, args.cgroup)
     if previous is not None:
@@ -614,21 +614,35 @@ def configure_topology(da, args, units: list[tuple[str, str]], kd: int, ranges: 
             if prior is None:
                 reason = f"leaf {path} appeared during commit and was not included in this apply"
                 record_topology_drop(args, step, row["unit"], path, reason, None, row["inode"])
+        after_units = {row["unit"] for row in after}
         for unit, reasons in after_gaps.items():
             for reason in reasons:
-                record_topology_drop(args, step, unit, None, reason)
+                record_topology_drop(args, step, unit, None, reason, refuse_unit=unit not in after_units)
         stable = set(topology_identity(before)) & set(topology_identity(after))
         if not stable:
-            raise Inconclusive(f"no configured leaf identity survived the DAMON commit under {args.cgroup}; retrying with current topology")
-    elif not after:
-        raise Inconclusive(f"no configured leaf memcg remains under {args.cgroup}; the sample is INCONCLUSIVE")
+            raise Refusal(f"no configured leaf identity survived the DAMON commit under {args.cgroup}; re-enumeration required")
     append_topology(args.evidence, {"kind": "configured", "step": step, "source": source,
                                    "leaves": topology_record_leaves(before),
                                    "observed_after_commit": topology_record_leaves(after)})
+    after_units = {row["unit"] for row in after}
     for unit, reasons in after_gaps.items():
         for reason in reasons:
-            record_topology_drop(args, step, unit, None, reason)
+            record_topology_drop(args, step, unit, None, reason, refuse_unit=unit not in after_units)
     return before, after_gaps
+
+
+def configure_topology_with_retries(da, args, units: list[tuple[str, str]], kd: int,
+                                    ranges: list[tuple[int, int]], step: int, source: str,
+                                    previous: list[dict] | None, operation: str) -> tuple[list[dict], dict[str, list[str]]]:
+    last_error: Exception | None = None
+    for attempt in range(1, RETRY_ATTEMPTS + 1):
+        try:
+            return configure_topology(da, args, units, kd, ranges, step, source, previous)
+        except (Inconclusive, Refusal, OSError, ValueError) as exc:
+            last_error = exc
+            if attempt < RETRY_ATTEMPTS:
+                retry_pause(args, attempt, operation, exc)
+    raise Inconclusive(f"{operation} failed after {RETRY_ATTEMPTS} attempts; no topology commit was confirmed: {last_error}") from last_error
 
 
 def setup(args) -> int:
@@ -646,7 +660,6 @@ def setup(args) -> int:
     initial_topology, _initial_gaps = topology_snapshot(units, args.cgroup)
     if not initial_topology:
         raise Refusal(f"no leaf memcg under {args.cgroup} for the units given: a slice is measured as its leaves (4.2)")
-    entries = [(row["unit"], row["path"]) for row in initial_topology]
     ranges = physical_ranges(args.iomem, mem_total_bytes(args.proc))
     idx, original_nr, owner = select_kdamond(args.admin)
     # These synced records establish ownership before either count write. A
@@ -672,13 +685,28 @@ def setup(args) -> int:
             raise Refusal(f"kdamonds/{idx}/contexts/0/avail_operations is unreadable")
         if "paddr" not in avail[0].split():
             raise Refusal(f"avail_operations [{avail[0].strip()}] has no paddr: this kernel cannot monitor physical regions")
-        configure(da, args.admin, idx, entries, ranges, commit=False)
         state_path = os.path.join(nrd, str(idx), "state")
-        state_before_on = read_lines(state_path)
-        if not state_before_on or state_before_on[0].strip() != "off":
-            raise Refusal(f"kdamond {idx} became {state_before_on[0].strip() if state_before_on else 'unreadable'} before setup could start it")
-        da.SysfsInterface.kdamond_on(idx)
-        daemon_started_here = True
+        last_error: Exception | None = None
+        for attempt in range(1, RETRY_ATTEMPTS + 1):
+            attempt_topology, _attempt_gaps = topology_snapshot(units, args.cgroup)
+            if not attempt_topology:
+                last_error = Inconclusive(f"no leaf memcg under {args.cgroup} remains during setup")
+            else:
+                try:
+                    attempt_entries = [(row["unit"], row["path"]) for row in attempt_topology]
+                    configure(da, args.admin, idx, attempt_entries, ranges, commit=False)
+                    state_before_on = read_lines(state_path)
+                    if not state_before_on or state_before_on[0].strip() != "off":
+                        raise Refusal(f"kdamond {idx} became {state_before_on[0].strip() if state_before_on else 'unreadable'} before setup could start it")
+                    da.SysfsInterface.kdamond_on(idx)
+                    daemon_started_here = True
+                    break
+                except (Refusal, OSError, ValueError) as exc:
+                    last_error = exc
+            if attempt < RETRY_ATTEMPTS:
+                retry_pause(args, attempt, "scheme setup", last_error or "no leaf memcg remains")
+        else:
+            raise Inconclusive(f"scheme setup failed after {RETRY_ATTEMPTS} attempts; refusing: {last_error}") from last_error
         # Record successful ownership only after the sysfs transition succeeds. If the
         # process dies between on and this fsynced WAL append, restore leaves an on
         # daemon alone and reports pending rather than stopping a possible foreign owner.
@@ -686,15 +714,21 @@ def setup(args) -> int:
         st = read_lines(os.path.join(nrd, str(idx), "state"))
         if not st or st[0].strip() != "on":
             raise Refusal(f"kdamond {idx} did not start (state {st[0].strip() if st else 'unreadable'!r})")
-        current_topology, _current_gaps = topology_snapshot(units, args.cgroup)
+        current_topology, current_gaps = topology_snapshot(units, args.cgroup)
         if not current_topology:
-            raise Refusal(f"no configured leaf memcg remains under {args.cgroup}; setup is INCONCLUSIVE")
-        if topology_identity(current_topology) != topology_identity(initial_topology):
+            raise Inconclusive(f"no configured leaf memcg remains under {args.cgroup}; setup is INCONCLUSIVE")
+        configured_entries = current_topology
+        if topology_identity(current_topology) != topology_identity(attempt_topology):
             ranges = physical_ranges(args.iomem, mem_total_bytes(args.proc))
-            entries, _gaps = configure_topology(da, args, units, idx, ranges, 0, "setup", initial_topology)
+            configured_entries, current_gaps = configure_topology_with_retries(
+                da, args, units, idx, ranges, 0, "setup", attempt_topology, "scheme setup commit")
         else:
             append_topology(args.evidence, {"kind": "configured", "step": 0, "source": "setup",
                                            "leaves": topology_record_leaves(current_topology)})
+            current_units = {row["unit"] for row in current_topology}
+            for unit, reasons in current_gaps.items():
+                for reason in reasons:
+                    record_topology_drop(args, 0, unit, None, reason, refuse_unit=unit not in current_units)
     except Exception as exc:
         try:
             if daemon_started_here:
@@ -714,7 +748,7 @@ def setup(args) -> int:
         except Exception as restore_exc:
             raise Refusal(f"setup failed ({exc}); immediate DAMON restore is pending ({restore_exc}); WAL kept at {args.state}") from exc
         raise
-    say(f"kdamond {idx}: {len(entries)} leaf schemes, paddr, refresh_ms 0, {SAMPLE_US // 1000}ms/{AGGR_US // 1000}s")
+    say(f"kdamond {idx}: {len(configured_entries)} leaf schemes, paddr, refresh_ms 0, {SAMPLE_US // 1000}ms/{AGGR_US // 1000}s")
     print(f"damon_stat_enabled={status}")
     print(f"kdamond={idx}")
     return 0
@@ -727,20 +761,11 @@ def refresh(args) -> int:
     da = load_lib(args.lib, args.admin)
     kd = resolve_kdamond(args)
     ranges = physical_ranges(args.iomem, mem_total_bytes(args.proc))
-    last_error: Exception | None = None
     previous = configured_topology(args.evidence, required=False)
-    for attempt in range(1, RETRY_ATTEMPTS + 1):
-        try:
-            entries, _gaps = configure_topology(da, args, units, kd, ranges, args.step, "step_refresh", previous)
-            say(f"kdamond {kd}: {len(entries)} leaf schemes re-enumerated for step {args.step}")
-            return 0
-        except (Refusal, OSError, ValueError) as exc:
-            last_error = exc
-            if attempt < RETRY_ATTEMPTS:
-                retry_pause(args, attempt, "scheme refresh", exc)
-    if isinstance(last_error, Inconclusive):
-        raise last_error
-    raise Refusal(f"scheme refresh failed after {RETRY_ATTEMPTS} attempts; refusing: {last_error}") from last_error
+    entries, _gaps = configure_topology_with_retries(
+        da, args, units, kd, ranges, args.step, "step_refresh", previous, "scheme refresh")
+    say(f"kdamond {kd}: {len(entries)} leaf schemes re-enumerated for step {args.step}")
+    return 0
 
 
 def append_rows(path: str, rows: list[tuple[str, dict]], step: int) -> None:
@@ -795,78 +820,90 @@ def fixture_rows(args, units: list[tuple[str, str]]) -> list[tuple[str, dict]]:
 
 
 def record_topology_drop(args, step: int, unit: str, path: str | None, reason: str,
-                         configured_inode: int | None = None, current_inode: int | None = None) -> None:
+                         configured_inode: int | None = None, current_inode: int | None = None,
+                         *, refuse_unit: bool = False) -> None:
     event = {"kind": "dropped", "step": step, "unit": unit, "path": path, "reason": reason}
     if configured_inode is not None:
         event["configured_inode"] = configured_inode
     if current_inode is not None:
         event["current_inode"] = current_inode
     append_topology(args.evidence, event)
-    record_refusal(args.evidence, unit, f"topology step {step}: {reason}")
+    if refuse_unit:
+        record_refusal(args.evidence, unit, f"topology step {step}: {reason}")
+
+
+def unit_leaf_identity(rows: list[dict], unit: str) -> tuple[tuple[str, int], ...]:
+    return tuple(sorted((row["path"], int(row["inode"])) for row in rows if row["unit"] == unit))
+
+
+def topology_drop_details(unit: str, configured: list[dict], live: list[dict], gaps: dict[str, list[str]],
+                          when: str) -> list[tuple[str | None, str, int | None, int | None]]:
+    expected = {row["path"]: row for row in configured if row["unit"] == unit}
+    observed = {row["path"]: row for row in live if row["unit"] == unit}
+    details: list[tuple[str | None, str, int | None, int | None]] = []
+    for path, row in sorted(expected.items()):
+        current = observed.get(path)
+        if current is not None:
+            if current["inode"] != row["inode"]:
+                details.append((path, f"leaf {path} changed directory inode {when} ({row['inode']} -> {current['inode']})",
+                                row["inode"], current["inode"]))
+            continue
+        if any(other.startswith(path.rstrip("/") + "/") for other in observed):
+            details.append((path, f"leaf {path} gained child cgroups {when} and was no longer a leaf", row["inode"], None))
+        else:
+            details.append((path, f"leaf {path} disappeared {when} or became unreadable", row["inode"], None))
+    for path, row in sorted(observed.items()):
+        if path in expected or any(path.startswith(old.rstrip("/") + "/") for old in expected):
+            continue
+        details.append((path, f"leaf {path} appeared {when} and was not included in this apply", None, row["inode"]))
+    for reason in gaps.get(unit, []):
+        details.append((None, reason, None, None))
+    if not details:
+        details.append((None, f"configured unit {unit} has no readable leaf {when}", None, None))
+    return details
 
 
 def sample_attempt(args, units: list[tuple[str, str]], da, kd: int, cg: str) -> tuple[list[tuple[str, dict]], list[tuple[str, str]]]:
-    """Apply once and read only scheme identities that still match the committed cgroup topology."""
-    current, current_gaps = topology_snapshot(units, cg)
-    if not current:
-        for unit, _rel in units:
-            reasons = current_gaps.get(unit) or ["no readable leaf remains for this configured unit"]
-            for reason in reasons:
-                record_topology_drop(args, args.step, unit, None, reason)
-        raise Inconclusive(f"no configured leaf memcg remains under {cg}; the sample is INCONCLUSIVE")
+    """Read one apply only when that unit's live leaves still match the committed inputs."""
     configured = configured_topology(args.evidence)
-    if topology_identity(current) != topology_identity(configured):
-        ranges = physical_ranges(args.iomem, mem_total_bytes(args.proc))
-        committed, _committed_gaps = configure_topology(
-            da, args, units, kd, ranges, args.step, "sample", configured)
-    else:
-        committed = configured
+    current, current_gaps = topology_snapshot(units, cg)
+    dropped_units: set[str] = set()
+
+    def check_live_topology(live: list[dict], gaps: dict[str, list[str]], when: str) -> set[str]:
+        changed: set[str] = set()
+        for unit, _rel in units:
+            expected_id = unit_leaf_identity(configured, unit)
+            live_id = unit_leaf_identity(live, unit)
+            if expected_id == live_id and not gaps.get(unit):
+                if expected_id:
+                    continue
+                # A unit with no committed leaf keeps its existing per-unit refusal.
+            changed.add(unit)
+            for path, reason, configured_inode, current_inode in topology_drop_details(
+                    unit, configured, live, gaps, when):
+                record_topology_drop(args, args.step, unit, path, reason, configured_inode, current_inode,
+                                     refuse_unit=not live_id)
+        return changed
+
+    dropped_units.update(check_live_topology(current, current_gaps, "before apply"))
+    if not current:
+        raise Inconclusive(f"no configured leaf memcg remains under {cg}; the sample is INCONCLUSIVE")
+    if not any(unit_leaf_identity(configured, unit) == unit_leaf_identity(current, unit)
+               and unit_leaf_identity(configured, unit) and not current_gaps.get(unit) for unit, _rel in units):
+        raise Inconclusive(f"no committed leaf set remains under {cg}; the sample is INCONCLUSIVE")
 
     da.SysfsInterface.kdamond_update_stats(kd)
     da.SysfsInterface.kdamond_update_tried_regions(kd)   # exactly one apply per sample
     after, after_gaps = topology_snapshot(units, cg)
-    committed_by_path = {row["path"]: row for row in committed}
-    after_by_path = {row["path"]: row for row in after}
-    drops: list[tuple[str, str | None, str, int | None, int | None]] = []
-    for unit, reasons in after_gaps.items():
-        for reason in reasons:
-            drops.append((unit, None, reason, None, None))
-    for path, row in committed_by_path.items():
-        live = after_by_path.get(path)
-        if live is None:
-            same_path = next((entry for entry in after if entry["path"] == path), None)
-            if same_path is not None:
-                reason = f"leaf {path} changed directory inode after commit ({row['inode']} -> {same_path['inode']})"
-                drops.append((row["unit"], path, reason, row["inode"], same_path["inode"]))
-            elif any(entry["path"].startswith(path.rstrip("/") + "/") for entry in after):
-                reason = f"leaf {path} gained child cgroups after commit and was no longer a leaf"
-                drops.append((row["unit"], path, reason, row["inode"], None))
-            else:
-                reason = f"leaf {path} disappeared or became unreadable after commit"
-                drops.append((row["unit"], path, reason, row["inode"], None))
-        elif live["inode"] != row["inode"]:
-            reason = f"leaf {path} changed directory inode after commit ({row['inode']} -> {live['inode']})"
-            drops.append((row["unit"], path, reason, row["inode"], live["inode"]))
-    for row in after:
-        prior = committed_by_path.get(row["path"])
-        if prior is None:
-            drops.append((row["unit"], row["path"],
-                          f"leaf {row['path']} appeared after commit and was not included in this apply",
-                          None, row["inode"]))
-        elif prior["inode"] != row["inode"]:
-            # The path's replacement was already recorded as the configured leaf's drop above.
-            continue
-    if not after:
-        for unit, _rel in units:
-            if not any(drop[0] == unit for drop in drops):
-                drops.append((unit, None, "no readable leaf remained after the DAMON apply", None, None))
-    for unit, path, reason, configured_inode, current_inode in drops:
-        record_topology_drop(args, args.step, unit, path, reason, configured_inode, current_inode)
+    dropped_units.update(check_live_topology(after, after_gaps, "after apply"))
     if not after:
         raise Inconclusive(f"no configured leaf memcg remained after the DAMON apply under {cg}; the sample is INCONCLUSIVE")
-    if not any(after_by_path.get(row["path"], {}).get("inode") == row["inode"] for row in committed):
-        raise Inconclusive(f"no committed leaf identity remained after the DAMON apply under {cg}; the sample is INCONCLUSIVE")
+    if not any(unit_leaf_identity(configured, unit) == unit_leaf_identity(after, unit)
+               and unit_leaf_identity(configured, unit) and not after_gaps.get(unit) for unit, _rel in units):
+        raise Inconclusive(f"no committed leaf set remained after the DAMON apply under {cg}; the sample is INCONCLUSIVE")
 
+    configured_by_path = {row["path"]: row for row in configured}
+    after_by_path = {row["path"]: row for row in after}
     per: dict[str, dict] = {}
     schemes = os.path.join(args.admin, "kdamonds", str(kd), "contexts", "0", "schemes")
     nr_schemes = read_int(os.path.join(schemes, "nr_schemes"), -1)
@@ -881,7 +918,7 @@ def sample_attempt(args, units: list[tuple[str, str]], da, kd: int, cg: str) -> 
         memcg_path = path_lines[0].strip()
         unit = unit_for_memcg_path(memcg_path, units)
         path = memcg_path[1:]
-        committed_leaf = committed_by_path.get(path)
+        committed_leaf = configured_by_path.get(path)
         if committed_leaf is None:
             raise Refusal(f"scheme {i} memcg_path {memcg_path!r} has no configured leaf identity; refusing a sysfs/configuration mismatch")
         if committed_leaf["unit"] != unit:
@@ -889,9 +926,6 @@ def sample_attempt(args, units: list[tuple[str, str]], da, kd: int, cg: str) -> 
         if path in seen_paths:
             raise Refusal(f"multiple schemes configure memcg_path {memcg_path!r}; refusing duplicate attribution")
         seen_paths.add(path)
-        live = after_by_path.get(path)
-        if live is None or live["inode"] != committed_leaf["inode"]:
-            continue  # the change was recorded above; this leaf contributes no bytes to this apply
         tried = os.path.join(sdir, "tried_regions")
         if not os.path.isdir(tried):
             raise Refusal(f"{tried} disappeared during sample; refusing an incomplete hot-set count")
@@ -918,19 +952,21 @@ def sample_attempt(args, units: list[tuple[str, str]], da, kd: int, cg: str) -> 
         stats = da.SysfsInterface.read_stats(kd, 0, i)
         if stats.get("sz_tried", -1) < 0 or stats.get("sz_ops_filter_passed", -1) < 0:
             raise Refusal(f"scheme {i} statistics disappeared during sample")
-        acc = per.setdefault(unit, {"leaves": 0, "passed": 0, "tried": 0, "hot": 0})
-        acc["leaves"] += 1
-        acc["passed"] += passed
-        acc["tried"] += stats["sz_tried"]
-        acc["hot"] += hot
-    if seen_paths != set(committed_by_path):
-        raise Refusal(f"configured DAMON schemes do not cover the committed leaf identities; refusing an incomplete sample")
+        live = after_by_path.get(path)
+        if (unit not in dropped_units and live is not None and live["inode"] == committed_leaf["inode"]):
+            acc = per.setdefault(unit, {"leaves": 0, "passed": 0, "tried": 0, "hot": 0})
+            acc["leaves"] += 1
+            acc["passed"] += passed
+            acc["tried"] += stats["sz_tried"]
+            acc["hot"] += hot
+    if seen_paths != set(configured_by_path):
+        raise Refusal("configured DAMON schemes do not cover the committed leaf identities; refusing an incomplete sample")
     rows = [(unit, acc) for unit, acc in sorted(per.items())]
     refused = []
     for unit, _acc in rows:
-        current = sum(row["current"] for row in after if row["unit"] == unit)
-        if per[unit]["passed"] == 0 and current > SELF_TEST_CURRENT:
-            refused.append((unit, f"sz_filter_passed 0 with memory.current {current}"))
+        current_bytes = sum(row["current"] for row in after if row["unit"] == unit)
+        if per[unit]["passed"] == 0 and current_bytes > SELF_TEST_CURRENT:
+            refused.append((unit, f"sz_filter_passed 0 with memory.current {current_bytes}"))
     return rows, refused
 
 
@@ -946,6 +982,8 @@ def sample(args) -> int:
         try:
             rows, refused = sample_attempt(args, units, da, kd, cg)
             break
+        except Inconclusive:
+            raise
         except (Refusal, OSError, ValueError) as exc:
             last_error = exc
             if attempt < RETRY_ATTEMPTS:

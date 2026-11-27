@@ -841,6 +841,13 @@ fi
 [ "$SETTLE_TICKS" -lt 0 ] && SETTLE_TICKS=0
 JUDGED_TICKS=$((DWELL_TICKS - SETTLE_TICKS)); [ "$JUDGED_TICKS" -lt 1 ] && JUDGED_TICKS=1
 dwell warmup 0 "$WARMUP_TICKS" 0 || step_mark 0
+if [ -z "$ABORT" ]; then
+  hotset refresh-schemes --step 0 >/dev/null 2>&1 || {
+    note "the hot-set schemes could not be re-enumerated after warm-up for step 0; stopping before the settle window"
+    abort INCONCLUSIVE damon_refresh
+    step_mark 0
+  }
+fi
 for s in $(seq 0 "$STEPS"); do
   [ -n "$ABORT" ] && break
   if [ "$s" -gt 0 ]; then # step 0 writes nothing: it is the read of the live configuration

@@ -256,10 +256,17 @@ that matched the access pattern *before* the ops filters, so it is non-zero when
 A seam fixture pins the chain: a cold page of the leaf counts 0, a young page of **another** leaf counts 0, and a young page of the leaf counts its
 folio size. **Preflight.** It requires `stats/sz_ops_filter_passed`, the `young` filter, the `ops_filters/` directory with its `allow` file, and
 `paddr` in `avail_operations` on the r1002 kernel, and refuses with exit 3 naming what is missing; it never falls back to `end − start`. **How many
-schemes, and their cost.** One scheme per **leaf**, not per unit or slice: a slice has no own hot set, and its leaves are re-enumerated once per step,
-so a scheme changed mid-run is applied with a `commit` to the running kdamond's `state`. Each `stat` scheme walks **all of RAM** folio by folio every
-aggregation interval: with 15-20 leaves that is 30-40 M folio checks per 8 s. Risk 3's "1000 regions at 400 ms" understates the cost; it is that walk
-the DAMON-off control pass measures.
+schemes, and their cost.** One scheme per **leaf**, not per unit or slice: a slice has no own hot set. The complete input set is freshly enumerated and
+rewritten at setup, after warm-up and before step 0's settle window, and at every later step boundary. A boundary retry re-enumerates and rewrites the
+whole set before committing it to the running kdamond's `state`; after all attempts fail the boundary is INCONCLUSIVE. Setup retries the same full
+enumeration and input write before starting the selected daemon. Samples never write scheme inputs or send `commit`; they issue only the stats and
+`tried_regions` state commands, then read the committed scheme results. A sample compares each unit's live leaf paths and directory inodes with the last
+committed set both before and after the apply. If either set differs, it records a step-scoped drop reason and emits no row for that whole unit; other
+units still produce rows and the run continues. The next boundary can configure the changed set so that unit can be measured again. If no unit retains
+its full committed leaf set, the sample is INCONCLUSIVE. A configured floored unit with no leaf has no row and retains its recorded unit refusal. A
+topology drop does not create the run-wide `hotset-refused` marker. `user.slice` may therefore remain untested when its session scopes change between
+boundaries; its installed floor stays in force. Each `stat` scheme walks **all of RAM** folio by folio every aggregation interval: with 15-20 leaves
+that is 30-40 M folio checks per 8 s. Risk 3's "1000 regions at 400 ms" understates the cost; it is that walk the DAMON-off control pass measures.
 
 **4.2 Parameters and "hot".** `sample_us`/`aggr_us` = 400 ms / 8 s (guide §12.3's recommendation); `min/max_regions` 10/1000; `refresh_ms` **0** — the
 kit drives the updates itself and never lets the kernel's periodic stats refresh alias the scheme's 8 s apply interval (at 10 s, consecutive deltas
@@ -275,7 +282,8 @@ installed; a slice is enumerated once per step as the sum of its leaves (`user.s
 
 **4.3 The floor.** `floor(unit) = ceil(1.10 × H_unit)` (`FLOOR_FACTOR` = 1.10: one page per region per 400 ms plus merge/split churn; 1.25 was a blind
 factor over a proxy that counted cold but LRU-active pages, and the operator's ruling replaces it). A row is printed **only when this run proved it**
-(that unit's probes and ssh passed at every step with that floor); an unproved unit keeps its table row and the eval names it. A probe FAIL while
+(that unit has a measured row and no topology drop at every passing step, and its probes and ssh passed at every step with that floor); an unproved
+unit keeps its table row and the eval names it. A candidate line includes the step and reason for any topology drop. A probe FAIL while
 `memory.current ≤ floor` means the floor is too small → raise that row to `ceil(1.10 × its last-passing memory.current)` and repeat once (design note
 §4.1); under §7 the repeat is **step 6's run 3 with that row installed**, not a second ladder here. Floors stay raise-only against a foreign drop-in,
 and the derived `system.slice` floor is still summed post-raise under the 460M / 10 % bounds. **Proved, or only a candidate.** The squeeze runs with
@@ -411,8 +419,10 @@ leaf = folio size); `sz_ops_filter_passed = 0` with `memory.current > 1 MiB` →
 `…is_informational_and_does_not_change_the_verdict` (rc 0, `INFO`); the M and floor assertions move to `hotset`;
 `test_the_proposed_k_is_never_below_the_tested_one_on_fail_and_on_pass` → `…never_below_k_last_pass` (one clamp, §5);
 `test_the_probe_body_is_incompressible…` gains the per-step inflation and never-re-touch rule; the shell tests' `TIER_MAX`/fake-run expectations move
-to the deepest-ceiling cap; `test_a_load_that_never_hit_the_ceiling_is_inconclusive` becomes its per-step form. Lane: the existing `smoke`/`r0-r1`
-lane (the module is already in it); shellcheck extends to the two new scripts. No new lane.
+to the deepest-ceiling cap; `test_a_load_that_never_hit_the_ceiling_is_inconclusive` becomes its per-step form. The existing `smoke` lane pins the
+sample write log (no scheme inputs or commit), additions/removals/re-inodes/child gains before or after apply (whole-unit drop, another unit's row,
+and continued run), remeasurement after the next boundary, the post-warm-up step-0 reconfigure, full rewrite after a rejected commit and leaf removal,
+setup retry after a leaf vanishes, INCONCLUSIVE after all boundary attempts fail, and eval's displayed drop reason. No new lane.
 
 ## 9. (h) Risks and open questions (default taken)
 

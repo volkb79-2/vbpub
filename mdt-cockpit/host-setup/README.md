@@ -1229,6 +1229,13 @@ The design is `docs/DESIGN-ACCEPT-KIT-V2.md`. v1 (P-plat-19g) put two capped pro
 `memory.min` keeping its protected part resident, judges **pressure and ssh/service latency** per step (refaults are now `INFO` only), and takes the floors from DAMON's
 `sz_ops_filter_passed` per leaf.
 
+DAMON scheme inputs are committed at setup, once after warm-up and before step 0's settle window, and at each later step boundary. Every setup or
+boundary retry takes a fresh leaf enumeration and rewrites the complete scheme set. A sample writes no scheme input and sends no `commit`; it updates
+stats and `tried_regions`, then checks the live leaf paths and directory inodes against the committed set before and after the apply. A changed unit
+gets no row for that step and a recorded drop reason, while other units continue; the next boundary can measure it again. If no unit retains its full
+committed leaf set, the sample is INCONCLUSIVE. A configured floored unit with no leaf still has its floor refused and its reason recorded. Because
+session scopes under `user.slice` change during the run, its floor may remain untested; the installed floor stays in force.
+
 Before step 0, stop the reconcile timer on r1002 and verify the reconcile service is inactive. Keep the timer stopped through setup, the run and restore. If any command
 refuses or exits before the post-run block, do not continue: finish `accept-restore.sh` first if the unit started or its WAL remains, then run
 `systemctl start mdt-dev-governance-reconcile.timer` and `systemctl start mdt-dev-governance-reconcile.service`; verify the timer with
