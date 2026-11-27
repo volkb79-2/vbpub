@@ -350,16 +350,16 @@ def test_default_dry_run_swap_shape_does_not_record_a_table_write(tmp_path, monk
     assert sfdisk_write_count(disk) == 0
 
 
-@pytest.mark.parametrize("request", ["tail-span", "record-only"])
+@pytest.mark.parametrize("condition", ["tail-span", "record-only"])
 def test_dry_run_records_a_table_write_when_either_record_condition_is_requested(
-    tmp_path, monkeypatch, request,
+    tmp_path, monkeypatch, condition,
 ):
     installer, disk = make(tmp_path)
-    if request == "tail-span":
+    if condition == "tail-span":
         disk.load_entries({installer.root_number: dict(disk.table[installer.root_number])})
     enable_dry_run_table_view(installer, disk, monkeypatch)
 
-    if request == "tail-span":
+    if condition == "tail-span":
         installer._apply_known_swap_shape(tail_swap_span=True)
     else:
         installer._apply_known_swap_shape(record_in_dry_run=True)
