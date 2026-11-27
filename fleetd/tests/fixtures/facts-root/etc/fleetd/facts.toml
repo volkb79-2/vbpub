@@ -25,6 +25,10 @@ planning_cap = 5
 max_footprint = "large"
 max_planned_bytes = 7516192768
 max_upload_bytes = 1073741824
+max_upload_store_bytes = 10737418240
+aging_s = 60
+legacy_charge_bytes = 536870912
+legacy_planned_cores = 1.5
 
 [policy.footprint_charges_bytes]
 tiny = 67108864

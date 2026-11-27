@@ -4,15 +4,15 @@
 
 The package contains strict versioned contracts, an injectable read-only facts
 collector, a deterministic RAM-first planner, and a one-shot lite campaign
-controller. The controller uses the existing identity-checked hx wrapper and
-runner jobs; it is not a daemon and has no socket or lease protocol.
+controller. The campaign controller uses the existing identity-checked hx
+wrapper and runner jobs; the separate P-fd-05 C3a host-agent entry point serves
+the host protocol described below.
 
 ## Host admission core (P-fd-05 C2)
 
-`fleetd.admission` is a standard-library-only host admission library. It adds
-accounting and decisions only: it does not open sockets, create containers, or
-add CLI verbs, and fleetd's current planner and runners do not call it yet. The
-host agent package will wire callers to this book.
+`fleetd.admission` is a standard-library-only host admission library. Package
+C3a wires its book to the host protocol, but does not create containers or ship
+a real executor. The current planner and runners do not call it yet.
 
 `HostCapacity` is the typed projection of the admission-relevant `host-facts/2`
 fields. Each input is a `Fact[T]`: a known value has no reason; an unavailable
@@ -24,9 +24,14 @@ so the full charge remains reserved. Stored observations never reduce a
 reservation. Policy is host-owned and includes footprint charges, planned RAM
 and CPU caps, PSI and disk floors, allowed priorities, and required `aging_s`.
 `legacy_charge_bytes` and `legacy_planned_cores` are required when the legacy
-job provider lists any job. Design package C adds these values to the host
-policy schema; it must extend the closed `facts.toml.policy` key set in
-`facts.py` before deployment writes those keys.
+job provider lists any job. The closed `facts.toml.policy` schema accepts all
+three as optional positive inputs: seconds, bytes, and cores. `/2` always
+carries `aging_s`, `legacy_charge_bytes`, and `legacy_planned_cores`; an
+unconfigured value is null with a reason, while a configured value carries its
+unit and source. `/1` is unchanged.
+Host config must gain these keys only after installing a fleetd release that
+accepts them. The current policy values for legacy jobs are required when used;
+`legacy_planned_cores` is positive.
 
 `AdmissionBook(state_dir, clock, waiter)` makes one serialized decision at a
 time. The caller supplies the state directory (production uses
@@ -49,14 +54,24 @@ freeze rule. Each listed legacy job without an `EXIT` marker is charged
 `legacy_charge_bytes` and `legacy_planned_cores`; its directory remains charged
 until an `EXIT` marker removes it from the required provider's list. Unknown
 needed policy values return 75 with the key named in the reason; an expired wait
-appends its last refusal reason. `legacy_planned_cores` may be 0. A known but
-invalid policy value (for example `aging_s` of 0) refuses with 2. A capacity
+appends its last refusal reason. `legacy_planned_cores` must be positive when
+configured. A known but invalid policy value (for example `aging_s` of 0)
+refuses with 2. A capacity
 provider that raises returns 75.
 
 The capacity provider, the legacy job provider and the inspector run under
-`queue.lock`, whose lock has no timeout. Package C must bound every one of those
-calls and turn a timeout into 75 or an `ERROR` answer; one hung call would stop
-every submit, completion and wait expiry on the host (FD-054).
+`queue.lock`, whose lock has no timeout. C3a bounds each callback with the
+required positive `agent.toml.query_timeout_s`: capacity and legacy-list
+timeouts become 75, and inspector timeouts become `ERROR`. One callback can
+time out without retaining `queue.lock` or creating an unbounded worker backlog
+(FD-054).
+
+Every `host-facts/2` policy object carries `aging_s`,
+`legacy_charge_bytes`, and `legacy_planned_cores`. An unconfigured key is
+`null` with a reason; a configured key carries its unit and source. These are
+required producer keys even when the host does not configure them. `/1` is
+unchanged, and host config must add these keys only after a release accepts
+them.
 
 The shared wait queue clamps priority to the authenticated group's host policy
 and orders by priority, submission time, then group-prefixed job id. The first
@@ -77,10 +92,9 @@ request digest covers its contract fields except `job_id` and
 `requested_by.version`. A non-null `shard` or `resources.cpu_set` is refused
 with 2; both remain reserved in /1.
 
-The textual group-prefix check has a known ambiguity: group `ops` can claim
-`ops-ci-run-1`, which also appears prefixed by group `ops-ci`. Package C's
-authenticated group policy must prevent overlapping prefixes or provide an
-unambiguous group-specific id namespace.
+The textual group-prefix check would be ambiguous if group `ops` and group
+`ops-ci` both existed. C3a's closed agent policy refuses a set of identities
+with overlapping `-`-separated group prefixes (FD-053).
 
 `complete` writes a durable terminal record containing `job_id`, group, digest,
 and completed state, with no charge, before removing the admitted record. If a
@@ -99,6 +113,18 @@ charge. Reconcile is an observation: it tombstones and releases only for an
 explicit no-such-object answer; a pending lease also requires an acquirable
 flock. `PRESENT`, `ERROR`, other answers, and inspector exceptions leave the
 record unchanged. Released lease names remain tombstoned and cannot be reused.
+A pre-bind disconnect first tombstones the lease, releases the connection flock,
+then inspects the exact container name. A delayed create cannot bind to that
+tombstone. When an inspector is configured, the agent reconciles pending and
+bound records at startup and at the required positive
+`agent.toml.lease_reconcile_interval_s`; bound records are inspected by exact
+container ID. Each inspector call is bounded by `query_timeout_s`, and an
+unknown/error result retains the charge. The required positive
+`agent.toml.lease_bind_timeout_s` bounds the complete bind frame from the grant
+on the monotonic clock; trickled bytes do not extend it. Expiry uses the same
+tombstone, exact-name inspection and charge-release rules as a pre-bind
+disconnect. The client receives an error reply and the connection ends. This
+deadline does not apply after binding.
 A fitting lease waiter whose inspector keeps answering `ERROR` can block every
 waiter that sorts after it, in lower priority classes too, until its admission
 wait expires; a waiter holds no charge. This is a known limit (FD-052). The package does
@@ -113,6 +139,137 @@ unknown guard state returns 75. This applies to jobs and leases.
 The closed exit-code table assigns 79 to prerequisite-missing; 73 is reserved
 by fleetd's runner. Code 75 is a missing required fact, a held admission, or a
 wait withdrawn before start; code 2 is a request or static-eligibility refusal.
+
+## Host agent protocol (P-fd-05 C3a)
+
+`fleetd.agent_policy`, `fleetd.agent_protocol`, `fleetd.agent_verbs`,
+`fleetd.agent_admission`, `fleetd.agent_server`, `fleetd.agent_client` and
+`fleetd.agent_entry` use the Python standard library only. The `fleetd-agent`
+entry point reads the closed host-owned `agent.toml` policy and serves a Unix
+socket path, an inherited listening descriptor, or one ssh forced-command
+request on stdin/stdout. It
+does not execute a shell command. C3a does not install a systemd unit or socket
+group, and does not include the C3b executor or C3c service setup.
+
+Local socket peers are authenticated from `SO_PEERCRED`'s UID and primary GID;
+the configured supplementary socket group only grants connect permission. The
+forced-command group is supplied by its trusted command line. Request fields
+never set identity or group. Unknown peer/group and transport failures use
+exit 3. Policy loading rejects overlapping authenticated group prefixes so a
+group cannot claim another group's `job_id` namespace.
+
+Every connection begins with a four-byte big-endian length and one UTF-8 JSON
+object, capped at 64 KiB. Requests are read completely before dispatch; response
+frames use the same cap. `put` streams its declared body after the request and
+`fetch`/`progress` may stream a body after the response frame. The idle
+connection deadline applies while the first request is being read, not while a
+submit waits for admission or after a lease is granted. The same framing is
+used on the socket and forced-command stdin/stdout. A server error response
+carries `error: {exit_code, reason}` inside the normal envelope; `error` has
+exactly those fields, with an integer exit code and string reason. Error
+responses omit top-level `exit_code` and `reason`. Success responses omit
+`error`. The client discriminates only on `error`, and maps a malformed error
+object to exit 70. A successful status may carry a non-zero top-level
+`exit_code`; it remains job data. The formal envelope schema is
+[`agent-response.schema.json`](agent-response.schema.json).
+
+Every ordinary verb uses exactly one request frame and the client half-closes
+its write side before dispatch. `put` instead reads exactly its declared body
+and then requires EOF. A second frame or trailing request bytes is a transport
+refusal. `lease` keeps its write side open for bind and the held connection
+lifetime; §2.2 does not require ordinary submits to keep it open while waiting
+for admission.
+
+Every answer also carries the `fleet-host-agent/1` schema and the agent's
+SemVer `agent_version`. The `facts` answer places the validated
+`host-facts/2` document under its `facts` field, preserving that document's
+own schema and facts metadata.
+
+`probe` advertises the supported verb field sets and a SemVer `agent_version`.
+`AgentClient` refuses a major mismatch while naming both versions. For a
+minor/patch/build mismatch it sends the requested verb only if the host's probe
+advertises that verb and every request field. A missing or refusing local
+socket is exit 3; `AgentClient` has no SSH or local-admission fallback. Use
+`fleetd-agent serve --socket-path PATH` for a directly bound socket or
+`fleetd-agent serve --listen-fd FD` for socket activation. The path form
+requires an existing real parent directory; restart may remove a stale socket
+file but never removes the directory. `fleetd-agent forced-command --group
+GROUP` applies the identical framing to ssh-provided stdin/stdout.
+
+The CLI omits `lease` from `probe` unless exact-object inspection, the
+legacy-job list and container-identity inspection are configured. C3b wires
+those runtime providers; the C3a CLI has none. A direct C3a service call to
+`lease` without them refuses with exit 2.
+
+The closed verbs are `probe`, `facts`, `have`, `put`, `fetch`, `progress`,
+`submit`, `status`, `cancel`, and controller-socket-only `lease`. Every field,
+repo, path, argv, environment value, artifact and upload name is checked before
+side effects. `candidates` is a host-created content-addressed `put` object;
+`--only-candidates` is accepted only when it names that authenticated group's
+file. Assay progress reads `.assay/progress-<assay_lane>.jsonl` from the job
+checkout, resolving `assay_lane` through `hostside.resolve_assay_lane`, and
+streams from a byte offset. Lane declarations and progress files are opened
+from trusted directory descriptors with no-follow traversal of every path
+component. Each progress response is capped at 8 MiB and includes the matching
+`next_offset`; clients refuse any response body larger than that cap. Assay
+candidate counting reads at most the opened file's size up to the named
+`MAX_ASSAY_PROGRESS_COUNT_BYTES` limit of 8 MiB. A larger file returns
+`done: null` with a non-empty `done_reason`; smaller files omit `done_reason`.
+The read uses the opened-size snapshot, so appends during counting do not extend
+the scan. Incremental counting remains FD-063.
+
+`put` requires configured positive `policy.max_upload_bytes` and
+`policy.max_upload_store_bytes` facts and a known non-empty `policy.disk_floors`
+map; any unavailable input refuses with exit 2. A cross-process flock
+serializes the stored-byte scan and reservation. The scan counts regular files
+across all upload groups without following symlinks; an unreadable stored file
+refuses. The aggregate check is `stored + in_flight + new <= policy.max_upload_store_bytes`,
+including re-uploads of an existing object. Before accepting a reservation,
+the upload filesystem must also satisfy `available - in_flight - new
+>= max(policy.disk_floors.values())`. Each in-flight reservation holds its full
+declared size from admission through durable commit (file fsync, rename, and
+directory fsync) or, after abandonment, until its partial is removed. Bytes
+written or buffered do not reduce the reservation; during streaming they may
+also consume disk space, which is conservatively counted twice. The accounting
+lock is not held while the body streams. The writer holds a stable owner-lock
+file before publishing the reservation record. It writes the record to a
+temporary file, fsyncs it, renames it atomically, and fsyncs the incoming
+directory. Recovery derives record, temporary-record, and partial names from
+the validated token and never from record contents. It removes torn records,
+leftover record temporaries, and partials only after acquiring the owner's
+lock; a live owner keeps its partial. If the owner lock is missing, inaccessible,
+or busy while its record is invalid, `put` refuses with the offending filename
+and an operator check. Retention and garbage collection are not implemented
+(FD-062).
+
+`agent.toml.max_connections` is a required positive integer with no default. It
+bounds ordinary local connections; an excess connection is refused with exit
+3. Once a lease has an admission handle, its connection leaves that ordinary
+count and is bounded by the lease charge. Server shutdown closes ordinary
+connections and returns without waiting for their workers; held lease charges
+remain durable for startup reconciliation. Response frame and body writes use
+the configured idle deadline after each successful write progress, not a total
+transfer limit. A held lease connection and a submit waiting for admission do
+not use that deadline.
+
+The executor is an injected `AgentExecutor` Protocol (`start`, `request_stop`,
+`read_state`), not a C3a implementation. With no executor, `submit` refuses
+with exit 2 and a named `executor unavailable` reason before writing
+`request.json` or entering the admission book. The admission and lease verbs
+still use the durable C2 book. A live lease connection holds its lease flock
+until disconnect; bind/reconnect verify the immutable container ID and
+host-inspected lease label. No run or lane wall-clock limit is added.
+
+Submits for the same job ID serialize the `request.json` write, admission,
+failure cleanup, and executor start under `jobs/<job_id>/submit.lock`. The lock
+is a private regular file opened without following symlinks. Status and cancel
+do not acquire it, so an admission waiter cannot block those verbs behind the
+submit transaction.
+
+Status of a durable `fleet-admission-terminal/1` record returns only its
+recorded `job_id`, `state: completed` and `completed_at`; it does not invent a
+verdict, exit code or other executor result. Cancel of a finished job refuses
+with exit 2. Executor-backed terminal details remain for C3b (FD-061).
 
 ## Contracts
 
@@ -185,8 +342,9 @@ New host-owned settings are optional so rollout does not invent policy:
 `[gate_slice].slice`, `[paths].checkout_root`, `[paths].docker_root`, and
 `[policy]` keys `host_reserve_bytes`, `planning_cap`, `max_footprint`,
 `max_planned_bytes`, `footprint_charges_bytes`,
-`priority_classes_by_principal`, `disk_floors`, `max_upload_bytes`, and
-`admission`. Missing settings become null facts with a source-specific reason.
+`priority_classes_by_principal`, `disk_floors`, `max_upload_bytes`,
+`max_upload_store_bytes`, and `admission`. Missing settings become null facts
+with a source-specific reason.
 `policy.host_reserve_bytes` is emitted as `memory.host_reserve_bytes` so this
 quantity has one name. These additions do not change the current planner's
 inputs or placement formulas: it does not require `memory.host_reserve_bytes`

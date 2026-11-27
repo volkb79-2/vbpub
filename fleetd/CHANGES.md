@@ -5,14 +5,39 @@ All notable changes to this project are recorded here.
 ## [Unreleased]
 
 ### Added
-- Add the stdlib host admission book for capacity fit, durable charges, executor and waiter flock liveness, priority queueing, aged reservations, legacy RAM/core charges, warm-sample decisions, and lease accounting. This is library-only and is not yet wired to the host agent or callers.
+- Add the standard-library host-agent protocol, closed policy validation, bounded framing, socket and forced-command server, local version-checking client, and `fleetd-agent` entry point. C3a does not ship the C3b executor or the C3c service installation.
+- Wire `probe`, `facts`, `have`, `put`, `fetch`, `progress`, `submit`, `status`, `cancel`, and controller-local `lease` to host-owned state and the C2 admission book. Without an injected executor, submit refuses before admission or a durable `request.json` write.
+- Bound capacity, legacy-list and object-inspector callbacks made under `queue.lock` with required `agent.toml.query_timeout_s`; apply the same timeout to every callback, mapping timeouts to 75 or `ERROR`.
+- Add the stdlib host admission book for capacity fit, durable charges, executor and waiter flock liveness, priority queueing, aged reservations, legacy RAM/core charges, warm-sample decisions, and lease accounting.
 - Persist terminal job group/digest records before releasing completed charges; the host agent package C owns terminal retention.
 - Collect, validate and consume `host-facts/2` with explicit null reasons, load, gate-slice, disk, guard and policy facts; `fleet facts validate` retains `/1` for one migration release.
 - Document the new facts and optional host policy keys without changing planner placement decisions; close FD-049's guard fact reshape.
+- Require `aging_s`, `legacy_charge_bytes`, and `legacy_planned_cores` in every `host-facts/2` policy object; unconfigured values are null with a reason.
+- Reconcile pending and bound lease records at startup and at required `agent.toml.lease_reconcile_interval_s`; pre-bind disconnect tombstones before exact-name inspection, and only confirmed absence releases the charge.
+- Serialize same-job submit write, admission, cleanup and start transactions with a private per-job flock; status and cancel do not take that lock.
+- Require positive `agent.toml.max_connections`; refuse excess ordinary connections with exit 3, release a granted lease from the ordinary count, and bound response write-idle time without limiting total transfer time.
+- Require positive `agent.toml.lease_bind_timeout_s`; expire an incomplete or trickled bind frame on an absolute monotonic deadline and reconcile its tombstone before replying (FD-060).
+- Require EOF after one ordinary request frame (after the declared body for `put`); clients half-close before dispatch, while lease keeps its write side open through bind and container life.
+- Convert JSON parser depth and integer-digit failures to protocol errors, type-check closed enum fields, and keep their exit codes on the wire.
+- Open lane declarations and progress streams through trusted directory descriptors without following any path component; cap progress ranges and client response bodies at 8 MiB.
+- Return terminal status only from its durable completion record and refuse cancel of completed jobs. C3b owns executor-backed terminal details (FD-061).
+- Advertise `lease` only when object, legacy-job and container-identity inspectors are configured; C3b wires those providers, so the shipped C3a CLI does not advertise it.
+- Keep each upload's full declared size reserved through durable commit or partial removal; bytes buffered or written do not lower the upload filesystem disk-floor charge. Publish reservation records atomically under a stable owner lock and reclaim torn records only after confirming the owner is absent. Leave retention and garbage collection to C3b (FD-062).
+- Bound Assay progress candidate counting to the opened file's 8 MiB snapshot; larger files return `done: null` with a reason, and incremental counting remains FD-063.
+
+### Fixed
+- Import the admission exception handled by `fleetd-agent`, so startup admission failures return their specified exit code instead of raising `NameError`.
+- Keep ordinary client socket descriptors worker-owned during shutdown; the server shuts them down to wake workers but does not close a descriptor still in use.
+- Wake an active synchronous `serve_once` during shutdown and let it close its listener descriptors after leaving the wait.
+- Replay terminal submits from the durable completion record, matching `status` without consulting executor memory.
+- Refuse lease records at the job `status` and `cancel` boundary before they can reach executor methods.
+- Separate error envelopes from successful status data with the nested `error` object, including on held lease connections.
+- Close FD-060 by applying the required absolute bind-frame deadline and pre-bind tombstone reconciliation on expiry.
 
 ### Changed
 - Assign prerequisite-missing exit code 79 (moved from 76); 73 is reserved by fleetd's runner. Map preflight exit 4 to refusal 2. In `/1`, refuse non-null `resources.cpu_set` with 2, reserved like `shard`.
 - The first aged waiter in queue order holds the reservation, fitting or not: nothing else is admitted before it except a strictly higher-priority merge gate. An expired wait names its last refusal, a raising capacity provider refuses with 75, and only the terminal record of a still-active job is read during admission. Lease reconciliation changes a record only on confirmed absence; explicit revoke tombstones while retaining its charge.
+- Continue queue-order scanning after the aged reservation holder so a later-polled merge gate cannot pass an earlier fitting merge gate (FD-058).
 - `fleet facts collect` emits `host-facts/2` only.
 - The planner reads `/2` `cpu.online` and `memory.total_bytes`, and refuses `/1`; legacy `/1` `cpu.for_lanes` and `memory.for_lanes_bytes` are therefore accepted only by `fleet facts validate` during the migration release and no longer affect placement.
 - The collector reads the parent control-plane slice's `memory.min` again and reports it as `control_plane.memory_min_bytes`; the planner ignores it.

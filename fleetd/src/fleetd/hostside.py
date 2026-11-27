@@ -12,6 +12,7 @@ import json
 import math
 import os
 import re
+import stat
 import sys
 import tomllib
 import zlib
@@ -30,16 +31,77 @@ def decode_payload(encoded: str) -> list[dict[str, object]]:
     return value
 
 
-def resolve_assay_lane(checkout: Path, project: str, lane: str) -> str:
-    project_dir = checkout if project == "." else checkout / project
+def open_beneath(root_fd: int, relative: str, *, directory: bool = False) -> int:
+    """Open a relative file below a trusted directory fd without following symlinks."""
+    if type(root_fd) is not int or root_fd < 0:
+        raise ValueError("trusted directory descriptor must be a non-negative integer")
+    if not isinstance(relative, str) or relative.startswith("/") or "\\" in relative:
+        raise ValueError("path must be relative")
+    if relative == ".":
+        if not directory:
+            raise ValueError("a file path must not be the current directory")
+        fd = os.dup(root_fd)
+        if not stat.S_ISDIR(os.fstat(fd).st_mode):
+            os.close(fd)
+            raise NotADirectoryError("trusted descriptor is not a directory")
+        return fd
+    parts = relative.split("/")
+    if any(part in {"", ".", ".."} for part in parts):
+        raise ValueError("path contains an unsafe component")
+    current = os.dup(root_fd)
+    try:
+        for index, part in enumerate(parts):
+            final = index == len(parts) - 1
+            flags = os.O_RDONLY | os.O_NOFOLLOW
+            if not final or directory:
+                flags |= os.O_DIRECTORY
+            else:
+                flags |= os.O_NONBLOCK
+            next_fd = os.open(part, flags, dir_fd=current)
+            os.close(current)
+            current = next_fd
+        mode = os.fstat(current).st_mode
+        if directory and not stat.S_ISDIR(mode):
+            raise NotADirectoryError(relative)
+        if not directory and not stat.S_ISREG(mode):
+            raise OSError(f"{relative} is not a regular file")
+        result, current = current, -1
+        return result
+    finally:
+        if current >= 0:
+            os.close(current)
+
+
+def resolve_assay_lane(
+    checkout: Path,
+    project: str,
+    lane: str,
+    *,
+    root_fd: int | None = None,
+) -> str:
     assay_lane = lane
-    for config_path in (project_dir / "run-gate.toml", checkout / "run-gate.root.toml"):
+    config_paths = (
+        "run-gate.toml" if project == "." else f"{project}/run-gate.toml",
+        "run-gate.root.toml",
+    )
+    for config_path in config_paths:
         try:
-            declaration = tomllib.loads(config_path.read_text(encoding="utf-8")).get("lanes", {}).get(lane)
-        except (OSError, UnicodeError, tomllib.TOMLDecodeError):
+            if root_fd is None:
+                document = tomllib.loads((checkout / config_path).read_text(encoding="utf-8"))
+            else:
+                config_fd = open_beneath(root_fd, config_path)
+                with os.fdopen(config_fd, "rb") as source:
+                    document = tomllib.loads(source.read().decode("utf-8"))
+        except FileNotFoundError:
             continue
+        except (OSError, UnicodeError, tomllib.TOMLDecodeError):
+            if root_fd is None:
+                continue
+            raise
+        lanes = document.get("lanes")
+        declaration = lanes.get(lane) if isinstance(lanes, Mapping) else None
         if declaration is not None:
-            assay_lane = declaration.get("assay_lane", lane)
+            assay_lane = declaration.get("assay_lane", lane) if isinstance(declaration, Mapping) else lane
             break
     if not isinstance(assay_lane, str) or _SAFE_ASSAY_LANE.fullmatch(assay_lane) is None:
         raise ValueError("resolved Assay lane is not a safe artifact name")

@@ -155,7 +155,15 @@ def host_facts_v2(legacy: dict[str, Any]) -> dict[str, Any]:
             "priority_classes_by_principal": _wrap(None),
             "disk_floors": _wrap(None),
             "max_upload_bytes": _wrap(None),
+            "max_upload_store_bytes": _wrap(None, "not-configured: facts.toml.policy.max_upload_store_bytes"),
             "admission": _wrap(None),
+        "aging_s": _wrap(None, "not-configured: facts.toml.policy.aging_s"),
+        "legacy_charge_bytes": _wrap(
+            None, "not-configured: facts.toml.policy.legacy_charge_bytes",
+        ),
+        "legacy_planned_cores": _wrap(
+            None, "not-configured: facts.toml.policy.legacy_planned_cores",
+        ),
         },
         "queue": {
             "planned_cores": _wrap(None, "not-collected: admission book arrives with the host agent"),
