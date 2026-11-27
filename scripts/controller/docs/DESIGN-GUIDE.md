@@ -133,7 +133,8 @@ current launcher therefore starts each implementer Bash execution in a user
 and PID namespace. While its tracked guard files are unchanged, this prevents
 accidental signal commands issued through that launch path from reaching outer
 processes. It is not tamper-resistant: a same-user agent can edit the extension,
-wrapper, worker, or launcher and change how a later command starts (CTL-65).
+Python bootstrap, worker, or launcher and change how a later command starts
+(CTL-65).
 
 `pi-impl.sh` passes `--no-extensions -e <absolute pi-pidns-extension.js>` on
 every implementer invocation. The explicit extension replaces the built-in
@@ -149,6 +150,12 @@ extension installs its own `shellPath` via the local operations factory
 (`dist/core/tools/bash.js:156-157`). Implementer `PI_EXTRA_ARGS` cannot add or
 disable extension flags. No user or worktree settings file is edited. Review
 mode is unchanged and has no bash tool.
+
+The Python bootstrap itself starts before bwrap as `/usr/bin/python3 -IS`.
+Those flags make Python interpreter startup ignore `PYTHON*` settings and skip
+site initialization, including `sitecustomize.py` and user-site hooks. The
+bootstrap passes the original environment through to Bash, so `PYTHON*`
+variables remain available to commands inside the namespace.
 
 Before the run name is claimed, `pi-impl.sh` calls the wrapper with `-c true`.
 A missing wrapper or extension, a missing bwrap executable, or a namespace

@@ -997,6 +997,12 @@ mutant("scripts/controller/pi-impl.sh", "pi-pidns-extension-check-dropped.sh",
 mutant("scripts/controller/pi-impl.sh", "pi-pidns-extension-args-allowed.sh",
        '    --extension | --extension=* | -e | --no-extensions | -ne) return 0 ;;',
        '    --extension | --extension=* | -e | --no-extensions | -ne) return 1 ;;')
+mutant("scripts/controller/pi-impl.sh", "pi-session-scan-python-not-isolated.sh",
+       '  python3 -I - "$1" <<\'PY\'',
+       '  python3 - "$1" <<\'PY\'')
+mutant("scripts/controller/pi-impl.sh", "pi-run-inspection-python-not-isolated.sh",
+       '  python3 -I - "$out/$name.jsonl" "$out/$name.last.txt" <<\'PY\'',
+       '  python3 - "$out/$name.jsonl" "$out/$name.last.txt" <<\'PY\'')
 
 mutant("scripts/controller/pi-pidns-bash-worker.sh", "pi-pidns-no-user-namespace",
        '  --unshare-user\n  --unshare-pid',
@@ -1037,6 +1043,13 @@ mutant("scripts/controller/pi-pidns-bash-worker.sh", "pi-pidns-fail-open",
 mutant("scripts/controller/pi-pidns-bash-worker.sh", "pi-pidns-command-status-zero",
        'exit "$command_rc"',
        'exit 0')
+mutant("scripts/controller/pi-pidns-bash", "pi-pidns-python-startup-unisolated",
+       '#!/usr/bin/python3 -IS',
+       '#!/usr/bin/python3')
+mutant("scripts/controller/pi-pidns-bash", "pi-pidns-signal-dispositions-dropped",
+       'signal.signal(signal.SIGPIPE, signal.SIG_DFL)\n'
+       'signal.signal(signal.SIGXFSZ, signal.SIG_DFL)',
+       '')
 mutant("scripts/controller/codex-impl.sh", "codex-force-retire-early.sh",
        'controller_run_claim "$name" || exit 2\nretire_existing=0',
        'controller_run_claim "$name" || exit 2\n'

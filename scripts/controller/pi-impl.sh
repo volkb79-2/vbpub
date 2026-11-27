@@ -367,7 +367,7 @@ inspect_review_material() {
 # incomplete and therefore refuses a resume rather than being treated as no
 # record.
 scan_run_stream_sessions() {
-  python3 - "$1" <<'PY'
+  python3 -I - "$1" <<'PY'
 import json
 import re
 import sys
@@ -1266,7 +1266,7 @@ invoke_pi() {
 # flag, aborted flag, has-text flag, has-tool-call flag. The turn count, tool
 # call count and token total are the live sidecar's job (pi-live.py).
 inspect_run() {
-  python3 - "$out/$name.jsonl" "$out/$name.last.txt" <<'PY'
+  python3 -I - "$out/$name.jsonl" "$out/$name.last.txt" <<'PY'
 import json
 import sys
 from pathlib import Path

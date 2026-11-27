@@ -1825,8 +1825,11 @@ B1 counts an entry as closed only from a `Status:` line (or a closed word in the
 
 **Status:** BY DESIGN (filed 2026-11-27; controller and main ruling on P-plat-26d H2).
 
-The extension, shell wrapper, Bash worker, and launcher live in the controller
-checkout writable by the implementer. The guard prevents accidental signal
+The extension, Python bootstrap, Bash worker, and launcher live in the
+controller checkout writable by the implementer. The bootstrap runs Python
+interpreter startup before bwrap with `-I -S`, which ignores `PYTHON*`
+interpreter settings and skips site initialization; its original environment
+is still passed through to the command. The guard prevents accidental signal
 commands from an agent using the current launch path, but it does not stop a
 same-user agent from editing those files and changing how a later command
 starts. This is a documented limit, not a tamper-resistance guarantee.

@@ -142,6 +142,9 @@ Use this order for each implementation task.
    built-in bash tool and user `!`/`!!` commands go through the tracked
    `pi-pidns-extension.js` and `pi-pidns-bash`. With the tracked guard files
    unchanged, each command starts in a fresh user and PID namespace.
+   The Python bootstrap starts as `/usr/bin/python3 -IS`: its interpreter
+   startup ignores `PYTHON*` settings and skips site initialization before
+   bwrap, while the original environment remains available to Bash commands.
    `pi-impl.sh` passes the extension explicitly with
    `--no-extensions -e`, so worktree and user extension settings cannot replace
    it; `PI_EXTRA_ARGS` cannot load or disable extensions in implementer mode.
@@ -454,8 +457,10 @@ under this guard.
 
 **Guard limitation.** This stops accidental signal commands made through the
 current guarded path. It is not tamper-resistant: a same-user implementer can
-edit the tracked extension, wrapper, worker, or launcher files and change how a
-later command starts. This limitation is tracked as CTL-65 in
+edit the tracked extension, Python bootstrap, worker, or launcher files and
+change how a later command starts. The bootstrap's Python interpreter startup
+uses `-I -S` before bwrap; the environment is still passed through to the
+commands. This limitation is tracked as CTL-65 in
 [`KNOWN_ISSUES_TODO_BACKLOG.md`](KNOWN_ISSUES_TODO_BACKLOG.md).
 
 **Review mode is sticky per run name and pi session.** Every launch records it as

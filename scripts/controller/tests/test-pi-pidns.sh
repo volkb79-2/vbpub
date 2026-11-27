@@ -1,6 +1,18 @@
 #!/usr/bin/env bash
 set -uo pipefail
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+if [[ ${PI_PIDNS_WRAPPER_SCRIPT+x} ]]; then
+  if [[ ! -f $PI_PIDNS_WRAPPER_SCRIPT || ! -r $PI_PIDNS_WRAPPER_SCRIPT ]]; then
+    printf 'ERROR: unreadable override PI_PIDNS_WRAPPER_SCRIPT: %s\n' "$PI_PIDNS_WRAPPER_SCRIPT" >&2
+    exit 2
+  fi
+fi
+if [[ ${PI_PIDNS_WORKER_SCRIPT+x} ]]; then
+  if [[ ! -f $PI_PIDNS_WORKER_SCRIPT || ! -r $PI_PIDNS_WORKER_SCRIPT ]]; then
+    printf 'ERROR: unreadable override PI_PIDNS_WORKER_SCRIPT: %s\n' "$PI_PIDNS_WORKER_SCRIPT" >&2
+    exit 2
+  fi
+fi
 SOURCE=${PI_PIDNS_WRAPPER_SCRIPT:-$SCRIPT_DIR/../pi-pidns-bash}
 WORKER_SOURCE=${PI_PIDNS_WORKER_SCRIPT:-$SCRIPT_DIR/../pi-pidns-bash-worker.sh}
 ROOT=$(mktemp -d "${TMPDIR:-/tmp}/controller-pi-pidns.XXXXXX")
@@ -21,6 +33,19 @@ for arg in "$@"; do printf '%s\0' "$arg" >> "$FAKE_BWRAP_ARGV"; done
 for name in TMUX TMUX_PANE DOCKER_HOST; do
   if [[ -v $name ]]; then printf '%s=present\n' "$name"; else printf '%s=unset\n' "$name"; fi
 done > "${FAKE_BWRAP_ENV:?}"
+if [[ ${PYTHONPATH+x} ]]; then
+  printf 'PYTHONPATH=%s\n' "$PYTHONPATH" >> "$FAKE_BWRAP_ENV"
+else
+  printf 'PYTHONPATH=unset\n' >> "$FAKE_BWRAP_ENV"
+fi
+if [[ -n ${FAKE_BWRAP_SIGNAL_STATUS:-} ]]; then
+  while read -r field value _; do
+    if [[ $field == SigIgn: ]]; then
+      printf '%s\n' "$value" > "$FAKE_BWRAP_SIGNAL_STATUS"
+      break
+    fi
+  done < "/proc/$$/status"
+fi
 /usr/bin/env | /usr/bin/grep -E '^(BASH_ENV|ENV|SHELLOPTS|BASHOPTS)=' > "${FAKE_BWRAP_STARTUP_ENV:?}" || :
 if declare -F printf >/dev/null; then
   printf 'FUNCTION_printf=present\n' >> "$FAKE_BWRAP_ENV"
@@ -45,10 +70,7 @@ make_wrapper() {
     sed "s|^BWRAP=/usr/bin/bwrap$|BWRAP=$bwrap_path|" "$WORKER_SOURCE" \
       > "$directory/pi-pidns-bash-worker.sh"
   else
-    # Keep the oracle runnable against the reviewed b9f7cdb73 shell wrapper:
-    # its BASH_ENV and exported-function leaks must fail at the marker checks.
-    sed "s|^BWRAP=/usr/bin/bwrap$|BWRAP=$bwrap_path|" "$SOURCE" \
-      > "$directory/pi-pidns-bash"
+    fail "worker source is unreadable: $WORKER_SOURCE"
   fi
   chmod 0755 "$directory/pi-pidns-bash"
 }
@@ -188,6 +210,66 @@ SH
     'the exported printf function was not imported by the bwrap launcher'
 }
 
+check_python_startup_environment_isolated() {
+  local pythonpath_dir=$ROOT/pythonpath cwd_dir=$ROOT/python-cwd
+  local pythonpath_marker=$ROOT/pythonpath-sitecustomize-ran
+  local cwd_marker=$ROOT/cwd-sitecustomize-ran
+  local output=$ROOT/python-startup-env.out rc
+  mkdir -p "$pythonpath_dir" "$cwd_dir"
+  cat > "$pythonpath_dir/sitecustomize.py" <<'PY'
+import os
+from pathlib import Path
+
+Path(os.environ["PIDNS_SITE_MARKER"]).write_text("ran", encoding="utf-8")
+PY
+  cp -- "$pythonpath_dir/sitecustomize.py" "$cwd_dir/sitecustomize.py"
+  rm -f -- "$pythonpath_marker" "$cwd_marker"
+
+  if (cd -- "$cwd_dir" && env PYTHONPATH="$pythonpath_dir:" \
+    PIDNS_SITE_MARKER="$pythonpath_marker" TMUX_TMPDIR="$ROOT/tmux-pythonpath" \
+    FAKE_BWRAP_START=0 FAKE_BWRAP_EXIT=1 "$WRAPPER" -c true > "$output" 2>&1); then
+    fail 'fake bwrap setup failure with PYTHONPATH unexpectedly returned success'
+  else
+    rc=$?
+    [[ $rc == 125 ]] || fail "PYTHONPATH startup probe returned $rc instead of 125"
+  fi
+  [[ ! -e $pythonpath_marker ]] || fail 'PYTHONPATH sitecustomize ran before the namespace'
+  contains "$FAKE_BWRAP_ENV" "PYTHONPATH=$pythonpath_dir:" \
+    'PYTHONPATH was not passed through to the bwrap command environment'
+
+  if (cd -- "$cwd_dir" && env PYTHONPATH=: PIDNS_SITE_MARKER="$cwd_marker" \
+    TMUX_TMPDIR="$ROOT/tmux-python-cwd" FAKE_BWRAP_START=0 FAKE_BWRAP_EXIT=1 \
+    "$WRAPPER" -c true > "$output" 2>&1); then
+    fail 'fake bwrap setup failure with an empty PYTHONPATH entry unexpectedly returned success'
+  else
+    rc=$?
+    [[ $rc == 125 ]] || fail "empty-entry startup probe returned $rc instead of 125"
+  fi
+  [[ ! -e $cwd_marker ]] || fail 'cwd sitecustomize from an empty PYTHONPATH entry ran before the namespace'
+  contains "$FAKE_BWRAP_ENV" 'PYTHONPATH=:' \
+    'an empty PYTHONPATH entry was not passed through to the bwrap command environment'
+}
+
+check_exec_signal_dispositions_restored() {
+  local status_file=$ROOT/fake-bwrap-sigign
+  local ignored_mask sig_ign
+  rm -f -- "$status_file"
+  env TMUX_TMPDIR="$ROOT/tmux-signal-dispositions" \
+    FAKE_BWRAP_SIGNAL_STATUS="$status_file" FAKE_BWRAP_START=1 FAKE_BWRAP_EXIT=0 \
+    "$WRAPPER" -c true > "$ROOT/signal-dispositions.out" 2>&1 \
+    || fail 'fake bwrap signal-disposition probe failed'
+  [[ -s $status_file ]] || fail 'fake bwrap did not record SigIgn from its child status'
+  sig_ign=$(<"$status_file")
+  ignored_mask=$((16#$sig_ign))
+  # /proc reports bit (signal number - 1): SIGPIPE is bit 12, SIGXFSZ bit 24.
+  if (( ignored_mask & 0x1000 )); then
+    fail 'SIGPIPE was still ignored after the Python bootstrap execve'
+  fi
+  if (( ignored_mask & 0x1000000 )); then
+    fail 'SIGXFSZ was still ignored after the Python bootstrap execve'
+  fi
+}
+
 check_live_isolation() {
   local output=$ROOT/live.out errors=$ROOT/live.err release=$ROOT/child.release
   local child_pid rc
@@ -238,7 +320,11 @@ case ${PI_PIDNS_TEST_FOCUS:-all} in
   missing-bwrap) check_missing_bwrap_refuses ;;
   fail-closed) check_bwrap_setup_failure_is_fail_closed ;;
   command-status) check_command_status_is_preserved ;;
-  startup-env) check_startup_environment_is_sanitized ;;
+  startup-env)
+    check_startup_environment_is_sanitized
+    check_python_startup_environment_isolated
+    ;;
+  signals) check_exec_signal_dispositions_restored ;;
   live) check_live_isolation ;;
   all)
     check_wrapper_argv_and_environment
@@ -247,6 +333,8 @@ case ${PI_PIDNS_TEST_FOCUS:-all} in
     check_bwrap_setup_failure_is_fail_closed
     check_command_status_is_preserved
     check_startup_environment_is_sanitized
+    check_python_startup_environment_isolated
+    check_exec_signal_dispositions_restored
     check_live_isolation
     ;;
   *) fail "unknown PI_PIDNS_TEST_FOCUS=$PI_PIDNS_TEST_FOCUS" ;;

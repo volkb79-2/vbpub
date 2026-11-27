@@ -27,6 +27,12 @@ ROOT=$(mktemp -d "${TMPDIR:-/tmp}/controller-pi-test.XXXXXX")
 cleanup() { [[ -n ${KEEP_TEST_ROOT:-} ]] || rm -rf -- "$ROOT"; }
 trap cleanup EXIT
 fail() { echo "FAIL: $*" >&2; exit 1; }
+if [[ ${PI_IMPL_SCRIPT+x} ]]; then
+  if [[ ! -f $PI_IMPL_SCRIPT || ! -r $PI_IMPL_SCRIPT ]]; then
+    printf 'ERROR: unreadable override PI_IMPL_SCRIPT: %s\n' "$PI_IMPL_SCRIPT" >&2
+    exit 2
+  fi
+fi
 contains() { grep -qF -- "$2" "$1" || fail "$3 (missing: $2)"; }
 not_contains() {
   local needle=$1 description=$2
@@ -211,7 +217,7 @@ if [[ -n ${FAKE_PI_SEQUENCE:-} ]]; then
   [[ -z ${FAKE_PI_COUNTER:-} ]] || printf '%s' "$((index + 1))" > "$FAKE_PI_COUNTER"
   stream=${FAKE_FIXTURE_DIR:?}/"${sequence[$index]}".jsonl
 fi
-python3 - "$stream" "${FAKE_PI_SESSION_ID:-}" <<'PY'
+python3 -I - "$stream" "${FAKE_PI_SESSION_ID:-}" <<'PY'
 import json
 import sys
 
@@ -3017,6 +3023,43 @@ JSON
   [[ $(pidns_probe_count) == 0 ]] || fail 'review mode ran an implementer shell preflight'
 }
 
+check_pidns_python_stdin_isolated() {
+  local marker=$ROOT/json-shadow-ran rc=0
+  clean_worktree
+  rm -f -- "$WORKTREE/json.py" "$marker"
+  cat > "$WORKTREE/json.py" <<'PY'
+import os
+from pathlib import Path
+
+Path(os.environ["PI_JSON_SHADOW_MARKER"]).write_text("ran", encoding="utf-8")
+PY
+
+  (
+    export PI_JSON_SHADOW_MARKER=$marker
+    cd -- "$WORKTREE" || exit 1
+    PI_LIVE=0 launch pidns-python-inspect deepseek-pi-volker pi-success /dev/null
+  ) || rc=$?
+  [[ $rc == 0 ]] || {
+    cat "$ROOT/pidns-python-inspect.launch.log" >&2
+    fail "a worktree json.py shadow affected run inspection (exit $rc)"
+  }
+  [[ ! -e $marker ]] || fail 'run inspection imported json.py from the worktree cwd'
+
+  rc=0
+  (
+    export PI_JSON_SHADOW_MARKER=$marker
+    cd -- "$WORKTREE" || exit 1
+    PI_LIVE=0 launch pidns-python-scan deepseek-pi-volker pi-success /dev/null \
+      resume pidns-python-inspect-session
+  ) || rc=$?
+  [[ $rc == 0 ]] || {
+    cat "$ROOT/pidns-python-scan.launch.log" >&2
+    fail "a worktree json.py shadow affected session scanning (exit $rc)"
+  }
+  [[ ! -e $marker ]] || fail 'session scanning imported json.py from the worktree cwd'
+  rm -f -- "$WORKTREE/json.py"
+}
+
 check_pidns_startup_environment_is_sanitized() {
   local env_script=$ROOT/pidns-injected-bash-env
   local config=$CONTROLLER_ROOT/controller.local.env saved_config=$ROOT/controller.local.env.saved
@@ -3542,6 +3585,7 @@ if [[ -n ${PI_TEST_FOCUS:-} ]]; then
   case $PI_TEST_FOCUS in
     default-thinking) check_pi_default_thinking_max ;;
     pidns-argv) check_pidns_launch_contract ;;
+    pidns-python-stdin) check_pidns_python_stdin_isolated ;;
     pidns-startup-env) check_pidns_startup_environment_is_sanitized ;;
     pidns-preflight) check_pidns_preflight_refused ;;
     pidns-extra-args) check_pidns_extension_args_refused ;;
@@ -4443,6 +4487,7 @@ check_refusal_keeps_records
 check_accepted_resume_records
 check_run_mode
 check_pidns_launch_contract
+check_pidns_python_stdin_isolated
 check_pidns_startup_environment_is_sanitized
 check_pidns_preflight_refused
 check_pidns_extension_args_refused

@@ -36,6 +36,9 @@ done
 pidns_wrapper_row=$(git -C "$REPO_ROOT" ls-files -s -- scripts/controller/pi-pidns-bash) || pidns_wrapper_row=
 [[ -n $pidns_wrapper_row ]] || { echo 'FAIL: scripts/controller/pi-pidns-bash is not tracked' >&2; exit 1; }
 [[ ${pidns_wrapper_row%% *} == 100755 ]] || bad+=("scripts/controller/pi-pidns-bash (${pidns_wrapper_row%% *})")
+IFS= read -r pidns_wrapper_shebang < "$REPO_ROOT/scripts/controller/pi-pidns-bash" || pidns_wrapper_shebang=
+[[ $pidns_wrapper_shebang == '#!/usr/bin/python3 -IS' ]] \
+  || { echo 'FAIL: pi-pidns-bash must start Python with -I -S before namespace setup' >&2; exit 1; }
 pidns_worker_row=$(git -C "$REPO_ROOT" ls-files -s -- scripts/controller/pi-pidns-bash-worker.sh) || pidns_worker_row=
 [[ -n $pidns_worker_row ]] || { echo 'FAIL: scripts/controller/pi-pidns-bash-worker.sh is not tracked' >&2; exit 1; }
 (( ${#bad[@]} == 0 )) || { printf 'not executable (want 100755): %s\n' "${bad[@]}" >&2; exit 1; }
