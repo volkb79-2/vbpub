@@ -41,6 +41,7 @@ class AgentServer:
         self._client_threads: set[threading.Thread] = set()
         self._closed = False
         self._serving = False
+        self._serve_once_active = False
 
     @classmethod
     def on_path(cls, path: Path, service: AgentVerbService, policy: AgentPolicy) -> AgentServer:
@@ -52,37 +53,49 @@ class AgentServer:
 
     def serve_once(self) -> None:
         """Accept and handle one client synchronously; useful for lifecycle probes."""
-        readable, _, _ = self._select_waiter([self.listener, self._wake_read], [], [], None)
-        if self._wake_read in readable:
-            return
-        connection, _address = self.listener.accept()
-        if not self._register_ordinary(connection):
-            with connection:
-                _write_error(
-                    connection, self.service, ExitCode.IDENTITY_OR_TRANSPORT,
-                    "ordinary connection limit reached or server is closing",
-                )
-            return
+        with self._state_lock:
+            if self._closed:
+                return
+            if self._serving or self._serve_once_active:
+                raise AdmissionError(ExitCode.RUNNER_FAILURE, "fleetd agent listener is already serving")
+            self._serve_once_active = True
         try:
-            with connection:
-                try:
-                    identity = self.policy.resolve_socket_peer(connection)
-                except AdmissionError as exc:
-                    _write_error(connection, self.service, exc.exit_code, exc.reason)
-                    return
-                serve_connection(
-                    connection, connection, self.service, self.policy, identity,
-                    on_lease_held=lambda: self._release_ordinary(connection),
-                )
+            readable, _, _ = self._select_waiter([self.listener, self._wake_read], [], [], None)
+            if self._wake_read in readable:
+                return
+            connection, _address = self.listener.accept()
+            if not self._register_ordinary(connection):
+                with connection:
+                    _write_error(
+                        connection, self.service, ExitCode.IDENTITY_OR_TRANSPORT,
+                        "ordinary connection limit reached or server is closing",
+                    )
+                return
+            try:
+                with connection:
+                    try:
+                        identity = self.policy.resolve_socket_peer(connection)
+                    except AdmissionError as exc:
+                        _write_error(connection, self.service, exc.exit_code, exc.reason)
+                        return
+                    serve_connection(
+                        connection, connection, self.service, self.policy, identity,
+                        on_lease_held=lambda: self._release_ordinary(connection),
+                    )
+            finally:
+                self._release_ordinary(connection)
         finally:
-            self._release_ordinary(connection)
+            with self._state_lock:
+                self._serve_once_active = False
+                if self._closed and not self._serving:
+                    self._close_listener_sockets()
 
     def serve_forever(self) -> None:
         """Serve each connection independently so a held lease does not block peers."""
         with self._state_lock:
             if self._closed:
                 return
-            if self._serving:
+            if self._serving or self._serve_once_active:
                 raise AdmissionError(ExitCode.RUNNER_FAILURE, "fleetd agent listener is already serving")
             self._serving = True
         next_reconcile = self._monotonic() + self.policy.lease_reconcile_interval_s
@@ -140,9 +153,12 @@ class AgentServer:
         finally:
             with self._state_lock:
                 self._serving = False
-                self.listener.close()
-                self._wake_read.close()
-                self._wake_write.close()
+                self._close_listener_sockets()
+
+    def _close_listener_sockets(self) -> None:
+        self.listener.close()
+        self._wake_read.close()
+        self._wake_write.close()
 
     def _serve_connection(self, connection: socket.socket) -> None:
         current = threading.current_thread()
@@ -182,7 +198,7 @@ class AgentServer:
             if self._closed:
                 return
             self._closed = True
-            serving = self._serving
+            serving = self._serving or self._serve_once_active
             ordinary = tuple(self._ordinary_connections)
             if serving:
                 try:
@@ -190,9 +206,7 @@ class AgentServer:
                 except OSError:
                     pass
             else:
-                self._wake_read.close()
-                self._wake_write.close()
-                self.listener.close()
+                self._close_listener_sockets()
         for connection in ordinary:
             try:
                 connection.shutdown(socket.SHUT_RDWR)

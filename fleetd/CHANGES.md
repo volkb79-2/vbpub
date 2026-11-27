@@ -26,6 +26,7 @@ All notable changes to this project are recorded here.
 ### Fixed
 - Import the admission exception handled by `fleetd-agent`, so startup admission failures return their specified exit code instead of raising `NameError`.
 - Keep ordinary client socket descriptors worker-owned during shutdown; the server shuts them down to wake workers but does not close a descriptor still in use.
+- Wake an active synchronous `serve_once` during shutdown and let it close its listener descriptors after leaving the wait.
 
 ### Changed
 - Assign prerequisite-missing exit code 79 (moved from 76); 73 is reserved by fleetd's runner. Map preflight exit 4 to refusal 2. In `/1`, refuse non-null `resources.cpu_set` with 2, reserved like `shard`.

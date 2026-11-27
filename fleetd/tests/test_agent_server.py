@@ -670,6 +670,65 @@ def test_serve_once_handles_wake_limit_and_peer_authentication_refusal(tmp_path,
     identity_server.close()
 
 
+def test_close_wakes_active_serve_once_and_waiter_closes_watched_descriptors(tmp_path):
+    service, _identity, _checkout = _service(tmp_path)
+    waiting = threading.Event()
+    woke = threading.Event()
+    leave_wait = threading.Event()
+    completed = threading.Event()
+    real_select = select.select
+    server = None
+
+    def parked_select(readers, writers, errors, timeout=None):
+        if server._wake_read in readers:
+            waiting.set()
+            readable = real_select(readers, writers, errors, timeout)
+            woke.set()
+            if not leave_wait.wait(3):
+                raise AssertionError("serve_once was not released by the failure watchdog")
+            return readable
+        return real_select(readers, writers, errors, timeout)
+
+    server = AgentServer(
+        open_agent_socket(tmp_path / "serve-once-close.sock"),
+        service, service.policy, select_waiter=parked_select,
+    )
+    watched = (server.listener.fileno(), server._wake_read.fileno(), server._wake_write.fileno())
+
+    def serve_one():
+        server.serve_once()
+        completed.set()
+
+    waiter = threading.Thread(target=serve_one)
+    try:
+        waiter.start()
+        assert waiting.wait(3), "serve_once did not enter its listener wait"
+        with pytest.raises(AdmissionError) as second_once:
+            server.serve_once()
+        assert second_once.value.exit_code == ExitCode.RUNNER_FAILURE
+        with pytest.raises(AdmissionError) as concurrent_forever:
+            server.serve_forever()
+        assert concurrent_forever.value.exit_code == ExitCode.RUNNER_FAILURE
+
+        server.close()
+        assert woke.wait(3), "close did not wake the active serve_once"
+        assert not completed.is_set(), "serve_once left its wait before the test released it"
+        assert all(stat.S_ISSOCK(os.fstat(fd).st_mode) for fd in watched)
+
+        leave_wait.set()
+        assert completed.wait(3), "serve_once did not finish after leaving the wait"
+        waiter.join(timeout=3)
+        assert not waiter.is_alive(), "serve_once thread remained alive after the failure watchdog"
+        for fd in watched:
+            with pytest.raises(OSError):
+                os.fstat(fd)
+    finally:
+        leave_wait.set()
+        if waiter.ident is not None:
+            waiter.join(timeout=3)
+        server.close()
+
+
 def test_serve_forever_returns_when_closed_rejects_duplicate_and_skips_early_reconcile(tmp_path):
     service, _identity, _checkout = _service(
         tmp_path, peer_credentials=(os.geteuid(), os.getegid()),
@@ -677,6 +736,8 @@ def test_serve_forever_returns_when_closed_rejects_duplicate_and_skips_early_rec
     closed = AgentServer.on_path(tmp_path / "closed.sock", service, service.policy)
     closed.close()
     closed.serve_forever()
+    closed.serve_once()
+    assert closed.listener.fileno() == -1
 
     duplicate = AgentServer.on_path(tmp_path / "duplicate.sock", service, service.policy)
     duplicate._serving = True
