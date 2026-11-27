@@ -2,13 +2,16 @@ import hashlib
 import json
 import os
 import socket
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-from fleetd.admission import AdmissionError
+from fleetd.admission import AdmissionError, ExitCode
+from fleetd.admission import InspectorAnswer
 from fleetd.agent_verbs import AgentVerbService
+from fleetd.agent_protocol import read_frame, write_frame
 from fleetd.contracts import validate_host_facts
 from fleetd.facts import collect_host_facts
 from test_agent_protocol import _policy, _submit
@@ -22,7 +25,7 @@ def _service(tmp_path, *, extra_argv='[["--verbose"]]'):
     facts = validate_host_facts(collect_host_facts(
         FACTS_ROOT,
         disk_statvfs_reader=lambda _path: SimpleNamespace(
-            f_frsize=4096, f_bsize=4096, f_blocks=100, f_bavail=40,
+            f_frsize=4096, f_bsize=4096, f_blocks=1_000_000, f_bavail=750_000,
         ),
     ))
     service = AgentVerbService(tmp_path / "state", policy, lambda: facts, agent_version="1.0.0")
@@ -85,6 +88,94 @@ def test_probe_facts_and_have_return_host_owned_data(tmp_path):
     assert facts.document["schema"] == "host-facts/2"
     assert facts.document["policy"]["max_upload_bytes"]["v"] == 1073741824
     assert have.document["refs"] == ["a" * 40]
+
+
+def test_submit_without_executor_refuses_before_admission_or_durable_write(tmp_path):
+    service, identity, _checkout = _service(tmp_path)
+
+    with pytest.raises(AdmissionError, match="executor unavailable") as error:
+        service.handle(_submit(), identity)
+
+    assert error.value.exit_code == ExitCode.REFUSAL
+    assert list(service.paths.jobs_dir.iterdir()) == []
+    assert list(service.admission.book.admitted_dir.iterdir()) == []
+    assert list(service.admission.book.waiting_dir.iterdir()) == []
+
+
+def test_lease_grant_bind_ack_and_reconnect_hold_the_admission_handle(tmp_path):
+    policy, _checkout = _policy(tmp_path)
+    raw_facts = collect_host_facts(
+        FACTS_ROOT,
+        disk_statvfs_reader=lambda _path: SimpleNamespace(
+            f_frsize=4096, f_bsize=4096, f_blocks=1_000_000, f_bavail=750_000,
+        ),
+    )
+    raw_facts["policy"]["priority_classes_by_principal"] = {
+        "v": {"controller-devcontainer": ["gate"]},
+    }
+    raw_facts["policy"]["admission"] = {
+        "v": {"queue_path": "/run/fleetd/queue", "wait_s": 30, "settle_s": 1},
+    }
+    facts = validate_host_facts(raw_facts)
+    lease_id = "controller-run-1"
+    container_id = "c" * 64
+    service = AgentVerbService(
+        tmp_path / "state", policy, lambda: facts, agent_version="1.0.0",
+        legacy_jobs_provider=lambda: (),
+        inspector=lambda _name: InspectorAnswer.NO_SUCH_OBJECT,
+        container_inspector=lambda inspected_id: {
+            "id": inspected_id, "name": "rg-test",
+            "labels": {"fleetd.lease": lease_id},
+        },
+    )
+    identity = policy.resolve_peer(1000, 100)
+    initial_request = {
+        "verb": "lease", "lease_id": lease_id, "container_name": "rg-test",
+        "footprint": "tiny", "planned_cores": 1, "priority": "gate",
+    }
+    errors = []
+
+    def serve(request, server):
+        try:
+            service.serve_lease(request, identity, server)
+        except BaseException as exc:
+            errors.append(exc)
+            try:
+                write_frame(server, {"event": "test-error", "reason": str(exc)})
+            except Exception:
+                pass
+        finally:
+            try:
+                server.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            server.close()
+
+    client, server = socket.socketpair()
+    first = threading.Thread(target=serve, args=(initial_request, server))
+    first.start()
+    grant = read_frame(client, None)
+    assert grant["event"] == "grant", grant
+    write_frame(client, {"event": "bind", "lease_id": lease_id, "container_id": container_id})
+    bound = read_frame(client, None)
+    assert bound["event"] == "bound"
+    assert bound["container_id"] == container_id
+    client.close()
+    first.join()
+    assert errors == []
+
+    client, server = socket.socketpair()
+    reconnect = threading.Thread(target=serve, args=(
+        {"verb": "lease", "lease_id": lease_id, "container_id": container_id}, server,
+    ))
+    reconnect.start()
+    resumed = read_frame(client, None)
+    assert resumed["event"] == "bound"
+    assert resumed["container_id"] == container_id
+    client.close()
+    reconnect.join()
+    assert errors == []
+    assert service.admission.book.status(lease_id, identity.group)["container_id"] == container_id
 
 
 @pytest.mark.parametrize(
@@ -232,7 +323,7 @@ def test_submit_candidate_allowlist_accepts_only_file_created_for_authenticated_
     request = _submit()
     request["extra_argv"] = ["--only-candidates", result["path"]]
 
-    with pytest.raises(AdmissionError, match="not available in this package stage"):
+    with pytest.raises(AdmissionError, match="executor unavailable"):
         service.handle(request, identity)
 
     request["extra_argv"][1] = "/tmp/client-owned-candidates"

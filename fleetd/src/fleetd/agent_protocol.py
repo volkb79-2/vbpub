@@ -34,7 +34,7 @@ class FrameError(ValueError):
     """A malformed, oversized, truncated, or idle agent frame."""
 
 
-def _read_exact(fd: int, size: int, idle_timeout_s: float) -> bytes:
+def _read_exact(fd: int, size: int, idle_timeout_s: float | None) -> bytes:
     chunks: list[bytes] = []
     remaining = size
     while remaining:
@@ -68,13 +68,16 @@ def _invalid_json_constant(value: str) -> None:
     raise FrameError(f"invalid JSON constant {value!r}")
 
 
-def read_frame(stream: object, idle_timeout_s: float) -> dict[str, Any]:
-    """Read one big-endian length-prefixed JSON object, with an idle timeout."""
-    if isinstance(idle_timeout_s, bool) or not isinstance(idle_timeout_s, (int, float)):
-        raise FrameError("idle timeout must be a positive number")
-    timeout = float(idle_timeout_s)
-    if not math.isfinite(timeout) or timeout <= 0:
-        raise FrameError("idle timeout must be a positive number")
+def read_frame(stream: object, idle_timeout_s: float | None) -> dict[str, Any]:
+    """Read one frame; ``None`` waits without an idle deadline for a held lease."""
+    if idle_timeout_s is None:
+        timeout = None
+    else:
+        if isinstance(idle_timeout_s, bool) or not isinstance(idle_timeout_s, (int, float)):
+            raise FrameError("idle timeout must be a positive number")
+        timeout = float(idle_timeout_s)
+        if not math.isfinite(timeout) or timeout <= 0:
+            raise FrameError("idle timeout must be a positive number")
     try:
         fd = stream if type(stream) is int else stream.fileno()
     except (AttributeError, OSError, ValueError) as exc:
@@ -298,11 +301,16 @@ def validate_request(
         "status": {"verb", "job_id"}, "progress": {"verb", "job_id", "offset"},
         "cancel": {"verb", "job_id", "reason"},
         "fetch": {"verb", "job_id", "artifact", "offset", "length"},
-        "lease": {"verb", "lease_id", "container_name", "footprint", "planned_cores", "priority"},
+        "lease": {"verb", "lease_id", "container_name", "footprint", "planned_cores", "priority", "container_id"},
     }
     if verb not in fields:
         _refuse(f"unsupported agent verb {verb!r}")
-    request = _object(value, "request", fields[verb])
+    if verb == "lease" and "container_id" in value:
+        request = _object(value, "request", {"verb", "lease_id", "container_id"})
+    elif verb == "lease":
+        request = _object(value, "request", fields[verb] - {"container_id"})
+    else:
+        request = _object(value, "request", fields[verb])
 
     if verb in {"probe", "facts"}:
         return request
@@ -333,6 +341,11 @@ def validate_request(
         if identity.transport != "peer":
             raise AdmissionError(ExitCode.IDENTITY_OR_TRANSPORT, "lease is available only on the controller socket")
         _job_id(request["lease_id"], identity, "lease_id")
+        if "container_id" in request:
+            container_id = _string(request["container_id"], "lease.container_id", maximum=64)
+            if re.fullmatch(r"[0-9a-f]{64}", container_id) is None:
+                _refuse("lease.container_id must be a full lowercase Docker container id")
+            return request
         name = _string(request["container_name"], "lease.container_name", maximum=128)
         if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", name) is None:
             _refuse("lease.container_name is invalid")

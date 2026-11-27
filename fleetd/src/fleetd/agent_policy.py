@@ -33,6 +33,7 @@ class AgentIdentity:
 @dataclass(frozen=True)
 class AgentPolicy:
     idle_connection_s: float
+    query_timeout_s: float
     identities: tuple[AgentIdentity, ...]
     repo_roots: Mapping[str, Path]
     requested_by_clients: frozenset[str]
@@ -201,12 +202,13 @@ def load_agent_policy(path: Path = DEFAULT_AGENT_POLICY_PATH) -> AgentPolicy:
 
     root = _object(
         parsed, "agent.toml",
-        {"schema_version", "idle_connection_s", "identities", "repo_roots", "requested_by_clients",
+        {"schema_version", "idle_connection_s", "query_timeout_s", "identities", "repo_roots", "requested_by_clients",
          "extra_argv", "dev_argv", "env_values"},
     )
     if type(root["schema_version"]) is not int or root["schema_version"] != 1:
         raise ContractError("agent.toml.schema_version: expected integer 1")
     idle_connection_s = _positive_number(root["idle_connection_s"], "agent.toml.idle_connection_s")
+    query_timeout_s = _positive_number(root["query_timeout_s"], "agent.toml.query_timeout_s")
     identities = _identities(root["identities"])
 
     raw_roots = root["repo_roots"]
@@ -231,6 +233,6 @@ def load_agent_policy(path: Path = DEFAULT_AGENT_POLICY_PATH) -> AgentPolicy:
         env_values[name] = _string_set(values, f"agent.toml.env_values.{name}")
 
     return AgentPolicy(
-        idle_connection_s, identities, repo_roots, requested_by_clients,
+        idle_connection_s, query_timeout_s, identities, repo_roots, requested_by_clients,
         extra_argv, dev_argv, env_values,
     )

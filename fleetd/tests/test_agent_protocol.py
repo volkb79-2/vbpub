@@ -41,6 +41,7 @@ group = "worker"
 '''
     path.write_text(f'''schema_version = 1
 idle_connection_s = 20
+query_timeout_s = 5
 requested_by_clients = ["fleetd"]
 extra_argv = {extra_argv}
 dev_argv = [["status"]]
@@ -298,6 +299,21 @@ def test_validate_request_uses_transport_identity_and_restricts_lease(tmp_path):
              "footprint": "small", "planned_cores": 1, "priority": "gate"},
             forced, policy,
         )
+
+
+def test_lease_reconnect_request_names_only_the_existing_lease_and_immutable_container_id(tmp_path):
+    policy, _checkout = _policy(tmp_path)
+    identity = policy.resolve_peer(1000, 100)
+    request = {"verb": "lease", "lease_id": "controller-run-1", "container_id": "c" * 64}
+
+    assert validate_request(request, identity, policy) is request
+    request["container_name"] = "untrusted-extra"
+    with pytest.raises(AdmissionError, match="unknown field.*container_name"):
+        validate_request(request, identity, policy)
+
+    request = {"verb": "lease", "lease_id": "controller-run-1", "container_id": "short"}
+    with pytest.raises(AdmissionError, match="full lowercase Docker"):
+        validate_request(request, identity, policy)
 
 
 def test_validate_request_checks_dev_payload_and_allowlist(tmp_path):

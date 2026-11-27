@@ -3065,6 +3065,34 @@ def test_exactly_one_of_two_fitting_waiters_is_admissible_so_neither_blocks_the_
     assert allowed == [admitted]
 
 
+def test_aged_nonfitting_reservation_does_not_allow_merge_gates_to_pass_out_of_queue_order(tmp_path):
+    book = _book(tmp_path / "state")
+    capacity = _capacity()
+    existing_charge = {
+        "job_id": "ops-existing", "charged_bytes": 2 * GIB,
+        "current_warm_bytes": 0, "planned_cores": 1.0,
+    }
+    holder = _waiting_row("ops-aged-holder", "campaign", 0.0)
+    holder["footprint"] = "large"
+    first = _waiting_row("ops-first-merge", "merge-gate", 50.0)
+    second = _waiting_row("ops-second-merge", "merge-gate", 51.0)
+    rows = [holder, first, second]
+
+    assert book._queue_allows(second, rows, capacity, {"job:ops-existing": existing_charge}, (), 100.0, 60.0) is False
+    assert book._queue_allows(first, rows, capacity, {"job:ops-existing": existing_charge}, (), 100.0, 60.0) is True
+
+    admitted_first = {
+        "job_id": first["job_id"], "charged_bytes": GIB // 2,
+        "current_warm_bytes": 0, "planned_cores": 1.0,
+    }
+    after_first_admission = [holder, second]
+    assert book._queue_allows(
+        second, after_first_admission,
+        capacity, {"job:ops-existing": existing_charge, "job:ops-first-merge": admitted_first}, (),
+        100.0, 60.0,
+    ) is True
+
+
 def test_expired_wait_names_the_last_refusal(tmp_path):
     clock = _FakeClock()
     capacity = replace(
@@ -3081,6 +3109,24 @@ def test_expired_wait_names_the_last_refusal(tmp_path):
     assert raised.value.exit_code == 75
     assert "policy.legacy_planned_cores unavailable: legacy core policy missing" in raised.value.reason
     assert book.status("ops-waits-for-policy", "ops") is None
+
+
+def test_custom_waiter_disconnect_withdraws_its_record_before_returning(tmp_path):
+    book = _book(tmp_path / "state")
+    with pytest.raises(AdmissionError, match="client disconnected") as raised:
+        book.submit(
+            _request(job_id="ops-disconnected-waiter", footprint="small"),
+            authenticated_group="ops",
+            capacity_provider=lambda: _capacity(),
+            legacy_jobs_provider=lambda: ("legacy-running",),
+            wait_s=10,
+            waiter=lambda _seconds: (_ for _ in ()).throw(
+                AdmissionError(ExitCode.IDENTITY_OR_TRANSPORT, "client disconnected")
+            ),
+        )
+
+    assert raised.value.exit_code == ExitCode.IDENTITY_OR_TRANSPORT
+    assert book.status("ops-disconnected-waiter", "ops") is None
 
 
 def test_unreadable_terminal_of_an_unrelated_finished_job_does_not_block_admission(tmp_path):

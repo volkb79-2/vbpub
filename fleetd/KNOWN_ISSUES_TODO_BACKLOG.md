@@ -60,6 +60,7 @@
 | FD-055 | A stray record after an unconfirmed rollback can leave a charge the waiter never claims | P2 | OPEN | 2026-11-26 |
 | FD-056 | The wait deadline is not rechecked after the queue lock is taken | P3 | OPEN | 2026-11-26 |
 | FD-057 | Admission subprocess tests have no timeout, and the two-process test is weak | P3 | OPEN | 2026-11-26 |
+| FD-058 | Aged-holder scan can skip queue-ordered merge-gate waiters | P1 | FIXED IN THIS BRANCH (C3a) | 2026-11-27 |
 
 ## FD-001 Lite campaign lifecycle
 
@@ -1078,3 +1079,19 @@ admission test detects a missing lock only when the interleaving is unlucky. It
 cannot fail spuriously.
 
 Source: P-fd-05 C2 review r2 L-8.
+
+## FD-058 Preserve queue order when merge gates pass an aged reservation
+
+**State:** FIXED IN THIS BRANCH (C3a). **Priority:** P1. **Filed:** 2026-11-27.
+
+`AdmissionBook._queue_allows` stops its scan as soon as it finds the aged
+reservation holder. It could therefore miss a fitting merge-gate waiter that
+must precede the candidate being polled, allowing admission order to depend on
+which waiter reacquires `queue.lock` first. `_queue_allows` now continues
+collecting queue-order blockers after identifying the reservation holder. The
+holder remains the first aged, statically eligible waiter; admitted merge gates
+may pass it only in the already-defined queue order. A regression test proves
+that the second fitting merge gate cannot pass the first while the aged holder
+is non-fitting.
+
+Source: P-fd-05 C3a controller ruling for FD-058.

@@ -8,16 +8,18 @@ import json
 import os
 import re
 import select
+import socket
 import stat
 import tempfile
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Iterable, Mapping
 
-from .admission import AdmissionError, ExitCode
+from .admission import AdmissionError, ExitCode, InspectorAnswer
+from .agent_admission import AgentAdmission, AgentExecutor
 from .agent_policy import AgentIdentity, AgentPolicy
-from .agent_protocol import FrameError, validate_request, write_frame
+from .agent_protocol import FrameError, read_frame, validate_request, write_frame
 from .contracts import ContractError, HostFacts, validate_host_facts
 from .hostside import resolve_assay_lane
 
@@ -36,7 +38,7 @@ _CAPABILITIES: dict[str, list[str]] = {
     "progress": ["verb", "job_id", "offset"],
     "cancel": ["verb", "job_id", "reason"],
     "fetch": ["verb", "job_id", "artifact", "offset", "length"],
-    "lease": ["verb", "lease_id", "container_name", "footprint", "planned_cores", "priority"],
+    "lease": ["verb", "lease_id", "container_name", "footprint", "planned_cores", "priority", "container_id"],
 }
 
 
@@ -113,11 +115,22 @@ class AgentVerbService:
         facts_provider: Callable[[], Mapping[str, object] | HostFacts],
         *,
         agent_version: str,
+        admission: AgentAdmission | None = None,
+        executor: AgentExecutor | None = None,
+        legacy_jobs_provider: Callable[[], Iterable[str]] | None = None,
+        inspector: Callable[[str], InspectorAnswer] | None = None,
+        container_inspector: Callable[[str], Mapping[str, object] | None] | None = None,
     ) -> None:
         self.paths = AgentPaths.initialize(state_dir)
         self.policy = policy
         self.facts_provider = facts_provider
         self.agent_version = agent_version
+        self.admission = admission or AgentAdmission(
+            state_dir, policy, facts_provider,
+            legacy_jobs_provider=legacy_jobs_provider, inspector=inspector,
+            container_inspector=container_inspector,
+        )
+        self.executor = executor
 
     def _envelope(self, **fields: object) -> dict[str, object]:
         return {"schema": AGENT_SCHEMA, "agent_version": self.agent_version, **fields}
@@ -166,7 +179,76 @@ class AgentVerbService:
             return self._fetch(normalized, identity)
         if verb == "progress":
             return self._progress(normalized, identity)
+        if verb == "submit":
+            if self.executor is None:
+                raise AdmissionError(
+                    ExitCode.REFUSAL,
+                    "executor unavailable: fleetd host executor is not configured",
+                )
+            result = self.admission.submit(normalized, identity, self.executor)
+            return AgentReply(self._envelope(**result))
+        if verb == "status":
+            result = self.admission.status(str(normalized["job_id"]), identity, self.executor)
+            return AgentReply(self._envelope(**result))
+        if verb == "cancel":
+            result = self.admission.cancel(
+                str(normalized["job_id"]), str(normalized["reason"]), identity, self.executor,
+            )
+            return AgentReply(self._envelope(**result))
+        if verb == "lease":
+            raise AdmissionError(
+                ExitCode.IDENTITY_OR_TRANSPORT,
+                "lease requires the held-connection protocol handler",
+            )
         raise AdmissionError(ExitCode.REFUSAL, f"agent verb {verb!r} is not available in this package stage")
+
+    def serve_lease(self, request: object, identity: AgentIdentity, stream: object) -> None:
+        """Grant, bind or reconnect a local lease and hold its flock to disconnect."""
+        normalized = validate_request(
+            request, identity, self.policy,
+            created_candidate_paths=self.paths.candidate_paths(identity.group),
+        )
+        lease_id = str(normalized["lease_id"])
+        container_id = normalized.get("container_id")
+        result = None
+        try:
+            if isinstance(container_id, str):
+                result = self.admission.reserve_lease(
+                    lease_id, identity, container_id=container_id,
+                )
+                self._write_lease_message(stream, event="bound", lease_id=lease_id, container_id=container_id)
+            else:
+                result = self.admission.reserve_lease(
+                    lease_id, identity,
+                    container_name=str(normalized["container_name"]),
+                    footprint=str(normalized["footprint"]),
+                    planned_cores=float(normalized["planned_cores"]),
+                    priority=str(normalized["priority"]),
+                    waiter=_lease_queue_waiter(stream),
+                )
+                self._write_lease_message(
+                    stream, event="grant", lease_id=lease_id,
+                    container_name=str(result.record["container_name"]),
+                )
+                bind_request = read_frame(stream, None)
+                if (
+                    set(bind_request) != {"event", "lease_id", "container_id"}
+                    or bind_request.get("event") != "bind"
+                    or bind_request.get("lease_id") != lease_id
+                    or not isinstance(bind_request.get("container_id"), str)
+                    or re.fullmatch(r"[0-9a-f]{64}", str(bind_request["container_id"])) is None
+                ):
+                    raise AdmissionError(ExitCode.REFUSAL, "lease bind frame has an invalid closed shape")
+                container_id = str(bind_request["container_id"])
+                self.admission.bind_lease(lease_id, container_id, identity, result.handle)
+                self._write_lease_message(stream, event="bound", lease_id=lease_id, container_id=container_id)
+            _wait_for_lease_disconnect(stream)
+        finally:
+            if result is not None and result.handle is not None:
+                result.handle.close()
+
+    def _write_lease_message(self, stream: object, **fields: object) -> None:
+        write_frame(stream, self._envelope(**fields))
 
     def _have(self, repo: str) -> dict[str, object]:
         root = self.policy.repo_roots[repo]
@@ -529,3 +611,44 @@ def _write_bytes(fd: int, data: bytes) -> None:
         if written <= 0:
             raise FrameError("streamed response write made no progress")
         view = view[written:]
+
+
+def _lease_queue_waiter(stream: object) -> Callable[[float], None]:
+    if not isinstance(stream, socket.socket):
+        raise AdmissionError(ExitCode.IDENTITY_OR_TRANSPORT, "lease requires a local socket connection")
+
+    def wait(seconds: float) -> None:
+        try:
+            readable, _, _ = select.select([stream], [], [], seconds)
+            if not readable:
+                return
+            data = stream.recv(1, socket.MSG_PEEK | socket.MSG_DONTWAIT)
+        except BlockingIOError:
+            return
+        except OSError as exc:
+            raise AdmissionError(ExitCode.IDENTITY_OR_TRANSPORT, f"lease connection failed while queued: {exc}") from exc
+        if not data:
+            raise AdmissionError(ExitCode.IDENTITY_OR_TRANSPORT, "lease client disconnected before its grant")
+        raise AdmissionError(ExitCode.IDENTITY_OR_TRANSPORT, "unexpected client data while lease admission is queued")
+
+    return wait
+
+
+def _wait_for_lease_disconnect(stream: object) -> None:
+    try:
+        fd = stream if type(stream) is int else stream.fileno()
+    except (AttributeError, OSError, ValueError) as exc:
+        raise FrameError("held lease stream has no file descriptor") from exc
+    if type(fd) is not int or fd < 0:
+        raise FrameError("held lease stream has an invalid file descriptor")
+    while True:
+        try:
+            readable, _, _ = select.select([fd], [], [], None)
+            if not readable:
+                continue
+            data = os.read(fd, 1)
+        except OSError as exc:
+            raise AdmissionError(ExitCode.IDENTITY_OR_TRANSPORT, f"held lease connection failed: {exc}") from exc
+        if not data:
+            return
+        raise AdmissionError(ExitCode.IDENTITY_OR_TRANSPORT, "unexpected data after lease bind acknowledgement")
