@@ -2084,3 +2084,29 @@ Run `accept-20261127T120405Z-1` on r1002 at head `ca4b64ddb`: step 0 (K=1560M) P
 The one smoke lane ran 12:23:21-12:25:25Z; its judged window was 12:23:45-12:30:47Z. `system.some` peaked 0.54 while the lane lived; the failing peaks 1.03 (12:26:10) and 1.46 (12:30:06) came after its containers and checkout were removed.
 
 Reading: a recorded result of ONE run; after-effects of the lane are not strictly excluded. No fix is proposed here.
+
+## MDT-116 - host-setup acceptance kit v2: review follow-ups and operating lessons (2026-11-27)
+
+**Status:** OPEN (low severity; none was a merge blocker). Paths are under `host-setup/`. From the static reviews of P-plat-19m (merged in `9a70e5a6a`) and its root runs on r1002.
+
+**Slice floors (review of `68b1a9cc6`):**
+- S1: `accept-eval.py` compares a `.slice` floor with no installed value, because base `.slice` rows are refused. A slice measured in every passing step prints `proved=yes` even when it lies above the real slice MemoryMin (512M dev-interactive, 64M user.slice) that the capacity derivation reserves. Compare with the real MemoryMin and say when the measurement exceeds it.
+- S2: slices still print a `FLOOR` line beside the INFO line; a slice candidate would print `installed 0M`, which is false. Skip slices in the `FLOOR` loop.
+- S3: `docs/DESIGN-ACCEPT-KIT-V2.md` 4.3 says a non-slice candidate enters the `host-setup.env` lines commented out (the code never puts a candidate into the block) and that losing a floor is safe (not so for a slice above its real MemoryMin). `CHANGES.md` does not mention the refusal of invalid base `DEV_HOST_MEMORY_MIN` rows.
+- S4: no test covers that base-row refusal, a snapshot holding a `.slice` row, or the `proved=no` INFO form.
+- S5 (older): r1002's rows leave 8M under the 460M `system.slice` bound; proved service raises above that end `INCONCLUSIVE proposal` without rows (documented bound).
+
+**DAMON refresh and its tests (reviews of `af17e3a11` and `ca4b64ddb`):**
+- D1: `accept-run.sh` discards the output of both `hotset refresh-schemes` calls; append it to `$EVID/hotset-<step>.log` and name that file in the note.
+- D2: a drop recorded by setup or the post-warm-up commit carries step 0, and any momentary "no leaf" makes the unit unproved for the whole run (safe direction). Fix or document.
+- D3: two weak tests around the step-0 refresh: one assertion is tautological, and moving the refresh after the settle window would still pass.
+- D4: `accept-hotset.py` setup retry can rewrite scheme inputs of a kdamond a foreign owner started in the same window before it refuses; check `state == off` on each attempt. The `Inconclusive` check at `sample()`'s retry exit is unreachable.
+- D5: the "unreadable kernel config" WARN arm has no test.
+- D6: the test cleanup in `tests/test_accept_kit.py` has a bounded wait but no kill escalation.
+- D7: the design doc still calls the `stats/sz_ops_filter_passed` and `young` filter checks a preflight fact; setup requires them, preflight does not check them.
+
+**Running the kit:**
+- R1: `accept-run.sh` asks for "one gate lane, the cockpit attached and idle, one ssh login" but gives no commands for that operator part; put the commands into the kit docs.
+- R2: document the no-polling rule: no ssh, helper or remote-gate follower on the measured host during a run. Run 1 (`accept-20261127T114041Z-1`) ran with two ssh pollers and failed step 0 on `user.slice` pressure (a correlation, not proven cause). Start the gate lane detached and collect it after the run.
+- R3: the load criterion was met on only 62-71 % of judged ticks (80 % needed) in failing steps, so such a step is not load-bearing; the load generator's margin is thin.
+- R4: the kit could record external sshd logins during the judged windows, so a disturbed run is visible in its evidence.
