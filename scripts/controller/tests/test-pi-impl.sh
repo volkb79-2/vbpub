@@ -3035,9 +3035,9 @@ Path(os.environ["PI_JSON_SHADOW_MARKER"]).write_text("ran", encoding="utf-8")
 PY
 
   (
-    export PI_JSON_SHADOW_MARKER=$marker
     cd -- "$WORKTREE" || exit 1
-    PI_LIVE=0 launch pidns-python-inspect deepseek-pi-volker pi-success /dev/null
+    PI_JSON_SHADOW_MARKER=$marker PI_LIVE=0 \
+      launch pidns-python-inspect deepseek-pi-volker pi-success /dev/null
   ) || rc=$?
   [[ $rc == 0 ]] || {
     cat "$ROOT/pidns-python-inspect.launch.log" >&2
@@ -3047,9 +3047,9 @@ PY
 
   rc=0
   (
-    export PI_JSON_SHADOW_MARKER=$marker
     cd -- "$WORKTREE" || exit 1
-    PI_LIVE=0 launch pidns-python-scan deepseek-pi-volker pi-success /dev/null \
+    PI_JSON_SHADOW_MARKER=$marker PI_LIVE=0 \
+      launch pidns-python-scan deepseek-pi-volker pi-success /dev/null \
       resume pidns-python-inspect-session
   ) || rc=$?
   [[ $rc == 0 ]] || {
