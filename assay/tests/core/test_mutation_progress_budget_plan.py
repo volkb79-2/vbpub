@@ -2474,6 +2474,277 @@ def test_no_progress_wall_stop_is_unclassified_and_retried_on_resume(
     assert not any(event.get("event") == "candidate" for event in progress)
 
 
+def test_real_liveness_stop_drains_parallel_peer_and_resume_retries_missing_identity(
+    tmp_path, monkeypatch
+):
+    """The real execute_plan path maps a liveness stop and drains jobs=2.
+
+    Synthetic process handles and a virtual clock make both candidates' run
+    order deterministic. The first candidate reaches LivenessRunner's wall
+    stop; the already-dispatched peer then completes and persists before the
+    fatal result is raised. Resume dispatches the stopped identity again.
+    """
+    from assay import _window_host, runner as runner_module
+
+    repo = _three_site_repo(tmp_path)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    state_root = tmp_path / "state-root"
+    state_root.mkdir()
+    progress_path = tmp_path / ".assay" / "lane.progress.jsonl"
+    events_dir = tmp_path / "liveness-candidates"
+    lane = make_lane(argv=("pytest", "-q"))
+    baseline = execute_command(
+        lane,
+        cwd=repo.path,
+        process_runner=lambda argv, *, env, cwd, timeout: completed_process(
+            list(argv), returncode=0
+        ),
+    )
+    all_jobs = mutation_module.collect_mutation_sites(
+        _THREE_TARGETS,
+        adapter=PythonAdapter(),
+        operators=("python:bool-const-flip",),
+        limit=10,
+    )
+    assert isinstance(all_jobs, tuple) and len(all_jobs) == 3
+    candidate_ids = [mutation_module.candidate_id(job) for job in all_jobs]
+
+    class _Clock:
+        def __init__(self):
+            self.t = 0.0
+
+        def now(self):
+            return self.t
+
+        def advance(self, duration):
+            self.t += duration
+
+    class _Proc:
+        def __init__(self, pid):
+            self.pid = pid
+            self.returncode = None
+
+        def finish(self, returncode):
+            self.returncode = returncode
+
+        def poll(self):
+            return self.returncode
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+    active = {"clock": None, "candidate": None, "proc": None, "pass": 1}
+    next_pid = 8100
+    timeline = []
+
+    def window_clock():
+        assert active["clock"] is not None
+        return active["clock"].now()
+
+    def window_sleep(duration):
+        assert active["clock"] is not None
+        active["clock"].advance(duration)
+
+    def fake_popen(argv, *, env, cwd, stdout, stderr, start_new_session, **_kwargs):
+        nonlocal next_pid
+        next_pid += 1
+        active["proc"] = _Proc(next_pid)
+        return active["proc"]
+
+    def cpu_reader(_pid):
+        clock = active["clock"]
+        proc = active["proc"]
+        assert clock is not None and proc is not None
+        if not (active["candidate"] == "stopped" and active["pass"] == 1):
+            if clock.t >= 3.0 and proc.returncode is None:
+                proc.finish(0)
+                timeline.append((active["pass"], active["candidate"], "peer-complete"))
+        return 0.0
+
+    def unavailable_resources(_pid):
+        return {
+            "schema_version": 1,
+            "status": "unavailable",
+            "reason": "scripted-unreadable-pressure",
+        }
+
+    liveness_runner = liveness.LivenessRunner(
+        events_dir=events_dir,
+        expect_next_event_within_s=1000.0,
+        pre_first_event_within_s=1000.0,
+        monotonic=window_clock,
+        sleep=window_sleep,
+        cpu_reader=cpu_reader,
+        resource_reader=unavailable_resources,
+        popen=fake_popen,
+        process_group_killer=lambda _pgid, _sig: None,
+        cpu_without_progress_bound_s=2.0,
+        advisory_budget_s=50.0,
+    )
+
+    def direct_window_run(
+        plan, *, cwd, timeout, process_runner, clock, **_kwargs
+    ):
+        source = (Path(cwd) / "pkg" / "flags.py").read_text(encoding="utf-8")
+        if "a = False" in source:
+            candidate = "stopped"
+        elif "b = False" in source:
+            candidate = "peer"
+        elif "c = False" in source:
+            candidate = "third"
+        else:
+            raise AssertionError(f"unexpected mutation source: {source!r}")
+        active["clock"] = _Clock()
+        active["candidate"] = candidate
+        active["proc"] = None
+        return runner_module.execute_plan(
+            plan,
+            cwd=cwd,
+            timeout=timeout,
+            process_runner=process_runner,
+            clock=clock,
+        )
+
+    class _ControlledExecutor:
+        def __init__(self, requested_jobs):
+            assert requested_jobs == 2
+            self.pending = []
+            self.submitted = []
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def submit(self, function, position):
+            future = Future()
+            self.pending.append((future, function, position))
+            self.submitted.append(position)
+            return future
+
+    executors = []
+
+    def executor_factory(requested_jobs):
+        executor = _ControlledExecutor(requested_jobs)
+        executors.append(executor)
+        return executor
+
+    def controlled_wait(futures, *, return_when, timeout=None):
+        selected = set(futures)
+        pending = [
+            entry for entry in executors[-1].pending if entry[0] in selected
+        ]
+        assert pending
+        for future, function, position in pending:
+            assert future.set_running_or_notify_cancel()
+            try:
+                result = function(position)
+            except BaseException as exc:
+                future.set_exception(exc)
+                if isinstance(exc, mutation_module.AssayError):
+                    timeline.append((active["pass"], active["candidate"], "stop"))
+            else:
+                future.set_result(result)
+        return selected, set()
+
+    def safe_synthetic_pgid(_pid):
+        raise ProcessLookupError
+
+    monkeypatch.setattr(
+        mutation_module.SnapshotRepository,
+        "cheap_clone",
+        property(lambda _self: True),
+    )
+    monkeypatch.setattr(_window_host, "can_host", lambda _runner, _clock: True)
+    monkeypatch.setattr(_window_host, "run_window", direct_window_run)
+    monkeypatch.setattr(mutation_module, "wait", controlled_wait)
+    monkeypatch.setattr(
+        mutation_module, "_read_candidate_resource_counters", lambda: None
+    )
+    monkeypatch.setattr(
+        mutation_module,
+        "_read_candidate_resource_counters_during_campaign",
+        lambda: (None, "scripted unobserved limit counters"),
+    )
+    monkeypatch.setattr(liveness.os, "getpgid", safe_synthetic_pgid)
+    monkeypatch.setattr(liveness, "terminate_live_window_hosts", lambda: None)
+
+    with prepared_snapshot(repo, scratch_root=scratch) as prepared:
+        with pytest.raises(AssayError) as excinfo:
+            run_mutation(
+                baseline=baseline,
+                prepared=prepared,
+                plan=make_plan(lane),
+                deadline=make_deadline(budget_seconds=180.0),
+                targets=_THREE_TARGETS,
+                adapter=PythonAdapter(),
+                jobs=2,
+                max_mutants=10,
+                operators=("python:bool-const-flip",),
+                process_runner=liveness_runner,
+                clock=lambda: datetime.now(timezone.utc),
+                executor_factory=executor_factory,
+                budget_per_candidate_seconds=50.0,
+                liveness_watch_armed=True,
+                liveness_cpu_without_progress_bound_s=2.0,
+                liveness_per_test_baseline_s={},
+                liveness_events_dir=events_dir,
+                progress_artifact=progress_path,
+                state_root=state_root,
+                resume=True,
+            )
+        assert excinfo.value.outcome is Outcome.BUDGET_EXCEEDED
+        assert excinfo.value.reason_code is ReasonCode.LANE_TIMEOUT
+        assert "attempt is unclassified" in str(excinfo.value)
+
+        assert executors[0].submitted == [0, 1]
+        assert timeline[:2] == [(1, "stopped", "stop"), (1, "peer", "peer-complete")]
+        assert (state_root / f"{candidate_ids[1]}.json").is_file()
+        assert not (state_root / f"{candidate_ids[0]}.json").exists()
+        assert not (state_root / f"{candidate_ids[2]}.json").exists()
+        peer_record = json.loads(
+            (state_root / f"{candidate_ids[1]}.json").read_text(encoding="utf-8")
+        )
+        assert peer_record["candidate_id"] == candidate_ids[1]
+        assert peer_record["outcome_bucket"] == "survived"
+
+        active["pass"] = 2
+        resumed = run_mutation(
+            baseline=baseline,
+            prepared=prepared,
+            plan=make_plan(lane),
+            deadline=make_deadline(budget_seconds=180.0),
+            targets=_THREE_TARGETS,
+            adapter=PythonAdapter(),
+            jobs=2,
+            max_mutants=10,
+            operators=("python:bool-const-flip",),
+            process_runner=liveness_runner,
+            clock=lambda: datetime.now(timezone.utc),
+            executor_factory=executor_factory,
+            budget_per_candidate_seconds=50.0,
+            liveness_watch_armed=True,
+            liveness_cpu_without_progress_bound_s=2.0,
+            liveness_per_test_baseline_s={},
+            liveness_events_dir=events_dir,
+            progress_artifact=progress_path,
+            state_root=state_root,
+            resume=True,
+        )
+
+    assert resumed is not None and not isinstance(resumed, str)
+    # The resumed pending list is [the missing first identity, the untouched
+    # third candidate], so its local positions are 0 and 1 again.
+    assert executors[1].submitted == [0, 1]
+    assert timeline[2:] == [
+        (2, "stopped", "peer-complete"),
+        (2, "third", "peer-complete"),
+    ]
+    assert {path.stem for path in state_root.glob("*.json")} == set(candidate_ids)
+
+
 @pytest.mark.parametrize(
     ("armed", "first_timeout", "attempt_count"),
     [(True, 60.0, 2), (False, 10.0, 1)],
