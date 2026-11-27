@@ -1121,6 +1121,31 @@ observation-only calibration against real PSI and warm-use outcomes before any
 predictive refusal is enabled; no coefficients, sample counts, or error bounds
 have measurement support yet.
 
+The pressure response is also design only. Estimate an actual RAM shortfall
+from `psi.memory.{some,full}_avg{10,60}_pct` (`/proc/pressure/memory`, percent),
+`memory.available_bytes` (`/proc/meminfo:MemAvailable`, bytes), refault evidence,
+and admitted-job working sets (cgroup v2 `memory.current -
+memory.stat[inactive_file]`, bytes). `host-facts/2` does not collect refault
+counters or per-job working sets; the refault source and fact shape remain
+unresolved. Select one freeze candidate whose freeze can cover the measured
+shortfall, preferring the most recently admitted job when it covers it. Never
+freeze all dev work or all jobs considered causal; `wings` and the game server
+are never candidates. No formula, threshold or measurement-free constant is
+chosen.
+
+Thaw one job at a time only after the cause changes: a job finishes or freed
+memory covers the frozen job's working set. Do not thaw because a pressure
+number crosses a threshold. A freeze preserves the job and its charge; it does
+not automatically stop, tear down, reschedule or move it. Moving depends on
+progress, whether partial results resume, and another host being idle; fleetd
+decides. If other hosts are busy, retain a `frozen-queued` state on the current
+host.
+
+This refines DESIGN §3.3's `memory full avg10 >= 3` admission-only sentence and
+§3.5's frozen-time stall sentence. It clarifies that §4.3's cancel/TERM thaw and
+stop sequence requires explicit cancellation or TERM, not a pressure freeze;
+§3.4's `frozen_units > 0` check remains an admission refusal only.
+
 Source: operator ruling for P-fd-05 C3a subtask 6 (2026-11-27).
 
 ## FD-060 Granted lease never binds while its connection stays alive

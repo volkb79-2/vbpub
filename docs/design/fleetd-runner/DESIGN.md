@@ -340,9 +340,10 @@ use plus only unconsumed reservations, so actual use is not counted twice. `max_
 For each eligible host, static plannable RAM is the minimum of total RAM minus host reserve, slice ceiling and planned-byte cap.
 If the class charge exceeds that value on every eligible host, `submit` refuses with 2; transient load still queues or returns 75.
 Swap is never added; fleetd's campaign overcommit factor (`fleetd/src/fleetd/plan.py:563-585`) is not used. A job may exceed its
-estimate; live `memory full avg10 >= 3` stops new admission but never kills a running job.
+estimate; live `memory full avg10 >= 3` stops new admission. That admission gate does not choose a freeze target. The design-only
+freeze policy in §3.3a can freeze one selected job, but does not kill or automatically reschedule it.
 
-### 3.3a PSI-aware admission (design only; not implemented, FD-059)
+### 3.3a PSI-aware admission and freeze response (design only; not implemented, FD-059)
 
 Add a sustained-pressure gate at the target host: do not admit while
 `psi.memory.full_avg60_pct >= 10`. An unreadable, malformed, or null
@@ -397,6 +398,43 @@ job's effect from host-wide PSI under concurrent work; and what observations and
 prediction error justify enabling refusal. Until those are answered from host
 measurements, only the explicit sustained full-`avg60` rule above is proposed,
 and neither it nor the predictor is implemented by C3a.
+
+**Freeze, thaw and move response (design only; not implemented).** Estimate the
+actual host RAM shortfall from the current memory PSI and refault evidence,
+`memory.available_bytes` (MemAvailable), and the working sets of admitted jobs.
+The facts currently available are `psi.memory.{some,full}_avg{10,60}_pct` from
+`/proc/pressure/memory` (percent), `memory.available_bytes` from
+`/proc/meminfo:MemAvailable` (bytes), and each job's warm working set from its
+cgroup v2 `memory.current - memory.stat[inactive_file]` (bytes), as sampled in
+§3.3. `host-facts/2` does not collect refault counters, and it does not carry a
+per-job working-set fact; the counter source and its fact shape remain open.
+Use measured changes in PSI, refaults and available memory against those
+working sets to identify a concrete shortfall; no formula or threshold is
+selected. This is not a policy to freeze all dev work or every job believed to
+cause pressure: conditions were acceptable before the last job was admitted.
+Freeze one eligible job only when its freeze is estimated to cover the
+shortfall. If it covers the shortfall, prefer the most recently admitted job.
+`wings` and the game server are never freeze candidates.
+
+Thaw only after the cause changes: a job finishes, or measured freed memory
+covers the frozen job's working set. A pressure value dropping below a number
+does not trigger thaw. Thaw one job at a time and reassess before thawing another.
+
+A freeze preserves the job and its admission charge. It does not automatically
+stop, tear down, or reschedule the job. A move depends on its progress, whether
+its partial results can be resumed, and whether another host is idle; fleetd
+decides whether to move it. If every other host is busy, keep it in a
+`frozen-queued` state on its current host until fleetd can decide again.
+
+This policy refines §3.3's sentence that `memory full avg10 >= 3` stops new
+admission without killing a running job, and §3.5's sentence that progress
+judges stalls while pausing during thrashguard freezes. A pressure freeze is a
+separate, selected-job action; a verified frozen interval remains excluded
+from stall accounting. It also clarifies §4.3's `On cancel or TERM` thaw and
+stop sequence: that sequence is for an explicit cancel or TERM, not an
+automatic consequence of a pressure freeze. The §3.4 `frozen_units > 0`
+admission refusal remains an admission gate and does not choose a freeze or
+thaw target.
 
 ### 3.4 One admission mechanism on the host (B3), exit-75 parity
 
@@ -479,8 +517,9 @@ uses the `lease` verb for accounting, while fleetd-placed execution there is exc
 
 ### 3.5 No new wall-clock budget
 
-Nothing in §3 sets a run wall-clock limit. Wait limits cover admission; progress judges stalls, pausing during
-thrashguard freezes. D13 removes today's timeout (`scripts/controller/dev:159`; operator 2026-11-26);
+Nothing in §3 sets a run wall-clock limit. Wait limits cover admission; progress judges stalls and excludes a verified frozen
+interval from stall accounting. A pressure freeze preserves its job and charge and does not itself stop, move or reschedule it.
+D13 removes today's timeout (`scripts/controller/dev:159`; operator 2026-11-26);
 `--wait` is CTL-52's 900-second admission limit (`scripts/controller/dev:278`); `aging_s` only orders queue; `LOST_AFTER_SECONDS` is controller liveness, not a run budget (`fleetd/src/fleetd/campaign.py:25-29`).
 
 ## 4. Host executor and results
@@ -507,7 +546,7 @@ restart/downgrade cannot kill it (§4.5).
 
 On normal completion or lane failure, deregister the exited container, run `collect_once`, verify
 the archive, remove this job's containers by labels and checkout, then release its charge. On
-cancel or TERM, deregister and thaw it if frozen, send TERM to the lane, and wait for its process
+explicit cancel or TERM, deregister and thaw it if frozen, send TERM to the lane, and wait for its process
 or container to stop. Only then collect once and verify the archive. Collection is idempotent;
 store errors do not rewrite the lane verdict.
 
