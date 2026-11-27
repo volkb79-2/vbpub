@@ -37,6 +37,8 @@ class AgentServer:
         self._select_waiter = select_waiter
         self._wake_read, self._wake_write = socket.socketpair()
         self._state_lock = threading.Lock()
+        self._ordinary_connections: set[socket.socket] = set()
+        self._client_threads: set[threading.Thread] = set()
         self._closed = False
         self._serving = False
 
@@ -54,13 +56,26 @@ class AgentServer:
         if self._wake_read in readable:
             return
         connection, _address = self.listener.accept()
-        with connection:
-            try:
-                identity = self.policy.resolve_socket_peer(connection)
-            except AdmissionError as exc:
-                _write_error(connection, self.service, exc.exit_code, exc.reason)
-                return
-            serve_connection(connection, connection, self.service, self.policy, identity)
+        if not self._register_ordinary(connection):
+            with connection:
+                _write_error(
+                    connection, self.service, ExitCode.IDENTITY_OR_TRANSPORT,
+                    "ordinary connection limit reached or server is closing",
+                )
+            return
+        try:
+            with connection:
+                try:
+                    identity = self.policy.resolve_socket_peer(connection)
+                except AdmissionError as exc:
+                    _write_error(connection, self.service, exc.exit_code, exc.reason)
+                    return
+                serve_connection(
+                    connection, connection, self.service, self.policy, identity,
+                    on_lease_held=lambda: self._release_ordinary(connection),
+                )
+        finally:
+            self._release_ordinary(connection)
 
     def serve_forever(self) -> None:
         """Serve each connection independently so a held lease does not block peers."""
@@ -86,12 +101,42 @@ class AgentServer:
                         next_reconcile = now + self.policy.lease_reconcile_interval_s
                     continue
                 connection, _address = self.listener.accept()
-                threading.Thread(
+                if not self._register_ordinary(connection):
+                    with connection:
+                        _write_error(
+                            connection, self.service, ExitCode.IDENTITY_OR_TRANSPORT,
+                            "ordinary connection limit reached or server is closing",
+                        )
+                    continue
+                worker = threading.Thread(
                     target=self._serve_connection,
                     args=(connection,),
                     name="fleetd-agent-client",
                     daemon=True,
-                ).start()
+                )
+                try:
+                    with self._state_lock:
+                        if self._closed:
+                            self._ordinary_connections.discard(connection)
+                            start_worker = False
+                        else:
+                            self._client_threads.add(worker)
+                            try:
+                                worker.start()
+                            except RuntimeError:
+                                self._client_threads.discard(worker)
+                                self._ordinary_connections.discard(connection)
+                                raise
+                            start_worker = True
+                except RuntimeError:
+                    with connection:
+                        _write_error(
+                            connection, self.service, ExitCode.RUNNER_FAILURE,
+                            "cannot start fleetd agent connection worker",
+                        )
+                    continue
+                if not start_worker:
+                    connection.close()
         finally:
             with self._state_lock:
                 self._serving = False
@@ -100,24 +145,45 @@ class AgentServer:
                 self._wake_write.close()
 
     def _serve_connection(self, connection: socket.socket) -> None:
-        with connection:
-            try:
-                identity = self.policy.resolve_socket_peer(connection)
-            except AdmissionError as exc:
-                _write_error(connection, self.service, exc.exit_code, exc.reason)
-                return
-            try:
-                serve_connection(connection, connection, self.service, self.policy, identity)
-            except OSError:
-                return
+        current = threading.current_thread()
+        try:
+            with connection:
+                try:
+                    identity = self.policy.resolve_socket_peer(connection)
+                except AdmissionError as exc:
+                    _write_error(connection, self.service, exc.exit_code, exc.reason)
+                    return
+                try:
+                    serve_connection(
+                        connection, connection, self.service, self.policy, identity,
+                        on_lease_held=lambda: self._release_ordinary(connection),
+                    )
+                except OSError:
+                    return
+        finally:
+            self._release_ordinary(connection)
+            with self._state_lock:
+                self._client_threads.discard(current)
+
+    def _register_ordinary(self, connection: socket.socket) -> bool:
+        with self._state_lock:
+            if self._closed or len(self._ordinary_connections) >= self.policy.max_connections:
+                return False
+            self._ordinary_connections.add(connection)
+            return True
+
+    def _release_ordinary(self, connection: socket.socket) -> None:
+        with self._state_lock:
+            self._ordinary_connections.discard(connection)
 
     def close(self) -> None:
-        """Close only the listener; the containing runtime directory is host-owned."""
+        """Close ordinary clients and the listener without waiting for workers."""
         with self._state_lock:
             if self._closed:
                 return
             self._closed = True
             serving = self._serving
+            ordinary = tuple(self._ordinary_connections)
             if serving:
                 try:
                     self._wake_write.send(b"x")
@@ -127,6 +193,15 @@ class AgentServer:
                 self._wake_read.close()
                 self._wake_write.close()
                 self.listener.close()
+        for connection in ordinary:
+            try:
+                connection.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            try:
+                connection.close()
+            except OSError:
+                pass
 
 
 def _check_socket_parent(path: Path) -> None:
@@ -211,7 +286,7 @@ def _write_error(stream: object, service: AgentVerbService, exit_code: int, reas
             "agent_version": service.agent_version,
             "exit_code": int(exit_code),
             "reason": reason,
-        })
+        }, service.policy.idle_connection_s)
     except FrameError:
         return
 
@@ -222,15 +297,19 @@ def serve_connection(
     service: AgentVerbService,
     policy: AgentPolicy,
     identity: AgentIdentity,
+    *,
+    on_lease_held: Callable[[], None] | None = None,
 ) -> int:
     """Read one full request before dispatch and return its bounded frame/body."""
     try:
         request = read_frame(input_stream, policy.idle_connection_s)
         if request.get("verb") == "lease":
-            service.serve_lease(request, identity, input_stream)
+            service.serve_lease(
+                request, identity, input_stream, on_lease_held=on_lease_held,
+            )
             return ExitCode.PASS
         reply = service.handle(request, identity, body_stream=input_stream)
-        write_agent_reply(output_stream, reply)
+        write_agent_reply(output_stream, reply, policy.idle_connection_s)
         return ExitCode.PASS
     except AdmissionError as exc:
         _write_error(output_stream, service, exc.exit_code, exc.reason)

@@ -91,8 +91,23 @@ def _body(reply):
         reply.close()
 
 
-def _lease_service(tmp_path, inspector, lease_id="controller-run-1"):
-    policy, _checkout = _policy(tmp_path)
+def _lease_service(tmp_path, inspector, lease_id="controller-run-1", peer_credentials=None):
+    identities = ""
+    if peer_credentials is not None:
+        uid, gid = peer_credentials
+        identities = f'''[[identities]]
+transport = "peer"
+principal = "controller-devcontainer"
+group = "controller"
+uid = {uid}
+gid = {gid}
+
+[[identities]]
+transport = "forced-command"
+principal = "worker"
+group = "worker"
+'''
+    policy, _checkout = _policy(tmp_path, identities=identities)
     raw_facts = collect_host_facts(
         FACTS_ROOT,
         disk_statvfs_reader=lambda _path: SimpleNamespace(
@@ -115,12 +130,13 @@ def _lease_service(tmp_path, inspector, lease_id="controller-run-1"):
             "labels": {"fleetd.lease": lease_id},
         },
     )
-    return service, policy.resolve_peer(1000, 100), facts
+    uid, gid = (1000, 100) if peer_credentials is None else peer_credentials
+    return service, policy.resolve_peer(uid, gid), facts
 
 
-def _lease_worker(service, request, identity, server, outcomes, finished):
+def _lease_worker(service, request, identity, server, outcomes, finished, on_lease_held=None):
     try:
-        service.serve_lease(request, identity, server)
+        service.serve_lease(request, identity, server, on_lease_held=on_lease_held)
     except BaseException as exc:
         outcomes.append(exc)
     finally:
@@ -176,12 +192,16 @@ def test_lease_grant_bind_ack_and_reconnect_hold_the_admission_handle(tmp_path):
     }
     errors = []
     first_done = threading.Event()
+    first_held = threading.Event()
 
     client, server = socket.socketpair()
-    first = threading.Thread(target=_lease_worker, args=(service, initial_request, identity, server, errors, first_done))
+    first = threading.Thread(target=_lease_worker, args=(
+        service, initial_request, identity, server, errors, first_done, first_held.set,
+    ))
     first.start()
     grant = read_frame(client, 3)
     assert grant["event"] == "grant", grant
+    assert first_held.is_set()
     write_frame(client, {"event": "bind", "lease_id": lease_id, "container_id": container_id})
     bound = read_frame(client, 3)
     assert bound["event"] == "bound"
@@ -193,17 +213,19 @@ def test_lease_grant_bind_ack_and_reconnect_hold_the_admission_handle(tmp_path):
     assert inspections and set(inspections) == {"rg-test"}
 
     reconnect_done = threading.Event()
+    reconnect_held = threading.Event()
 
     client, server = socket.socketpair()
     reconnect = threading.Thread(target=_lease_worker, args=(
         service,
         {"verb": "lease", "lease_id": lease_id, "container_id": container_id},
-        identity, server, errors, reconnect_done,
+        identity, server, errors, reconnect_done, reconnect_held.set,
     ))
     reconnect.start()
     resumed = read_frame(client, 3)
     assert resumed["event"] == "bound"
     assert resumed["container_id"] == container_id
+    assert reconnect_held.is_set()
     client.close()
     _assert_worker_finished(reconnect, reconnect_done)
     assert errors == []

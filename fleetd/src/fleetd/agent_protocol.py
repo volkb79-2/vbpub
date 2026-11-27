@@ -8,6 +8,7 @@ import os
 import re
 import select
 import struct
+import time
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -104,19 +105,65 @@ def read_frame(stream: object, idle_timeout_s: float | None) -> dict[str, Any]:
     return value
 
 
-def _write_all(fd: int, content: bytes) -> None:
+def _write_all(fd: int, content: bytes, idle_timeout_s: float | None) -> None:
     remaining = memoryview(content)
-    while remaining:
+    if idle_timeout_s is None:
+        while remaining:
+            try:
+                count = os.write(fd, remaining)
+            except OSError as exc:
+                raise FrameError(f"cannot write framed response: {exc}") from exc
+            if count <= 0:
+                raise FrameError("framed response write made no progress")
+            remaining = remaining[count:]
+        return
+    if isinstance(idle_timeout_s, bool) or not isinstance(idle_timeout_s, (int, float)):
+        raise FrameError("response idle timeout must be a positive number")
+    try:
+        timeout = float(idle_timeout_s)
+    except OverflowError as exc:
+        raise FrameError("response idle timeout must be a positive number") from exc
+    if not math.isfinite(timeout) or timeout <= 0:
+        raise FrameError("response idle timeout must be a positive number")
+    try:
+        was_blocking = os.get_blocking(fd)
+        os.set_blocking(fd, False)
+    except OSError as exc:
+        raise FrameError(f"cannot configure framed response stream: {exc}") from exc
+    last_progress = time.monotonic()
+    try:
+        while remaining:
+            remaining_timeout = timeout - (time.monotonic() - last_progress)
+            if remaining_timeout <= 0:
+                raise FrameError("response write idle deadline expired")
+            try:
+                _, writable, _ = select.select([], [fd], [], remaining_timeout)
+            except (OSError, ValueError) as exc:
+                raise FrameError(f"cannot wait for framed response stream: {exc}") from exc
+            if not writable:
+                raise FrameError("response write idle deadline expired")
+            try:
+                count = os.write(fd, remaining)
+            except BlockingIOError:
+                continue
+            except OSError as exc:
+                raise FrameError(f"cannot write framed response: {exc}") from exc
+            if count <= 0:
+                raise FrameError("framed response write made no progress")
+            remaining = remaining[count:]
+            last_progress = time.monotonic()
+    finally:
         try:
-            count = os.write(fd, remaining)
+            os.set_blocking(fd, was_blocking)
         except OSError as exc:
-            raise FrameError(f"cannot write framed response: {exc}") from exc
-        if count <= 0:
-            raise FrameError("framed response write made no progress")
-        remaining = remaining[count:]
+            raise FrameError(f"cannot restore framed response stream: {exc}") from exc
 
 
-def write_frame(stream: object, value: Mapping[str, object]) -> None:
+def write_frame(
+    stream: object,
+    value: Mapping[str, object],
+    idle_timeout_s: float | None = None,
+) -> None:
     """Write one capped JSON-object response frame."""
     try:
         fd = stream if type(stream) is int else stream.fileno()
@@ -130,7 +177,7 @@ def write_frame(stream: object, value: Mapping[str, object]) -> None:
         raise FrameError("framed stream has an invalid file descriptor")
     if len(body) == 0 or len(body) > MAX_FRAME_BYTES:
         raise FrameError(f"response frame exceeds {MAX_FRAME_BYTES} bytes")
-    _write_all(fd, struct.pack(">I", len(body)) + body)
+    _write_all(fd, struct.pack(">I", len(body)) + body, idle_timeout_s)
 
 
 def _refuse(reason: str) -> None:

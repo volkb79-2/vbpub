@@ -190,6 +190,16 @@ file. Assay progress reads `.assay/progress-<assay_lane>.jsonl` from the job
 checkout, resolving `assay_lane` through `hostside.resolve_assay_lane`, and
 streams from a byte offset.
 
+`agent.toml.max_connections` is a required positive integer with no default. It
+bounds ordinary local connections; an excess connection is refused with exit
+3. Once a lease has an admission handle, its connection leaves that ordinary
+count and is bounded by the lease charge. Server shutdown closes ordinary
+connections and returns without waiting for their workers; held lease charges
+remain durable for startup reconciliation. Response frame and body writes use
+the configured idle deadline after each successful write progress, not a total
+transfer limit. A held lease connection and a submit waiting for admission do
+not use that deadline.
+
 The executor is an injected `AgentExecutor` Protocol (`start`, `request_stop`,
 `read_state`), not a C3a implementation. With no executor, `submit` refuses
 with exit 2 and a named `executor unavailable` reason before writing

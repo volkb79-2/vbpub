@@ -19,7 +19,7 @@ from typing import Any, Callable, Iterable, Mapping
 from .admission import AdmissionError, ExitCode, InspectorAnswer
 from .agent_admission import AgentAdmission, AgentExecutor
 from .agent_policy import AgentIdentity, AgentPolicy
-from .agent_protocol import FrameError, read_frame, validate_request, write_frame
+from .agent_protocol import FrameError, _write_all, read_frame, validate_request, write_frame
 from .contracts import ContractError, HostFacts, validate_host_facts
 from .hostside import resolve_assay_lane
 
@@ -214,7 +214,14 @@ class AgentVerbService:
             )
         raise AdmissionError(ExitCode.REFUSAL, f"agent verb {verb!r} is not available in this package stage")
 
-    def serve_lease(self, request: object, identity: AgentIdentity, stream: object) -> None:
+    def serve_lease(
+        self,
+        request: object,
+        identity: AgentIdentity,
+        stream: object,
+        *,
+        on_lease_held: Callable[[], None] | None = None,
+    ) -> None:
         """Grant, bind or reconnect a local lease and hold its flock to disconnect."""
         normalized = validate_request(
             request, identity, self.policy,
@@ -229,6 +236,8 @@ class AgentVerbService:
                 result = self.admission.reserve_lease(
                     lease_id, identity, container_id=container_id,
                 )
+                if on_lease_held is not None:
+                    on_lease_held()
                 self._write_lease_message(stream, event="bound", lease_id=lease_id, container_id=container_id)
             else:
                 result = self.admission.reserve_lease(
@@ -240,6 +249,8 @@ class AgentVerbService:
                     waiter=_lease_queue_waiter(stream),
                 )
                 pending_new_lease = True
+                if on_lease_held is not None:
+                    on_lease_held()
                 self._write_lease_message(
                     stream, event="grant", lease_id=lease_id,
                     container_name=str(result.record["container_name"]),
@@ -611,37 +622,32 @@ class AgentVerbService:
         return AgentReply(document, body_fd=fd, body_length=body_length)
 
 
-def write_agent_reply(stream: object, reply: AgentReply) -> None:
+def write_agent_reply(stream: object, reply: AgentReply, idle_timeout_s: float | None = None) -> None:
     """Write a capped response frame followed by its streamed body, then close it."""
     try:
-        write_frame(stream, reply.document)
+        write_frame(stream, reply.document, idle_timeout_s)
         fd = stream if type(stream) is int else stream.fileno()
         if type(fd) is not int or fd < 0:
             raise FrameError("response stream has an invalid file descriptor")
         if reply.body:
-            _write_bytes(fd, reply.body)
+            _write_bytes(fd, reply.body, idle_timeout_s)
         if reply.body_fd is not None:
             remaining = reply.body_length
             while remaining:
                 chunk = os.read(reply.body_fd, min(65536, remaining))
                 if not chunk:
                     raise FrameError("streamed response body was truncated")
-                _write_bytes(fd, chunk)
+                _write_bytes(fd, chunk, idle_timeout_s)
                 remaining -= len(chunk)
     finally:
         reply.close()
 
 
-def _write_bytes(fd: int, data: bytes) -> None:
-    view = memoryview(data)
-    while view:
-        try:
-            written = os.write(fd, view)
-        except OSError as exc:
-            raise FrameError(f"cannot write streamed response: {exc}") from exc
-        if written <= 0:
-            raise FrameError("streamed response write made no progress")
-        view = view[written:]
+def _write_bytes(fd: int, data: bytes, idle_timeout_s: float | None) -> None:
+    try:
+        _write_all(fd, data, idle_timeout_s)
+    except FrameError as exc:
+        raise FrameError(f"cannot write streamed response: {exc}") from exc
 
 
 def _lease_queue_waiter(stream: object) -> Callable[[float], None]:

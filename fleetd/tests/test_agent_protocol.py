@@ -43,6 +43,7 @@ group = "worker"
 idle_connection_s = 20
 query_timeout_s = 5
 lease_reconcile_interval_s = 30
+max_connections = 4
 requested_by_clients = ["fleetd"]
 extra_argv = {extra_argv}
 dev_argv = [["status"]]

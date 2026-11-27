@@ -26,6 +26,7 @@ group = "worker"
 idle_connection_s = 20
 query_timeout_s = 5
 lease_reconcile_interval_s = 30
+max_connections = 4
 requested_by_clients = ["fleetd"]
 extra_argv = [["--verbose"]]
 dev_argv = [["status"]]
@@ -52,6 +53,7 @@ def test_agent_policy_loads_closed_identity_and_allowlist_config(tmp_path):
     assert policy.idle_connection_s == 20
     assert policy.query_timeout_s == 5
     assert policy.lease_reconcile_interval_s == 30
+    assert policy.max_connections == 4
     assert policy.repo_roots["vbpub"] == tmp_path / "checkouts"
     assert policy.requested_by_clients == frozenset({"fleetd"})
     assert policy.extra_argv == frozenset({("--verbose",)})
@@ -123,6 +125,8 @@ group = "ops-ci"
         ("query_timeout_s = 5", "query_timeout_s = 0", "positive number"),
         ("lease_reconcile_interval_s = 30", "lease_reconcile_interval_s = 0", "positive number"),
         ("lease_reconcile_interval_s = 30", "lease_reconcile_interval_s = true", "positive number"),
+        ("max_connections = 4", "max_connections = 0", "positive integer"),
+        ("max_connections = 4", "max_connections = true", "positive integer"),
         ("group = \"controller\"", "group = \"../controller\"", "safe identifier"),
         ("uid = 1000", "uid = true", "non-negative integer"),
         ("CI = [\"1\", \"true\"]", "CI = [\"1\", \"1\"]", "duplicate value"),
@@ -153,4 +157,8 @@ def test_agent_policy_rejects_unknown_keys_and_unreadable_files(tmp_path):
         "lease_reconcile_interval_s = 30\n", "",
     ), encoding="utf-8")
     with pytest.raises(ContractError, match="missing key.*lease_reconcile_interval_s"):
+        load_agent_policy(path)
+
+    path.write_text(_policy_text(tmp_path / "checkouts").replace("max_connections = 4\n", ""), encoding="utf-8")
+    with pytest.raises(ContractError, match="missing key.*max_connections"):
         load_agent_policy(path)

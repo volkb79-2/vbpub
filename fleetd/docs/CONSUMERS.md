@@ -90,11 +90,12 @@ the executor belongs to C3b.
 
 `/etc/fleetd/agent.toml` is a closed host-owned config. It requires
 `schema_version`, `idle_connection_s`, `query_timeout_s`,
-`lease_reconcile_interval_s`, `identities`,
+`lease_reconcile_interval_s`, `max_connections`, `identities`,
 `repo_roots`, `requested_by_clients`, `extra_argv`, `dev_argv`, and
-`env_values`; none has a consumer-invented fallback. Both time values are
+`env_values`; none has a consumer-invented fallback. The three time values are
 positive. `lease_reconcile_interval_s` sets the exact-lease reconciliation
-period; there is no default. `query_timeout_s` bounds each capacity,
+period; there is no default. `max_connections` is a positive integer with no
+default and bounds ordinary local connections. `query_timeout_s` bounds each capacity,
 legacy-job-list and object-inspector callback made while the admission queue lock is held. The peer
 table maps exact UID/primary-GID pairs to a principal and group;
 forced-command entries map their trusted group argument to the same identity
@@ -102,9 +103,12 @@ shape. Request fields cannot choose either value. Loading the policy refuses
 overlapping authenticated group prefixes.
 
 The agent sends and receives four-byte big-endian length-prefixed UTF-8 JSON
-objects capped at 64 KiB. Its idle connection deadline only applies while
-reading a request; it is not a submit wait or a run limit, and it does not
-apply to a lease after grant. `probe` includes `agent_version` and the verb
+objects capped at 64 KiB. The idle deadline applies while reading a request
+and while a response write makes no progress; it is not a total transfer limit,
+submit wait or run limit, and it does not apply to a lease after grant. An
+excess ordinary connection receives exit 3; after a lease admission handle is
+acquired, that held connection leaves the ordinary connection count. `probe`
+includes `agent_version` and the verb
 field capabilities. Clients refuse a major-version mismatch; a minor or patch
 mismatch requires the host to advertise the requested verb and every field.
 A configured inspector reconciles pending and bound leases at startup and at
