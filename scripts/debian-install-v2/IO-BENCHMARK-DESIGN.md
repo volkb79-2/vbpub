@@ -25,6 +25,13 @@ for both temporary table writes.
   type, start, size, and a nonblank PARTUUID. The runner receives the exact
   target, byte size, and PARTUUID and keeps `init_device(own=True, expect_size,
   expect_partuuid)`; its iobench `Config` opts into `raw_write=True`.
+- Before the first span table write, a read-only `blkid` probe checks the
+  planned extent on the disk at its byte offset and size. A non-swap signature
+  or any `PTTYPE` refuses without a table write and names manual recovery.
+  On a fresh benchmark install, a different tail-swap layout that the
+  benchmark-disabled path would replace is also replaceable after the same
+  inactive and blank-or-swap checks; resume still requires the planned swaps
+  or exact span.
 
 Every conversion uses the existing guarded transaction: checksum-backed
 pre-change table, geometry validation, refusal to move signed data partitions,
@@ -36,27 +43,37 @@ source.
 
 The fresh-install sequence is:
 
-1. Write the `vbpub-swap-span` table through the guarded transaction.
-2. Run the configured iobench rung on the span.
-3. Once the benchmark is final (success or advisory warning), run `wipefs -a`
-   and zero the first MiB of the span to clear signatures and the iobench
-   marker.
-4. Write the planned regular swap partitions through the same transaction.
+1. Probe the planned extent read-only, then write the `vbpub-swap-span` table
+   through the guarded transaction.
+2. After fio package setup, recheck span identity and quiescence, then run
+   `wipefs -a` to clear blank-or-swap signatures before the iobench runner.
+3. Run the configured iobench rung on the span.
+4. Once the benchmark is final (success or advisory warning), run
+   `wipefs -a` again and write the planned regular swap partitions through
+   the same transaction. There is no zeroing command. The iobench marker stays
+   in the last MiB of the last swap partition; iobench identity checks reject
+   a stale marker and a later init overwrites it.
 5. Continue with io.cost, root growth, and swap activation.
 
-`ActionUnreapable` is a hard stop: the runner may still use the device, so the
-span is not wiped, repartitioned, or formatted. Other runner/package failures
-are advisory; the step becomes `warned`, then cleanup and regular swap
-restoration continue. If all swap slots are retained before root, there is no
-tail span; record `warned` with `no_tail_swap_span` and continue.
+`ActionUnreapable` from the runner is a hard stop: the runner may still use
+the device, so the span is not wiped again or repartitioned. After reboot,
+confirm no `iobench-install-runner` or `fio` child remains, set
+`steps.io_benchmark.status` to `warned` in `state_dir/state.json`, and resume;
+this skips io.cost calibration and restores the planned swaps. If fio package
+setup is unreapable, the span is not wiped and the runner has not started;
+wait for apt/dpkg to exit or reboot, then resume stage two. Other
+runner/package failures are advisory; the step becomes `warned`, then cleanup
+and regular swap restoration continue. If all swap slots are retained before
+root, there is no tail span; record `warned` with `no_tail_swap_span` and
+continue.
 
 Resume is derived only from the live table and `io_benchmark` status:
 
 | Live tail state | Benchmark status | Action |
 | --- | --- | --- |
-| Planned regular swaps | not final | Convert to span, run, wipe, restore swaps |
-| Exact span | not final | Run, wipe, restore swaps |
-| Exact span | `success`, `warned`, or `skipped` | Wipe, restore swaps |
+| Planned regular swaps | not final | Convert to span, run, wipe signatures, restore swaps |
+| Exact span | not final | Run, wipe signatures, restore swaps |
+| Exact span | `success`, `warned`, or `skipped` | Wipe signatures, restore swaps |
 | Planned regular swaps | `success`, `warned`, or `skipped` | Continue without a rewrite |
 | Any other mix or geometry | any | Named refusal; write nothing |
 
@@ -90,5 +107,6 @@ describe the guest-visible stack, not guaranteed backing-media speed.
 
 Re-benchmarking an installed host is not implemented; `tools/swap-bench-window.sh`
 is unchanged. Btrfs swap remains refused as `btrfs_swap_needs_p3`. Install-time
-btrfs benchmark planning keeps `btrfs_iobench_raw_unavailable`, and the btrfs
-stage records `iobench_raw_unavailable_on_btrfs`. These are later packages.
+btrfs benchmark requests with `iobench_raw_gb` absent or false are accepted
+for compatibility; stage two records `iobench_raw_unavailable_on_btrfs`.
+These are later packages.

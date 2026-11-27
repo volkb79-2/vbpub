@@ -219,10 +219,17 @@ On ext4 schema 1 and 2, `run_io_benchmark: true` requires
 refuses with `io_benchmark_requires_tail_swap_span`. The span uses the first
 tail swap number and runs from the first tail start through the last tail end.
 It uses the Linux filesystem type GUID so the kernel does not auto-activate it.
-Any retained pre-root swaps remain outside it. After success or advisory
-failure, stage two runs `wipefs -a`, zeros the first MiB, then writes the
-regular swap table. An unreapable runner fails without wiping or repartitioning
-the span. A plan with no tail swaps warns `no_tail_swap_span` and continues.
+Any retained pre-root swaps remain outside it. Before the first table write,
+a read-only probe checks the planned extent; signatures other than swap and
+nested partition tables refuse with manual recovery instructions. After
+package setup, stage two rechecks identity and quiescence, wipes signatures
+before the runner, then wipes them again before restoring swaps. There is no
+zeroing command: the marker remains in the last MiB of the last swap, where
+identity checks reject a stale marker and a later init overwrites it. A fresh
+install may replace a different tail-swap layout that the benchmark-disabled
+path would replace; resume rows require planned swaps or the exact span. A
+plan with no tail swaps warns `no_tail_swap_span` and continues. The exact
+unreapable recovery is documented in the README and iobench design.
 Every installer-written swap fstab row carries
 `nofail,x-systemd.device-timeout=5s`.
 
@@ -376,8 +383,9 @@ This shape is required because IC-M1a accepts only root `"*"`, reserve 0,
 combinations name their code rather than falling back:
 `btrfs_config_requires_schema_version_2`, `btrfs_root_resize_unsupported`,
 `btrfs_reserve_unsupported`, `btrfs_data_kind_unsupported`,
-`btrfs_iobench_raw_unavailable`, and `btrfs_swap_needs_p3`. The btrfs stage
-records the benchmark as skipped with `iobench_raw_unavailable_on_btrfs` and
+`btrfs_swap_needs_p3`. A benchmark request with `iobench_raw_gb` absent or
+false is accepted for compatibility; the btrfs stage records it as skipped
+with `iobench_raw_unavailable_on_btrfs` and
 swap as skipped with `btrfs_swap_needs_p3`.
 
 v2 creates only top-level `@...` children under `/.top` (subvolid 5) on the

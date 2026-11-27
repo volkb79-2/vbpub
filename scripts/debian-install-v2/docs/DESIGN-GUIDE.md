@@ -278,10 +278,16 @@ swap extents with one `vbpub-swap-span` partition. It uses the first tail
 swap's number, the Linux filesystem type GUID, and the full extent from the
 first swap's start through the last swap's end. Retained pre-root swaps remain
 outside the span. After iobench succeeds or returns an advisory failure, the
-installer runs `wipefs -a`, zeros the first MiB, and writes the planned regular
-swap partitions. No tail swap produces a `no_tail_swap_span` warning and the
-install continues. An unreapable runner stops the install without wiping or
-repartitioning the span.
+installer runs `wipefs -a` again and writes the planned regular swaps. A
+read-only probe before the first table write rejects non-swap signatures and
+nested partition tables with manual recovery instructions. After package
+setup, identity and quiescence are checked again, then `wipefs -a` clears the
+span before the runner. No zeroing command is used: the marker stays in the
+last MiB of the last swap, identity checks reject a stale marker, and a later
+init overwrites it. A fresh install may replace another inactive blank-or-swap
+tail layout that the benchmark-disabled path would replace; resumes require
+planned swaps or the exact span. No tail swap produces a
+`no_tail_swap_span` warning. Unreapable recovery is in the README.
 
 On ext4 schema 1 and 2, the benchmark requires `swap_policy: "on"` and at
 least one configured swap slot; otherwise it refuses as
@@ -296,9 +302,9 @@ The stage-two resume rule is derived from the live table and benchmark status:
 
 | Live tail table | `io_benchmark` status | Resume action |
 | --- | --- | --- |
-| Planned swaps | not final | Write span, run, wipe markers, restore swaps |
-| `vbpub-swap-span` | not final | Run, wipe markers, restore swaps |
-| `vbpub-swap-span` | `success`, `warned`, or `skipped` | Wipe markers, restore swaps |
+| Planned swaps | not final | Write span, run, wipe signatures, restore swaps |
+| `vbpub-swap-span` | not final | Run, wipe signatures, restore swaps |
+| `vbpub-swap-span` | `success`, `warned`, or `skipped` | Wipe signatures, restore swaps |
 | Planned swaps | final | Continue without a table rewrite |
 | Any other state | any | Named refusal, no table write |
 
@@ -395,13 +401,13 @@ IC-M6 owns ZFS-root support.
 `schema_version: 2` adds the root-aware validation. Schema 1 remains loadable
 and retains its legacy ext4 meaning. With a discovered btrfs root, the only
 valid shape released by IC-M1a is root `"*"`, reserve 0, data kind `"none"`
-or `"subvolumes"`, no install benchmark, and
+or `"subvolumes"`, and
 `swap_policy: "off"` with `swap_partition_count: 0`. The root type is never a
 config key. The refusal codes are deliberately part of the contract because
 the ISO layout facts, not generic schema errors, determine the remedy.
-Swap remains refused as `btrfs_swap_needs_p3`; benchmark planning retains
-`btrfs_iobench_raw_unavailable`, and the skipped stage-two benchmark detail is
-`iobench_raw_unavailable_on_btrfs`.
+Swap remains refused as `btrfs_swap_needs_p3`. The `run_io_benchmark`
+request is accepted when `iobench_raw_gb` is absent or false, then stage two
+records the skipped benchmark detail `iobench_raw_unavailable_on_btrfs`.
 
 For `data.kind: "subvolumes"`, v2 requires `/.top` to be mounted at
 `subvolid=5` on the same backing partition as `/`; a tmpfs or another btrfs

@@ -614,3 +614,32 @@ TNT-60 and TNT-61 (`truenas/tnt/BACKLOG.md`).
 
 **Close when.** A 3-shard run with `--merge-shards` passes on two hosts, a second run resumes finished records, and the verdict does not change with host load.
 
+## OPEN (DIV2-BL-23, 2026-11-27): the span cleanup overwrites the original disk transaction manifest
+
+**Source.** WP-10 P3 review r1 finding L-5; controller ruling 8.
+
+**Finding.** The second table write replaces the manifest's reference to the
+original checksummed table backup with the temporary span table.
+
+**Do.** Preserve the original manifest reference and both table-write backups.
+
+**Acceptance idea.** After both writes, the manifest and checksum identify the
+original table; span and final plans remain available.
+
+**Close when.** A test verifies that reference after both writes.
+
+## OPEN (DIV2-BL-24, 2026-11-27): canary source copy can fail during a concurrent project change
+
+**Source.** `r3` gate `rgw-r3-20261127T002023-v1001`; this package did not edit
+`tools/canary-run.sh`.
+
+**Finding.** Concurrent project changes can make the copy fail with
+`tar: .: file changed as we read it`.
+
+**Do.** Make the copy tolerate or avoid concurrent project changes.
+
+**Acceptance idea.** An overlapping copy completes or retries from a stable
+snapshot without omitting changes.
+
+**Close when.** The concurrent-change regression passes in `r3`.
+

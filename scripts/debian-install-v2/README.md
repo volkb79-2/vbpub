@@ -311,27 +311,42 @@ messages: [docs/DESIGN-data-area-v2.md](docs/DESIGN-data-area-v2.md).
   replaces the contiguous end-of-disk tail swaps with one Linux filesystem
   type partition labelled `vbpub-swap-span`, using the first tail swap's
   number and the full span from first start to last end. Pre-root retained
-  swaps stay outside it. After the rung succeeds or warns, `wipefs -a` and a
-  zero of the first MiB clear its markers before the regular swaps are written.
+  swaps stay outside it. After the rung succeeds or warns, a second
+  `wipefs -a` clears signatures before the regular swaps are written.
+  The iobench marker remains in the last MiB of the last swap partition; its
+  identity check rejects a stale marker and a later iobench init overwrites it.
   A missing tail span is recorded as `no_tail_swap_span` and the install
-  continues. An unreapable runner fails the install and leaves the span
-  untouched. Before either table conversion, affected partitions must be
-  unmounted, absent from `/proc/swaps`, and blank or carry only a swap
-  signature. Benchmark timeouts remain 270/780/3660 seconds.
+  continues. Before the first table write, a read-only probe checks the full
+  planned extent; any signature other than swap, or any nested partition
+  table, refuses with manual recovery instructions. The installer rechecks
+  span identity and quiescence after package setup, then runs `wipefs -a`
+  before the runner. A fresh install may replace existing tail swap partitions
+  that the benchmark-disabled layout would replace; resumes still require the
+  planned swaps or exact span. A runner that cannot be reaped stops the install
+  and preserves the live span. After reboot, confirm no
+  `iobench-install-runner` or `fio` child remains, set
+  `steps.io_benchmark.status` to `warned` in `state_dir/state.json`, and resume;
+  this skips io.cost calibration and restores swaps. If fio package setup
+  cannot be reaped, the span is not wiped and the runner has not started; wait
+  for apt/dpkg to exit or reboot, then resume stage two. Before either table
+  conversion, affected partitions must be unmounted, absent from
+  `/proc/swaps`, and blank or carry only a swap signature. Benchmark timeouts
+  remain 270/780/3660 seconds.
 
 Stage-two resume derives the next action from the live partition table and
 the `io_benchmark` step:
 
 | Live tail table | Benchmark step | Resume action |
 | --- | --- | --- |
-| Planned regular swaps | not final | Write the span, run iobench, wipe markers, write regular swaps |
-| `vbpub-swap-span` | not final | Run iobench, wipe markers, write regular swaps |
-| `vbpub-swap-span` | `success`, `warned`, or `skipped` | Wipe markers, write regular swaps |
+| Planned regular swaps | not final | Write the span, run iobench, wipe signatures, write regular swaps |
+| `vbpub-swap-span` | not final | Run iobench, wipe signatures, write regular swaps |
+| `vbpub-swap-span` | `success`, `warned`, or `skipped` | Wipe signatures, write regular swaps |
 | Planned regular swaps | final | Continue without another table write |
 | Any other mix or geometry | any | Refuse by name without writing the table |
 
 Dry-run records both table writes. Installed-host re-benchmarking remains a
 separate follow-up, and btrfs swap and benchmark support are not implemented.
+Known limitation DIV2-BL-23: the second span table write replaces the original disk-transaction manifest; its checksummed backup remains available.
 - **`data.kind = "partitions"`**: one GPT partition per volume `{size, fs, mount, label}`,
   `fs` is `btrfs`, `ext4`, `xfs` or `none` (a raw partition; `type: "zfs"` sets the ZFS
   GPT type for a hand-made pool). `label` is required and unique (it is the GPT partition
@@ -468,8 +483,9 @@ On btrfs, `layout_policy.disk_spec` accepts only `partitioning.root: "*"`,
 `swap_partition_count: 0`. The named refusals are
 `btrfs_config_requires_schema_version_2`,
 `btrfs_root_resize_unsupported`, `btrfs_reserve_unsupported`,
-`btrfs_data_kind_unsupported`, `btrfs_iobench_raw_unavailable`, and
-`btrfs_swap_needs_p3`. The btrfs stage records the benchmark as skipped with
+`btrfs_data_kind_unsupported`, and `btrfs_swap_needs_p3`. A benchmark request
+with `iobench_raw_gb` absent or false is accepted for compatibility; the btrfs
+stage records it as skipped with
 `iobench_raw_unavailable_on_btrfs`, and records swap as skipped with
 `btrfs_swap_needs_p3`.
 Config load also refuses `unsafe_state_path` on every root, ext4 included:
@@ -551,7 +567,7 @@ with it. C4's deletion of `/root/.vbpub/firstboot.json` and
 is what prevents v2's install from replaying on that rollback.
 
 Not implemented: swapping on btrfs (`btrfs_swap_needs_p3`) and benchmarking a
-btrfs root (`btrfs_iobench_raw_unavailable` / `iobench_raw_unavailable_on_btrfs`).
+btrfs root (`iobench_raw_unavailable_on_btrfs`).
 Re-benchmarking an installed ext4 host is also a later package. IC-M1b/c items
 (the dr first-boot hook and ISO netcup option, `/.top` mode 0700, the btrfs VM
 lane, and the runner's btrfs CoW mount) remain separate. The old C6 `@swap` swapfile design is
@@ -891,16 +907,12 @@ rung + 60 s), and each keeps its own state directory
 `state_dir/iobench/<rung>`. A value outside those three names is refused at
 config load with `io_benchmark_profile must be one of: veryquick, quick,
 standard`; the key is accepted and simply unused when the benchmark is off.
-Stage two writes the span through the guarded partition-table transaction,
-checks the exact PARTUUID and geometry, and confirms affected partitions are
-unmounted, absent from `/proc/swaps`, and blank or swap-signed. After the rung
-finishes or returns an advisory failure, it runs `wipefs -a`, zeros the first
-MiB, and writes the regular swaps. It never formats or mounts the span. If all
-configured swap is retained before root, the step warns `no_tail_swap_span`
-and the install continues. An unreapable runner fails the install and leaves
-the span untouched. Stage two completes this cycle before io.cost, root growth
-and swap activation; dry-run records both guarded table writes. Every
-installer-written swap fstab row includes `nofail,x-systemd.device-timeout=5s`.
+Stage two uses the guarded partition-table transaction for the span and its
+restoration. The read-only extent probe, pre-run signature wipe, marker
+behavior, resume rules and exact unreapable recovery are described above and
+in [IO-BENCHMARK-DESIGN.md](IO-BENCHMARK-DESIGN.md). A no-tail plan warns
+`no_tail_swap_span`; dry-run records both table writes. Every installer-written
+swap fstab row includes `nofail,x-systemd.device-timeout=5s`.
 
 Results (`rbps`/`rseqiops`/`rrandiops`/`wbps`/`wseqiops`/`wrandiops`) go to
 `state_dir/io-benchmark.json` (mode `0600`, and it names the rung that produced
