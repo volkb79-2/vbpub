@@ -66,26 +66,31 @@ def test_shipped_cli_probe_omits_lease_and_lease_refuses_without_c3b_providers(t
     cli.start()
     assert server_ready.wait(3), "CLI server did not start before the failure watchdog"
 
-    probe_client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    probe_client.connect(str(socket_path))
-    write_frame(probe_client, {"verb": "probe"})
-    probe_client.shutdown(socket.SHUT_WR)
-    probe = read_frame(probe_client, 3)
-    probe_client.close()
-    assert "lease" not in probe["capabilities"]
+    # The CLI thread is not a daemon: a failed assertion that left the server open would hang pytest at exit.
+    try:
+        probe_client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        probe_client.connect(str(socket_path))
+        write_frame(probe_client, {"verb": "probe"})
+        probe_client.shutdown(socket.SHUT_WR)
+        probe = read_frame(probe_client, 3)
+        probe_client.close()
+        assert "lease" not in probe["capabilities"]
 
-    lease_client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    lease_client.connect(str(socket_path))
-    write_frame(lease_client, {
-        "verb": "lease", "lease_id": "controller-cli-lease", "container_name": "rg-test",
-        "footprint": "tiny", "planned_cores": 1, "priority": "gate",
-    })
-    refusal = read_frame(lease_client, 3)
-    lease_client.close()
-    assert refusal["exit_code"] == 2
-    assert "object inspector" in refusal["reason"]
+        lease_client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        lease_client.connect(str(socket_path))
+        write_frame(lease_client, {
+            "verb": "lease", "lease_id": "controller-cli-lease", "container_name": "rg-test",
+            "footprint": "tiny", "planned_cores": 1, "priority": "gate",
+        })
+        refusal = read_frame(lease_client, 3)
+        lease_client.close()
+        assert "exit_code" not in refusal and "reason" not in refusal
+        assert refusal["error"]["exit_code"] == 2
+        assert "object inspector" in refusal["error"]["reason"]
+    finally:
+        for server in servers:
+            server.close()
 
-    servers[0].close()
     assert cli_finished.wait(3), "CLI did not stop before the failure watchdog"
     cli.join(timeout=3)
     assert not cli.is_alive(), "CLI worker remained alive after close"

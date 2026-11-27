@@ -461,9 +461,10 @@ def test_lease_bind_deadline_tombstones_and_reconciles_exact_name(
     assert error["error"]["reason"] == "frame deadline expired"
     assert set(error["error"]) == {"exit_code", "reason"}
     assert "exit_code" not in error and "reason" not in error
-    assert outcomes == [ExitCode.IDENTITY_OR_TRANSPORT]
     assert timeouts == [service.policy.lease_bind_timeout_s]
+    # The error frame is written before the worker records its outcome.
     _assert_worker_finished(worker, finished)
+    assert outcomes == [ExitCode.IDENTITY_OR_TRANSPORT]
     record = service.admission.book.status(lease_id, identity.group)
     assert record["state"] == "tombstone"
     assert record["released"] is expected_released
@@ -570,13 +571,13 @@ def test_trickled_lease_bind_frame_cannot_extend_absolute_deadline(tmp_path):
 
     assert error["error"]["exit_code"] == ExitCode.IDENTITY_OR_TRANSPORT
     assert error["error"]["reason"] == "frame deadline expired"
-    assert outcomes == [ExitCode.IDENTITY_OR_TRANSPORT]
     assert now["value"] >= service.policy.lease_bind_timeout_s
     assert observed_timeouts == [10.0, 7.0, 4.0]
     assert send_failures == []
     sender.join(timeout=3)
     assert not sender.is_alive(), "trickled bind sender remained alive after the deadline response"
     _assert_worker_finished(worker, finished)
+    assert outcomes == [ExitCode.IDENTITY_OR_TRANSPORT]
     assert service.admission.book.status(lease_id, identity.group)["released"] is True
     client.close()
 
