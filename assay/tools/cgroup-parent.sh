@@ -123,16 +123,27 @@ new_unit_probe_identity() {
   unit_probe_id=""
 }
 inspect_owned_unit_probe() {
-  local target="$1" facts inspect_status inspected_id inspected_name inspected_owner
+  local target="$1" facts message line absent
+  local inspect_status inspected_id inspected_name inspected_owner
+  local format='{{.Id}}|{{.Name}}|{{index .Config.Labels "io.assay.cgroup-parent.owner"}}'
   if facts="$(timeout --signal=TERM --kill-after=5s 30s docker inspect "$target" \
-    --format '{{.Id}}|{{.Name}}|{{index .Config.Labels "io.assay.cgroup-parent.owner"}}' 2>&1)"; then
+    --format "$format")"; then
     :
   else
     inspect_status=$?
-    if [[ "$inspect_status" == 1 && "$target" == "$unit_probe_name" \
-      && "$facts" == "Error: No such object: $unit_probe_name" ]]; then
-      return 1
+    [[ "$inspect_status" == 1 && "$target" == "$unit_probe_name" ]] || return 3
+    # Absence needs Docker's own statement for this exact name. Ask again with
+    # only stderr captured: with --format, a failed inspect also writes an
+    # empty stdout line. A second call that succeeds is ambiguous too.
+    if message="$(timeout --signal=TERM --kill-after=5s 30s docker inspect "$target" \
+      --format "$format" 2>&1 >/dev/null)"; then
+      return 3
     fi
+    absent="no such object: $target"
+    while IFS= read -r line; do
+      [[ "${line,,}" != "${absent,,}" && "${line,,}" != "error: ${absent,,}" ]] \
+        || return 1
+    done <<<"$message"
     return 3
   fi
   [[ "$facts" != *$'\n'* ]] || return 2
