@@ -305,6 +305,9 @@ class AgentVerbService:
                         except Exception:
                             # A failed inspection leaves the tombstone charged for later reconciliation.
                             pass
+                    else:
+                        # The tombstone write failed; keep the charge and skip inspection.
+                        pass
                 else:
                     result.handle.close()
 

@@ -1,7 +1,10 @@
 import hashlib
 import json
+import errno
 import os
+import io
 import socket
+import struct
 import threading
 from pathlib import Path
 from types import SimpleNamespace
@@ -11,8 +14,9 @@ import pytest
 from fleetd.admission import AdmissionError, ExitCode
 from fleetd.admission import InspectorAnswer
 from fleetd.agent_verbs import AgentVerbService
+from fleetd import agent_verbs
 from fleetd.agent_protocol import MAX_FETCH_BYTES, FrameError, read_frame, write_frame
-from fleetd.contracts import validate_host_facts
+from fleetd.contracts import HostFacts, validate_host_facts
 from fleetd.facts import collect_host_facts
 from test_agent_protocol import _policy, _submit
 
@@ -57,6 +61,20 @@ def _put(service, identity, name, content):
             "verb": "put", "name": name, "sha256": hashlib.sha256(content).hexdigest(),
             "bytes": len(content),
         }, identity, body_stream=server)
+        return reply.document
+    finally:
+        client.close()
+        server.close()
+
+
+def _direct_put(service, identity, name, content):
+    client, server = socket.socketpair()
+    try:
+        client.sendall(content)
+        client.shutdown(socket.SHUT_WR)
+        reply = service._put({
+            "name": name, "sha256": hashlib.sha256(content).hexdigest(), "bytes": len(content),
+        }, identity, server)
         return reply.document
     finally:
         client.close()
@@ -416,6 +434,12 @@ def test_put_refuses_a_symlinked_group_directory_before_writing_outside_state(tm
 
     assert list(outside.iterdir()) == []
 
+    # Exercise the second check inside _put after the public candidate scan rejects it.
+    with pytest.raises(AdmissionError, match="put group directory is a symlink") as internal_check:
+        _direct_put(service, identity, "candidates", b"candidate table")
+    assert internal_check.value.exit_code == ExitCode.REFUSAL
+    assert list(outside.iterdir()) == []
+
 
 def test_fetch_checks_job_ownership_and_returns_only_the_requested_byte_range(tmp_path):
     service, identity, _checkout = _service(tmp_path)
@@ -614,3 +638,1234 @@ def test_submit_candidate_allowlist_accepts_only_file_created_for_authenticated_
     request["extra_argv"][1] = "/tmp/client-owned-candidates"
     with pytest.raises(AdmissionError, match="host-created candidates file"):
         service.handle(request, identity)
+
+
+def test_agent_paths_refuse_symlinks_unprivate_modes_and_creation_failures(tmp_path, monkeypatch):
+    outside = tmp_path / "outside"
+    outside.mkdir(mode=0o700)
+    linked_root = tmp_path / "linked-state"
+    linked_root.symlink_to(outside, target_is_directory=True)
+    with pytest.raises(AdmissionError, match="must not be a symlink") as root_link:
+        agent_verbs.AgentPaths.initialize(linked_root)
+    assert root_link.value.exit_code == ExitCode.REFUSAL
+
+    shared_root = tmp_path / "shared-state"
+    shared_root.mkdir(mode=0o755)
+    with pytest.raises(AdmissionError, match="accessible by other users") as root_mode:
+        agent_verbs.AgentPaths.initialize(shared_root)
+    assert root_mode.value.exit_code == ExitCode.REFUSAL
+
+    failed_root = tmp_path / "failed-state"
+    real_mkdir = Path.mkdir
+
+    def fail_jobs(path, *args, **kwargs):
+        if path == failed_root / "jobs":
+            raise OSError("jobs creation refused")
+        return real_mkdir(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", fail_jobs)
+    with pytest.raises(AdmissionError, match="cannot initialize agent state directory") as create_error:
+        agent_verbs.AgentPaths.initialize(failed_root)
+    assert create_error.value.exit_code == ExitCode.RUNNER_FAILURE
+    monkeypatch.setattr(Path, "mkdir", real_mkdir)
+
+    missing_jobs = tmp_path / "missing-jobs"
+
+    def skip_jobs(path, *args, **kwargs):
+        if path == missing_jobs / "jobs":
+            return None
+        return real_mkdir(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", skip_jobs)
+    with pytest.raises(AdmissionError, match="not a real directory") as not_directory:
+        agent_verbs.AgentPaths.initialize(missing_jobs)
+    assert not_directory.value.exit_code == ExitCode.REFUSAL
+
+    shared_child = tmp_path / "shared-child"
+    shared_child.mkdir(mode=0o700)
+    (shared_child / "jobs").mkdir(mode=0o755)
+    with pytest.raises(AdmissionError, match="accessible by other users") as child_mode:
+        agent_verbs.AgentPaths.initialize(shared_child)
+    assert child_mode.value.exit_code == ExitCode.REFUSAL
+
+    unreadable = tmp_path / "unreadable-state"
+    target = unreadable / "uploads"
+    real_stat = Path.stat
+    real_is_dir = Path.is_dir
+
+    def path_stat_error(path, *args, **kwargs):
+        if path == target:
+            raise OSError("upload directory stat failed")
+        return real_stat(path, *args, **kwargs)
+
+    def target_is_directory(path):
+        if path == target:
+            return True
+        return real_is_dir(path)
+
+    monkeypatch.setattr(Path, "stat", path_stat_error)
+    monkeypatch.setattr(Path, "is_dir", target_is_directory)
+    with pytest.raises(AdmissionError, match="cannot inspect agent state path") as stat_error:
+        agent_verbs.AgentPaths.initialize(unreadable)
+    assert stat_error.value.exit_code == ExitCode.RUNNER_FAILURE
+
+
+def test_service_refuses_bad_versions_and_advertises_lease_only_with_all_providers(tmp_path):
+    service, identity, _checkout = _service(tmp_path)
+    with pytest.raises(AdmissionError, match="must be SemVer") as version_error:
+        AgentVerbService(
+            tmp_path / "bad-version", service.policy, service.facts_provider,
+            agent_version="version-one",
+        )
+    assert version_error.value.exit_code == ExitCode.REFUSAL
+
+    service.admission.inspector = object()
+    assert "lease" not in service.handle({"verb": "probe"}, identity).document["capabilities"]
+    service.admission.legacy_jobs_provider = lambda: ()
+    assert "lease" not in service.handle({"verb": "probe"}, identity).document["capabilities"]
+    service.admission.container_inspector = lambda _container_id: None
+    assert "lease" in service.handle({"verb": "probe"}, identity).document["capabilities"]
+
+
+def test_agent_facts_upload_limits_and_unavailable_verbs_have_closed_replies(tmp_path):
+    service, identity, _checkout = _service(tmp_path)
+    default_probe = service.handle({"verb": "probe"}, identity).document
+    assert "lease" not in default_probe["capabilities"]
+    with pytest.raises(AdmissionError, match="put request has no streamed body") as no_body:
+        service.handle({"verb": "put", "name": "candidates", "sha256": "a" * 64, "bytes": 1}, identity)
+    assert no_body.value.exit_code == ExitCode.IDENTITY_OR_TRANSPORT
+
+    service.facts_provider = lambda: {}
+    with pytest.raises(AdmissionError, match="host facts unavailable") as invalid_facts:
+        service.handle({"verb": "facts"}, identity)
+    assert invalid_facts.value.exit_code == ExitCode.QUEUED_WITHDRAWN
+
+    service.facts_provider = lambda: HostFacts({"schema": "host-facts/1"})
+    with pytest.raises(AdmissionError, match="requires host-facts/2") as old_facts:
+        service.handle({"verb": "facts"}, identity)
+    assert old_facts.value.exit_code == ExitCode.REFUSAL
+
+    service._facts = lambda: {"policy": {"max_upload_bytes": {"v": None, "reason": "not configured"}}}
+    with pytest.raises(AdmissionError, match="max_upload_bytes unavailable") as unknown_limit:
+        service._max_upload_bytes()
+    assert unknown_limit.value.exit_code == ExitCode.REFUSAL
+
+    with pytest.raises(AdmissionError, match="held-connection protocol handler") as ordinary_lease:
+        service.handle({
+            "verb": "lease", "lease_id": "controller-run-1", "container_name": "runner",
+            "footprint": "tiny", "planned_cores": 1, "priority": "gate",
+        }, identity)
+    assert ordinary_lease.value.exit_code == ExitCode.IDENTITY_OR_TRANSPORT
+
+
+def test_agent_dispatch_returns_admission_documents_for_submit_status_and_cancel(tmp_path):
+    service, identity, _checkout = _service(tmp_path)
+    service.executor = object()
+    service.admission.submit = lambda _request, _identity, _executor: {
+        "job_id": "controller-run-1", "state": "queued",
+    }
+    submitted = service.handle(_submit(), identity)
+    assert submitted.document == {
+        "schema": "fleet-host-agent/1", "agent_version": "1.0.0",
+        "job_id": "controller-run-1", "state": "queued",
+    }
+
+    service.admission.status = lambda job_id, _identity, _executor: {"job_id": job_id, "state": "running"}
+    status = service.handle({"verb": "status", "job_id": "controller-run-1"}, identity)
+    assert status.document["state"] == "running"
+
+    service.admission.cancel = lambda job_id, reason, _identity, _executor: {
+        "job_id": job_id, "state": "stopping", "reason": reason,
+    }
+    cancelled = service.handle({
+        "verb": "cancel", "job_id": "controller-run-1", "reason": "operator request",
+    }, identity)
+    assert cancelled.document["reason"] == "operator request"
+
+
+def test_agent_dispatch_refuses_a_validated_verb_without_a_stage_handler(tmp_path, monkeypatch):
+    service, identity, _checkout = _service(tmp_path)
+    monkeypatch.setattr(agent_verbs, "validate_request", lambda *_args, **_kwargs: {"verb": "future-stage"})
+    with pytest.raises(AdmissionError, match="is not available in this package stage") as unavailable:
+        service.handle({"verb": "future-stage"}, identity)
+    assert unavailable.value.exit_code == ExitCode.REFUSAL
+
+
+def test_candidate_paths_returns_only_real_commit_named_files_and_maps_io_errors(tmp_path, monkeypatch):
+    service, identity, _checkout = _service(tmp_path)
+    assert service.paths.candidate_paths(identity.group) == frozenset()
+    group = service.paths.uploads_dir / identity.group
+    group.mkdir(mode=0o700)
+    assert service.paths.candidate_paths(identity.group) == frozenset()
+
+    directory = group / "candidates"
+    directory.mkdir(mode=0o700)
+    good = directory / ("a" * 40)
+    good.write_bytes(b"host-created")
+    (directory / "not-a-commit").write_bytes(b"ignored")
+    (directory / ("b" * 40)).symlink_to(good)
+    (directory / ("c" * 40)).mkdir()
+    assert service.paths.candidate_paths(identity.group) == frozenset({str(good.resolve())})
+
+    real_iterdir = Path.iterdir
+
+    def fail_candidate_listing(path):
+        if path == directory:
+            raise OSError("candidate listing unavailable")
+        return real_iterdir(path)
+
+    monkeypatch.setattr(Path, "iterdir", fail_candidate_listing)
+    with pytest.raises(AdmissionError, match="cannot inspect host-created candidates") as listing_error:
+        service.paths.candidate_paths(identity.group)
+    assert listing_error.value.exit_code == ExitCode.RUNNER_FAILURE
+    monkeypatch.setattr(Path, "iterdir", real_iterdir)
+
+    uploads = service.paths.uploads_dir
+    displaced = tmp_path / "displaced-uploads"
+    uploads.rename(displaced)
+    uploads.symlink_to(displaced, target_is_directory=True)
+    with pytest.raises(AdmissionError, match="upload directory is not a real directory") as uploads_link:
+        service.paths.candidate_paths(identity.group)
+    assert uploads_link.value.exit_code == ExitCode.REFUSAL
+
+
+def test_have_filters_untrusted_checkouts_and_maps_root_errors(tmp_path, monkeypatch):
+    service, identity, _checkout = _service(tmp_path)
+    root = service.policy.repo_roots["vbpub"]
+    valid = root / ("e" * 40)
+    valid.mkdir()
+    (valid / ".git").write_text("gitdir: valid", encoding="utf-8")
+    no_marker = root / ("b" * 40)
+    no_marker.mkdir()
+    marker_link = root / ("c" * 40)
+    marker_link.mkdir()
+    (marker_link / ".git").symlink_to(valid / ".git")
+    wrong_name = root / "not-a-commit"
+    wrong_name.mkdir()
+    symlink = root / ("d" * 40)
+    symlink.symlink_to(valid, target_is_directory=True)
+    assert service.handle({"verb": "have", "repo": "vbpub"}, identity).document["refs"] == ["e" * 40]
+
+    root.rename(tmp_path / "moved-checkouts")
+    root.symlink_to(tmp_path / "moved-checkouts", target_is_directory=True)
+    with pytest.raises(AdmissionError, match="checkout root .* unavailable") as unavailable:
+        service.handle({"verb": "have", "repo": "vbpub"}, identity)
+    assert unavailable.value.exit_code == ExitCode.REFUSAL
+
+
+def test_have_maps_listing_errors_and_skips_unresolvable_checkouts(tmp_path, monkeypatch):
+    service, identity, _checkout = _service(tmp_path)
+    root = service.policy.repo_roots["vbpub"]
+    valid = root / ("e" * 40)
+    valid.mkdir()
+    (valid / ".git").write_text("gitdir: valid", encoding="utf-8")
+    bad_resolution = root / ("b" * 40)
+    bad_resolution.mkdir()
+    (bad_resolution / ".git").write_text("gitdir: invalid", encoding="utf-8")
+    real_resolve = Path.resolve
+
+    def fail_one_checkout(path, *args, **kwargs):
+        if path == bad_resolution:
+            raise RuntimeError("checkout moved while probing")
+        return real_resolve(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", fail_one_checkout)
+    reply = service.handle({"verb": "have", "repo": "vbpub"}, identity)
+    assert reply.document["refs"] == ["e" * 40]
+
+    monkeypatch.setattr(Path, "resolve", real_resolve)
+    real_iterdir = Path.iterdir
+
+    def fail_listing(path):
+        if path == root:
+            raise OSError("repo checkout listing failed")
+        return real_iterdir(path)
+
+    monkeypatch.setattr(Path, "iterdir", fail_listing)
+    with pytest.raises(AdmissionError, match="cannot read repo checkout root") as listing_error:
+        service.handle({"verb": "have", "repo": "vbpub"}, identity)
+    assert listing_error.value.exit_code == ExitCode.RUNNER_FAILURE
+
+
+def test_stream_upload_maps_descriptor_wait_read_and_idle_errors(tmp_path, monkeypatch):
+    service, _identity, _checkout = _service(tmp_path)
+    target = io.BytesIO()
+    with pytest.raises(AdmissionError, match="no file descriptor") as no_fd:
+        service._stream_upload(object(), 1, hashlib.sha256(b"x").hexdigest(), target)
+    assert no_fd.value.exit_code == ExitCode.IDENTITY_OR_TRANSPORT
+
+    invalid_stream = SimpleNamespace(fileno=lambda: -1)
+    with pytest.raises(AdmissionError, match="invalid file descriptor") as invalid_fd:
+        service._stream_upload(invalid_stream, 1, hashlib.sha256(b"x").hexdigest(), target)
+    assert invalid_fd.value.exit_code == ExitCode.IDENTITY_OR_TRANSPORT
+
+    read_fd, write_fd = os.pipe()
+    try:
+        monkeypatch.setattr(agent_verbs.select, "select", lambda *_args: (_ for _ in ()).throw(ValueError("bad fd")))
+        with pytest.raises(AdmissionError, match="cannot wait for put body") as wait_error:
+            service._stream_upload(read_fd, 1, hashlib.sha256(b"x").hexdigest(), target)
+        assert wait_error.value.exit_code == ExitCode.IDENTITY_OR_TRANSPORT
+
+        monkeypatch.setattr(agent_verbs.select, "select", lambda *_args: ([read_fd], [], []))
+        monkeypatch.setattr(agent_verbs.os, "read", lambda *_args: (_ for _ in ()).throw(OSError("read failed")))
+        with pytest.raises(AdmissionError, match="cannot read put body") as read_error:
+            service._stream_upload(read_fd, 1, hashlib.sha256(b"x").hexdigest(), target)
+        assert read_error.value.exit_code == ExitCode.IDENTITY_OR_TRANSPORT
+    finally:
+        os.close(read_fd)
+        os.close(write_fd)
+
+
+def test_stream_upload_uses_idle_deadline_when_body_or_end_never_arrives(tmp_path, monkeypatch):
+    service, _identity, _checkout = _service(tmp_path)
+    read_fd, write_fd = os.pipe()
+    try:
+        monkeypatch.setattr(agent_verbs.select, "select", lambda *_args: ([], [], []))
+        with pytest.raises(AdmissionError, match="idle connection deadline expired") as no_body:
+            service._stream_upload(read_fd, 1, hashlib.sha256(b"x").hexdigest(), io.BytesIO())
+        assert no_body.value.exit_code == ExitCode.IDENTITY_OR_TRANSPORT
+
+        os.write(write_fd, b"x")
+        calls = 0
+
+        def readable_then_parked(*_args):
+            nonlocal calls
+            calls += 1
+            return ([read_fd], [], []) if calls == 1 else ([], [], [])
+
+        monkeypatch.setattr(agent_verbs.select, "select", readable_then_parked)
+        with pytest.raises(AdmissionError, match="did not half-close") as no_eof:
+            service._stream_upload(read_fd, 1, hashlib.sha256(b"x").hexdigest(), io.BytesIO())
+        assert no_eof.value.exit_code == ExitCode.IDENTITY_OR_TRANSPORT
+    finally:
+        os.close(read_fd)
+        os.close(write_fd)
+
+    read_fd, write_fd = os.pipe()
+    try:
+        os.write(write_fd, b"x")
+        calls = 0
+
+        def fail_end_check(*_args):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                return ([read_fd], [], [])
+            raise OSError("end check failed")
+
+        monkeypatch.setattr(agent_verbs.select, "select", fail_end_check)
+        with pytest.raises(AdmissionError, match="cannot check put body end") as end_error:
+            service._stream_upload(read_fd, 1, hashlib.sha256(b"x").hexdigest(), io.BytesIO())
+        assert end_error.value.exit_code == ExitCode.IDENTITY_OR_TRANSPORT
+    finally:
+        os.close(read_fd)
+        os.close(write_fd)
+
+
+def test_owned_job_refuses_missing_symlink_oversized_invalid_and_other_group_records(tmp_path):
+    service, identity, _checkout = _service(tmp_path)
+    with pytest.raises(AdmissionError, match="unknown job") as missing:
+        service._owned_job("missing", identity)
+    assert missing.value.exit_code == ExitCode.REFUSAL
+
+    outside = tmp_path / "outside-job"
+    outside.mkdir()
+    (service.paths.jobs_dir / "linked-job").symlink_to(outside, target_is_directory=True)
+    with pytest.raises(AdmissionError, match="unknown job") as job_link:
+        service._owned_job("linked-job", identity)
+    assert job_link.value.exit_code == ExitCode.REFUSAL
+
+    job_dir = _job(service, identity)
+    request_file = job_dir / "request.json"
+    saved = request_file.read_bytes()
+    request_file.unlink()
+    request_file.symlink_to(outside / "absent.json")
+    with pytest.raises(AdmissionError, match="request record is a symlink") as request_link:
+        service._owned_job("controller-run-1", identity)
+    assert request_link.value.exit_code == ExitCode.QUEUED_WITHDRAWN
+
+    request_file.unlink()
+    with pytest.raises(AdmissionError, match="cannot read job .* request record") as missing_record:
+        service._owned_job("controller-run-1", identity)
+    assert missing_record.value.exit_code == ExitCode.QUEUED_WITHDRAWN
+    request_file.write_bytes(b"x" * 65537)
+    with pytest.raises(AdmissionError, match="exceeds 64 KiB") as oversized:
+        service._owned_job("controller-run-1", identity)
+    assert oversized.value.exit_code == ExitCode.QUEUED_WITHDRAWN
+
+    request_file.write_bytes(b"\xff")
+    with pytest.raises(AdmissionError, match="invalid JSON") as invalid_json:
+        service._owned_job("controller-run-1", identity)
+    assert invalid_json.value.exit_code == ExitCode.QUEUED_WITHDRAWN
+
+    request_file.write_text(json.dumps({"group": "worker", "request": {}}), encoding="utf-8")
+    with pytest.raises(AdmissionError, match="does not belong") as wrong_group:
+        service._owned_job("controller-run-1", identity)
+    assert wrong_group.value.exit_code == ExitCode.REFUSAL
+
+    request_file.write_text(json.dumps({"group": identity.group, "request": []}), encoding="utf-8")
+    with pytest.raises(AdmissionError, match="does not belong") as invalid_request:
+        service._owned_job("controller-run-1", identity)
+    assert invalid_request.value.exit_code == ExitCode.REFUSAL
+
+    request_file.write_bytes(saved)
+    assert service._owned_job("controller-run-1", identity)[1]["lane"] == "r0-r1"
+
+
+def test_owned_job_maps_request_file_open_failures(tmp_path, monkeypatch):
+    service, identity, _checkout = _service(tmp_path)
+    job_dir = _job(service, identity)
+    request_file = job_dir / "request.json"
+    real_open = os.open
+
+    def deny_request(path, flags, *args, **kwargs):
+        if path == request_file:
+            raise OSError("request record open refused")
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(agent_verbs.os, "open", deny_request)
+    with pytest.raises(AdmissionError, match="cannot read job .* request record") as error:
+        service._owned_job("controller-run-1", identity)
+    assert error.value.exit_code == ExitCode.QUEUED_WITHDRAWN
+
+
+def test_safe_file_constrains_missing_open_and_nonregular_files(tmp_path, monkeypatch):
+    root = tmp_path / "job"
+    root.mkdir()
+    missing = root / "missing.log"
+    with pytest.raises(AdmissionError, match="is missing") as absent:
+        AgentVerbService._safe_file(root, missing)
+    assert absent.value.exit_code == ExitCode.REFUSAL
+    assert AgentVerbService._safe_file(root, missing, missing_ok=True) is None
+
+    subdir = root / "directory"
+    subdir.mkdir()
+    real_open = os.open
+    opened = []
+
+    def capture_open(path, flags, *args, **kwargs):
+        fd = real_open(path, flags, *args, **kwargs)
+        opened.append(fd)
+        return fd
+
+    monkeypatch.setattr(agent_verbs.os, "open", capture_open)
+    with pytest.raises(AdmissionError, match="is not a regular file") as not_regular:
+        AgentVerbService._safe_file(root, subdir)
+    assert not_regular.value.exit_code == ExitCode.REFUSAL
+    assert len(opened) == 1
+    with pytest.raises(OSError):
+        os.fstat(opened[0])
+
+    monkeypatch.setattr(agent_verbs.os, "open", lambda *_args, **_kwargs: (_ for _ in ()).throw(PermissionError("read denied")))
+    with pytest.raises(AdmissionError, match="cannot open requested file") as denied:
+        AgentVerbService._safe_file(root, subdir)
+    assert denied.value.exit_code == ExitCode.RUNNER_FAILURE
+
+
+def test_safe_file_handles_missing_open_race_and_escaping_paths(tmp_path, monkeypatch):
+    root = tmp_path / "job"
+    root.mkdir()
+    artifact = root / "artifact"
+    artifact.write_text("data", encoding="utf-8")
+    outside = tmp_path / "outside"
+    outside.write_text("secret", encoding="utf-8")
+    symlink = root / "escape"
+    symlink.symlink_to(outside)
+    with pytest.raises(AdmissionError, match="escapes its job directory") as escape:
+        AgentVerbService._safe_file(root, symlink)
+    assert escape.value.exit_code == ExitCode.REFUSAL
+
+    real_open = os.open
+
+    def missing_after_resolve(path, flags, *args, **kwargs):
+        if path == artifact.resolve():
+            raise FileNotFoundError("vanished after resolution")
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(agent_verbs.os, "open", missing_after_resolve)
+    assert AgentVerbService._safe_file(root, artifact, missing_ok=True) is None
+    with pytest.raises(AdmissionError, match="cannot open requested file") as vanished:
+        AgentVerbService._safe_file(root, artifact)
+    assert vanished.value.exit_code == ExitCode.RUNNER_FAILURE
+
+
+def test_fetch_refuses_offsets_and_reports_files_that_change_during_reads(tmp_path, monkeypatch):
+    service, identity, _checkout = _service(tmp_path)
+    job_dir = _job(service, identity)
+    artifact = job_dir / "job.log"
+    artifact.write_bytes(b"content")
+    with pytest.raises(AdmissionError, match="exceeds artifact size") as offset_error:
+        service.handle({
+            "verb": "fetch", "job_id": "controller-run-1", "artifact": "job.log",
+            "offset": 99, "length": 1,
+        }, identity)
+    assert offset_error.value.exit_code == ExitCode.REFUSAL
+
+    real_read = os.read
+    reads = 0
+
+    def vanish_during_hash(fd, size):
+        nonlocal reads
+        if fd != service.paths.jobs_dir:
+            reads += 1
+            if reads == 1:
+                return b""
+        return real_read(fd, size)
+
+    monkeypatch.setattr(agent_verbs.os, "read", vanish_during_hash)
+    with pytest.raises(AdmissionError, match="changed while hashing") as changed:
+        service.handle({
+            "verb": "fetch", "job_id": "controller-run-1", "artifact": "job.log",
+            "offset": 0, "length": 1,
+        }, identity)
+    assert changed.value.exit_code == ExitCode.RUNNER_FAILURE
+
+    reads = 0
+
+    def vanish_during_range(fd, size):
+        nonlocal reads
+        reads += 1
+        if reads == 1:
+            return b"content"
+        if reads == 2:
+            return b""
+        return real_read(fd, size)
+
+    monkeypatch.setattr(agent_verbs.os, "read", vanish_during_range)
+    with pytest.raises(AdmissionError, match="changed while reading its range") as range_changed:
+        service.handle({
+            "verb": "fetch", "job_id": "controller-run-1", "artifact": "job.log",
+            "offset": 0, "length": 1,
+        }, identity)
+    assert range_changed.value.exit_code == ExitCode.RUNNER_FAILURE
+
+
+def test_hash_file_requires_regular_non_symlink_files_and_closes_on_read_errors(tmp_path, monkeypatch):
+    regular = tmp_path / "artifact"
+    regular.write_bytes(b"hash me")
+    assert AgentVerbService._hash_file(regular) == (7, hashlib.sha256(b"hash me").hexdigest())
+
+    link = tmp_path / "link"
+    link.symlink_to(regular)
+    with pytest.raises(AdmissionError, match="must not be a symlink") as symlink_error:
+        AgentVerbService._hash_file(link)
+    assert symlink_error.value.exit_code == ExitCode.REFUSAL
+
+    directory = tmp_path / "directory"
+    directory.mkdir()
+    real_open = os.open
+    captured = []
+
+    def return_directory_for_file(path, flags, *args, **kwargs):
+        fd = real_open(directory if path == regular else path, flags, *args, **kwargs)
+        captured.append(fd)
+        return fd
+
+    monkeypatch.setattr(agent_verbs.os, "open", return_directory_for_file)
+    with pytest.raises(AdmissionError, match="is not a regular file") as not_regular:
+        AgentVerbService._hash_file(regular)
+    assert not_regular.value.exit_code == ExitCode.REFUSAL
+    with pytest.raises(OSError):
+        os.fstat(captured[0])
+
+    monkeypatch.setattr(agent_verbs.os, "open", lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("open failed")))
+    with pytest.raises(AdmissionError, match="cannot open agent file") as open_error:
+        AgentVerbService._hash_file(regular)
+    assert open_error.value.exit_code == ExitCode.RUNNER_FAILURE
+
+    monkeypatch.setattr(agent_verbs.os, "open", real_open)
+    read_fd = real_open(regular, os.O_RDONLY)
+    monkeypatch.setattr(agent_verbs.os, "open", lambda *_args, **_kwargs: read_fd)
+    monkeypatch.setattr(agent_verbs.os, "read", lambda *_args: (_ for _ in ()).throw(OSError("read failed")))
+    with pytest.raises(OSError, match="read failed"):
+        AgentVerbService._hash_file(regular)
+    with pytest.raises(OSError):
+        os.fstat(read_fd)
+
+
+def test_fsync_directory_closes_its_descriptor_when_sync_fails(tmp_path, monkeypatch):
+    real_open = os.open
+    captured = []
+
+    def capture_open(path, flags, *args, **kwargs):
+        fd = real_open(path, flags, *args, **kwargs)
+        captured.append(fd)
+        return fd
+
+    monkeypatch.setattr(agent_verbs.os, "open", capture_open)
+    monkeypatch.setattr(agent_verbs.os, "fsync", lambda _fd: (_ for _ in ()).throw(OSError("sync failed")))
+    with pytest.raises(OSError, match="sync failed"):
+        AgentVerbService._fsync_directory(tmp_path)
+    assert len(captured) == 1
+    with pytest.raises(OSError):
+        os.fstat(captured[0])
+
+
+def test_lane_kind_uses_root_declaration_and_rejects_invalid_or_missing_lanes(tmp_path):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    (checkout / "run-gate.root.toml").write_text(
+        '[lanes."r0-r1"]\nkind = "sequence"\n', encoding="utf-8",
+    )
+    checkout_fd = os.open(checkout, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        assert AgentVerbService._lane_kind(checkout_fd, "project", "r0-r1") == "sequence"
+        (checkout / "run-gate.root.toml").write_text(
+            '[lanes."r0-r1"]\nkind = "unknown"\n', encoding="utf-8",
+        )
+        with pytest.raises(AdmissionError, match="invalid kind") as invalid_kind:
+            AgentVerbService._lane_kind(checkout_fd, "project", "r0-r1")
+        assert invalid_kind.value.exit_code == ExitCode.QUEUED_WITHDRAWN
+
+        (checkout / "run-gate.root.toml").write_text("[lanes\n", encoding="utf-8")
+        with pytest.raises(AdmissionError, match="cannot read Run-Gate lane declaration") as malformed:
+            AgentVerbService._lane_kind(checkout_fd, "project", "r0-r1")
+        assert malformed.value.exit_code == ExitCode.QUEUED_WITHDRAWN
+
+        (checkout / "run-gate.root.toml").unlink()
+        with pytest.raises(AdmissionError, match="is not declared") as missing:
+            AgentVerbService._lane_kind(checkout_fd, "project", "r0-r1")
+        assert missing.value.exit_code == ExitCode.QUEUED_WITHDRAWN
+
+        (checkout / "run-gate.root.toml").write_text(
+            '[lanes]\n"r0-r1" = "not a table"\n', encoding="utf-8",
+        )
+        with pytest.raises(AdmissionError, match="is not declared") as malformed_declaration:
+            AgentVerbService._lane_kind(checkout_fd, "project", "r0-r1")
+        assert malformed_declaration.value.exit_code == ExitCode.QUEUED_WITHDRAWN
+    finally:
+        os.close(checkout_fd)
+
+
+def test_progress_helpers_ignore_bad_assay_events_and_map_file_inspection_errors(tmp_path, monkeypatch):
+    progress = tmp_path / "progress.jsonl"
+    progress.write_bytes(
+        b'{"event":"candidate","candidate_id":"same"}\n'
+        b'{"event":"candidate","candidate_id":"same"}\n'
+        b'{"event":"candidate","candidate_id":2}\n'
+        b"not-json\n\xff\n"
+        b'{"event":"candidate","candidate_id":"trailing"}',
+    )
+    fd = os.open(progress, os.O_RDONLY)
+    try:
+        assert AgentVerbService._assay_done_count(fd, progress.stat().st_size) == 1
+    finally:
+        os.close(fd)
+
+    real_open = os.open
+    captured = []
+
+    def open_progress(_root_fd, _relative):
+        fd = real_open(progress, os.O_RDONLY)
+        captured.append(fd)
+        return fd
+
+    monkeypatch.setattr(agent_verbs, "open_beneath", open_progress)
+    monkeypatch.setattr(agent_verbs.os, "fstat", lambda _fd: (_ for _ in ()).throw(OSError("stat failed")))
+    with pytest.raises(AdmissionError, match="cannot inspect progress file") as stat_error:
+        AgentVerbService._progress_file(10, "progress.jsonl")
+    assert stat_error.value.exit_code == ExitCode.QUEUED_WITHDRAWN
+    monkeypatch.undo()
+    with pytest.raises(OSError):
+        os.fstat(captured[0])
+
+    early_fd = os.open(progress, os.O_RDONLY)
+    monkeypatch.setattr(agent_verbs.os, "read", lambda *_args: b"")
+    try:
+        assert AgentVerbService._assay_done_count(early_fd, progress.stat().st_size) == 0
+    finally:
+        os.close(early_fd)
+
+
+def test_progress_refuses_invalid_job_metadata_and_maps_checkout_io_errors(tmp_path, monkeypatch):
+    service, identity, _checkout = _service(tmp_path)
+    invalid_project = _job(service, identity, {"project": "../outside", "lane": "r0-r1"})
+    invalid_project.mkdir(exist_ok=True)
+    (invalid_project / "checkout").mkdir()
+    (invalid_project / "checkout" / "run-gate.toml").write_text(
+        '[lanes."r0-r1"]\nkind = "command"\n', encoding="utf-8",
+    )
+    with pytest.raises(AdmissionError, match="project") as unsafe_project:
+        service.handle({"verb": "progress", "job_id": "controller-run-1", "offset": 0}, identity)
+    assert unsafe_project.value.exit_code == ExitCode.REFUSAL
+
+    invalid_lane = {"project": ".", "lane": 4}
+    request_file = invalid_project / "request.json"
+    request_file.write_text(json.dumps({"group": identity.group, "request": invalid_lane}), encoding="utf-8")
+    with pytest.raises(AdmissionError, match="lane is invalid") as bad_lane:
+        service.handle({"verb": "progress", "job_id": "controller-run-1", "offset": 0}, identity)
+    assert bad_lane.value.exit_code == ExitCode.QUEUED_WITHDRAWN
+
+    request_file.write_text(json.dumps({"group": identity.group, "request": {"project": ".", "lane": "r0-r1"}}), encoding="utf-8")
+    checkout = invalid_project / "checkout"
+    (checkout / "run-gate.toml").unlink()
+    checkout.rmdir()
+    with pytest.raises(AdmissionError, match="checkout is unavailable") as missing_checkout:
+        service.handle({"verb": "progress", "job_id": "controller-run-1", "offset": 0}, identity)
+    assert missing_checkout.value.exit_code == ExitCode.QUEUED_WITHDRAWN
+
+    checkout.mkdir()
+    (checkout / "run-gate.toml").write_text('[lanes."r0-r1"]\nkind = "command"\n', encoding="utf-8")
+    real_open = os.open
+
+    def fail_jobs_open(path, flags, *args, **kwargs):
+        if path == service.paths.jobs_dir:
+            raise OSError(errno.ELOOP, "looped progress tree")
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(agent_verbs.os, "open", fail_jobs_open)
+    with pytest.raises(AdmissionError, match="progress path is unsafe") as loop:
+        service.handle({"verb": "progress", "job_id": "controller-run-1", "offset": 0}, identity)
+    assert loop.value.exit_code == ExitCode.REFUSAL
+
+    def fail_jobs_io(path, flags, *args, **kwargs):
+        if path == service.paths.jobs_dir:
+            raise OSError(errno.EIO, "progress tree unreadable")
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(agent_verbs.os, "open", fail_jobs_io)
+    with pytest.raises(AdmissionError, match="cannot open job .* progress tree") as io_error:
+        service.handle({"verb": "progress", "job_id": "controller-run-1", "offset": 0}, identity)
+    assert io_error.value.exit_code == ExitCode.QUEUED_WITHDRAWN
+
+
+def test_write_agent_reply_writes_exact_frames_and_closes_streamed_files(tmp_path):
+    body_path = tmp_path / "body"
+    body_path.write_bytes(b"streamed-body")
+    body_fd = os.open(body_path, os.O_RDONLY)
+    document = {"schema": "reply/1", "length": 13}
+    reply = agent_verbs.AgentReply(document, body_fd=body_fd, body_length=13)
+    client, server = socket.socketpair()
+    try:
+        agent_verbs.write_agent_reply(server, reply, idle_timeout_s=3)
+        expected_body = json.dumps(document, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        header = b""
+        while len(header) < 4:
+            chunk = client.recv(4 - len(header))
+            assert chunk
+            header += chunk
+        assert struct.unpack(">I", header)[0] == len(expected_body)
+        framed_body = b""
+        while len(framed_body) < len(expected_body) + 13:
+            chunk = client.recv(len(expected_body) + 13 - len(framed_body))
+            assert chunk
+            framed_body += chunk
+        assert framed_body == expected_body + b"streamed-body"
+        assert reply.body_fd is None
+        with pytest.raises(OSError):
+            os.fstat(body_fd)
+    finally:
+        client.close()
+        server.close()
+
+
+def test_write_agent_reply_appends_in_memory_body_after_the_frame():
+    document = {"result": "ok"}
+    reply = agent_verbs.AgentReply(document, body=b"range-bytes")
+    client, server = socket.socketpair()
+    try:
+        agent_verbs.write_agent_reply(server, reply)
+        assert read_frame(client, 2) == document
+        assert client.recv(len(b"range-bytes")) == b"range-bytes"
+    finally:
+        client.close()
+        server.close()
+
+
+def test_write_agent_reply_closes_on_invalid_stream_and_truncated_body(tmp_path, monkeypatch):
+    reply = agent_verbs.AgentReply({"answer": True}, body=b"body")
+    monkeypatch.setattr(agent_verbs, "write_frame", lambda *_args, **_kwargs: None)
+    with pytest.raises(FrameError, match="invalid file descriptor"):
+        agent_verbs.write_agent_reply(SimpleNamespace(fileno=lambda: -1), reply)
+    assert reply.body_fd is None
+
+    body_path = tmp_path / "short-body"
+    body_path.write_bytes(b"x")
+    body_fd = os.open(body_path, os.O_RDONLY)
+    truncated = agent_verbs.AgentReply({"length": 2}, body_fd=body_fd, body_length=2)
+    client, server = socket.socketpair()
+    try:
+        monkeypatch.setattr(agent_verbs, "write_frame", lambda stream, document, _timeout=None: write_frame(stream, document))
+        with pytest.raises(FrameError, match="streamed response body was truncated"):
+            agent_verbs.write_agent_reply(server, truncated)
+        assert read_frame(client, 2) == {"length": 2}
+        assert client.recv(1) == b"x"
+        with pytest.raises(OSError):
+            os.fstat(body_fd)
+    finally:
+        client.close()
+        server.close()
+
+
+def test_streamed_reply_write_errors_are_reported_as_frame_errors(monkeypatch):
+    monkeypatch.setattr(agent_verbs, "_write_all", lambda *_args: (_ for _ in ()).throw(FrameError("blocked")))
+    with pytest.raises(FrameError, match="cannot write streamed response: blocked"):
+        agent_verbs._write_bytes(1, b"body", None)
+
+
+def test_lease_waiter_and_disconnect_helpers_map_transport_states(monkeypatch):
+    with pytest.raises(AdmissionError, match="local socket connection") as wrong_stream:
+        agent_verbs._lease_queue_waiter(object())
+    assert wrong_stream.value.exit_code == ExitCode.IDENTITY_OR_TRANSPORT
+
+    client, server = socket.socketpair()
+    try:
+        waiter = agent_verbs._lease_queue_waiter(server)
+        monkeypatch.setattr(agent_verbs.select, "select", lambda *_args: ([], [], []))
+        waiter(0)
+        monkeypatch.setattr(agent_verbs.select, "select", lambda *_args: ([server], [], []))
+        waiter(0)  # A readiness race with no queued bytes is harmless.
+        client.sendall(b"unexpected")
+        with pytest.raises(AdmissionError, match="unexpected client data") as queued_data:
+            waiter(0)
+        assert queued_data.value.exit_code == ExitCode.IDENTITY_OR_TRANSPORT
+    finally:
+        client.close()
+        server.close()
+
+    client, server = socket.socketpair()
+    try:
+        waiter = agent_verbs._lease_queue_waiter(server)
+        monkeypatch.setattr(agent_verbs.select, "select", lambda *_args: ([server], [], []))
+        client.close()
+        with pytest.raises(AdmissionError, match="disconnected before its grant") as disconnected:
+            waiter(0)
+        assert disconnected.value.exit_code == ExitCode.IDENTITY_OR_TRANSPORT
+    finally:
+        server.close()
+
+    client, server = socket.socketpair()
+    try:
+        waiter = agent_verbs._lease_queue_waiter(server)
+        monkeypatch.setattr(agent_verbs.select, "select", lambda *_args: (_ for _ in ()).throw(OSError("select failed")))
+        with pytest.raises(AdmissionError, match="connection failed while queued") as select_error:
+            waiter(0)
+        assert select_error.value.exit_code == ExitCode.IDENTITY_OR_TRANSPORT
+    finally:
+        client.close()
+        server.close()
+
+
+def test_held_lease_disconnect_waits_for_eof_and_rejects_invalid_streams(monkeypatch):
+    with pytest.raises(FrameError, match="no file descriptor"):
+        agent_verbs._wait_for_lease_disconnect(object())
+    with pytest.raises(FrameError, match="invalid file descriptor"):
+        agent_verbs._wait_for_lease_disconnect(SimpleNamespace(fileno=lambda: -1))
+
+    read_fd, write_fd = os.pipe()
+    os.close(write_fd)
+    selections = iter(([], [read_fd]))
+    monkeypatch.setattr(agent_verbs.select, "select", lambda *_args: (next(selections), [], []))
+    try:
+        assert agent_verbs._wait_for_lease_disconnect(read_fd) is None
+    finally:
+        os.close(read_fd)
+
+    read_fd, write_fd = os.pipe()
+    try:
+        os.write(write_fd, b"still connected")
+        os.close(write_fd)
+        monkeypatch.setattr(agent_verbs.select, "select", lambda *_args: ([read_fd], [], []))
+        with pytest.raises(AdmissionError, match="unexpected data after lease bind") as extra:
+            agent_verbs._wait_for_lease_disconnect(read_fd)
+        assert extra.value.exit_code == ExitCode.IDENTITY_OR_TRANSPORT
+    finally:
+        os.close(read_fd)
+
+    read_fd, write_fd = os.pipe()
+    try:
+        monkeypatch.setattr(agent_verbs.select, "select", lambda *_args: (_ for _ in ()).throw(OSError("select failed")))
+        with pytest.raises(AdmissionError, match="held lease connection failed") as failed:
+            agent_verbs._wait_for_lease_disconnect(read_fd)
+        assert failed.value.exit_code == ExitCode.IDENTITY_OR_TRANSPORT
+    finally:
+        os.close(read_fd)
+        os.close(write_fd)
+
+
+def test_lease_reconnect_without_callback_holds_charge_until_eof(tmp_path):
+    lease_id = "controller-run-1"
+    container_id = "c" * 64
+    service, identity, _facts = _lease_service(
+        tmp_path, lambda _target: InspectorAnswer.NO_SUCH_OBJECT, lease_id=lease_id,
+    )
+    initial = service.admission.reserve_lease(
+        lease_id, identity, container_name="rg-test", footprint="tiny",
+        planned_cores=1, priority="gate",
+    )
+    assert initial.handle is not None
+    initial.handle.close()
+
+    outcomes = []
+    finished = threading.Event()
+    client, server = socket.socketpair()
+    worker = threading.Thread(target=_lease_worker, args=(
+        service, {"verb": "lease", "lease_id": lease_id, "container_id": container_id},
+        identity, server, outcomes, finished,
+    ))
+    worker.start()
+    bound = read_frame(client, 3)
+    assert bound["event"] == "bound"
+    assert bound["container_id"] == container_id
+    assert service.admission.book.status(lease_id, identity.group)["released"] is False
+    client.close()
+    _assert_worker_finished(worker, finished)
+    assert outcomes == []
+    assert service.admission.book.status(lease_id, identity.group)["released"] is False
+
+
+def test_lease_rejects_invalid_bind_frame_then_tombstones_and_reconciles(tmp_path):
+    service, identity, _facts = _lease_service(
+        tmp_path, lambda _target: InspectorAnswer.NO_SUCH_OBJECT,
+    )
+    request = {
+        "verb": "lease", "lease_id": "controller-run-1", "container_name": "rg-test",
+        "footprint": "tiny", "planned_cores": 1, "priority": "gate",
+    }
+    outcomes = []
+    finished = threading.Event()
+    client, server = socket.socketpair()
+    worker = threading.Thread(target=_lease_worker, args=(service, request, identity, server, outcomes, finished))
+    worker.start()
+    grant = read_frame(client, 3)
+    assert grant["event"] == "grant"
+    write_frame(client, {"event": "wrong-event", "lease_id": request["lease_id"], "container_id": "c" * 64})
+    _assert_worker_finished(worker, finished)
+    client.close()
+
+    assert len(outcomes) == 1
+    assert isinstance(outcomes[0], AdmissionError)
+    assert outcomes[0].exit_code == ExitCode.REFUSAL
+    record = service.admission.book.status(request["lease_id"], identity.group)
+    assert record["state"] == "tombstone"
+    assert record["released"] is True
+
+
+def test_lease_reservation_failure_leaves_no_charge_to_cleanup(tmp_path):
+    service, identity, _facts = _lease_service(
+        tmp_path, lambda _target: InspectorAnswer.NO_SUCH_OBJECT,
+    )
+    service.admission.reserve_lease = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+        AdmissionError(ExitCode.QUEUED_WITHDRAWN, "lease admission timed out"),
+    )
+    request = {
+        "verb": "lease", "lease_id": "controller-run-1", "container_name": "rg-test",
+        "footprint": "tiny", "planned_cores": 1, "priority": "gate",
+    }
+    client, server = socket.socketpair()
+    try:
+        with pytest.raises(AdmissionError, match="lease admission timed out") as error:
+            service.serve_lease(request, identity, server)
+        assert error.value.exit_code == ExitCode.QUEUED_WITHDRAWN
+        assert list(service.admission.book.leases_dir.iterdir()) == []
+    finally:
+        client.close()
+        server.close()
+
+
+def test_lease_cleanup_closes_handle_when_tombstone_write_fails(tmp_path):
+    service, identity, _facts = _lease_service(
+        tmp_path, lambda _target: InspectorAnswer.NO_SUCH_OBJECT,
+    )
+
+    class Handle:
+        closed = False
+
+        def close(self):
+            self.closed = True
+
+    handle = Handle()
+    service.admission.reserve_lease = lambda *_args, **_kwargs: SimpleNamespace(
+        record={"container_name": "rg-test"}, handle=handle,
+    )
+    service.admission.revoke_lease = lambda *_args: (_ for _ in ()).throw(OSError("tombstone write failed"))
+    reconciliations = []
+    service.admission.reconcile_lease = lambda *_args: reconciliations.append("called")
+    request = {
+        "verb": "lease", "lease_id": "controller-run-1", "container_name": "rg-test",
+        "footprint": "tiny", "planned_cores": 1, "priority": "gate",
+    }
+    outcomes = []
+    finished = threading.Event()
+    client, server = socket.socketpair()
+    worker = threading.Thread(target=_lease_worker, args=(service, request, identity, server, outcomes, finished))
+    worker.start()
+    assert read_frame(client, 3)["event"] == "grant"
+    client.close()
+    _assert_worker_finished(worker, finished)
+    assert isinstance(outcomes[0], FrameError)
+    assert handle.closed is True
+    assert reconciliations == []
+
+
+def test_lease_tombstone_failure_skips_reconciliation_after_close(tmp_path, monkeypatch):
+    service, identity, _facts = _lease_service(
+        tmp_path, lambda _target: InspectorAnswer.NO_SUCH_OBJECT,
+    )
+
+    class Handle:
+        closed = False
+
+        def close(self):
+            self.closed = True
+
+    handle = Handle()
+    service.admission.reserve_lease = lambda *_args, **_kwargs: SimpleNamespace(
+        record={"container_name": "rg-test"}, handle=handle,
+    )
+    service.admission.revoke_lease = lambda *_args: (_ for _ in ()).throw(OSError("tombstone write failed"))
+    reconciliations = []
+    service.admission.reconcile_lease = lambda *_args: reconciliations.append("called")
+    monkeypatch.setattr(
+        agent_verbs, "_wait_for_lease_disconnect",
+        lambda _stream: (_ for _ in ()).throw(FrameError("injected disconnect")),
+    )
+    request = {
+        "verb": "lease", "lease_id": "controller-run-1", "container_name": "rg-test",
+        "footprint": "tiny", "planned_cores": 1, "priority": "gate",
+    }
+    outcomes = []
+    finished = threading.Event()
+    client, server = socket.socketpair()
+    worker = threading.Thread(target=_lease_worker, args=(service, request, identity, server, outcomes, finished))
+    worker.start()
+    try:
+        assert read_frame(client, 3)["event"] == "grant"
+        write_frame(client, {"event": "wrong-event", "lease_id": request["lease_id"], "container_id": "c" * 64})
+        _assert_worker_finished(worker, finished)
+        assert isinstance(outcomes[0], AdmissionError)
+        assert outcomes[0].exit_code == ExitCode.REFUSAL
+        assert handle.closed is True
+        assert reconciliations == []
+    finally:
+        client.close()
+
+
+def test_pending_lease_tombstone_failure_does_not_reconcile(tmp_path, monkeypatch):
+    service, identity, _facts = _lease_service(
+        tmp_path, lambda _target: InspectorAnswer.NO_SUCH_OBJECT,
+    )
+
+    class Handle:
+        closed = False
+
+        def close(self):
+            self.closed = True
+
+    handle = Handle()
+    revocations = []
+    reconciliations = []
+
+    def fail_tombstone(lease_id, _identity):
+        revocations.append(lease_id)
+        raise OSError("tombstone storage unavailable")
+
+    service.admission.reserve_lease = lambda *_args, **_kwargs: SimpleNamespace(
+        record={"container_name": "rg-test"}, handle=handle,
+    )
+    service.admission.revoke_lease = fail_tombstone
+    service.admission.reconcile_lease = lambda *args: reconciliations.append(args)
+    monkeypatch.setattr(service, "_write_lease_message", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        agent_verbs, "read_frame",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(FrameError("bind transport failed")),
+    )
+    request = {
+        "verb": "lease", "lease_id": "controller-run-1", "container_name": "rg-test",
+        "footprint": "tiny", "planned_cores": 1, "priority": "gate",
+    }
+
+    client, server = socket.socketpair()
+    try:
+        with pytest.raises(FrameError, match="bind transport failed"):
+            service.serve_lease(request, identity, server)
+    finally:
+        client.close()
+        server.close()
+
+    assert revocations == ["controller-run-1"]
+    assert handle.closed is True
+    assert reconciliations == []
+
+
+def test_lease_cleanup_skips_when_grant_has_no_handle(tmp_path):
+    service, identity, _facts = _lease_service(
+        tmp_path, lambda _target: InspectorAnswer.NO_SUCH_OBJECT,
+    )
+    service.admission.reserve_lease = lambda *_args, **_kwargs: SimpleNamespace(
+        record={"container_name": "rg-test"}, handle=None,
+    )
+    bound_calls = []
+    service.admission.bind_lease = lambda *args: bound_calls.append(args)
+    request = {
+        "verb": "lease", "lease_id": "controller-run-1", "container_name": "rg-test",
+        "footprint": "tiny", "planned_cores": 1, "priority": "gate",
+    }
+    outcomes = []
+    finished = threading.Event()
+    client, server = socket.socketpair()
+    worker = threading.Thread(target=_lease_worker, args=(service, request, identity, server, outcomes, finished))
+    worker.start()
+    assert read_frame(client, 3)["event"] == "grant"
+    container_id = "c" * 64
+    write_frame(client, {"event": "bind", "lease_id": request["lease_id"], "container_id": container_id})
+    assert read_frame(client, 3)["event"] == "bound"
+    client.close()
+    _assert_worker_finished(worker, finished)
+    assert outcomes == []
+    assert bound_calls[0][1] == container_id
+
+
+def test_put_caps_uploads_and_refuses_wrong_existing_content_address(tmp_path):
+    service, identity, _checkout = _service(tmp_path)
+    maximum = service._max_upload_bytes()
+    with pytest.raises(AdmissionError, match="exceeds policy.max_upload_bytes") as too_large:
+        service._put({
+            "bytes": maximum + 1, "name": "candidates", "sha256": "a" * 64,
+        }, identity, object())
+    assert too_large.value.exit_code == ExitCode.REFUSAL
+
+    content = b"same candidate"
+    first = _put(service, identity, "candidates", content)
+    second = _put(service, identity, "candidates", content)
+    assert first["path"] == second["path"]
+    destination = Path(first["path"])
+    destination.write_bytes(b"tampered content")
+    client, server = socket.socketpair()
+    try:
+        client.sendall(content)
+        client.shutdown(socket.SHUT_WR)
+        with pytest.raises(AdmissionError, match="does not match its content address") as mismatch:
+            service.handle({
+                "verb": "put", "name": "candidates", "sha256": hashlib.sha256(content).hexdigest(),
+                "bytes": len(content),
+            }, identity, body_stream=server)
+        assert mismatch.value.exit_code == ExitCode.REFUSAL
+    finally:
+        client.close()
+        server.close()
+    assert destination.read_bytes() == b"tampered content"
+
+
+def test_put_maps_creation_and_fsync_errors_without_leaving_temporary_files(tmp_path, monkeypatch):
+    service, identity, _checkout = _service(tmp_path)
+    request = {"bytes": 0, "name": "candidates", "sha256": hashlib.sha256(b"").hexdigest()}
+    monkeypatch.setattr(agent_verbs.tempfile, "mkstemp", lambda **_kwargs: (_ for _ in ()).throw(OSError("temp unavailable")))
+    with pytest.raises(AdmissionError, match="cannot store put body") as temp_error:
+        service._put(request, identity, object())
+    assert temp_error.value.exit_code == ExitCode.RUNNER_FAILURE
+    assert list(service.paths.incoming_dir.iterdir()) == []
+
+    monkeypatch.undo()
+    content = b"directory sync"
+    monkeypatch.setattr(
+        service, "_fsync_directory",
+        lambda _path: (_ for _ in ()).throw(OSError("directory fsync failed")),
+    )
+    client, server = socket.socketpair()
+    try:
+        client.sendall(content)
+        client.shutdown(socket.SHUT_WR)
+        with pytest.raises(AdmissionError, match="cannot store put body") as sync_error:
+            service.handle({
+                "verb": "put", "name": "candidates", "sha256": hashlib.sha256(content).hexdigest(),
+                "bytes": len(content),
+            }, identity, body_stream=server)
+        assert sync_error.value.exit_code == ExitCode.RUNNER_FAILURE
+    finally:
+        client.close()
+        server.close()
+    destination = service.paths.uploads_dir / identity.group / "candidates" / hashlib.sha256(content).hexdigest()
+    assert destination.read_bytes() == content
+    assert list(service.paths.incoming_dir.iterdir()) == []
+
+
+def test_put_refuses_upload_root_and_destination_symlinks_and_non_directory_results(tmp_path, monkeypatch):
+    service, identity, _checkout = _service(tmp_path)
+    content = b"symlink check"
+    uploads = service.paths.uploads_dir
+    moved = tmp_path / "moved-uploads"
+    uploads.rename(moved)
+    uploads.symlink_to(moved, target_is_directory=True)
+    with pytest.raises(AdmissionError, match="agent upload directory is not a real directory") as root_link:
+        _direct_put(service, identity, "candidates", content)
+    assert root_link.value.exit_code == ExitCode.REFUSAL
+    assert list(service.paths.incoming_dir.iterdir()) == []
+
+    uploads.unlink()
+    uploads.mkdir(mode=0o700)
+    group = uploads / identity.group
+    outside = tmp_path / "outside-destination"
+    outside.mkdir()
+    group.mkdir(mode=0o700)
+    (group / "candidates").symlink_to(outside, target_is_directory=True)
+    with pytest.raises(AdmissionError, match="destination directory is a symlink") as destination_link:
+        _put(service, identity, "candidates", content)
+    assert destination_link.value.exit_code == ExitCode.REFUSAL
+    assert list(outside.iterdir()) == []
+
+    (group / "candidates").unlink()
+    real_mkdir = Path.mkdir
+    destination_dir = group / "candidates"
+
+    def skip_destination_directory(path, *args, **kwargs):
+        if path == destination_dir:
+            return None
+        return real_mkdir(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", skip_destination_directory)
+    with pytest.raises(AdmissionError, match="destination is not a real directory") as missing_destination:
+        _put(service, identity, "candidates", content)
+    assert missing_destination.value.exit_code == ExitCode.REFUSAL
+
+
+def test_put_refuses_non_directory_group_and_content_symlink_paths(tmp_path, monkeypatch):
+    service, identity, _checkout = _service(tmp_path)
+    real_mkdir = Path.mkdir
+    group_dir = service.paths.uploads_dir / identity.group
+
+    def skip_group_directory(path, *args, **kwargs):
+        if path == group_dir:
+            return None
+        return real_mkdir(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", skip_group_directory)
+    with pytest.raises(AdmissionError, match="put group path is not a real directory") as group_error:
+        _direct_put(service, identity, "candidates", b"group path")
+    assert group_error.value.exit_code == ExitCode.REFUSAL
+    assert list(service.paths.incoming_dir.iterdir()) == []
+    monkeypatch.setattr(Path, "mkdir", real_mkdir)
+
+    group_dir.mkdir(mode=0o700)
+    destination_dir = group_dir / "candidates"
+    destination_dir.mkdir(mode=0o700)
+    outside = tmp_path / "outside-content"
+    outside.write_bytes(b"untouched")
+    content = b"content link"
+    digest = hashlib.sha256(content).hexdigest()
+    (destination_dir / digest).symlink_to(outside)
+    with pytest.raises(AdmissionError, match="put destination is a symlink") as content_link:
+        _direct_put(service, identity, "candidates", content)
+    assert content_link.value.exit_code == ExitCode.REFUSAL
+    assert outside.read_bytes() == b"untouched"
+
+
+def test_put_closes_temporary_descriptor_when_setup_fails(tmp_path, monkeypatch):
+    service, identity, _checkout = _service(tmp_path)
+    real_mkstemp = agent_verbs.tempfile.mkstemp
+    descriptors = []
+
+    def capture_temp(**kwargs):
+        fd, name = real_mkstemp(**kwargs)
+        descriptors.append((fd, name))
+        return fd, name
+
+    monkeypatch.setattr(agent_verbs.tempfile, "mkstemp", capture_temp)
+    monkeypatch.setattr(agent_verbs.os, "fchmod", lambda *_args: (_ for _ in ()).throw(OSError("chmod failed")))
+    with pytest.raises(AdmissionError, match="cannot store put body") as setup_error:
+        service._put({"bytes": 0, "name": "candidates", "sha256": hashlib.sha256(b"").hexdigest()}, identity, object())
+    assert setup_error.value.exit_code == ExitCode.RUNNER_FAILURE
+    assert len(descriptors) == 1
+    with pytest.raises(OSError):
+        os.fstat(descriptors[0][0])
+    assert not Path(descriptors[0][1]).exists()
