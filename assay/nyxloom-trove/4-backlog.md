@@ -16477,3 +16477,26 @@ runs, and the file stays behind.
 **Close when.** A failed removal returns 3 (`rm -f -- "$stderr_file" || return
 3`), so there is no unmounted retry and the identity stays for the EXIT trap,
 and a `tester-unified` case that makes only this removal fail proves it.
+
+## B609 — two runs of one shard under one judge disagree on a mutant's outcome
+
+**Status: OPEN, filed 2026-11-27 (cmru R2 backfill, B562); severity: medium,
+because a stored verdict depends on which run produced it.**
+
+Shard 1 of 64 of `cmru-first-release-r2` at commit
+`5e02d731b72f43095d7bb8ec7b9be205efd2e71a` ran twice, both complete (75 of 75
+records) under judge `c6e270f2…`. One candidate differs:
+`20fc27434d6ff74b6ba6cbd9f2cd73c1882f075b51e4fac9037c93e65bd03568`,
+`cmru/src/cmru/bundle.py:165`, `python:bool-const-flip` (`True->False`).
+
+- `rgw-assay-first-release-r2-20261124T125223-v1001`: `survived`.
+- `rgw-assay-first-release-r2-20261124T152154-r1002`: `killed`, with
+  `first_failing_test` null.
+
+Stores: `cmru/.assay/r2-staging/<run>/assay-store.tgz` (untracked controller
+data). The cause is not established. A `killed` record that names no failing
+test (see B578) may be a failure unrelated to the mutant.
+
+**Close when.** The kill's cause is established from the run's evidence or a
+reproduction, and either the test or classification defect is fixed, or the
+limit is documented for consumers of resumed and merged stores.
