@@ -40,6 +40,7 @@ def run_probe(
     unit_probe_run_mode: str = "owned",
     absent_inspect_stderr: str = "error: no such object: {target}",
     inspect_stderr_warning: str = "",
+    inspect_failures: list[list[object]] | None = None,
 ):
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir(exist_ok=True)
@@ -103,6 +104,13 @@ if args and args[0] == "inspect":
             file=sys.stderr,
         )
         raise SystemExit(1)
+    if probe.get("inspect_failures"):
+        # One scripted [status, stderr] per call, then the probe answers again.
+        status, text = probe["inspect_failures"].pop(0)
+        save_probe_state(state)
+        print("", flush=True)
+        print(text.replace("{target}", probe["name"]), file=sys.stderr)
+        raise SystemExit(status)
     if probe.get("inspect_ambiguous_once"):
         probe["inspect_ambiguous_once"] = False
         save_probe_state(state)
@@ -172,6 +180,7 @@ if is_unit_probe:
     probe = {"id": container_id, "name": name, "owner": owner}
     if len(memory_stat_mounts) == 1:
         probe["memory_stat_mount"] = memory_stat_mounts[0]
+        probe["inspect_failures"] = json.loads(os.environ["INSPECT_FAILURES"])
     if mode == "inspect-ambiguous-once" and memory_stat_mounts:
         probe["inspect_ambiguous_once"] = True
     if mode == "owner-mismatch":
@@ -255,6 +264,7 @@ raise SystemExit(2)
         "UNIT_PROBE_RUN_MODE": unit_probe_run_mode,
         "ABSENT_INSPECT_STDERR": absent_inspect_stderr,
         "INSPECT_STDERR_WARNING": inspect_stderr_warning,
+        "INSPECT_FAILURES": json.dumps(inspect_failures or []),
         "MEMORY_STAT_DATA": memory_stat or "",
         "MEMORY_STAT_READ_ERROR": "1" if memory_stat_read_error else "0",
         "MEMORY_STAT_MOUNT_FAILURE": "1" if memory_stat_mount_failure else "0",
@@ -318,7 +328,6 @@ def _execute_unit_probe_script(
     memory_stat_path: Path,
     *,
     reader_mode: str = "normal",
-    timeout_available: bool = True,
 ):
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir(exist_ok=True)
@@ -361,9 +370,8 @@ print(json.dumps({"data": value}))
     )
     busctl.chmod(0o755)
     timeout = fake_bin / "timeout"
-    if timeout_available:
-        timeout.write_text(
-            r'''#!/usr/bin/python3
+    timeout.write_text(
+        r'''#!/usr/bin/python3
 import json
 import os
 import sys
@@ -385,15 +393,10 @@ if args[0] == "awk":
         raise SystemExit(2)
 os.execvpe(args[0], args, os.environ)
 ''',
-            encoding="utf-8",
-        )
-        timeout.chmod(0o755)
-    executable_script = script
-    if not timeout_available:
-        executable_script = executable_script.replace(
-            "timeout --kill-after=2s 5s /usr/bin/busctl", "busctl"
-        )
-    executable_script = executable_script.replace("/usr/bin/busctl", "busctl").replace(
+        encoding="utf-8",
+    )
+    timeout.chmod(0o755)
+    executable_script = script.replace("/usr/bin/busctl", "busctl").replace(
         "/tmp/host-memory.stat", str(memory_stat_path)
     )
     timeout_log = tmp_path / "timeout.argv"
@@ -410,10 +413,7 @@ os.execvpe(args[0], args, os.environ)
         text=True,
         check=False,
         env={
-            "PATH": (
-                f"{fake_bin}:{os.environ['PATH']}"
-                if timeout_available else str(fake_bin)
-            ),
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
             "TIMEOUT_LOG": str(timeout_log),
             "READER_MODE": reader_mode,
         },
@@ -982,7 +982,6 @@ def test_memory_stat_mount_failure_retries_unmounted_and_cleans_owned_probe(
         "error: no such object: {target}",
         "Error: No such object: {target}",
         "no such object: {target}",
-        "WARNING: unrelated CLI notice\nerror: no such object: {target}",
     ],
 )
 def test_mount_failure_with_absent_container_retries_without_removal(
@@ -1027,6 +1026,8 @@ def test_mount_failure_with_absent_container_retries_without_removal(
         "error: no such object: {target}-other",
         "error: no such object: {target} (daemon unreachable)",
         "Error response from daemon: no such object: {target}",
+        "WARNING: unrelated CLI notice\nerror: no such object: {target}",
+        "error: no such object: {target}\nCannot connect to the Docker daemon",
         "Cannot connect to the Docker daemon",
         "",
     ],
@@ -1051,6 +1052,40 @@ def test_other_inspect_failure_after_mount_failure_refuses_without_fallback(
     calls = [json.loads(line) for line in argv_log.read_text(encoding="utf-8").splitlines()]
     assert len([call for call in calls if call[0] == "run"]) == 1
     assert not any(call[0] == "rm" for call in calls)
+
+
+@pytest.mark.parametrize(
+    "inspect_failures",
+    [
+        [[1, ""], [1, "WARNING: unrelated CLI notice\nerror: no such object: {target}"]],
+        [[1, ""], [124, "error: no such object: {target}"]],
+        [[124, "error: no such object: {target}"]],
+    ],
+)
+def test_inexact_absence_keeps_a_created_probe_for_exit_cleanup(
+    tmp_path: Path,
+    inspect_failures: list[list[object]],
+):
+    proc, argv_log = run_probe(
+        tmp_path,
+        "OK",
+        slice_name="dev-gates.slice",
+        cgroup_values={"memory.current": "5368709120"},
+        memory_reserve_bytes=2147483648,
+        unit_probe_run_mode="mount-failure-created",
+        inspect_failures=inspect_failures,
+    )
+
+    assert proc.returncode != 0
+    assert proc.stdout == ""
+    assert "refusing fallback" in proc.stderr
+    calls = [json.loads(line) for line in argv_log.read_text(encoding="utf-8").splitlines()]
+    assert len([call for call in calls if call[0] == "run"]) == 1
+    assert [call for call in calls if call[0] == "rm"] == [
+        ["rm", "--force", "f" * 64]
+    ]
+    state = json.loads((tmp_path / "unit-probe-state.json").read_text(encoding="utf-8"))
+    assert state["containers"] == {}
 
 
 def test_docker_warning_on_stderr_does_not_break_probe_verification(tmp_path: Path):
@@ -1195,14 +1230,6 @@ def test_generated_probe_script_reads_only_gates_memory_stat_with_a_bound(
     )
     assert failed_reader.returncode == 0, failed_reader.stderr
     assert "ASSAY_MEMORY_STAT_READ_ERROR" in failed_reader.stdout
-
-    missing_timeout_dir = tmp_path / "missing-timeout-execution"
-    missing_timeout_dir.mkdir()
-    missing_timeout, _ = _execute_unit_probe_script(
-        missing_timeout_dir, script, stat_file, timeout_available=False
-    )
-    assert missing_timeout.returncode == 0, missing_timeout.stderr
-    assert "ASSAY_MEMORY_STAT_READ_ERROR" in missing_timeout.stdout
 
     unreserved_dir = tmp_path / "unreserved"
     unreserved_dir.mkdir()
