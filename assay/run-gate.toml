@@ -86,6 +86,7 @@ export PYTHONPATH="analysis/src:{worktree}/libraries/cowtree/src"
 "$tooling_tmp/venv/bin/python" -m pytest -q -p no:cacheprovider \
   gate/tests/test_b105_report_check.py \
   gate/tests/test_distribution_gate.py \
+  gate/tests/test_changes_fold_preflight.py \
   gate/tests/test_release_gate.py \
   gate/tests/test_self_qualification_container.py \
   gate/tests/test_self_lane.py \
