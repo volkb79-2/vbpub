@@ -4512,5 +4512,5 @@ The lanes under items 2 and 3 must stay byte-identical, because the whole-source
   `capture_output=True` cannot write a Git diagnostic for any input it accepts.
 - **Resolution.** The fake keyword-dictionary witness was removed. Real local
   repository tests cover the boolean results; only observable mutations are
-  required to fail a behavioral test. The other 27 records remain behaviorally
-  tested.
+  required to fail a behavioral test. The all-30 probe confirmed 27 killed
+  mutations and these three survivors as equivalent.

@@ -54,7 +54,8 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   not the selected tag (KI-211).
 - tests(cmru): the upload-coordinate refusal stubs the release transport, so
   it no longer needs api.github.com to reach its assertion (KI-210).
-- tests(cmru): two behaviour suites cover 27 of the first 30
+- tests(cmru): the all-30 survivor probe killed 27 mutations; two behaviour
+  suites cover those 27 of the first 30
   `transaction.py` R2 survivors over the durable scope sidecars and the Git/ref
   guards: an
   unchecked `_git` read returns instead of raising, a failing Git call's
