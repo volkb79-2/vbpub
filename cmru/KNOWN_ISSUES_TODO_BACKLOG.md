@@ -285,6 +285,24 @@ a kernel API behavior test, not a timing test.
   no-replace rename also refuses the occupied destination and returns `False`. The resulting
   files and return value are identical. Neither path writes caller stderr or decodes subprocess
   output.
+- `12657b6dd362` changes `text=True` to `False` for the captured `git merge-base --is-ancestor`
+  result. The caller reads only `returncode`; it never inspects stdout/stderr. `capture_output`
+  remains enabled, so even `GIT_TRACE=1` stays captured, and no output is decoded or returned to
+  the caller. Return code, exception, files and caller stderr are unchanged.
+
+### KI-227 — batch 3 abandon-workspace mutations remain open
+
+**Status:** OPEN. Candidates in `transaction.py` source window 3363–3458:
+`89a2ee0c767d`, `dc6245529c30`, `1e7f27130c22`, `8ae2f59eea5a`, `4c7aaaa5d6a3`,
+`7e3c34b77cab`, `1e61bad9c004`, `febb3a206762`, `f05bd3dda1fd`, and
+`fc7293486dc2`.
+
+An attempt to witness the abandonment paths with real local bare remotes passed its behavioral
+assertions but failed the suite's descendant guard: `run_remote_git` left Git child processes
+behind for the guard to reap. Those tests were removed. The batch rule forbids tests that signal,
+wait for or reap processes; no surviving witness may retain that process leak. The candidates
+remain open pending a process-clean local-remote setup. `12657b6dd362` in the same window has the
+narrow equivalence proof above.
 
 > **KI-12 … KI-16 shipped together** in `merge(cmru): KI-12..KI-17 and S15 tool
 > dependencies`, with the new S15 tool-dependency feature. SPEC: `S-CLI.5b/5c/5d`,
