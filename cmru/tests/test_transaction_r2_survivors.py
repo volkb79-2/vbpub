@@ -22,9 +22,7 @@ import pytest
 
 from cmru import transaction
 from cmru.errors import UnsafeRecord
-from tests._git_isolation import (  # noqa: F401
-    git_isolation, isolate_git, reap_git_zombie_children,
-)
+from tests._git_isolation import git_isolation, isolate_git  # noqa: F401
 
 BASE = "a" * 40
 BRANCH = "cmru-release-20261128_120000-demo-ab12cd"
@@ -197,19 +195,12 @@ def test_the_release_lock_creates_the_scope_directory_it_needs(monkeypatch, tmp_
 
 
 def test_a_failed_origin_main_fetch_propagates_as_a_called_process_error(
-    monkeypatch, reap_git_zombie_children, tmp_path,
+    monkeypatch, tmp_path,
 ):
-    """Git's real fetch command refuses when the local repository has no origin."""
+    """A disallowed local transport fails before Git starts its helper."""
     root = _repo(tmp_path)
-    real_run_remote_git = transaction.run_remote_git
-
-    def captured_remote_git(*args, **kwargs):
-        kwargs["capture_output"] = True
-        return real_run_remote_git(*args, **kwargs)
-
-    # Keep Git's local transport descendants inside the capture wrapper so the
-    # suite's process-boundary guard sees no child after this real fetch exits.
-    monkeypatch.setattr(transaction, "run_remote_git", captured_remote_git)
+    _git(root, "remote", "add", "origin", f"file://{tmp_path / 'absent-remote.git'}")
+    monkeypatch.setenv("GIT_ALLOW_PROTOCOL", "https")
 
     with pytest.raises(subprocess.CalledProcessError) as error:
         transaction.fetch_origin_main(root)
