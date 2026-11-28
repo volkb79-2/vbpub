@@ -1,6 +1,7 @@
 """Caller-visible transaction witnesses for R2 survivor batch 3."""
 from __future__ import annotations
 
+import errno
 import json
 import os
 import shutil
@@ -77,3 +78,56 @@ def test_cleanup_rollback_moves_a_dangling_staged_record_back_to_its_public_name
     assert (parent / output_id).is_symlink()
     assert os.readlink(parent / output_id) == "missing-target"
     assert not (stage / "record").exists()
+
+
+def test_successful_noreplace_restore_reports_the_move_and_moves_the_record(
+    monkeypatch, tmp_path,
+):
+    parent = tmp_path / "parent"
+    stage = parent / "stage"
+    stage.mkdir(parents=True)
+    (stage / "record").write_text("reviewed output\n", encoding="utf-8")
+    parent_fd = os.open(parent, transaction._directory_open_flags())
+    stage_fd = os.open(stage, transaction._directory_open_flags())
+
+    def renameat2(source_fd, source, destination_fd, destination, _flags):
+        os.rename(
+            os.fsdecode(source), os.fsdecode(destination),
+            src_dir_fd=source_fd, dst_dir_fd=destination_fd,
+        )
+        return 0
+
+    monkeypatch.setattr(
+        transaction.ctypes, "CDLL",
+        lambda *_args, **_kwargs: SimpleNamespace(renameat2=renameat2),
+    )
+    try:
+        restored = transaction._restore_cleanup_stage_record(
+            parent_fd, stage_fd, "output-2",
+        )
+    finally:
+        os.close(stage_fd)
+        os.close(parent_fd)
+
+    assert restored
+    assert (parent / "output-2").read_text(encoding="utf-8") == "reviewed output\n"
+    assert not (stage / "record").exists()
+
+
+def test_noreplace_collision_returns_false_and_preserves_both_records(tmp_path):
+    """KI-226: exercise Linux renameat2's errno channel, not syscall speed."""
+    parent = tmp_path / "parent"
+    parent.mkdir()
+    (parent / "source").write_text("staged\n", encoding="utf-8")
+    (parent / "destination").write_text("concurrent\n", encoding="utf-8")
+    parent_fd = os.open(parent, transaction._directory_open_flags())
+    try:
+        restored = transaction._rename_noreplace_at(
+            "source", parent_fd, "destination", parent_fd,
+        )
+    finally:
+        os.close(parent_fd)
+
+    assert not restored
+    assert (parent / "source").read_text(encoding="utf-8") == "staged\n"
+    assert (parent / "destination").read_text(encoding="utf-8") == "concurrent\n"

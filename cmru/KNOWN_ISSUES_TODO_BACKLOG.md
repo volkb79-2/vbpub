@@ -259,6 +259,28 @@ These original behaviors need a product decision and safe implementation before 
 assert them as desirable. No test blesses directory recreation; no product source was changed.
 
 
+### KI-226 — batch 3 transaction R2 equivalence proofs
+
+**Status:** OPEN; narrowly equivalent mutation outcomes, pending the complete batch 3 probe.
+
+The new `test_noreplace_collision_returns_false_and_preserves_both_records` exercises the
+Linux `renameat2` errno channel because `use_errno=True` is the behavior under test; it checks
+that an occupied destination remains unchanged and the staged record stays available. This is
+a kernel API behavior test, not a timing test.
+
+- `64756fcf5c5a` changes the successful descriptor assertion from `artifact_fd is not None
+  and logs_fd is not None` to `or`. Each descriptor is assigned only by a successful
+  `os.open()`, which returns a valid integer descriptor; on failure control leaves through
+  the preceding exception handlers. The assertion cannot see exactly one missing descriptor
+  in reachable execution. Return values, exceptions, files and caller stderr are unchanged;
+  there is no subprocess output to decode.
+- `9321dbe65f96` follows a dangling symlink while checking whether the public output name is
+  vacant. Without following links, `stat` sees the occupied symlink and returns `False` from
+  `_restore_cleanup_stage_record`. Following it raises `FileNotFoundError`, after which the
+  no-replace rename also refuses the occupied destination and returns `False`. The resulting
+  files and return value are identical. Neither path writes caller stderr or decodes subprocess
+  output.
+
 > **KI-12 … KI-16 shipped together** in `merge(cmru): KI-12..KI-17 and S15 tool
 > dependencies`, with the new S15 tool-dependency feature. SPEC: `S-CLI.5b/5c/5d`,
 > `S12.2a`–`S12.2e`, `S2.6`, `S15`. Mutation campaign green (115 candidates, 115
