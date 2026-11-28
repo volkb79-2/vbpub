@@ -81,7 +81,7 @@ together.
 | CTL-80 | `compact-resume.sh` can deliver `/compact` as pasted text and then send the resume prompt although no compaction ran | High | FIXED 2026-11-28 (P-plat-CTL80 r3) |
 | CTL-81 | A fresh pi controller session saves the previous session's monitor-restart notice as its original goal | Medium | FIXED 2026-11-28 (P-plat-CTL80) |
 | CTL-82 | An IDE selection chip in an empty Claude Code prompt row is read as typed input | Medium | OPEN 2026-11-28 (main smoke evidence) |
-| CTL-85 | `controller.local.env` overrides launcher routes and environment, including `start_job` values | Known limit | BY DESIGN 2026-11-28 (main decision) |
+| CTL-85 | `controller.local.env` and launcher-specific route/environment precedence | Known limit | BY DESIGN 2026-11-28 (main decision) |
 
 ---
 
@@ -2118,13 +2118,18 @@ procfs-visible pid and start ticks, `job-check.sh` recognizes an outer procfs
 owner that `kill -0` cannot reach, and fake-pi tests pin the launcher and
 completion contract.
 
-## CTL-85 — controller.local.env overrides start_job route and environment
+## CTL-85 — controller.local.env and launcher-specific start_job precedence
 
 **Status:** BY DESIGN 2026-11-28 (main decision); severity: known limit.
 
-`controller_init` sources `controller.local.env` as operator configuration.
-Its exported route and environment values therefore override the route and
-sanitized environment supplied by any launcher, including `start_job`. This
-precedence is an operator policy and is disclosed in the launcher documentation.
+`controller_init` sources `controller.local.env`, but field precedence depends
+on the launcher. `codex-impl.sh` sources it after launch setup, so a local
+`CODEX_ROUTE` wins over an inherited or `start_job` route. `pi-impl.sh` restores
+nonempty caller `PI_ROUTE`, `PI_MODEL`, `PI_THINKING`, and `PI_SESSION_DIR`; a
+caller-set `PI_EXTRA_ARGS` or `PI_RUN_MODE` wins even when empty. When those
+values are absent (or empty for the first four fields), the local file can
+supply them. `pi-review.sh` passes its account-derived `PI_ROUTE` explicitly
+and sets `PI_RUN_MODE=review` and `PI_EXTRA_ARGS=''`, which win for that child.
+The launcher documentation records these distinctions.
 
 **Where:** `scripts/controller/lib.sh` (`controller_init`) and launcher docs.

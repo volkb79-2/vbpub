@@ -818,8 +818,15 @@ stops its review when either limit is exceeded. Watch for the `pi-ctl-job` end n
 after a restart or when you need the recorded result. `start_job` prints this
 complete shell-quoted command; the route is the launcher's effective route, and
 the optional report argument is included when supplied.
-`controller.local.env` is operator configuration and overrides the route and
-environment of every launcher, `start_job` included.
+`controller.local.env` is sourced by `controller_init`, but route precedence is
+launcher-specific. `codex-impl.sh` sources it after launch setup, so its
+`CODEX_ROUTE` overrides an inherited or `start_job` route. `pi-impl.sh` restores
+nonempty caller values for `PI_ROUTE`, `PI_MODEL`, `PI_THINKING`, and
+`PI_SESSION_DIR`; for `PI_EXTRA_ARGS` and `PI_RUN_MODE`, any caller-set value,
+including empty, wins. Otherwise those pi fields can come from the local file.
+`pi-review.sh` passes its account-derived `PI_ROUTE` to `pi-impl.sh` and sets
+review mode with empty extra args, so those explicit values win. Other local
+configuration values remain available unless a launcher pins them later.
 
 ```bash
 scripts/controller/pi-ctl-launch.sh hostobs
