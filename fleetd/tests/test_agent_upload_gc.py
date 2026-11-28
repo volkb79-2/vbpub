@@ -216,6 +216,30 @@ def test_submit_inventory_is_locked_but_have_is_not(tmp_path, monkeypatch):
     assert entered
 
 
+def test_collection_disabled_submit_ignores_missing_upload_and_odd_store(tmp_path, monkeypatch):
+    service, identity, _checkout = _service(tmp_path)
+    service.executor = object()
+    (service.paths.uploads_dir / "unexpected").write_text("preserve", encoding="utf-8")
+    entered = []
+    original = service._upload_store_lock
+
+    @contextmanager
+    def observed_lock():
+        with original():
+            entered.append(True)
+            yield
+
+    monkeypatch.setattr(service, "_upload_store_lock", observed_lock)
+    service.admission.submit = lambda *_args, **_kwargs: {"job_id": "job", "state": "queued"}
+    request = _submit()
+    request["stores"]["seed"] = {"path": "assay-store", "sha256": "a" * 64, "bytes": 1}
+
+    assert service.handle(request, identity).document["state"] == "queued"
+    assert service.handle({"verb": "have", "repo": "vbpub"}, identity).document["refs"] == []
+    assert entered == []
+    assert (service.paths.uploads_dir / "unexpected").read_text(encoding="utf-8") == "preserve"
+
+
 def test_blocked_admission_does_not_block_unrelated_put_or_have(tmp_path, monkeypatch):
     service, identity, checkout = _service(tmp_path)
     _enable_collection(service)
