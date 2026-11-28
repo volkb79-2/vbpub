@@ -389,6 +389,70 @@ def test_docker_inspector_requires_a_finite_positive_timeout(timeout):
         docker_object_inspector(timeout)
 
 
+def test_host_docker_adapter_uses_bounded_collector_without_runner(monkeypatch):
+    observed = {}
+
+    def bounded(argv, timeout):
+        observed.update(argv=list(argv), timeout=timeout)
+        return subprocess.CompletedProcess(argv, 0, b"ok", b"")
+
+    monkeypatch.setattr(agent_providers, "_run_bounded", bounded)
+    result = agent_providers.run_docker_command(["info"], 2.5)
+    assert result.stdout == b"ok"
+    assert observed == {
+        "argv": ["/usr/bin/docker", "--host", _DOCKER_HOST, "info"],
+        "timeout": 2.5,
+    }
+
+
+def test_host_docker_adapter_refuses_invalid_arguments():
+    for arguments in ([""], ["inspect", "bad\x00target"], [1]):
+        with pytest.raises(agent_providers.DockerInspectionError, match="arguments are invalid"):
+            agent_providers.run_docker_command(arguments, 1, runner=lambda *_args, **_kwargs: None)
+
+
+def test_bounded_command_wrapper_forwards_the_injected_collector(monkeypatch):
+    observed = {}
+    result = subprocess.CompletedProcess(["query"], 0, b"answer", b"")
+
+    def collector(argv, timeout, **kwargs):
+        observed.update(argv=list(argv), timeout=timeout, **kwargs)
+        return result
+
+    monkeypatch.setattr(agent_providers, "_run_bounded", collector)
+    assert agent_providers.run_bounded_command(
+        ["query"], 3, environment={"PATH": "/usr/bin"}, cwd="/tmp", stdin=None,
+        pass_fds=(17,), output_limit=123,
+    ) is result
+    assert observed == {
+        "argv": ["query"], "timeout": 3, "environment": {"PATH": "/usr/bin"},
+        "cwd": "/tmp", "stdin": None, "pass_fds": (17,), "output_limit": 123,
+        "popen_factory": None, "preexec_fn": None,
+    }
+
+
+@pytest.mark.parametrize("result", [
+    subprocess.CompletedProcess(["docker"], "0", b"[]", b""),
+    subprocess.CompletedProcess(["docker"], 0, "[]", b""),
+    subprocess.CompletedProcess(["docker"], 0, b"[]", ""),
+])
+def test_docker_inspector_checks_the_completed_result_boundary(monkeypatch, result):
+    monkeypatch.setattr(agent_providers, "run_docker_command", lambda *_args, **_kwargs: result)
+    inspect = docker_object_inspector(1)
+    assert inspect("legacy-runner") is InspectorAnswer.ERROR
+
+
+def test_docker_inspector_handles_completed_result_property_failure(monkeypatch):
+    class BrokenResult:
+        @property
+        def returncode(self):
+            raise RuntimeError("result property unavailable")
+
+    monkeypatch.setattr(agent_providers, "run_docker_command", lambda *_args, **_kwargs: BrokenResult())
+    inspect = docker_object_inspector(1)
+    assert inspect("legacy-runner") is InspectorAnswer.ERROR
+
+
 def test_docker_inspector_rejects_an_invalid_executable_without_running_it():
     for executable in ("-docker", "", None, "docker"):
         calls = []
@@ -1394,6 +1458,64 @@ def test_bounded_docker_runner_handles_missing_pipe_and_deadline_at_reap(monkeyp
             )
         assert killed == [(process.pid, signal.SIGKILL)]
         assert process.events == ["signal", "reap"]
+
+
+def test_bounded_docker_runner_rejects_unrelated_event_before_pidfd(monkeypatch):
+    class UnrelatedThenPidfd(_FakeSelector):
+        def __init__(self):
+            super().__init__()
+            self.pidfd_selects = 0
+
+        def select(self, timeout):
+            if any(isinstance(stream, int) for stream, _data in self.entries.values()):
+                self.pidfd_selects += 1
+                if self.pidfd_selects == 1:
+                    return [(_FakeSelectorKey(object(), ("other", None)), agent_providers.selectors.EVENT_READ)]
+            return super().select(timeout)
+
+    selector = UnrelatedThenPidfd()
+    process = _FakeProcess()
+    _, selector, process, killed, spawn, kill_group = _bounded_seams(
+        monkeypatch, read_map={101: [b""], 102: [b""]}, selector=selector, process=process,
+    )
+    with pytest.raises(agent_providers.DockerInspectionError, match="unrelated event"):
+        agent_providers._run_bounded(
+            ["/usr/bin/docker"], None,
+            popen_factory=spawn,
+            selector_factory=lambda: selector,
+            kill_group=kill_group,
+        )
+    assert selector.pidfd_selects == 1
+    assert killed == [(process.pid, signal.SIGKILL)]
+
+
+def test_bounded_docker_runner_waits_for_pidfd_after_empty_selector_result(monkeypatch):
+    class EmptyThenPidfd(_FakeSelector):
+        def __init__(self):
+            super().__init__()
+            self.pidfd_selects = 0
+
+        def select(self, timeout):
+            if any(isinstance(stream, int) for stream, _data in self.entries.values()):
+                self.pidfd_selects += 1
+                if self.pidfd_selects == 1:
+                    return []
+            return super().select(timeout)
+
+    selector = EmptyThenPidfd()
+    process = _FakeProcess()
+    _, selector, process, killed, spawn, kill_group = _bounded_seams(
+        monkeypatch, read_map={101: [b""], 102: [b""]}, selector=selector, process=process,
+    )
+    result = agent_providers._run_bounded(
+        ["/usr/bin/docker"], None,
+        popen_factory=spawn,
+        selector_factory=lambda: selector,
+        kill_group=kill_group,
+    )
+    assert result.returncode == 0
+    assert selector.pidfd_selects == 2
+    assert killed == [(process.pid, signal.SIGKILL)]
 
 
 def test_bounded_docker_runner_kills_on_selector_setup_error(monkeypatch):

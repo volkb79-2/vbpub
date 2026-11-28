@@ -474,6 +474,32 @@ def test_scope_launcher_retries_reaper_setup_after_baseexception(monkeypatch):
                 pass
 
 
+def test_scope_launcher_refuses_when_reaper_retry_also_fails():
+    read_fd, write_fd = os.pipe()
+    reaper_calls = []
+
+    def popen(_argv, **_kwargs):
+        return type("WorkerProcess", (), {"pid": 517, "wait": lambda _self: 0})()
+
+    def reaper(_wait):
+        reaper_calls.append(True)
+        if len(reaper_calls) == 1:
+            raise KeyboardInterrupt("first reaper setup interrupted")
+        raise RuntimeError("retry could not own wait")
+
+    launcher = SystemdScopeLauncher(1, popen=popen, reaper_start=reaper)
+    try:
+        with pytest.raises(AdmissionError, match="after interrupted reaper setup"):
+            launcher.launch("fleetd-job-y.scope", ["worker"], 8, read_fd, write_fd)
+        assert reaper_calls == [True, True]
+    finally:
+        for fd in (read_fd, write_fd):
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+
 def test_worker_main_verifies_flock_before_handshake_and_execution(tmp_path, monkeypatch):
     state_dir = tmp_path / "state"
     state_dir.mkdir()
@@ -954,6 +980,10 @@ def test_worker_handles_cancel_after_wait_without_signaling_an_exited_child(tmp_
         return CommandResult(0)
 
     worker._helper = helper
+    # This test isolates child wait/cancel ordering.  The event-file reader is
+    # injected separately because the fake helper does not switch to the
+    # synthetic runner uid configured above.
+    worker._read_events = lambda *, final=True: []
     worker.process_signals = _Signals()
     waits = []
 
@@ -1754,6 +1784,78 @@ def test_event_reader_advances_incrementally_and_enforces_the_named_byte_limit(t
         os.close(worker.repo_root_fd)
 
 
+@pytest.mark.parametrize("damage, message", [
+    ("replace", "identity changed"),
+    ("shrink", "file shrank"),
+])
+def test_event_reader_refuses_replaced_or_shrunk_file_after_initial_read(tmp_path, damage, message):
+    worker = _worker(tmp_path, _VersionRunner({}))
+    worker.runner_identity = RunnerIdentity("test-runner", os.getuid(), os.getgid(), (os.getgid(),))
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    event_dir = tmp_path / ".fleetd-events" / "vbpub"
+    event_dir.mkdir(parents=True)
+    event_path = event_dir / "controller-run-1.jsonl"
+    line = json.dumps({
+        "api": "fleet-host-agent/1", "job_id": "controller-run-1", "event": "lane-verdict",
+        "lane": "r0-r1", "verdict": "PASS", "exit_code": 0, "lane_exit_code": 0,
+    }) + "\n"
+    event_path.write_text(line, encoding="utf-8")
+    event_path.chmod(0o600)
+    worker.repo_root = repo
+    worker.event_rel = ".fleetd-events/vbpub/controller-run-1.jsonl"
+    try:
+        assert len(worker._read_events(final=False)) == 1
+        if damage == "replace":
+            replacement = event_path.with_name("replacement.jsonl")
+            replacement.write_text(line, encoding="utf-8")
+            replacement.chmod(0o600)
+            replacement.replace(event_path)
+        else:
+            event_path.write_bytes(b"")
+        with pytest.raises(AdmissionError, match=message):
+            worker._read_events(final=False)
+    finally:
+        os.close(worker.repo_root_fd)
+
+
+def test_event_reader_stops_after_short_read_from_a_truncated_stream(tmp_path, monkeypatch):
+    worker = _worker(tmp_path, _VersionRunner({}))
+    worker.runner_identity = RunnerIdentity("test-runner", os.getuid(), os.getgid(), (os.getgid(),))
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    event_dir = tmp_path / ".fleetd-events" / "vbpub"
+    event_dir.mkdir(parents=True)
+    event_path = event_dir / "controller-run-1.jsonl"
+    event_path.write_text("{}\n", encoding="utf-8")
+    event_path.chmod(0o600)
+    worker.repo_root = repo
+    worker.event_rel = ".fleetd-events/vbpub/controller-run-1.jsonl"
+    open_event = executor_worker_module.open_beneath
+    event_fds = []
+
+    def recording_open(root_fd, relative, *, directory=False):
+        fd = open_event(root_fd, relative, directory=directory)
+        if relative == worker.event_rel:
+            event_fds.append(fd)
+        return fd
+
+    monkeypatch.setattr(executor_worker_module, "open_beneath", recording_open)
+    real_read = os.read
+
+    def short_read(fd, amount):
+        if fd in event_fds:
+            return b""
+        return real_read(fd, amount)
+
+    monkeypatch.setattr(executor_worker_module.os, "read", short_read)
+    try:
+        assert worker._read_events(final=False) == []
+        assert worker.event_offset == 0
+    finally:
+        os.close(worker.repo_root_fd)
+
+
 def test_event_reader_refuses_excess_event_count_by_name(tmp_path, monkeypatch):
     worker = _worker(tmp_path, _VersionRunner({}))
     worker.runner_identity = RunnerIdentity("test-runner", os.getuid(), os.getgid(), (os.getgid(),))
@@ -2308,6 +2410,37 @@ def test_seed_unpack_refuses_size_duplicate_file_target_and_symlink_target(tmp_p
         os.close(root_fd)
 
 
+def test_seed_unpack_enforces_uncompressed_limit_and_preserves_named_tree_errors(tmp_path, monkeypatch):
+    root = tmp_path / "checkout"
+    root.mkdir()
+    root_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+    archive = _seed_archive(content=b"payload")
+    monkeypatch.setattr(executor_worker_module, "MAX_ARCHIVE_UNCOMPRESSED_BYTES", 2)
+    input_fd = _pipe_with(archive)
+    try:
+        with pytest.raises(ValueError, match="MAX_ARCHIVE_UNCOMPRESSED_BYTES"):
+            _extract_seed(
+                root_fd, input_fd, "store", hashlib.sha256(archive).hexdigest(), len(archive), 100,
+            )
+    finally:
+        os.close(input_fd)
+
+    monkeypatch.setattr(executor_worker_module, "MAX_ARCHIVE_UNCOMPRESSED_BYTES", 512 * 1024 * 1024)
+    monkeypatch.setattr(
+        executor_worker_module, "_mkdir_beneath",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("MAX_TREE_DEPTH exceeded (1)")),
+    )
+    input_fd = _pipe_with(archive)
+    try:
+        with pytest.raises(ValueError, match="STORE-SEED-FAILED store MAX_TREE_DEPTH"):
+            _extract_seed(
+                root_fd, input_fd, "store", hashlib.sha256(archive).hexdigest(), len(archive), 100,
+            )
+    finally:
+        os.close(input_fd)
+        os.close(root_fd)
+
+
 def test_beneath_directory_helpers_refuse_unsafe_paths_and_remove_without_following_links(tmp_path):
     root = tmp_path / "root"
     root.mkdir()
@@ -2549,6 +2682,110 @@ def test_docker_client_covers_inspection_passwd_query_and_remove_refusals():
                            (f"{container_id}\n{container_id}\n".encode(), "duplicate")):
         with pytest.raises(AdmissionError, match=reason):
             client_with(subprocess.CompletedProcess([], 0, output, b"")).job_containers("safe-job")
+
+
+def test_docker_job_container_query_ignores_blank_lines():
+    container_id = "e" * 64
+    docker = DockerClient(
+        3,
+        run=lambda argv, **_kwargs: subprocess.CompletedProcess(
+            argv, 0, f"\n  {container_id}  \n\n".encode(), b"",
+        ),
+    )
+    assert docker.job_containers("safe-job") == (container_id,)
+
+
+def test_copy_seed_refs_ignores_unavailable_or_unreadable_tag_listing(tmp_path):
+    class _Commands:
+        def __init__(self, listing):
+            self.listing = listing
+            self.calls = []
+
+        def run(self, argv, **_kwargs):
+            self.calls.append(list(argv))
+            return self.listing
+
+    for listing in (
+        CommandResult(1, b"", b"unavailable"),
+        CommandResult(0, b"\xff", b""),
+    ):
+        scenario = tmp_path / str(len(listing.stdout)) / str(listing.returncode)
+        scenario.mkdir(parents=True)
+        worker, _runner, _job_dir, _checkout = _ready_worker(scenario)
+        commands = _Commands(listing)
+        worker.runner = commands
+        try:
+            worker._copy_seed_refs("seed")
+            assert len(commands.calls) == 1
+        finally:
+            for fd in (worker.project_fd, worker.checkout_fd, worker.repo_root_fd):
+                if fd >= 0:
+                    os.close(fd)
+
+
+def test_copy_seed_refs_filters_untrusted_tags_and_records_failed_fetch(tmp_path):
+    class _Commands:
+        def __init__(self):
+            self.calls = []
+
+        def run(self, argv, **_kwargs):
+            self.calls.append(list(argv))
+            if "for-each-ref" in argv:
+                return CommandResult(
+                    0,
+                    b"refs/heads/main\nrefs/tags/not-a-release\nrefs/tags/fleetd-v1.0\n",
+                    b"",
+                )
+            return CommandResult(1, b"", b"fetch failed")
+
+    worker, _runner, _job_dir, _checkout = _ready_worker(tmp_path)
+    commands = _Commands()
+    worker.runner = commands
+    try:
+        worker._copy_seed_refs("seed")
+        assert len(commands.calls) == 2
+        assert commands.calls[1][-1] == "+refs/tags/fleetd-v1.0:refs/tags/fleetd-v1.0"
+    finally:
+        for fd in (worker.project_fd, worker.checkout_fd, worker.repo_root_fd):
+            if fd >= 0:
+                os.close(fd)
+
+
+@pytest.mark.parametrize("marker", ["MAX_TREE_ENTRIES", "MAX_DIRECTORY_ENTRIES", "MAX_TREE_DEPTH"])
+def test_archive_store_propagates_permanent_tree_limits(tmp_path, monkeypatch, marker):
+    root = tmp_path / "store-root"
+    root.mkdir()
+    root_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+    output_fd = os.open(root / "store.tgz", os.O_CREAT | os.O_RDWR, 0o600)
+    monkeypatch.setattr(
+        executor_worker_module, "_tree_entries",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError(f"{marker} exceeded (1)")),
+    )
+    try:
+        with pytest.raises(OSError, match=marker):
+            executor_worker_module._archive_store(root_fd, output_fd, ["store"])
+    finally:
+        os.close(output_fd)
+        os.close(root_fd)
+
+
+def test_archive_store_does_not_hide_permanent_pack_limit_errors(tmp_path, monkeypatch):
+    root = tmp_path / "store-root"
+    root.mkdir()
+    (root / "store").mkdir()
+    (root / "store" / "value").write_bytes(b"data")
+    root_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+    output_fd = os.open(root / "store.tgz", os.O_CREAT | os.O_RDWR, 0o600)
+    monkeypatch.setattr(
+        executor_worker_module, "_write_archive",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("MAX_TREE_ENTRIES exceeded (1)")),
+    )
+    try:
+        with pytest.raises(OSError, match="MAX_TREE_ENTRIES"):
+            executor_worker_module._archive_store(root_fd, output_fd, ["store"])
+    finally:
+        os.close(output_fd)
+        os.close(root_fd)
 
 
 def test_prerequisite_docker_run_uses_a_loaded_host_gate_tier():
@@ -2931,6 +3168,20 @@ def test_tree_removal_bounds_total_entries_and_depth(tmp_path, monkeypatch):
         monkeypatch.setattr(executor_worker_module, "MAX_TREE_DEPTH", 0)
         with pytest.raises(OSError, match="MAX_TREE_DEPTH"):
             executor_worker_module._tree_entries(root_fd, "tree", reject_special=True)
+    finally:
+        os.close(root_fd)
+
+
+def test_tree_removal_refuses_to_descend_at_the_depth_ceiling(tmp_path):
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / "child").mkdir()
+    root_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        with pytest.raises(OSError, match="MAX_TREE_DEPTH"):
+            executor_worker_module._remove_tree_at(
+                root_fd, "child", depth=executor_worker_module.MAX_TREE_DEPTH,
+            )
     finally:
         os.close(root_fd)
 
@@ -3535,6 +3786,932 @@ def _ready_worker(tmp_path, runner=None, *, request=None, docker=None, waiter=la
     project = request.get("project", ".")
     worker.project_fd = os.dup(worker.checkout_fd) if project == "." else -1
     return worker, runner, job_dir, checkout
+
+
+@pytest.mark.parametrize(
+    ("stderr", "reason", "permanent"),
+    [
+        (b"MAX_TREE_ENTRIES exceeded", "MAX_TREE_ENTRIES exceeded", True),
+        (b"permission denied", "runner-user helper 'prepare' failed", False),
+    ],
+)
+def test_worker_helper_classifies_permanent_limits_and_transient_errors(
+    tmp_path, stderr, reason, permanent,
+):
+    runner = _VersionRunner({})
+    worker, runner, _job_dir, _checkout = _ready_worker(tmp_path, runner)
+    helper_argv = worker._helper_argv("prepare", "--relative", ".fleetd-worktrees")
+    runner.responses[helper_argv[0]] = CommandResult(1, b"", stderr)
+    try:
+        with pytest.raises(AdmissionError, match=reason):
+            worker._helper("prepare", "--relative", ".fleetd-worktrees")
+        assert (worker.permanent_defect is not None) is permanent
+    finally:
+        for fd in (worker.project_fd, worker.checkout_fd, worker.repo_root_fd):
+            if fd >= 0:
+                os.close(fd)
+
+
+@pytest.mark.parametrize("lane, expected", [
+    ({"base": None}, None),
+    ({"base": ""}, "invalid"),
+])
+def test_required_checkout_base_handles_absent_and_invalid_lane_bases(tmp_path, monkeypatch, lane, expected):
+    worker, _runner, _job_dir, _checkout = _ready_worker(tmp_path)
+    worker.request.update(project=".", lane="r0-r1")
+    monkeypatch.setattr(executor_worker_module, "_lane_environment", lambda *_args: (lane, {}))
+    try:
+        if expected == "invalid":
+            with pytest.raises(AdmissionError, match="comparison base"):
+                worker._required_checkout_base(None)
+        else:
+            assert worker._required_checkout_base(None) is None
+    finally:
+        for fd in (worker.project_fd, worker.checkout_fd, worker.repo_root_fd):
+            if fd >= 0:
+                os.close(fd)
+
+
+def test_required_checkout_base_refuses_implicit_main_and_invalid_request_base(tmp_path, monkeypatch):
+    worker, _runner, _job_dir, _checkout = _ready_worker(tmp_path)
+    worker.request.update(project=".", lane="r0-r1", base="--invalid")
+    try:
+        with pytest.raises(AdmissionError, match="request base is invalid"):
+            worker._validated_request_base()
+
+        worker.request.pop("base")
+        assert worker._required_checkout_base(SHA) == SHA
+        worker.request.pop("project")
+        assert worker._required_checkout_base(None) is None
+
+        worker.request.update(project=".", lane="r0-r1")
+        monkeypatch.setattr(
+            executor_worker_module, "_lane_environment", lambda *_args: ({"base": "main"}, {}),
+        )
+        with pytest.raises(AdmissionError, match="requires an explicit request base"):
+            worker._required_checkout_base(None)
+    finally:
+        for fd in (worker.project_fd, worker.checkout_fd, worker.repo_root_fd):
+            if fd >= 0:
+                os.close(fd)
+
+
+def test_declared_base_refuses_non_text_request_base(tmp_path):
+    worker, _runner, _job_dir, _checkout = _ready_worker(tmp_path)
+    worker.request["base"] = 3
+    try:
+        with pytest.raises(AdmissionError, match="request base is invalid"):
+            worker._check_declared_base({"base": SHA})
+    finally:
+        for fd in (worker.project_fd, worker.checkout_fd, worker.repo_root_fd):
+            if fd >= 0:
+                os.close(fd)
+
+
+def test_required_checkout_base_defers_invalid_lane_config_until_prerequisites(tmp_path, monkeypatch):
+    worker, _runner, _job_dir, _checkout = _ready_worker(tmp_path)
+    worker.request.update(project=".", lane="r0-r1")
+    monkeypatch.setattr(
+        executor_worker_module, "_lane_environment",
+        lambda *_args: (_ for _ in ()).throw(AdmissionError(ExitCode.PREREQUISITE_MISSING, "broken config")),
+    )
+    try:
+        assert worker._required_checkout_base(None) is None
+    finally:
+        for fd in (worker.project_fd, worker.checkout_fd, worker.repo_root_fd):
+            if fd >= 0:
+                os.close(fd)
+
+
+def test_worker_main_preserves_interruption_before_worker_construction(tmp_path, monkeypatch):
+    interruption = KeyboardInterrupt("policy load interrupted")
+    monkeypatch.setattr(
+        executor_worker_module, "load_agent_policy",
+        lambda _path: (_ for _ in ()).throw(interruption),
+    )
+    with pytest.raises(KeyboardInterrupt) as caught:
+        worker_main([
+            "worker", "--state-dir", str(tmp_path / "state"),
+            "--policy", str(tmp_path / "agent.toml"), "--job-id", "controller-run-1",
+            "--lock-fd", "81", "--handshake-fd", "82",
+        ])
+    assert caught.value is interruption
+
+
+def test_rewrite_pending_terminal_as_error_rebinds_result_and_terminal_record(tmp_path):
+    worker, _runner, job_dir, _checkout = _ready_worker(tmp_path)
+    (job_dir / "result-pending.json").write_text(json.dumps({
+        "lane": "r0-r1", "verdict": "PASS", "exit_code": 0,
+        "binding": {"status": "verified", "reasons": ["earlier refusal"]},
+        "collection": {"collected_at": "2026-11-28T00:00:00Z"},
+    }), encoding="utf-8")
+    try:
+        terminal = worker._rewrite_pending_terminal_as_error("MAX_TREE_ENTRIES exceeded")
+        result = json.loads((job_dir / "result-pending.json").read_text(encoding="utf-8"))
+        pending = json.loads((job_dir / "terminal-pending.json").read_text(encoding="utf-8"))
+        assert result["verdict"] == "ERROR"
+        assert result["binding"]["status"] == "refused"
+        assert result["binding"]["reasons"] == ["earlier refusal", "MAX_TREE_ENTRIES exceeded"]
+        assert terminal["verdict"] == pending["verdict"] == "ERROR"
+        assert terminal["collected_at"] == "2026-11-28T00:00:00Z"
+        assert terminal["result_sha256"] == hashlib.sha256(
+            (job_dir / "result-pending.json").read_bytes(),
+        ).hexdigest()
+    finally:
+        for fd in (worker.project_fd, worker.checkout_fd, worker.repo_root_fd):
+            if fd >= 0:
+                os.close(fd)
+
+
+def test_rewrite_pending_terminal_as_error_refuses_missing_lane(tmp_path):
+    worker, _runner, job_dir, _checkout = _ready_worker(tmp_path)
+    (job_dir / "result-pending.json").write_text(json.dumps({"verdict": "PASS"}), encoding="utf-8")
+    try:
+        with pytest.raises(AdmissionError, match="no lane for permanent cleanup failure"):
+            worker._rewrite_pending_terminal_as_error("MAX_TREE_DEPTH exceeded")
+    finally:
+        for fd in (worker.project_fd, worker.checkout_fd, worker.repo_root_fd):
+            if fd >= 0:
+                os.close(fd)
+
+
+@pytest.mark.parametrize("contents, message", [
+    ("{", "pending result cannot record"),
+    ("[]", "pending result cannot record permanent cleanup failure"),
+])
+def test_rewrite_pending_terminal_as_error_refuses_unreadable_or_nonobject_result(tmp_path, contents, message):
+    worker, _runner, job_dir, _checkout = _ready_worker(tmp_path)
+    (job_dir / "result-pending.json").write_text(contents, encoding="utf-8")
+    try:
+        with pytest.raises(AdmissionError, match=message):
+            worker._rewrite_pending_terminal_as_error("MAX_TREE_ENTRIES exceeded")
+    finally:
+        for fd in (worker.project_fd, worker.checkout_fd, worker.repo_root_fd):
+            if fd >= 0:
+                os.close(fd)
+
+
+def test_rewrite_pending_terminal_as_error_does_not_duplicate_existing_reason(tmp_path):
+    worker, _runner, job_dir, _checkout = _ready_worker(tmp_path)
+    reason = "MAX_TREE_ENTRIES exceeded"
+    (job_dir / "result-pending.json").write_text(json.dumps({
+        "lane": "r0-r1", "binding": {"reasons": [reason]},
+    }), encoding="utf-8")
+    try:
+        worker._rewrite_pending_terminal_as_error(reason)
+        result = json.loads((job_dir / "result-pending.json").read_text(encoding="utf-8"))
+        assert result["binding"]["reasons"] == [reason]
+    finally:
+        for fd in (worker.project_fd, worker.checkout_fd, worker.repo_root_fd):
+            if fd >= 0:
+                os.close(fd)
+
+
+def test_finalize_lane_publishes_permanent_checkout_removal_limit_as_error(tmp_path):
+    worker, _runner, job_dir, _checkout = _ready_worker(tmp_path)
+    worker.request.update(sha=SHA, lane="r0-r1", project=".")
+    worker.permanent_defect = "MAX_TREE_ENTRIES exceeded"
+    terminal = {
+        "verdict": "PASS", "exit_code": 0, "lane": "r0-r1", "api": "fleet-host-agent/1",
+        "collected_at": "2026-11-28T00:00:00Z", "result_sha256": "a" * 64, "result_size": 10,
+    }
+    worker._persist_pending_terminal(terminal)
+    (job_dir / "result-pending.json").write_text(
+        json.dumps({"containers": [], "binding": {"reasons": []}}), encoding="utf-8",
+    )
+    worker._teardown_containers = lambda *_args, **_kwargs: None
+    worker._ensure_job_containers_stopped = lambda **_kwargs: None
+    worker._ensure_scope_is_only_worker = lambda: None
+    worker._remove_checkout = lambda: (_ for _ in ()).throw(
+        AdmissionError(ExitCode.IDENTITY_OR_TRANSPORT, "tree limit during checkout removal"),
+    )
+    error_terminal = dict(terminal, verdict="ERROR", exit_code=int(ExitCode.IDENTITY_OR_TRANSPORT))
+    worker._rewrite_pending_terminal_as_error = lambda reason: error_terminal
+    published = []
+    worker._publish_terminal = lambda value, **kwargs: published.append((dict(value), kwargs))
+    try:
+        assert worker._finalize_lane(0) == int(ExitCode.IDENTITY_OR_TRANSPORT)
+        assert published == [(
+            error_terminal,
+            {"final_state": "failed", "reason": "MAX_TREE_ENTRIES exceeded"},
+        )]
+    finally:
+        for fd in (worker.project_fd, worker.checkout_fd, worker.repo_root_fd):
+            if fd >= 0:
+                os.close(fd)
+
+
+def test_finalize_lane_keeps_charge_for_retryable_checkout_removal_failure(tmp_path):
+    class StopRetry(RuntimeError):
+        pass
+
+    worker, _runner, job_dir, _checkout = _ready_worker(tmp_path)
+    worker.request.update(sha=SHA, lane="r0-r1", project=".")
+    worker._persist_pending_terminal({
+        "verdict": "ERROR", "exit_code": int(ExitCode.REFUSAL), "lane": "r0-r1",
+        "api": "fleet-host-agent/1", "collected_at": "2026-11-28T00:00:00Z",
+        "result_sha256": "b" * 64, "result_size": 11,
+    })
+    (job_dir / "result-pending.json").write_text(
+        json.dumps({"containers": [], "binding": {"reasons": ["prior refusal"]}}),
+        encoding="utf-8",
+    )
+    worker._teardown_containers = lambda *_args, **_kwargs: None
+    worker._ensure_job_containers_stopped = lambda **_kwargs: None
+    worker._ensure_scope_is_only_worker = lambda: None
+    worker._remove_checkout = lambda: (_ for _ in ()).throw(
+        AdmissionError(ExitCode.QUEUED_WITHDRAWN, "checkout removal query failed"),
+    )
+    worker._publish_terminal = lambda *_args, **_kwargs: pytest.fail("charge released without checkout proof")
+    worker.waiter = lambda _seconds: (_ for _ in ()).throw(StopRetry("checkout removal retry"))
+    try:
+        with pytest.raises(StopRetry, match="checkout removal retry"):
+            worker._finalize_lane(0)
+        assert not (job_dir / "result.json").exists()
+        assert worker._state()["retry_required"] is True
+    finally:
+        for fd in (worker.project_fd, worker.checkout_fd, worker.repo_root_fd):
+            if fd >= 0:
+                os.close(fd)
+
+
+def test_host_checkout_candidate_listing_failure_has_checkout_reason(tmp_path, monkeypatch):
+    worker, _runner, _job_dir, _checkout = _ready_worker(tmp_path)
+    monkeypatch.setattr(
+        executor_worker_module, "_bounded_directory_entries",
+        lambda _fd: (_ for _ in ()).throw(OSError("directory unavailable")),
+    )
+    try:
+        with pytest.raises(AdmissionError, match="directory unavailable"):
+            worker._host_checkout_candidates()
+    finally:
+        for fd in (worker.project_fd, worker.checkout_fd, worker.repo_root_fd):
+            if fd >= 0:
+                os.close(fd)
+
+
+def test_upload_object_and_seed_lookup_accept_missing_store_as_empty(tmp_path):
+    worker, _runner, _job_dir, _checkout = _ready_worker(tmp_path)
+    try:
+        assert worker._uploaded_objects("in.bundle") == []
+        assert worker._find_seed_upload("not-a-digest", 10) is None
+        assert worker._find_seed_upload("f" * 64, 10) is None
+    finally:
+        for fd in (worker.project_fd, worker.checkout_fd, worker.repo_root_fd):
+            if fd >= 0:
+                os.close(fd)
+
+
+def test_uploaded_object_and_seed_listing_errors_keep_the_named_failure(tmp_path, monkeypatch):
+    worker, _runner, _job_dir, _checkout = _ready_worker(tmp_path)
+    upload_root = worker.state_dir / "uploads" / worker.group
+    (upload_root / "in.bundle").mkdir(parents=True)
+    (upload_root / "assay-seed-1.tgz").mkdir()
+    monkeypatch.setattr(
+        executor_worker_module, "_bounded_directory_entries",
+        lambda _fd: (_ for _ in ()).throw(OSError("directory ceiling unavailable")),
+    )
+    try:
+        with pytest.raises(AdmissionError, match="directory ceiling unavailable"):
+            worker._uploaded_objects("in.bundle")
+        with pytest.raises(AdmissionError, match="directory ceiling unavailable"):
+            worker._find_seed_upload("f" * 64, 10)
+    finally:
+        for fd in (worker.project_fd, worker.checkout_fd, worker.repo_root_fd):
+            if fd >= 0:
+                os.close(fd)
+
+
+def test_uploaded_object_inspection_preserves_admission_refusal(tmp_path, monkeypatch):
+    worker, _runner, _job_dir, _checkout = _ready_worker(tmp_path)
+    refusal = AdmissionError(ExitCode.REFUSAL, "upload root refused")
+    monkeypatch.setattr(
+        executor_worker_module, "open_beneath",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(refusal),
+    )
+    try:
+        with pytest.raises(AdmissionError, match="upload root refused") as caught:
+            worker._uploaded_objects("in.bundle")
+        assert caught.value is refusal
+    finally:
+        for fd in (worker.project_fd, worker.checkout_fd, worker.repo_root_fd):
+            if fd >= 0:
+                os.close(fd)
+
+
+def test_worker_follow_lane_events_leaves_retryable_observations_unadvanced(tmp_path):
+    worker, _runner, _job_dir, _checkout = _ready_worker(tmp_path)
+    worker.request.update(sha=SHA, lane="r0-r1")
+    event = {
+        "event": "lane-started", "lane": "r0-r1", "container_id": "a" * 64,
+    }
+    worker._read_events = lambda **_kwargs: [event]
+    worker._inspect_container_binding = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+        AdmissionError(ExitCode.QUEUED_WITHDRAWN, "Docker inspection can retry"),
+    )
+    try:
+        worker._follow_lane_events(final=False)
+        assert worker.event_cursor == 0
+        assert worker.event_observations == []
+    finally:
+        for fd in (worker.project_fd, worker.checkout_fd, worker.repo_root_fd):
+            if fd >= 0:
+                os.close(fd)
+
+
+def test_worker_follow_lane_events_records_inspection_errors_and_unreadable_event_retry(tmp_path):
+    worker, _runner, _job_dir, _checkout = _ready_worker(tmp_path)
+    worker.request.update(sha=SHA, lane="r0-r1")
+    event = {"event": "lane-started", "lane": "r0-r1", "container_id": "b" * 64}
+    saved = []
+    worker._read_events = lambda **_kwargs: [event]
+    worker._inspect_container_binding = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+        AdmissionError(ExitCode.IDENTITY_OR_TRANSPORT, "container identity mismatch"),
+    )
+    worker._retry_state_save = lambda **updates: saved.append(updates)
+    try:
+        worker._follow_lane_events(final=False)
+        assert worker.event_cursor == 1
+        assert worker.lane_error == "container identity mismatch"
+        assert saved[0]["lane_event_observations"][0]["error"] == "container identity mismatch"
+
+        worker._read_events = lambda **_kwargs: (_ for _ in ()).throw(
+            AdmissionError(ExitCode.QUEUED_WITHDRAWN, "event file temporarily missing"),
+        )
+        worker._follow_lane_events(final=False)
+        assert worker.event_cursor == 1
+    finally:
+        for fd in (worker.project_fd, worker.checkout_fd, worker.repo_root_fd):
+            if fd >= 0:
+                os.close(fd)
+
+
+@pytest.mark.parametrize("has_process", [True, False])
+def test_worker_follow_lane_events_stops_at_observation_budget(tmp_path, has_process):
+    worker, _runner, _job_dir, _checkout = _ready_worker(tmp_path)
+    event = {"event": "lane-started", "lane": "r0-r1", "container_id": None}
+    worker._read_events = lambda **_kwargs: [event]
+    worker._inspect_container_binding = lambda *_args, **_kwargs: {"id": None, "status": "no-container"}
+    worker.event_observation_bytes = executor_worker_module.MAX_EVENT_OBSERVATIONS_BYTES
+    process = type("Process", (), {"pid": 814, "poll": lambda _self: None})()
+    worker.runner_process = process if has_process else None
+    stopped = []
+    worker._request_worker_stop = lambda owned: stopped.append(owned.pid)
+    try:
+        worker._follow_lane_events(final=False)
+        assert worker.lane_error == "MAX_EVENT_OBSERVATIONS_BYTES exceeded"
+        assert worker.event_cursor == 1
+        assert stopped == ([814] if has_process else [])
+        assert worker.event_observations == []
+    finally:
+        for fd in (worker.project_fd, worker.checkout_fd, worker.repo_root_fd):
+            if fd >= 0:
+                os.close(fd)
+
+
+@pytest.mark.parametrize("has_process", [True, False])
+def test_worker_follow_lane_events_stops_when_permanent_observation_save_fails(tmp_path, has_process):
+    worker, _runner, _job_dir, _checkout = _ready_worker(tmp_path)
+    event = {"event": "lane-started", "lane": "r0-r1", "container_id": None}
+    worker._read_events = lambda **_kwargs: [event]
+    worker._inspect_container_binding = lambda *_args, **_kwargs: {"id": None, "status": "no-container"}
+    worker.permanent_defect = "MAX_STATE_RECORD_BYTES exceeded"
+    worker._retry_state_save = lambda **_kwargs: (_ for _ in ()).throw(
+        AdmissionError(ExitCode.IDENTITY_OR_TRANSPORT, worker.permanent_defect),
+    )
+    process = type("Process", (), {"pid": 815, "poll": lambda _self: None})()
+    worker.runner_process = process if has_process else None
+    stopped = []
+    worker._request_worker_stop = lambda owned: stopped.append(owned.pid)
+    try:
+        worker._follow_lane_events(final=False)
+        assert worker.lane_error == worker.permanent_defect
+        assert worker.event_cursor == 1
+        assert stopped == ([815] if has_process else [])
+    finally:
+        for fd in (worker.project_fd, worker.checkout_fd, worker.repo_root_fd):
+            if fd >= 0:
+                os.close(fd)
+
+
+def test_worker_follow_lane_events_propagates_retryable_observation_save_error(tmp_path):
+    worker, _runner, _job_dir, _checkout = _ready_worker(tmp_path)
+    event = {"event": "lane-started", "lane": "r0-r1", "container_id": None}
+    worker._read_events = lambda **_kwargs: [event]
+    worker._inspect_container_binding = lambda *_args, **_kwargs: {"id": None, "status": "no-container"}
+    worker._retry_state_save = lambda **_kwargs: (_ for _ in ()).throw(
+        AdmissionError(ExitCode.QUEUED_WITHDRAWN, "state file temporarily unavailable"),
+    )
+    try:
+        with pytest.raises(AdmissionError, match="state file temporarily unavailable"):
+            worker._follow_lane_events(final=False)
+        assert worker.event_cursor == 0
+    finally:
+        for fd in (worker.project_fd, worker.checkout_fd, worker.repo_root_fd):
+            if fd >= 0:
+                os.close(fd)
+
+
+@pytest.mark.parametrize("cancel_requested", [True, False])
+def test_retry_state_save_checks_cancel_after_oserror_without_signaling_in_test(tmp_path, cancel_requested):
+    worker, _runner, _job_dir, _checkout = _ready_worker(tmp_path)
+    worker._save_state(cancel_requested=cancel_requested)
+    real_save = worker._save_state
+    attempts = []
+    stop_requests = []
+
+    def fail_once(**updates):
+        attempts.append(dict(updates))
+        if len(attempts) == 1:
+            raise OSError("state write unavailable")
+        return real_save(**updates)
+
+    worker._save_state = fail_once
+    worker.runner_process = type("Process", (), {"pid": 811, "poll": lambda _self: None})()
+    worker._request_worker_stop = lambda process: stop_requests.append(process.pid)
+    worker.waiter = lambda _seconds: None
+    try:
+        assert worker._retry_state_save(checkpoint=True)["checkpoint"] is True
+        assert stop_requests == ([811] if cancel_requested else [])
+    finally:
+        for fd in (worker.project_fd, worker.checkout_fd, worker.repo_root_fd):
+            if fd >= 0:
+                os.close(fd)
+
+
+@pytest.mark.parametrize("failure", [
+    AdmissionError(ExitCode.QUEUED_WITHDRAWN, "temporary state refusal"),
+    OSError("temporary state write failure"),
+])
+def test_retry_state_save_retries_without_a_lane_process(tmp_path, failure):
+    worker, _runner, _job_dir, _checkout = _ready_worker(tmp_path)
+    real_save = worker._save_state
+    attempts = []
+
+    def fail_once(**updates):
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise failure
+        return real_save(**updates)
+
+    worker._save_state = fail_once
+    worker.runner_process = None
+    worker.waiter = lambda _seconds: None
+    try:
+        assert worker._retry_state_save(retry_after_write=True)["retry_after_write"] is True
+        assert len(attempts) == 2
+    finally:
+        for fd in (worker.project_fd, worker.checkout_fd, worker.repo_root_fd):
+            if fd >= 0:
+                os.close(fd)
+
+
+def test_retry_state_save_retries_when_cancel_state_read_is_transiently_unavailable(tmp_path):
+    worker, _runner, _job_dir, _checkout = _ready_worker(tmp_path)
+    real_save = worker._save_state
+    real_state = worker._state
+    saves = []
+    reads = []
+
+    def fail_save_once(**updates):
+        saves.append(1)
+        if len(saves) == 1:
+            raise AdmissionError(ExitCode.QUEUED_WITHDRAWN, "state write unavailable")
+        return real_save(**updates)
+
+    def fail_state_once():
+        reads.append(1)
+        if len(reads) == 1:
+            raise AdmissionError(ExitCode.QUEUED_WITHDRAWN, "cancel state unavailable")
+        return real_state()
+
+    worker._save_state = fail_save_once
+    worker._state = fail_state_once
+    worker.runner_process = type("Process", (), {"pid": 813, "poll": lambda _self: None})()
+    worker.waiter = lambda _seconds: None
+    worker._request_worker_stop = lambda _process: pytest.fail("no durable cancel intent was present")
+    try:
+        assert worker._retry_state_save(retry_after_write=True)["retry_after_write"] is True
+        assert len(saves) == 2 and len(reads) == 2
+    finally:
+        for fd in (worker.project_fd, worker.checkout_fd, worker.repo_root_fd):
+            if fd >= 0:
+                os.close(fd)
+
+
+def test_post_start_retry_and_finalizer_retry_preserve_retry_state(tmp_path):
+    worker, _runner, _job_dir, _checkout = _ready_worker(tmp_path)
+    saved = []
+    worker._state = lambda: {"reason": None}
+    worker._save_state = lambda **updates: saved.append(updates) or updates
+    worker._save_post_start_retry("write failed")
+    assert saved[0]["reason"] == "post-start retry required: write failed"
+
+    worker._state = lambda: (_ for _ in ()).throw(RuntimeError("state unavailable"))
+    worker._save_state = lambda **_updates: (_ for _ in ()).throw(OSError("state file unavailable"))
+    worker._save_post_start_retry("write failed while state is unreadable")
+    worker._save_post_start_retry = lambda reason: saved.append(reason)
+
+    attempts = []
+
+    def finalize(_status):
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise RuntimeError("transient finalize failure")
+        return 17
+
+    worker._finalize_lane = finalize
+    worker.waiter = lambda _seconds: None
+    try:
+        assert worker._finalize_lane_with_retry(1) == 17
+        assert len(attempts) == 2
+        assert saved[-1] == "finalization deferred: transient finalize failure"
+    finally:
+        for fd in (worker.project_fd, worker.checkout_fd, worker.repo_root_fd):
+            if fd >= 0:
+                os.close(fd)
+
+
+def test_resume_lane_retries_state_poll_event_and_stop_query_errors(tmp_path):
+    class StopRetry(RuntimeError):
+        pass
+
+    worker, _runner, _job_dir, _checkout = _ready_worker(tmp_path)
+    state_reads = []
+    retry_reasons = []
+
+    def read_state():
+        state_reads.append(1)
+        if len(state_reads) == 1:
+            raise RuntimeError("state read unavailable")
+        return {"lane_process_status": None, "cancel_requested": False}
+
+    class Process:
+        pid = 812
+
+        def __init__(self):
+            self.polls = 0
+
+        def poll(self):
+            self.polls += 1
+            if self.polls == 1:
+                raise RuntimeError("poll unavailable")
+            return None
+
+    process = Process()
+    worker._state = read_state
+    worker._save_post_start_retry = lambda reason: retry_reasons.append(reason)
+    worker.runner_process = process
+    worker._follow_lane_events = lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("event unavailable"))
+    worker._request_worker_stop = lambda _process: (_ for _ in ()).throw(RuntimeError("stop unavailable"))
+    waits = []
+
+    def wait(_seconds):
+        waits.append(1)
+        if len(waits) == 3:
+            raise StopRetry("resume retry boundary")
+
+    worker.waiter = wait
+    try:
+        with pytest.raises(StopRetry, match="resume retry boundary"):
+            worker._resume_lane_after_worker_error("original worker error")
+        assert process.polls == 2
+        assert any("cannot read lane state" in reason for reason in retry_reasons)
+        assert any("lane status query deferred" in reason for reason in retry_reasons)
+        assert any("lane event query deferred" in reason for reason in retry_reasons)
+        assert any("lane stop request deferred" in reason for reason in retry_reasons)
+    finally:
+        for fd in (worker.project_fd, worker.checkout_fd, worker.repo_root_fd):
+            if fd >= 0:
+                os.close(fd)
+
+
+def test_resume_lane_records_owned_process_exit_before_finalizing(tmp_path):
+    worker, _runner, _job_dir, _checkout = _ready_worker(tmp_path)
+    state = {"lane_process_status": None, "cancel_requested": False}
+    worker._state = lambda: state
+    worker._save_post_start_retry = lambda _reason: None
+    worker._follow_lane_events = lambda **_kwargs: None
+    worker._record_lane_exit = lambda status: state.update(lane_process_status=status)
+    worker._finalize_lane_with_retry = lambda status: status + 10
+    worker.runner_process = type("Process", (), {"poll": lambda _self: 3})()
+    try:
+        assert worker._resume_lane_after_worker_error("wait exception") == 13
+        assert worker.runner_process is None
+        assert state["lane_process_status"] == 3
+    finally:
+        for fd in (worker.project_fd, worker.checkout_fd, worker.repo_root_fd):
+            if fd >= 0:
+                os.close(fd)
+
+
+def test_settle_worker_interruption_retries_baseexception_until_terminal_owner_exists(tmp_path):
+    class CleanupInterrupt(BaseException):
+        pass
+
+    worker, _runner, _job_dir, _checkout = _ready_worker(tmp_path)
+    worker._state = lambda: {"lane_may_be_live": True, "lane_process_status": 5}
+    worker._save_post_start_retry = lambda _reason: None
+    attempts = []
+
+    def finalize(_status):
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise CleanupInterrupt("terminal write interrupted")
+        return 0
+
+    worker._finalize_lane_with_retry = finalize
+    waits = []
+    worker.waiter = lambda _seconds: waits.append(1)
+    try:
+        worker._settle_worker_interruption(KeyboardInterrupt("worker interrupted"))
+        assert len(attempts) == 2
+        assert waits == [1]
+    finally:
+        for fd in (worker.project_fd, worker.checkout_fd, worker.repo_root_fd):
+            if fd >= 0:
+                os.close(fd)
+
+
+def test_settle_interruption_before_run_retries_gate_and_unstarted_write(tmp_path):
+    class CleanupInterrupt(BaseException):
+        pass
+
+    worker, _runner, _job_dir, _checkout = _ready_worker(tmp_path)
+    confirmations = []
+
+    def confirm():
+        confirmations.append(1)
+        if len(confirmations) == 1:
+            raise CleanupInterrupt("gate check interrupted")
+        return False
+
+    worker._await_scope_confirmation = confirm
+    waits = []
+
+    def wait(_seconds):
+        waits.append(1)
+        raise CleanupInterrupt("wait interrupted")
+
+    worker.waiter = wait
+    original = KeyboardInterrupt("launch interrupted")
+    try:
+        with pytest.raises(KeyboardInterrupt) as caught:
+            worker._settle_interruption_before_run(original)
+        assert caught.value is original
+        assert worker.interruption_settled is True
+        assert waits == [1]
+    finally:
+        for fd in (worker.project_fd, worker.checkout_fd, worker.repo_root_fd):
+            if fd >= 0:
+                os.close(fd)
+
+
+def test_settle_interruption_before_run_retries_failed_unstarted_record(tmp_path):
+    class CleanupInterrupt(BaseException):
+        pass
+
+    worker, _runner, _job_dir, _checkout = _ready_worker(tmp_path)
+    worker._await_scope_confirmation = lambda: True
+    finishes = []
+
+    def finish(*_args):
+        finishes.append(1)
+        if len(finishes) == 1:
+            raise CleanupInterrupt("terminal save interrupted")
+
+    worker._finish_unstarted = finish
+    worker.waiter = lambda _seconds: (_ for _ in ()).throw(CleanupInterrupt("wait interrupted"))
+    try:
+        worker._settle_interruption_before_run(KeyboardInterrupt("scope confirmed"))
+        assert finishes == [1, 1]
+        assert worker.interruption_settled is True
+    finally:
+        for fd in (worker.project_fd, worker.checkout_fd, worker.repo_root_fd):
+            if fd >= 0:
+                os.close(fd)
+
+
+def test_settle_worker_interruption_retries_unstarted_terminal_and_cleanup_interruptions(tmp_path):
+    class CleanupInterrupt(BaseException):
+        pass
+
+    worker, _runner, _job_dir, _checkout = _ready_worker(tmp_path)
+    worker._state = lambda: {"lane_may_be_live": False, "lane_pid": None, "lane_process_status": None}
+    save_attempts = []
+
+    def save_retry(_reason):
+        save_attempts.append(1)
+        if len(save_attempts) == 1:
+            raise CleanupInterrupt("retry record interrupted")
+
+    finish_attempts = []
+
+    def finish(*_args):
+        finish_attempts.append(1)
+        if len(finish_attempts) == 1:
+            raise CleanupInterrupt("unstarted terminal interrupted")
+
+    worker._save_post_start_retry = save_retry
+    worker._finish_unstarted = finish
+    worker.waiter = lambda _seconds: (_ for _ in ()).throw(CleanupInterrupt("wait interrupted"))
+    try:
+        worker._settle_worker_interruption(KeyboardInterrupt("worker ended before lane"))
+        assert finish_attempts == [1, 1]
+        assert save_attempts == [1]
+    finally:
+        for fd in (worker.project_fd, worker.checkout_fd, worker.repo_root_fd):
+            if fd >= 0:
+                os.close(fd)
+
+
+@pytest.mark.parametrize("stderr, expected", [
+    (b"MAX_TREE_ENTRIES exceeded", ExitCode.IDENTITY_OR_TRANSPORT),
+    (b"permission denied", ExitCode.STORE_COLLECTION_FAILED),
+])
+def test_archive_collection_maps_helper_permanent_and_retryable_failures(tmp_path, stderr, expected):
+    class _Runner:
+        def run_to_fd(self, _argv, *, output_fd, **_kwargs):
+            return CommandResult(1, b"", stderr)
+
+    worker, _runner, job_dir, _checkout = _ready_worker(tmp_path)
+    worker.runner = _Runner()
+    try:
+        with pytest.raises(AdmissionError) as caught:
+            worker._write_archive_from_runner(
+                "archive-artifacts", "artifacts.tgz", (), root_fd=worker.project_fd,
+                kind="artifacts",
+            )
+        assert caught.value.exit_code == expected
+        if expected == ExitCode.IDENTITY_OR_TRANSPORT:
+            assert worker.permanent_defect == "MAX_TREE_ENTRIES exceeded"
+        assert not (job_dir / ".artifacts.tgz.part").exists()
+    finally:
+        for fd in (worker.project_fd, worker.checkout_fd, worker.repo_root_fd):
+            if fd >= 0:
+                os.close(fd)
+
+
+def test_archive_collection_maps_permanent_verification_limit(tmp_path, monkeypatch):
+    class _Runner:
+        def run_to_fd(self, _argv, *, output_fd, **_kwargs):
+            return CommandResult(0, b'{"status":"collected"}', b"")
+
+    worker, _runner, job_dir, _checkout = _ready_worker(tmp_path)
+    worker.runner = _Runner()
+    monkeypatch.setattr(
+        executor_worker_module, "_verify_archive_fd",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AdmissionError(ExitCode.STORE_COLLECTION_FAILED, "MAX_ARCHIVE_MEMBERS exceeded"),
+        ),
+    )
+    try:
+        with pytest.raises(AdmissionError, match="MAX_ARCHIVE_MEMBERS exceeded"):
+            worker._write_archive_from_runner(
+                "archive-artifacts", "artifacts.tgz", (), root_fd=worker.project_fd,
+                kind="artifacts",
+            )
+        assert worker.permanent_defect == "MAX_ARCHIVE_MEMBERS exceeded"
+        assert not (job_dir / ".artifacts.tgz.part").exists()
+    finally:
+        for fd in (worker.project_fd, worker.checkout_fd, worker.repo_root_fd):
+            if fd >= 0:
+                os.close(fd)
+
+
+def test_archive_collection_preserves_nonpermanent_verification_error(tmp_path, monkeypatch):
+    class _Runner:
+        def run_to_fd(self, _argv, *, output_fd, **_kwargs):
+            return CommandResult(0, b'{"status":"collected"}', b"")
+
+    worker, _runner, _job_dir, _checkout = _ready_worker(tmp_path)
+    worker.runner = _Runner()
+    error = AdmissionError(ExitCode.STORE_COLLECTION_FAILED, "archive unreadable")
+    monkeypatch.setattr(
+        executor_worker_module, "_verify_archive_fd",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(error),
+    )
+    try:
+        with pytest.raises(AdmissionError, match="archive unreadable") as caught:
+            worker._write_archive_from_runner(
+                "archive-artifacts", "artifacts.tgz", (), root_fd=worker.project_fd,
+                kind="artifacts",
+            )
+        assert caught.value is error
+    finally:
+        for fd in (worker.project_fd, worker.checkout_fd, worker.repo_root_fd):
+            if fd >= 0:
+                os.close(fd)
+
+
+def test_archive_collection_accepts_noncollected_store_response_without_archive(tmp_path):
+    class _Runner:
+        def run_to_fd(self, _argv, *, output_fd, **_kwargs):
+            return CommandResult(0, b'{"status":"none"}', b"")
+
+    worker, _runner, job_dir, _checkout = _ready_worker(tmp_path)
+    worker.runner = _Runner()
+    try:
+        assert worker._write_archive_from_runner(
+            "archive-store", "assay-store.tgz", (), root_fd=worker.project_fd,
+            kind="store", store_path="state",
+        ) == ("", 0, {"status": "none"})
+        assert (job_dir / ".assay-store.tgz.part").stat().st_size == 0
+    finally:
+        for fd in (worker.project_fd, worker.checkout_fd, worker.repo_root_fd):
+            if fd >= 0:
+                os.close(fd)
+
+
+@pytest.mark.parametrize("failure, expected", [
+    (AdmissionError(ExitCode.IDENTITY_OR_TRANSPORT, "MAX_TREE_ENTRIES exceeded"), "permanent"),
+    (AdmissionError(ExitCode.STORE_COLLECTION_FAILED, "archive missing"), None),
+])
+def test_saved_collection_maps_archive_errors_by_permanence(tmp_path, failure, expected):
+    worker, _runner, _job_dir, _checkout = _ready_worker(tmp_path)
+    worker._state = lambda: {"collection": {"store_rel": None}}
+    worker._archive_saved = lambda *_args, **_kwargs: (_ for _ in ()).throw(failure)
+    try:
+        if expected == "permanent":
+            with pytest.raises(AdmissionError, match="MAX_TREE_ENTRIES exceeded"):
+                worker._saved_collection(None)
+            assert worker.permanent_defect == "MAX_TREE_ENTRIES exceeded"
+        else:
+            assert worker._saved_collection(None) is None
+    finally:
+        for fd in (worker.project_fd, worker.checkout_fd, worker.repo_root_fd):
+            if fd >= 0:
+                os.close(fd)
+
+
+def test_saved_collection_refuses_store_without_path_after_matching_artifacts(tmp_path):
+    worker, _runner, _job_dir, _checkout = _ready_worker(tmp_path)
+    worker._state = lambda: {
+        "collection": {
+            "store_rel": None, "artifacts_sha256": "a" * 64, "artifacts_size": 10,
+            "store": {"status": "collected"},
+        },
+    }
+    worker._archive_saved = lambda *_args, **_kwargs: ("a" * 64, 10)
+    try:
+        assert worker._saved_collection(None) is None
+    finally:
+        for fd in (worker.project_fd, worker.checkout_fd, worker.repo_root_fd):
+            if fd >= 0:
+                os.close(fd)
+
+
+@pytest.mark.parametrize("outcome", ["permanent", "transient", "bad-checksum", "valid"])
+def test_saved_collection_validates_collected_store_digest_and_checksum(tmp_path, monkeypatch, outcome):
+    worker, _runner, _job_dir, _checkout = _ready_worker(tmp_path)
+    collection = {
+        "store_rel": "state", "artifacts_sha256": "a" * 64, "artifacts_size": 10,
+        "store": {"status": "collected", "sha256": "b" * 64, "size": 11},
+    }
+    worker._state = lambda: {"collection": collection}
+
+    def archive(name, **_kwargs):
+        if name == "artifacts.tgz":
+            return "a" * 64, 10
+        if outcome == "permanent":
+            raise AdmissionError(ExitCode.IDENTITY_OR_TRANSPORT, "MAX_TREE_ENTRIES exceeded")
+        if outcome == "transient":
+            raise AdmissionError(ExitCode.STORE_COLLECTION_FAILED, "store archive unavailable")
+        return "b" * 64, 11
+
+    worker._archive_saved = archive
+    checksum = b"wrong\n" if outcome == "bad-checksum" else b"b" * 64 + b"  assay-store.tgz\n"
+    monkeypatch.setattr(executor_worker_module, "_read_regular", lambda *_args, **_kwargs: checksum)
+    try:
+        if outcome == "permanent":
+            with pytest.raises(AdmissionError, match="MAX_TREE_ENTRIES exceeded"):
+                worker._saved_collection("state")
+            assert worker.permanent_defect == "MAX_TREE_ENTRIES exceeded"
+        elif outcome in {"transient", "bad-checksum"}:
+            assert worker._saved_collection("state") is None
+        else:
+            assert worker._saved_collection("state") is collection
+    finally:
+        for fd in (worker.project_fd, worker.checkout_fd, worker.repo_root_fd):
+            if fd >= 0:
+                os.close(fd)
+
+
+@pytest.mark.parametrize("collect, message", [
+    (["safe/path"] * (executor_worker_module.MAX_STORE_PATHS + 1), "MAX_STORE_PATHS"),
+    (["../outside"], "unsafe or duplicate"),
+    (17, "not a path or a list"),
+])
+def test_collect_refuses_overlarge_and_invalid_store_root_lists(tmp_path, collect, message):
+    worker, _runner, _job_dir, _checkout = _ready_worker(tmp_path)
+    worker.request["stores"] = {"collect": collect}
+    try:
+        with pytest.raises(AdmissionError, match=message):
+            worker._collect()
+    finally:
+        for fd in (worker.project_fd, worker.checkout_fd, worker.repo_root_fd):
+            if fd >= 0:
+                os.close(fd)
 
 
 def test_worker_request_environment_cancel_and_command_wrappers(tmp_path):
@@ -5200,7 +6377,7 @@ def test_event_reader_refuses_closed_identity_and_field_mismatches(tmp_path, eve
 @pytest.mark.parametrize("contents, message", [
     (b"\xff\n", "unreadable"),
     (b"not-json\n", "unreadable"),
-    (b"x" * 65537 + b"\n", "incomplete or too large"),
+    (b"x" * 65537 + b"\n", "MAX_EVENT_LINE_BYTES exceeded"),
 ])
 def test_event_reader_refuses_unreadable_or_oversized_lines(tmp_path, contents, message):
     worker = _worker(tmp_path, _VersionRunner({}))
@@ -5981,19 +7158,19 @@ def test_tree_walker_closes_pending_descriptors_and_artifact_tree_errors(tmp_pat
     (root / "parent" / "first").mkdir(parents=True)
     (root / "parent" / "second").mkdir()
     root_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
-    real_listdir = os.listdir
+    real_scandir = os.scandir
 
     def fail_child(fd):
         target = os.readlink(f"/proc/self/fd/{fd}")
         if target.endswith("/second"):
             raise RuntimeError("injected directory enumeration failure")
-        return real_listdir(fd)
+        return real_scandir(fd)
 
-    monkeypatch.setattr(executor_worker_module.os, "listdir", fail_child)
+    monkeypatch.setattr(executor_worker_module.os, "scandir", fail_child)
     try:
         with pytest.raises(RuntimeError, match="enumeration failure"):
             executor_worker_module._tree_entries(root_fd, "parent", reject_special=True)
-        monkeypatch.setattr(executor_worker_module.os, "listdir", real_listdir)
+        monkeypatch.setattr(executor_worker_module.os, "scandir", real_scandir)
         monkeypatch.setattr(
             executor_worker_module, "_tree_entries",
             lambda _fd, relative, **_kwargs: ([], "special") if relative == ".assay" else ([], "absent"),
@@ -6019,46 +7196,64 @@ def test_worker_module_main_guard_runs_closed_refusal(tmp_path, monkeypatch):
     assert caught.value.code == int(ExitCode.REFUSAL)
 
 
-def test_runner_input_recovery_closes_stdin_when_source_read_fails(tmp_path, monkeypatch):
-    class _Stdin:
-        def __init__(self):
-            self.close_calls = 0
+def test_runner_input_uses_bounded_collector_and_inherited_source_fd(tmp_path):
+    observed = {}
 
-        def write(self, _value):
-            raise AssertionError("source read fails before stdin write")
+    def bounded_runner(argv, timeout, **kwargs):
+        observed.update(argv=list(argv), timeout=timeout, **kwargs)
+        return CommandResult(0, b"", b"recovered")
 
-        def close(self):
-            self.close_calls += 1
-            raise OSError("close failed")
-
-    class _Process:
-        def __init__(self):
-            self.stdin = _Stdin()
-            self.returncode = 0
-            self.communicated = 0
-
-        def communicate(self, timeout=None):
-            self.communicated += 1
-            return b"", b"recovered"
-
-    process = _Process()
     runner = SubprocessRunnerCommands(
-        RunnerIdentity("runner", 1001, 1001, (1001,)), popen=lambda *_args, **_kwargs: process,
+        RunnerIdentity("runner", 1001, 1001, (1001,)), bounded_runner=bounded_runner,
     )
-    stream = process.stdin
-    source_fd = _pipe_with(b"unused")
+    source_fd = _pipe_with(b"input payload")
     cwd_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
-    monkeypatch.setattr(executor_worker_module.os, "read", lambda *_args: (_ for _ in ()).throw(OSError("read failed")))
     try:
         assert runner.run_with_input(
             ["helper"], cwd_fd=cwd_fd, env={}, source_fd=source_fd,
         ) == CommandResult(0, b"", b"recovered")
-        assert stream.close_calls == 1
-        assert process.stdin is None
-        assert process.communicated == 1
+        assert observed["argv"] == ["helper"]
+        assert observed["timeout"] is None
+        assert observed["environment"] == {}
+        assert observed["cwd"] == "/"
+        assert observed["stdin"] == source_fd
+        assert set(observed["pass_fds"]) == {cwd_fd, source_fd}
+        assert observed["output_limit"] == executor_worker_module.MAX_RUNNER_QUERY_OUTPUT_BYTES
     finally:
         os.close(source_fd)
         os.close(cwd_fd)
+
+
+@pytest.mark.parametrize(
+    ("method", "error", "detail"),
+    [
+        ("run_with_input", OSError("runner input failed"), "runner input query failed"),
+        ("run_to_fd", ValueError("runner archive failed"), "runner archive command failed"),
+    ],
+)
+def test_subprocess_runner_adapters_translate_bounded_collector_errors(tmp_path, method, error, detail):
+    def fail(*_args, **_kwargs):
+        raise error
+
+    runner = SubprocessRunnerCommands(
+        RunnerIdentity("runner", 1001, 1001, (1001,)), bounded_runner=fail,
+    )
+    cwd_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    source_fd, write_fd = os.pipe()
+    os.close(write_fd)
+    try:
+        with pytest.raises(AdmissionError, match=detail):
+            if method == "run_with_input":
+                runner.run_with_input(
+                    ["helper"], cwd_fd=cwd_fd, env={}, source_fd=source_fd,
+                )
+            else:
+                runner.run_to_fd(
+                    ["helper"], cwd_fd=cwd_fd, env={}, output_fd=source_fd,
+                )
+    finally:
+        os.close(cwd_fd)
+        os.close(source_fd)
 
 
 def test_docker_passwd_accepts_named_user_without_numeric_identity_check():
@@ -7454,44 +8649,34 @@ def test_run_lane_checks_cancel_before_and_after_each_wait(tmp_path):
                 os.close(fd)
 
 
-def test_runner_input_recovers_when_communicate_breaks_after_stdin_closed(tmp_path):
-    class _Stdin:
-        closed = False
+def test_runner_input_uses_bounded_collector_with_timeout_and_inherited_source_fd(tmp_path):
+    observed = {}
 
-        def close(self):
-            self.closed = True
+    def bounded_runner(argv, timeout, **kwargs):
+        observed.update(argv=list(argv), timeout=timeout, **kwargs)
+        return CommandResult(0, b"", b"recovered")
 
-    class _Process:
-        returncode = 0
-
-        def __init__(self):
-            self.stdin = _Stdin()
-            self.communications = 0
-
-        def communicate(self, timeout=None):
-            self.communications += 1
-            if self.communications == 1:
-                assert timeout == 7
-                raise BrokenPipeError("reader closed after stdin close")
-            return b"", b"recovered"
-
-    process = _Process()
-    calls = []
     runner = SubprocessRunnerCommands(
-        RunnerIdentity("runner", 1001, 1001, (1001,)),
-        popen=lambda *args, **kwargs: calls.append((args, kwargs)) or process,
+        RunnerIdentity("runner", 1001, 1001, (1001,)), bounded_runner=bounded_runner,
     )
     source_fd, write_fd = os.pipe()
     os.close(write_fd)
+    cwd_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
     try:
         result = runner.run_with_input(
-            ["helper"], cwd_fd=9, env={"PATH": "/usr/bin"}, source_fd=source_fd, timeout=7,
+            ["helper"], cwd_fd=cwd_fd, env={"PATH": "/usr/bin"}, source_fd=source_fd, timeout=7,
         )
         assert result == CommandResult(0, b"", b"recovered")
-        assert process.stdin is None and process.communications == 2
-        assert calls[0][1]["close_fds"] is True and calls[0][1]["pass_fds"] == (9,)
+        assert observed["argv"] == ["helper"]
+        assert observed["timeout"] == 7
+        assert observed["environment"] == {"PATH": "/usr/bin"}
+        assert observed["cwd"] == "/"
+        assert observed["stdin"] == source_fd
+        assert set(observed["pass_fds"]) == {cwd_fd, source_fd}
+        assert observed["output_limit"] == executor_worker_module.MAX_RUNNER_QUERY_OUTPUT_BYTES
     finally:
         os.close(source_fd)
+        os.close(cwd_fd)
 
 
 def test_memory_admission_refuses_when_available_memory_never_recovers(tmp_path, monkeypatch):
@@ -8526,9 +9711,40 @@ def test_worker_run_keeps_charge_after_lane_start_or_recorded_exit(tmp_path, fai
     worker._wait_for_psi = lambda: None
     worker._seed_stores = lambda: None
     worker._memory_admission = lambda: None
+    worker._follow_lane_events = lambda **_kwargs: None
+
+    class _Process:
+        pid = 771
+
+        def __init__(self):
+            self.status = None
+
+        def poll(self):
+            return self.status
+
+    process = _Process()
+    waits = []
+
+    def waiter(_duration):
+        waits.append(1)
+        process.status = 143
+
+    worker.waiter = waiter
+    stop_attempts = []
+    worker._request_worker_stop = lambda _process: stop_attempts.append(1)
+
+    def finalize_pending(status):
+        worker._save_state(
+            state="stopping", lane_process_status=status, lane_may_be_live=False,
+            exit_code=status, retry_required=True, reason="finalization remains pending",
+        )
+        return int(ExitCode.QUEUED_WITHDRAWN)
+
+    worker._finalize_lane = finalize_pending
     if failure == "live-admission":
         def start_then_fail(*_args):
-            worker._save_state(lane_may_be_live=True)
+            worker.runner_process = process
+            worker._save_state(lane_may_be_live=True, cancel_requested=True)
             raise AdmissionError(exit_code, "cancel observed during lane start")
     elif failure == "recorded-exit":
         def start_then_fail(*_args):
@@ -8536,12 +9752,20 @@ def test_worker_run_keeps_charge_after_lane_start_or_recorded_exit(tmp_path, fai
             raise AdmissionError(exit_code, "finalizer transport failed")
     else:
         def start_then_fail(*_args):
+            worker.runner_process = process
             worker._save_state(lane_may_be_live=True)
             raise RuntimeError("worker crashed after start")
     worker._run_lane = start_then_fail
     assert worker.run() == int(ExitCode.QUEUED_WITHDRAWN)
     state = worker._state()
     assert state["state"] == "stopping" and state["retry_required"] is True
+    if failure == "recorded-exit":
+        assert waits == []
+        assert state["lane_process_status"] == 0
+    else:
+        assert waits == [1]
+        assert state["lane_process_status"] == 143
+        assert stop_attempts == [1]
 
 
 def test_finish_unstarted_returns_when_durable_state_cannot_be_read(tmp_path):
@@ -9458,10 +10682,16 @@ def test_seed_extract_handles_nested_directories_missing_stream_and_cleanup_race
         current_target = ["missing"]
 
         class _Archive:
-            def getmembers(self):
-                member = tarfile.TarInfo(f"{current_target[0]}/value")
-                member.size = 1
-                return [member]
+            def __init__(self):
+                self.member = tarfile.TarInfo(f"{current_target[0]}/value")
+                self.member.size = 1
+                self.done = False
+
+            def next(self):
+                if self.done:
+                    return None
+                self.done = True
+                return self.member
 
             def extractfile(self, _member):
                 return None
@@ -10666,8 +11896,14 @@ def test_seed_extract_rejects_a_negative_member_size(tmp_path, monkeypatch):
             return True
 
     class _Archive:
-        def getmembers(self):
-            return [_Member()]
+        def __init__(self):
+            self.done = False
+
+        def next(self):
+            if self.done:
+                return None
+            self.done = True
+            return _Member()
 
         def close(self):
             pass

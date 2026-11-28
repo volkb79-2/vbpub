@@ -1677,15 +1677,9 @@ class HostJobWorker:
             except Exception as exc:
                 self._save_post_start_retry(f"lane event query deferred: {exc}")
             try:
-                state = self._state()
+                self._request_worker_stop(process)
             except Exception as exc:
-                self._save_post_start_retry(f"cannot read cancel state: {exc}")
-                state = {}
-            if state.get("cancel_requested") is True or self.lane_error is not None:
-                try:
-                    self._request_worker_stop(process)
-                except Exception as exc:
-                    self._save_post_start_retry(f"lane stop request deferred: {exc}")
+                self._save_post_start_retry(f"lane stop request deferred: {exc}")
             self.waiter(1)
 
     def _settle_worker_interruption(self, interrupted: BaseException) -> None:
