@@ -7434,7 +7434,7 @@ skips are the pre-existing `requires the tester-unified image's own
 
 ## B064 — progress and resume beyond R2: what R0/R1 could observably report, and why R3's canary is the one tier where both are actually feasible
 
-**Status: DEFERRED for the R3 half (operator triage 2026-09-23; coupled to B007) — PARTIAL (filed 2026-09-02, `f254b702`; R0/R1 half shipped v5.2.0, 2026-09-08) — R0/R1 phase-boundary progress stream shipped (A-444, `mutation.PROGRESS_EVENTS`); R3 per-attempt progress/resume remains unbuilt, coupled to B007's identity.**
+R3 per-attempt progress shipped under B612; per-target resume remains open.
 
 **Filed 2026-09-02** by the controller, from an operator question during Wave
 D: *do R0/R1 runtimes justify progress/resume, and could the canary (R3) have
