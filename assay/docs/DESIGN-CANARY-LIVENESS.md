@@ -2,6 +2,8 @@
 
 **Recommendation: (b), keep `budget_per_attempt` binding and disclose that R3 is unwatched. Fold B593 into progress records, not the v21 verdict.** This is the smallest safe package: no new watch semantics and no reopening the closed verdict cut.
 
+**Decision (main controller, 2026-11-28): (b).** Its cost is accepted: control diagnostics are not archived without a progress stream, and removal of `budget_per_attempt` and package A8 stay blocked.
+
 ## Current behavior
 
 - Each target runs a known-good control, then a transformed run, both through `_execute_snapshot_unit` (`src/assay/canary.py:773-811`, `:873-932`). The control result/reason is classified before the transform (`:793-811`); the transformed result determines the canary outcome (`:932`).
@@ -14,7 +16,7 @@
 
 **Change points and size.** Add a canary liveness policy/eligibility check in config; inject P4's pytest plugin and monitor at both `canary.py` command sites; keep control and transformed observations separate; add progress events and a verdict disclosure of `armed`, reason, and which budget role applies. About 180-260 lines across `config.py`, `canary.py`, `runner.py`, `verdict.py`, schema, docs and tests. Do not copy the monitor; factor a shared isolated-command runner if the existing API cannot safely be reused.
 
-**Tests and risk.** Add focused canary tests to the registered `tooling-tests` lane, then run `self-qualification-provisional` (R3 fixture and package integration) and `tester-unified` before release. Exercise both halves, busy CPU without plugin progress, one slow test, idle wall stop, control failure, multi-target expiry, and a non-pytest command. Main risks are cross-half state leakage, changing attempt terminal/aggregation rules, and false liveness on a legitimate slow test.
+**Tests and risk.** Add focused canary tests under `assay/tests/`, which `tester-unified` runs, then run `self-qualification-provisional` (R3 fixture and package integration) and `tester-unified` before release. Exercise both halves, busy CPU without plugin progress, one slow test, idle wall stop, control failure, multi-target expiry, and a non-pytest command. Main risks are cross-half state leakage, changing attempt terminal/aggregation rules, and false liveness on a legitimate slow test.
 
 **Schema, scope and limits.** A verdict `liveness` object on each attempt (armed/reason, CPU and per-test bounds, stop kind) and any new stop value are not on the closed v21 delta list. The current canary-attempt object has `additionalProperties: false` (`verdict.schema.json:1125-1303`); each requires a v21 list amendment, and §1/§8 explicitly says the list is closed and was amended once (`VERDICT-V21-DELTA.md:3,158-160`). Progress records alone could carry this without a verdict schema edit, but the verdict would not say which halves were watched or let an independent reader verify why `budget_per_attempt` was advisory. Non-pytest and non-Python canaries remain unwatched and retain binding budgets. Until those paths have a sound watch, removing `budget_per_attempt` remains blocked; so does package A8's “remove remaining wall deciders.”
 
@@ -22,7 +24,7 @@
 
 **Change points and size.** Emit a `canary_attempt` progress event with control/transform phase starts and finishes, elapsed time, and `watched: false`; document that `budget_per_attempt` remains binding and report its effective value in the run disclosure. Add B593 control diagnostics to the control-finished record only when control is non-PASS: reason code, first failing test, and bounded output tail. Keep pass records free of failure details. About 50-90 lines across `canary.py`, `runner.py`, progress tests, docs and B593. No liveness monitor or verdict projection change.
 
-**Tests and risk.** Register tests in `tooling-tests`; cover event order, budget exhaustion, single and multi-target runs, each control failure detail and bounded tail, and no details for a passing control. Then run `self-qualification-provisional` and `tester-unified`. Risk: users without a progress file still see only the coarse verdict; make the disclosure explicit in the normal run summary too.
+**Tests and risk.** Put the tests under `assay/tests/`, which `tester-unified` runs (`tooling-tests` runs only the files its argv lists, `run-gate.toml`); cover event order, budget exhaustion, single and multi-target runs, each control failure detail and bounded tail, and no details for a passing control. Then run `self-qualification-provisional` and `tester-unified`. Risk: users without a progress file still see only the coarse verdict; make the disclosure explicit in the normal run summary too.
 
 **Schema, scope and limits.** The proposed `canary_attempt` progress records are not verdict fields, so neither P5 nor B593 adds a field/value to the v21 list or current closed verdict schema. Putting `control_reason_code`, `control_first_failing_test`, or `control_output_tail` into the verdict would make each a new v21 item requiring a list amendment. Progress-only B593 loses self-contained, archived control diagnostics when no progress stream was requested or retained; that is the deliberate cost of preserving the one-amendment rule. Non-pytest and non-Python canaries are also explicitly unwatched, and remain bounded by `budget_per_attempt`. This option does not unblock removal of `budget_per_attempt` or A8's removal of remaining wall deciders.
 
@@ -34,6 +36,6 @@ P-13/B564 is not implemented as the quoted one-primitive package in the current 
 
 1. `canary.py` and `runner.py`: emit per-half phase and completion events, including B593 details on non-PASS control; retain the existing per-attempt deadline.
 2. Progress serialization/tests and `docs/SPEC.md`: document the explicit unwatched status and bounded diagnostic shape. Keep verdict model/schema unchanged.
-3. Update B593 and add B612 to this note. Run `tooling-tests`, `self-qualification-provisional`, then `tester-unified`; bind the independent review and release evidence to the exact commit.
+3. Update B593 and add B612 to this note. Run `self-qualification-provisional` (required for a change under `assay/src`) and `tester-unified`, which runs the new tests; bind the independent review and release evidence to the exact commit.
 
 **Questions for the main controller:** Should B593 live only in progress? Default: yes, because the v21 list is closed; accept the stated archive loss. Should P5 disclose only `watched: false`, or also the configured deadline? Default: both, so a reader knows the bound. Should option (a) stay available for a later package? Default: yes, after a shared isolated-run boundary is settled; it is not this package.
