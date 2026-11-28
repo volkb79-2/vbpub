@@ -183,8 +183,8 @@ What would help more, or be cleaner (non-normative):
   `crashed`. `src/assay/config.py:3558`,
   `src/assay/termination.py:49`, `src/assay/termination.py:64`,
   `src/assay/termination.py:88`, `src/assay/termination.py:97`,
-  `src/assay/termination.py:109`, `src/assay/mutation_store.py:4580`,
-  `src/assay/mutation_store.py:1784`, `src/assay/mutation_store.py:4980`
+  `src/assay/termination.py:109`, `src/assay/mutation_store.py:4961`,
+  `src/assay/mutation_store.py:4980`
 - **RIG-365** After the sweep, unless a campaign-deadline mask fired, each
   candidate executed in this invocation with bucket `crashed`,
   `budget_exceeded` or `hung` is re-run once, serially, in plan order. When
@@ -500,17 +500,19 @@ with `ERROR/BAD_LANE_CONFIG` on any other lane. `src/assay/cli.py:2394`,
   `src/assay/liveness.py:2709`, `src/assay/liveness.py:2717`,
   `src/assay/liveness.py:2755`, `src/assay/liveness.py:2774`
 - **LIV-120** The per-test CPU bound applies only to one in-flight pytest test,
-  outside xdist and without overlapping test starts. Its window opens at
-  `test_start`, covers setup, call and teardown, and closes only at the matching
-  `test_finish`; each start, including a rerun of the same node id, opens a
-  fresh window. The bound is `max(10 x baseline setup+call+teardown seconds,
-  60 CPU seconds)`. A node id absent from the baseline has no per-test bound;
+  outside xdist and without overlapping test starts. `test_start` identifies
+  the in-flight test; its first readable CPU sample initializes the measured
+  window. The window covers setup, call and teardown, and closes only at the
+  matching `test_finish`; each start, including a rerun of the same node id,
+  opens a fresh window. The bound is
+  `max(10 x baseline setup+call+teardown seconds, 60 CPU seconds)`. A node id
+  absent from the baseline has no per-test bound;
   `session_finish` closes any open window. `src/assay/liveness.py:911`,
   `src/assay/liveness.py:924`, `src/assay/liveness.py:1214`,
   `src/assay/liveness.py:1650`,
   `src/assay/liveness.py:1714`, `src/assay/liveness.py:1724`,
   `src/assay/liveness.py:1725`, `src/assay/liveness.py:1730`,
-  `src/assay/liveness.py:2667`,
+  `src/assay/liveness.py:2670`, `src/assay/liveness.py:2694`,
   `src/assay/liveness.py:2783`
 - **LIV-130** When liveness is injected and the baseline produced plugin
   events, the progress watch is armed. While the candidate CPU has been read
@@ -526,11 +528,12 @@ with `ERROR/BAD_LANE_CONFIG` on any other lane. `src/assay/cli.py:2394`,
   `src/assay/mutation.py:2965`, `src/assay/liveness.py:1621`,
   `src/assay/liveness.py:2842`, `src/assay/liveness.py:2901`,
   `src/assay/mutation.py:6100`
-- **LIV-140** The resource trace is capped by compacting eligible adjacent
-  samples; it does not truncate evidence or disable hang decisions. The first
-  two samples remain unmerged, and an unknown resource interval starts a new
-  trace. `src/assay/liveness.py:1808`, `src/assay/liveness.py:1852`,
-  `src/assay/liveness.py:2627`
+- **LIV-140** The resource trace is capped by merging adjacent known (`clear`
+  or `stalled`) samples; it does not truncate evidence or disable hang
+  decisions. The first two samples remain unmerged, and an unknown resource
+  interval starts a new trace. `src/assay/liveness.py:1808`,
+  `src/assay/liveness.py:1852`,
+  `src/assay/liveness.py:1881`, `src/assay/liveness.py:1905`
 - **LIV-145** With an intact event stream and a calibrated CPU-without-progress
   bound, a no-progress wall stop fires at four times that bound if no completed
   event or first `session_finish` re-dates its window first. Before any
