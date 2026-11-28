@@ -767,13 +767,18 @@ def test_executor_stop_records_intent_for_running_and_pending_lanes(tmp_path):
     assert "stop_signal" not in stopped
 
 
-def _worker(tmp_path, runner, *, finder=lambda _name: "/usr/bin/run-gate"):
+def _worker(
+    tmp_path, runner, *, finder=lambda _name: "/usr/bin/run-gate",
+    gate_cgroup_parent="test-gates.slice", gate_unit_loaded=lambda _unit: True,
+):
     policy, _ = _policy(tmp_path)
     worker = HostJobWorker(
         tmp_path / "state", policy, "controller-run-1", 9,
         user_resolver=lambda name: RunnerIdentity(name, 1001, 1001, (1001,)),
         runner_factory=lambda _identity: runner,
         run_gate_finder=finder,
+        gate_cgroup_parent=gate_cgroup_parent,
+        gate_unit_loaded=gate_unit_loaded,
     )
     worker.runner_identity = RunnerIdentity("vscode", 1001, 1001, (1001,), "/home/vscode")
     worker.runner = runner
@@ -2496,7 +2501,10 @@ def test_docker_client_covers_inspection_passwd_query_and_remove_refusals():
     container_id = "d" * 64
 
     def client_with(result):
-        return DockerClient(2, run=lambda _argv, **_kwargs: result)
+        return DockerClient(
+            2, run=lambda _argv, **_kwargs: result, cgroup_parent="test-gates.slice",
+            unit_loaded=lambda _unit: True,
+        )
 
     with pytest.raises(AdmissionError, match="Docker query failed"):
         DockerClient(2, run=lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("offline"))).image("img")
@@ -2541,6 +2549,149 @@ def test_docker_client_covers_inspection_passwd_query_and_remove_refusals():
                            (f"{container_id}\n{container_id}\n".encode(), "duplicate")):
         with pytest.raises(AdmissionError, match=reason):
             client_with(subprocess.CompletedProcess([], 0, output, b"")).job_containers("safe-job")
+
+
+def test_prerequisite_docker_run_uses_a_loaded_host_gate_tier():
+    calls = []
+    loaded_units = []
+
+    def run(argv, **kwargs):
+        calls.append((list(argv), kwargs))
+        return subprocess.CompletedProcess(argv, 0, b"runner:x:1001:1002:x:x:x\n", b"")
+
+    def unit_loaded(unit):
+        loaded_units.append(unit)
+        return unit == "dev-gates.slice"
+
+    docker = DockerClient(
+        3, run=run, cgroup_parent="dev-gates.slice", unit_loaded=unit_loaded,
+    )
+    docker.check_passwd("tester:local", "1001", "job-1", expected_gid=1002)
+    assert loaded_units == ["dev-gates.slice"]
+    assert calls[0][0][0:3] == [
+        "/usr/bin/docker", "--host", "unix:///var/run/docker.sock",
+    ]
+    run_index = calls[0][0].index("run")
+    assert calls[0][0][run_index + 1:run_index + 8] == [
+        "--rm", "--pull=never", "--network", "none", "--cgroup-parent", "dev-gates.slice", "--name",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("cgroup_parent", "loaded", "reason"),
+    [
+        (None, True, "CGROUP_PARENT_DEV_GATES"),
+        ("dev-gates.slice", False, "CGROUP_PARENT_DEV_GATES.*loaded"),
+        ("--help", True, "CGROUP_PARENT_DEV_GATES.*valid"),
+    ],
+)
+def test_prerequisite_docker_run_refuses_missing_invalid_or_unloaded_host_tier(
+    cgroup_parent, loaded, reason,
+):
+    calls = []
+    docker = DockerClient(
+        3,
+        run=lambda argv, **kwargs: calls.append((argv, kwargs)),
+        cgroup_parent=cgroup_parent,
+        unit_loaded=lambda _unit: loaded,
+    )
+    with pytest.raises(AdmissionError, match=reason):
+        docker.check_passwd("tester:local", "1001", "job-1")
+    assert calls == []
+
+
+def test_systemd_gate_tier_query_uses_the_shared_bounded_runner(monkeypatch):
+    bounded_calls = []
+    docker_calls = []
+
+    def bounded(argv, timeout_s, **kwargs):
+        bounded_calls.append((list(argv), timeout_s, kwargs))
+        return subprocess.CompletedProcess(argv, 0, b"loaded\n", b"")
+
+    def docker_run(argv, **kwargs):
+        docker_calls.append((list(argv), kwargs))
+        return subprocess.CompletedProcess(argv, 0, b"runner:x:1001:1002:x:x:x\n", b"")
+
+    monkeypatch.setattr(executor_worker_module, "run_bounded_command", bounded)
+    docker = DockerClient(3, run=docker_run, cgroup_parent="dev-gates.slice")
+    docker.check_passwd("tester:local", "1001", "job-1")
+    assert bounded_calls[0][0] == [
+        "/usr/bin/systemctl", "show", "--property=LoadState", "--value", "dev-gates.slice",
+    ]
+    assert bounded_calls[0][1] == 3
+    assert bounded_calls[0][2]["cwd"] == "/"
+    assert bounded_calls[0][2]["environment"] == {
+        "PATH": "/usr/bin:/bin", "HOME": "/nonexistent", "LC_ALL": "C",
+    }
+    assert docker_calls
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        subprocess.CompletedProcess([], 1, b"loaded\n", b"not found"),
+        subprocess.CompletedProcess([], 0, b"\xff", b""),
+    ],
+)
+def test_systemd_gate_tier_query_refuses_nonloaded_or_unreadable_answers(monkeypatch, answer):
+    docker_calls = []
+    monkeypatch.setattr(
+        executor_worker_module, "run_bounded_command",
+        lambda argv, _timeout, **_kwargs: subprocess.CompletedProcess(
+            argv, answer.returncode, answer.stdout, answer.stderr,
+        ),
+    )
+    docker = DockerClient(
+        3,
+        run=lambda argv, **kwargs: docker_calls.append((argv, kwargs)),
+        cgroup_parent="dev-gates.slice",
+    )
+    with pytest.raises(AdmissionError, match="CGROUP_PARENT_DEV_GATES.*loaded"):
+        docker.check_passwd("tester:local", "1001", "job-1")
+    assert docker_calls == []
+
+
+def test_systemd_gate_tier_query_failure_is_a_named_refusal():
+    docker = DockerClient(
+        3, run=lambda *_args, **_kwargs: None, cgroup_parent="dev-gates.slice",
+        unit_loaded=lambda _unit: (_ for _ in ()).throw(OSError("systemctl unavailable")),
+    )
+    with pytest.raises(AdmissionError, match="CGROUP_PARENT_DEV_GATES could not verify.*systemctl unavailable"):
+        docker.check_passwd("tester:local", "1001", "job-1")
+
+
+def test_worker_takes_prerequisite_gate_tier_from_host_environment(monkeypatch, tmp_path):
+    monkeypatch.setenv("CGROUP_PARENT_DEV_GATES", "dev-gates.slice")
+    worker = _worker(
+        tmp_path, _VersionRunner({}), gate_cgroup_parent=None,
+        gate_unit_loaded=lambda _unit: True,
+    )
+    worker.request = {"env": {"CGROUP_PARENT_DEV_GATES": "repository.slice"}}
+    try:
+        assert worker.docker.cgroup_parent == "dev-gates.slice"
+    finally:
+        os.close(worker.repo_root_fd)
+
+
+def test_ephemeral_lane_environment_uses_host_gate_tier_and_rejects_request_override(tmp_path):
+    worker = _worker(
+        tmp_path, _VersionRunner({}), gate_cgroup_parent="dev-gates.slice",
+        gate_unit_loaded=lambda _unit: True,
+    )
+    worker.request = {"env": {}}
+    try:
+        environment = worker._lane_runner_environment("ephemeral", {"image": "tester:local"})
+        assert environment["CGROUP_PARENT_DEV_GATES"] == "dev-gates.slice"
+        assert environment["RUN_GATE_TESTER_UNIFIED_IMAGE"] == "tester:local"
+        worker.policy.env_values["CGROUP_PARENT_DEV_GATES"] = frozenset({"repository.slice"})
+        with pytest.raises(AdmissionError, match="agent.toml.env_values.CGROUP_PARENT_DEV_GATES"):
+            worker._lane_runner_environment("ephemeral", {"image": "tester:local"})
+        worker.policy.env_values.pop("CGROUP_PARENT_DEV_GATES")
+        worker.request = {"env": {"CGROUP_PARENT_DEV_GATES": "repository.slice"}}
+        with pytest.raises(AdmissionError, match="request env CGROUP_PARENT_DEV_GATES"):
+            worker._lane_runner_environment("ephemeral", {"image": "tester:local"})
+    finally:
+        os.close(worker.repo_root_fd)
 
 
 def test_archive_filesystem_and_config_helpers_cover_safe_and_refusal_paths(tmp_path, monkeypatch):
@@ -3368,6 +3519,7 @@ def _ready_worker(tmp_path, runner=None, *, request=None, docker=None, waiter=la
         user_resolver=lambda name: RunnerIdentity(name, 1001, 1001, (1001,), str(tmp_path)),
         runner_factory=lambda _identity: runner, docker=docker, waiter=waiter,
         run_gate_finder=lambda _name: "/usr/bin/run-gate",
+        gate_cgroup_parent="test-gates.slice", gate_unit_loaded=lambda _unit: True,
     )
     worker.request = request
     worker.group = "controller"
@@ -3737,8 +3889,10 @@ def test_run_lane_builds_argv_environment_and_records_child_status(tmp_path, mod
     assert "RUN_GATE_EXPECTED_RUNNER" not in captured["env"]
     if mode == "ephemeral":
         assert captured["env"]["RUN_GATE_TESTER_UNIFIED_IMAGE"] == "tester:local"
+        assert captured["env"]["CGROUP_PARENT_DEV_GATES"] == "test-gates.slice"
     else:
         assert "RUN_GATE_TESTER_UNIFIED_IMAGE" not in captured["env"]
+        assert "CGROUP_PARENT_DEV_GATES" not in captured["env"]
     state = worker._state()
     assert state["lane_process_status"] == 0 and state["lane_may_be_live"] is False
     assert state["lane_status_owner"] == "worker"
@@ -5906,7 +6060,9 @@ def test_docker_passwd_accepts_named_user_without_numeric_identity_check():
         calls.append(argv)
         return subprocess.CompletedProcess(argv, 0, b"build:x:17:18::/home/build:/bin/sh\n", b"")
 
-    DockerClient(2, run=run).check_passwd("image", "build", "job with unsafe chars")
+    DockerClient(
+        2, run=run, cgroup_parent="test-gates.slice", unit_loaded=lambda _unit: True,
+    ).check_passwd("image", "build", "job with unsafe chars")
     assert calls[0][-2:] == ["passwd", "build"]
     assert "fleetd-uid-job-with-unsafe-chars" in calls[0]
 

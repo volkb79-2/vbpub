@@ -60,6 +60,7 @@ _RG_FALLBACK = "/home/vscode/.venvs/gate-tools2502/bin/run-gate"
 _STORE_PATH_RE = re.compile(r"[A-Za-z0-9._@+=,:-]+(?:/[A-Za-z0-9._@+=,:-]+)*\Z")
 _IMAGE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,254}\Z")
 _CONTAINER_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\Z")
+_SYSTEMD_SLICE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.@:-]*\.slice\Z")
 _SHARD_EVENT_RE = re.compile(r"(.+)\.shard[1-9][0-9]*of[1-9][0-9]*\Z")
 _RELEASE_TAG_RE = re.compile(r"[^/\s]+-v[0-9][^\s]*\Z")
 _PSI_LIMIT = 25.0
@@ -95,6 +96,8 @@ _RUN_GATE_VERDICT_CODES = {
 _DOCKER_SELECTOR_ENV = frozenset({
     "DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_CONFIG", "DOCKER_TLS_VERIFY", "DOCKER_CERT_PATH",
 })
+_GATE_TIER_ENV = "CGROUP_PARENT_DEV_GATES"
+_SYSTEMD_ENV = {"PATH": "/usr/bin:/bin", "HOME": "/nonexistent", "LC_ALL": "C"}
 _HELPER_BOOTSTRAP = (
     "import sys; root = sys.argv.pop(1); sys.path.insert(0, root); "
     "from fleetd.executor_worker import main; raise SystemExit(main())"
@@ -220,6 +223,55 @@ class SubprocessRunnerCommands:
         )
 
 
+def _systemd_slice_loaded(unit: str, timeout_s: float) -> bool:
+    """Check the configured host slice without an unbounded systemctl call."""
+
+    answer = run_bounded_command(
+        ["/usr/bin/systemctl", "show", "--property=LoadState", "--value", unit],
+        timeout_s,
+        environment=_SYSTEMD_ENV,
+        cwd="/",
+        stdin=subprocess.DEVNULL,
+        pass_fds=(),
+        output_limit=MAX_RUNNER_QUERY_OUTPUT_BYTES,
+    )
+    try:
+        load_state = (answer.stdout or b"").decode("ascii").strip()
+    except UnicodeDecodeError:
+        return False
+    return answer.returncode == 0 and load_state == "loaded"
+
+
+def _require_gate_slice(
+    value: str | None,
+    timeout_s: float,
+    unit_loaded: Callable[[str], bool] | None,
+) -> str:
+    if not isinstance(value, str) or not value:
+        raise AdmissionError(
+            ExitCode.PREREQUISITE_MISSING,
+            f"{_GATE_TIER_ENV} is required for ephemeral Docker work",
+        )
+    if _SYSTEMD_SLICE_RE.fullmatch(value) is None:
+        raise AdmissionError(
+            ExitCode.PREREQUISITE_MISSING,
+            f"{_GATE_TIER_ENV} must name a valid systemd slice",
+        )
+    try:
+        loaded = _systemd_slice_loaded(value, timeout_s) if unit_loaded is None else unit_loaded(value)
+    except Exception as exc:
+        raise AdmissionError(
+            ExitCode.PREREQUISITE_MISSING,
+            f"{_GATE_TIER_ENV} could not verify slice {value!r} as loaded: {exc}",
+        ) from exc
+    if loaded is not True:
+        raise AdmissionError(
+            ExitCode.PREREQUISITE_MISSING,
+            f"{_GATE_TIER_ENV} slice {value!r} is not a loaded systemd unit",
+        )
+    return value
+
+
 class DockerClient:
     """Small argv-only Docker inspection adapter used by the executor."""
 
@@ -228,9 +280,13 @@ class DockerClient:
         timeout_s: float,
         *,
         run: Callable[..., Any] | None = None,
+        cgroup_parent: str | None = None,
+        unit_loaded: Callable[[str], bool] | None = None,
     ) -> None:
         self.timeout_s = timeout_s
         self._run = run
+        self.cgroup_parent = cgroup_parent
+        self._unit_loaded = unit_loaded
 
     def command(self, *argv: str) -> CommandResult:
         try:
@@ -254,10 +310,13 @@ class DockerClient:
     def check_passwd(
         self, image: str, username_or_uid: str, job_id: str, *, expected_gid: int | None = None,
     ) -> None:
+        cgroup_parent = _require_gate_slice(
+            self.cgroup_parent, self.timeout_s, self._unit_loaded,
+        )
         safe = re.sub(r"[^A-Za-z0-9_.-]", "-", job_id)[:100]
         result = self.command(
-            "run", "--rm", "--pull=never", "--network", "none", "--name", f"fleetd-uid-{safe}",
-            "--entrypoint", "getent", image, "passwd", username_or_uid,
+            "run", "--rm", "--pull=never", "--network", "none", "--cgroup-parent", cgroup_parent,
+            "--name", f"fleetd-uid-{safe}", "--entrypoint", "getent", image, "passwd", username_or_uid,
         )
         if result.returncode != 0:
             raise AdmissionError(
@@ -784,6 +843,8 @@ class HostJobWorker:
         process_signals: ProcessSignals | None = None,
         scope_process_reader: Callable[[str], Sequence[int]] | None = None,
         thrashguard_client: object | None = None,
+        gate_cgroup_parent: str | None = None,
+        gate_unit_loaded: Callable[[str], bool] | None = None,
     ) -> None:
         self.state_dir = Path(state_dir)
         self.jobs_dir = self.state_dir / "jobs"
@@ -793,7 +854,11 @@ class HostJobWorker:
         self.lock_fd = lock_fd
         self.user_resolver = user_resolver
         self.runner_factory = runner_factory
-        self.docker = docker or DockerClient(policy.query_timeout_s)
+        self.gate_cgroup_parent = os.environ.get(_GATE_TIER_ENV) if gate_cgroup_parent is None else gate_cgroup_parent
+        self.gate_unit_loaded = gate_unit_loaded
+        self.docker = docker or DockerClient(
+            policy.query_timeout_s, cgroup_parent=self.gate_cgroup_parent, unit_loaded=gate_unit_loaded,
+        )
         self.pressure_reader = pressure_reader or _read_text_file
         self.meminfo_reader = meminfo_reader or _read_meminfo
         self.waiter = waiter
@@ -899,6 +964,11 @@ class HostJobWorker:
                         ExitCode.REFUSAL,
                         f"request env {key} cannot select the host Docker daemon or configuration",
                     )
+        if _GATE_TIER_ENV in self.policy.env_values:
+            raise AdmissionError(
+                ExitCode.REFUSAL,
+                f"agent.toml.env_values.{_GATE_TIER_ENV} cannot select the host gate cgroup tier",
+            )
         path = os.environ.get("PATH", os.defpath)
         env = {
             "PATH": path,
@@ -912,9 +982,26 @@ class HostJobWorker:
             "DOCKER_HOST": "unix:///var/run/docker.sock",
         }
         if isinstance(extra, Mapping):
+            if _GATE_TIER_ENV in extra:
+                raise AdmissionError(
+                    ExitCode.REFUSAL,
+                    f"request env {_GATE_TIER_ENV} cannot select the host gate cgroup tier",
+                )
             for key, value in extra.items():
                 if isinstance(key, str) and isinstance(value, str):
                     env[key] = value
+        return env
+
+    def _require_gate_tier(self) -> str:
+        return _require_gate_slice(
+            self.gate_cgroup_parent, self.policy.query_timeout_s, self.gate_unit_loaded,
+        )
+
+    def _lane_runner_environment(self, mode: str, facts: Mapping[str, object]) -> dict[str, str]:
+        env = self._environment()
+        if mode == "ephemeral":
+            env[_GATE_TIER_ENV] = self._require_gate_tier()
+            env["RUN_GATE_TESTER_UNIFIED_IMAGE"] = str(facts["image"])
         return env
 
     def _run(self, argv: Sequence[str], *, cwd_fd: int | None = None, timeout: float | None = None) -> CommandResult:
@@ -1296,6 +1383,8 @@ class HostJobWorker:
             raise AdmissionError(ExitCode.REFUSAL, "request project or lane is invalid")
         lane, environment = _lane_environment(self.checkout_fd, project, lane_name)
         mode = str(environment["mode"])
+        if mode == "ephemeral":
+            self._require_gate_tier()
         project_rel = "" if project == "." else project
         project_fd = os.dup(self.checkout_fd) if not project_rel else open_beneath(self.checkout_fd, project_rel, directory=True)
         try:
@@ -1767,9 +1856,7 @@ class HostJobWorker:
         if isinstance(base, str):
             argv.extend(("--base", base))
         argv.extend(("--event-file", str(self.event_path), "--job-id", self.job_id))
-        env = self._environment()
-        if mode == "ephemeral":
-            env["RUN_GATE_TESTER_UNIFIED_IMAGE"] = str(facts["image"])
+        env = self._lane_runner_environment(mode, facts)
         log_fd = os.open(self.job_dir / "lane.log", os.O_CREAT | os.O_TRUNC | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
         try:
             runner_name = facts.get("runner_name")
