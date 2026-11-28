@@ -5085,9 +5085,17 @@ def test_worker_checkout_refuses_failed_seed_missing_base_and_commit_mismatch(tm
     worker._host_checkout_candidates = lambda: [SHA]
     worker._reset_checkout = lambda _seed: False
     worker._helper = lambda *_args, **_kwargs: CommandResult(0)
+    bundle_attempts = []
+
+    def missing_bundle(seeds, **kwargs):
+        bundle_attempts.append((tuple(seeds), kwargs))
+        raise AdmissionError(ExitCode.CHECKOUT_FAILURE, "bundle fallback attempted")
+
+    worker._fetch_uploaded_bundle = missing_bundle
     try:
-        with pytest.raises(AdmissionError, match="cannot clone host checkout seed"):
+        with pytest.raises(AdmissionError, match="bundle fallback attempted"):
             worker._create_checkout()
+        assert bundle_attempts == [((SHA,), {"required_base": None})]
     finally:
         for fd in (worker.project_fd, worker.checkout_fd, worker.repo_root_fd):
             if fd >= 0:
@@ -5115,7 +5123,7 @@ def test_worker_checkout_refuses_failed_seed_missing_base_and_commit_mismatch(tm
     )
     worker.request = {"repo": "vbpub", "sha": SHA, "base": "refs/heads/missing"}
     worker._host_checkout_candidates = lambda: []
-    worker._fetch_uploaded_bundle = lambda _seeds: None
+    worker._fetch_uploaded_bundle = lambda _seeds, **_kwargs: None
     worker._synchronize_job_refs = lambda: None
     worker._helper = lambda *_args, **_kwargs: CommandResult(0)
     try:
@@ -5133,7 +5141,7 @@ def test_worker_checkout_refuses_failed_seed_missing_base_and_commit_mismatch(tm
     )
     worker.request = {"repo": "vbpub", "sha": SHA}
     worker._host_checkout_candidates = lambda: []
-    worker._fetch_uploaded_bundle = lambda _seeds: None
+    worker._fetch_uploaded_bundle = lambda _seeds, **_kwargs: None
     worker._synchronize_job_refs = lambda: None
     worker._helper = lambda *_args, **_kwargs: CommandResult(0)
     try:
@@ -6255,8 +6263,96 @@ def test_checkout_with_host_seed_still_attempts_other_uploaded_bundles(tmp_path)
     try:
         worker._create_checkout()
         assert copied_refs == [SHA]
-        assert fetched == [(SHA,)]
+        assert fetched == []
         assert any("checkout" in call for call in command_calls)
+    finally:
+        for fd in (worker.project_fd, worker.checkout_fd, worker.repo_root_fd):
+            if fd >= 0:
+                os.close(fd)
+
+
+def test_ready_host_seed_ignores_an_unrelated_broken_retained_bundle(tmp_path):
+    worker, _runner, _job_dir, _checkout = _ready_worker(tmp_path)
+    repo_root = worker.repo_root
+    source = tmp_path / "host-seed-source"
+    source.mkdir()
+    subprocess.run(["git", "init", "--quiet", "--initial-branch=main", str(source)], check=True)
+    (source / "base.txt").write_text("base\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(source), "add", "base.txt"], check=True)
+    subprocess.run([
+        "git", "-C", str(source), "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+        "commit", "--quiet", "-m", "base",
+    ], check=True)
+    base_sha = subprocess.run(
+        ["git", "-C", str(source), "rev-parse", "HEAD"], check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    (source / "run-gate.toml").write_text(
+        f"[lanes.r0-r1]\nenvironment='host'\nbase='{base_sha}'\n\n[environments.host]\nmode='host'\n",
+        encoding="utf-8",
+    )
+    (source / "job.txt").write_text("requested commit\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(source), "add", "run-gate.toml", "job.txt"], check=True)
+    subprocess.run([
+        "git", "-C", str(source), "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+        "commit", "--quiet", "-m", "target",
+    ], check=True)
+    target_sha = subprocess.run(
+        ["git", "-C", str(source), "rev-parse", "HEAD"], check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    shutil.copytree(source, repo_root / target_sha)
+
+    worker.request.update(repo="vbpub", sha=target_sha, project=".", lane="r0-r1", extra_argv=[])
+    unrelated = b"this retained upload is not a git bundle"
+    unrelated_digest = hashlib.sha256(unrelated).hexdigest()
+    upload_dir = worker.state_dir / "uploads" / worker.group / "in.bundle"
+    upload_dir.mkdir(parents=True)
+    (upload_dir / unrelated_digest).write_bytes(unrelated)
+    streamed = []
+
+    class _GitRunner:
+        def run(self, argv, *, cwd_fd, env, timeout=None):
+            cwd = os.readlink(f"/proc/self/fd/{cwd_fd}")
+            answer = subprocess.run(argv, cwd=cwd, capture_output=True, check=False)
+            return CommandResult(answer.returncode, answer.stdout, answer.stderr)
+
+        def run_with_input(self, argv, *, cwd_fd, env, source_fd, timeout=None):
+            streamed.append(list(argv))
+            helper_args = list(argv[6:])
+            relative = helper_args[helper_args.index("--relative") + 1]
+            destination = repo_root / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            body = bytearray()
+            while True:
+                chunk = os.read(source_fd, 4096)
+                if not chunk:
+                    break
+                body.extend(chunk)
+            destination.write_bytes(body)
+            return CommandResult(0)
+
+    worker.runner = _GitRunner()
+
+    def helper(mode, *args, **_kwargs):
+        values = list(args)
+        if mode == "prepare":
+            (repo_root / values[values.index("--relative") + 1]).mkdir(parents=True, exist_ok=True)
+        elif mode == "remove-tree":
+            target = repo_root / values[values.index("--relative") + 1]
+            if target.is_dir():
+                shutil.rmtree(target)
+            elif target.exists():
+                target.unlink()
+        return CommandResult(0)
+
+    worker._helper = helper
+    try:
+        worker._create_checkout()
+        actual = subprocess.run(
+            ["git", "-C", str(repo_root / worker.checkout_rel), "rev-parse", "HEAD"],
+            check=True, capture_output=True, text=True,
+        ).stdout.strip()
+        assert actual == target_sha
+        assert not streamed
     finally:
         for fd in (worker.project_fd, worker.checkout_fd, worker.repo_root_fd):
             if fd >= 0:
@@ -6364,6 +6460,62 @@ def test_bundle_retry_uses_other_candidate_and_records_failed_tag_listing(tmp_pa
         assert runner.head_fetches == 2
         assert any("release tag listing from bundle failed" in line for line in (worker.job_dir / "job.log").read_text().splitlines())
         assert len(removed) == 1
+    finally:
+        for fd in (worker.project_fd, worker.checkout_fd, worker.repo_root_fd):
+            if fd >= 0:
+                os.close(fd)
+
+
+def test_bundle_resolution_tries_other_upload_until_requested_sha_and_base_resolve(tmp_path):
+    first_digest, second_digest = "a" * 64, "b" * 64
+    base = "e" * 40
+    worker, _runner, _job_dir, _checkout = _ready_worker(tmp_path)
+    upload_dir = worker.state_dir / "uploads" / worker.group / "in.bundle"
+    upload_dir.mkdir(parents=True)
+    (upload_dir / first_digest).write_bytes(b"first bundle")
+    (upload_dir / second_digest).write_bytes(b"second bundle")
+    worker.request.update(sha=SHA)
+    worker._uploaded_objects = lambda _name: [(first_digest, 12), (second_digest, 13)]
+    worker._reset_checkout = lambda _seed: True
+    staged = []
+    removed = []
+    worker._helper = lambda mode, *args, **_kwargs: removed.append((mode, args)) or CommandResult(0)
+
+    class _Runner:
+        def __init__(self):
+            self.active_digest = ""
+            self.head_fetches = []
+
+        def run_with_input(self, argv, **_kwargs):
+            helper_args = list(argv[6:])
+            target = helper_args[helper_args.index("--relative") + 1]
+            self.active_digest = target.rsplit("bundle-", 1)[1]
+            staged.append(self.active_digest)
+            return CommandResult(0)
+
+        def run(self, argv, **_kwargs):
+            call = list(argv)
+            if "verify" in call:
+                return CommandResult(0)
+            if "fetch" in call and call[-1] == "HEAD":
+                self.head_fetches.append(self.active_digest)
+                return CommandResult(0)
+            if len(call) > 1 and call[1] == "ls-remote":
+                return CommandResult(1, b"", b"no tags")
+            if "cat-file" in call:
+                target = call[-1]
+                if target == f"{base}^{{commit}}":
+                    return CommandResult(1 if self.active_digest == first_digest else 0)
+                return CommandResult(0)
+            return CommandResult(0)
+
+    runner = _Runner()
+    worker.runner = runner
+    try:
+        worker._fetch_uploaded_bundle(required_base=base)
+        assert staged == [first_digest, second_digest]
+        assert runner.head_fetches == [first_digest, second_digest]
+        assert len(removed) == 2
     finally:
         for fd in (worker.project_fd, worker.checkout_fd, worker.repo_root_fd):
             if fd >= 0:

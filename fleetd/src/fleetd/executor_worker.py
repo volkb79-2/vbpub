@@ -1089,24 +1089,67 @@ class HostJobWorker:
         _atomic_json(self.job_dir / "checkout.json", checkout_record)
 
         seeds = self._host_checkout_candidates()
-        if sha in seeds:
-            if not self._reset_checkout(sha):
-                raise AdmissionError(ExitCode.CHECKOUT_FAILURE, f"cannot clone host checkout seed {sha}")
+        request_base = self._validated_request_base()
+        seeded_sha = False
+        if sha in seeds and self._reset_checkout(sha):
             self._copy_seed_refs(sha)
-            if self._uploaded_objects("in.bundle"):
-                self._fetch_uploaded_bundle(seeds)
-        else:
-            self._fetch_uploaded_bundle(seeds)
-        self._synchronize_job_refs()
+            seeded_sha = self._checkout_commit_resolves(sha)
+        if not seeded_sha:
+            self._fetch_uploaded_bundle(seeds, required_base=request_base)
+        self._checkout_requested_sha(sha)
 
+        required_base = self._required_checkout_base(request_base)
+        if required_base is not None and not self._checkout_commit_resolves(required_base):
+            self._fetch_uploaded_bundle(seeds, required_base=required_base)
+            self._checkout_requested_sha(sha)
+        self._synchronize_job_refs()
+        actual = self._checkout_requested_sha(sha)
+        if required_base is not None and not self._checkout_commit_resolves(required_base):
+            self._log(f"base {required_base} missing on the host after bundle resolution")
+            raise AdmissionError(ExitCode.MISSING_BASE, f"base {required_base} missing on the host")
+        self._log(f"checkout {self.repo_root / self.checkout_rel} at {actual}")
+        self._save_state(checkout={"ready": True, "sha": actual})
+
+    def _validated_request_base(self) -> str | None:
         base = self.request.get("base")
-        if isinstance(base, str):
-            base_result = self._run_query([
-                "git", "-C", str(self.repo_root / self.checkout_rel), "cat-file", "-e", f"{base}^{{commit}}",
-            ])
-            if base_result.returncode != 0:
-                self._log(f"base {base} missing on the host")
-                raise AdmissionError(ExitCode.MISSING_BASE, f"base {base} missing on the host")
+        if base is None:
+            return None
+        if not isinstance(base, str) or not base or base.startswith("-") or "\0" in base:
+            raise AdmissionError(ExitCode.MISSING_BASE, "request base is invalid")
+        return base
+
+    def _required_checkout_base(self, request_base: str | None) -> str | None:
+        if request_base is not None:
+            return request_base
+        project = self.request.get("project")
+        lane_name = self.request.get("lane")
+        if not isinstance(project, str) or not isinstance(lane_name, str) or self.checkout_fd < 0:
+            return None
+        try:
+            lane, _environment = _lane_environment(self.checkout_fd, project, lane_name)
+        except AdmissionError:
+            # Checkout validity is proved here; the prerequisites path reports
+            # the original lane/configuration refusal before a lane can start.
+            return None
+        base = lane.get("base")
+        if base is None:
+            return None
+        if not isinstance(base, str) or not base or base.startswith("-") or "\0" in base:
+            raise AdmissionError(ExitCode.PREREQUISITE_MISSING, "Run-Gate lane declares an invalid comparison base")
+        if base in {"main", "origin/main"}:
+            raise AdmissionError(
+                ExitCode.MISSING_BASE,
+                f"lane base {base!r} requires an explicit request base; the host has no authenticated current main",
+            )
+        return base
+
+    def _checkout_commit_resolves(self, commit: str) -> bool:
+        answer = self._run_query([
+            "git", "-C", str(self.repo_root / self.checkout_rel), "cat-file", "-e", f"{commit}^{{commit}}",
+        ], cwd_fd=self.repo_root_fd)
+        return answer.returncode == 0
+
+    def _checkout_requested_sha(self, sha: str) -> str:
         self._run_checked(
             ["git", "-C", str(self.repo_root / self.checkout_rel), "checkout", "--quiet", "--detach", sha],
             cwd_fd=self.repo_root_fd, exit_code=ExitCode.CHECKOUT_FAILURE, detail="cannot check out requested commit",
@@ -1118,8 +1161,7 @@ class HostJobWorker:
         ).stdout.decode("ascii", "strict").strip()
         if actual != sha:
             raise AdmissionError(ExitCode.CHECKOUT_FAILURE, f"host checkout commit {actual!r} does not match request sha")
-        self._log(f"checkout {self.repo_root / self.checkout_rel} at {actual}")
-        self._save_state(checkout={"ready": True, "sha": actual})
+        return actual
 
     def _host_checkout_candidates(self) -> list[str]:
         """Return only real, full-commit directories that can seed a local clone."""
@@ -1257,7 +1299,9 @@ class HostJobWorker:
         finally:
             _close(name_fd, group_fd, uploads_fd, root_fd)
 
-    def _fetch_uploaded_bundle(self, seeds: Sequence[str] = ()) -> None:
+    def _fetch_uploaded_bundle(
+        self, seeds: Sequence[str] = (), *, required_base: str | None = None,
+    ) -> None:
         objects = self._uploaded_objects("in.bundle")
         if not objects:
             raise AdmissionError(ExitCode.CHECKOUT_FAILURE, "no verified in.bundle upload contains the requested commit")
@@ -1335,7 +1379,9 @@ class HostJobWorker:
                         "git", "-C", str(self.repo_root / self.checkout_rel), "cat-file", "-e",
                         f"{request_sha}^{{commit}}",
                     ], cwd_fd=self.repo_root_fd)
-                    if resolved.returncode == 0:
+                    if resolved.returncode == 0 and (
+                        required_base is None or self._checkout_commit_resolves(required_base)
+                    ):
                         return
             finally:
                 self._helper("remove-tree", "--relative", target_rel, cwd_fd=self.repo_root_fd)
