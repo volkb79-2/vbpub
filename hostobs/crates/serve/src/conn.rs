@@ -1760,6 +1760,35 @@ mod tests {
     }
 
     #[test]
+    fn events_continuation_uses_stable_ordinal_after_ring_displacement() {
+        let mut rig = ready_bin(Level::Observe);
+        rig.backend.event_window = EventWindow {
+            items: vec![
+                event_item(2, "first", 1, 10),
+                event_item(3, "second", 2, 11),
+                event_item(4, "third", 3, 12),
+            ],
+            oldest_real_ns: Some(10),
+            displaced: 2,
+            started_real_ns: 9,
+        };
+        rig.send(&events_req(2, 0, 20, 1, "null"));
+        let first = event_reply(&mut rig);
+        let cursor = page_cursor(&first).expect("page cursor");
+        assert!(cursor.ends_with(":3"), "{cursor}");
+
+        rig.backend.event_window.items = vec![
+            event_item(3, "second", 2, 11),
+            event_item(4, "third", 3, 12),
+        ];
+        rig.backend.event_window.displaced = 3;
+        rig.backend.event_window.oldest_real_ns = Some(11);
+        rig.send(&events_req(3, 0, 20, 1, &format!("\"{cursor}\"")));
+        let continued = event_reply(&mut rig);
+        assert!(continued.contains("\"name\":\"second\""), "{continued}");
+    }
+
+    #[test]
     fn events_reply_reports_cumulative_displacement_and_backend_start_time() {
         let mut rig = ready_bin(Level::Observe);
         rig.backend.event_window = EventWindow {
