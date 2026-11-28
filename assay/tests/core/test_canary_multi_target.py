@@ -44,7 +44,7 @@ from assay import canary, runner
 from assay.adapters.python import PythonAdapter
 from assay.canary import run_isolated_canaries
 from assay.config import CanaryConfig
-from assay.errors import Outcome, ReasonCode
+from assay.errors import AssayError, Outcome, ReasonCode
 from assay.verify import verify_document
 
 MOMENT = datetime(2026, 9, 3, 12, 0, 0, tzinfo=timezone.utc)
@@ -644,9 +644,39 @@ def test_an_expired_per_attempt_bound_abandons_every_later_target_too(
     # The later target was abandoned without being started at all -- the
     # cascade, not two independent expiries.
     assert "never started" in claim.canary.attempts[-1].description
+    assert claim.detail is not None
+    assert "per-attempt canary budget expired" in claim.detail
     # And the lane itself was nowhere near its own budget.
     assert clock.value < 100.0, clock.value
     _accepted(verdict)
+
+
+def test_deadline_expiry_message_names_the_nearer_canary_clock():
+    now = [0.0]
+    monotonic = lambda: now[0]
+
+    per_attempt = runner.LaneDeadline.start(
+        budget_seconds=300.0, monotonic=monotonic
+    ).tightened(1.0)
+    now[0] = 1.0
+    with pytest.raises(AssayError, match="the per-attempt canary budget expired"):
+        per_attempt.remaining()
+
+    now[0] = 0.0
+    lane_wide = runner.LaneDeadline.start(
+        budget_seconds=1.0, monotonic=monotonic
+    ).tightened(None)
+    now[0] = 1.0
+    with pytest.raises(AssayError, match="^the lane-wide deadline expired$"):
+        lane_wide.remaining()
+
+    now[0] = 0.0
+    nearer_lane = runner.LaneDeadline.start(
+        budget_seconds=1.0, monotonic=monotonic
+    ).tightened(30.0)
+    now[0] = 1.0
+    with pytest.raises(AssayError, match="^the lane-wide deadline expired$"):
+        nearer_lane.remaining()
 
 
 def test_a_lane_declaring_no_per_attempt_bound_is_byte_unchanged(git_repo: GitRepo):

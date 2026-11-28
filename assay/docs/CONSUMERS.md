@@ -2236,11 +2236,12 @@ format still lets the annotated lines feed `--only-candidates`.
 
 A carried survivor can be carried again from the old generation even after a
 new test would kill it. When at least one survivor is carried, the run's text
-output says once that carried survivors stay carried. Re-run them with
-`assay run <lane> --resume --rejudge-outcome survived`; the resume path drops
-matching `survived` records before it resumes candidates. The printed command
-shows only these flags: keep the run's own `--state-dir`, `--file`, `--shard`
-and appended arguments when you repeat it.
+output says once that carried survivors stay carried. It prints a rejudge
+command using the actual lane name and, when supplied to this run, its
+shell-quoted `--state-dir`. The resume path drops matching `survived` records
+before it resumes candidates. Repeat this run's `--file`, `--shard` and
+appended arguments when they change what it selects; those selection options
+are not included in the printed command.
 
 `--merge-state DIR` (repeatable) copies records of the SAME judge from another
 store -- the way shard stores are merged (below). It needs no reason; records
