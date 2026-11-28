@@ -440,17 +440,23 @@ with `ERROR/BAD_LANE_CONFIG` on any other lane. `src/assay/cli.py:2394`,
   `src/assay/liveness.py:1250`, `src/assay/liveness.py:1297`,
   `src/assay/liveness.py:1303`,
   `src/assay/liveness.py:1311`, `src/assay/liveness.py:816`
-- **LIV-070** A CPU-spinning candidate is not `hung`: it ends only at its
-  per-candidate wall budget, as `budget_exceeded`, or, with
-  `budget_per_candidate = "none"`, at the lane deadline (LIV-010).
-  `src/assay/liveness.py:2097`, `src/assay/runner.py:1842`
-- **LIV-075** After 1024 retained trace samples (1 s polls) without progress
-  the trace is marked incomplete and no `hung` can be declared until progress
-  or a fresh baseline; the candidate then ends at its budget. (LIV-140 plans
-  to remove this.) `src/assay/liveness.py:677`, `src/assay/liveness.py:2020`
-- **LIV-080** A stored `hung` record is reusable only with liveness evidence
-  of policy `pressure-adjusted-idle-v1` and decision `idle-hang` or
-  `session-finish-hang`. `src/assay/mutation_store.py:1403`
+- **LIV-070** A candidate that keeps completing plugin events can exceed
+  `budget_per_candidate` while the liveness watch is armed; that budget is
+  advisory. The CPU-without-progress and per-test CPU bounds can still end it
+  as `hung`. If the watch is not armed, the per-candidate budget binds as
+  `budget_exceeded`; `none` leaves the lane deadline as the bound.
+  `src/assay/liveness.py:670`, `src/assay/liveness.py:2167`,
+  `src/assay/runner.py:1842`
+- **LIV-075** The resource trace is compacted at its sample cap without
+  disabling hang decisions. An `unknown` resource interval resets the trace
+  and the idle clock; a later complete interval starts a new trace.
+  `src/assay/liveness.py:1808`, `src/assay/liveness.py:1852`,
+  `src/assay/liveness.py:1998`
+- **LIV-080** A stored `hung` record is reusable with either validated
+  pressure-adjusted idle evidence (`idle-hang` or `session-finish-hang`) or
+  validated CPU-bound evidence (`cpu-without-progress` or
+  `per-test-cpu-bound`). `src/assay/mutation_store.py:1630`,
+  `src/assay/mutation_store.py:1841`
 - **LIV-090** SIGTERM/SIGINT/SIGHUP during `run` kill the live process
   groups and write an incomplete verdict (`BUDGET_EXCEEDED/LANE_TIMEOUT`).
   `src/assay/cli.py:801`, `src/assay/runner.py:274`
@@ -463,7 +469,7 @@ with `ERROR/BAD_LANE_CONFIG` on any other lane. `src/assay/cli.py:2394`,
   `src/assay/cli.py:707`, `src/assay/runner.py:1178`,
   `src/assay/runner.py:1179`
 
-### 6.2 PLANNED (package P4, in progress)
+### 6.2 Planned
 
 Sources: `docs/design/no-time-budgets/DESIGN.md` §3.2, §3.4, §7.1 (repo
 root); P4 brief `assay-p4-stall`; operator input 2026-11-25 (items A, C);
