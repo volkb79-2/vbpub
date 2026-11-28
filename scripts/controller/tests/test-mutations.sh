@@ -653,4 +653,10 @@ for pi_ctl_mutant in claim-before-inject name-validation agent-end-only wrapper-
       PI_CTL_CORE_MODULE="$ROOT/mutants/scripts/controller/pi-ctl-$pi_ctl_mutant/core.mjs" \
       bash "$SCRIPT_DIR/test-pi-ctl.sh"
 done
+for pi_ctl_bridge_mutant in bridge-prints-repeatedly bridge-ack-report-not-persisted bridge-ack-timeout-ignored; do
+  expect_assertion_killed_with_address_space_limit "pi-ctl-$pi_ctl_bridge_mutant" 2147483648 \
+    env NODE_OPTIONS=--max-old-space-size=256 \
+      PI_CTL_BRIDGE_MODULE="$ROOT/mutants/scripts/controller/pi-ctl-$pi_ctl_bridge_mutant/bridge.mjs" \
+      bash "$SCRIPT_DIR/test-pi-ctl.sh"
+done
 mutation_runner_finish || exit $?

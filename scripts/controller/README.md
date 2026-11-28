@@ -831,9 +831,9 @@ catalogue remains the operator-owned `$HOME/.pi/agent/models.json`.
 The `pi-ctl/` extension provides `send_message`, persisted wake-up
 schedule/list/cancel tools, bounded monitor start/list/stop tools, inbox polling,
 an event log and context recovery. Main receives peer messages through the
-tested bridge, which prints a fixed untrusted-peer header and id, replays
-unacknowledged claims after restart with persisted backoff, and removes a claim
-only after an explicit acknowledgment:
+tested bridge, which prints a fixed untrusted-peer header and id, prints each
+claim once per watch process, replays unacknowledged claims after a restart, and
+removes a claim only after an explicit acknowledgment:
 
 ```bash
 # Start this in the main controller's monitor, from the repository root.
@@ -843,7 +843,15 @@ node scripts/controller/pi-ctl/bridge.mjs ack "$message_id"
 ```
 
 After recording a message id in main's own state, set `message_id` from the
-header and run the `ack` command. The extension inbox deduplicates at the queue:
+header and run the `ack` command. A successful print is the delivery: the
+watching process records which claim it handed to main and never prints it
+again, however long the ack takes. A restarted `watch` replays every
+unacknowledged claim once (its predecessor's print died with it) and reports a
+claim once if it was printed but still not acknowledged after a real timeout --
+30 minutes by default, `PI_CTL_BRIDGE_ACK_TIMEOUT_SECONDS` (1 to 604800) to
+change it. The timeout is measured from the first print of any process, so
+restarting the watcher cannot postpone it, and `ack` is the only thing that ends
+a claim. The extension inbox deduplicates at the queue:
 a claim keeps its id and, once `pi.sendMessage()` has accepted that id, the
 message is never injected again into that session runtime. pi holds the copy in
 its agent-level follow-up queue and persists it only when the turn consumes it,

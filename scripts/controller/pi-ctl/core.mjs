@@ -47,7 +47,7 @@ function requireName(value, label) {
 	return value;
 }
 
-function envInteger(env, key, defaultValue, { min = 1, max = Number.MAX_SAFE_INTEGER } = {}) {
+export function envInteger(env, key, defaultValue, { min = 1, max = Number.MAX_SAFE_INTEGER } = {}) {
 	const raw = env[key];
 	if (raw === undefined || raw === "") return defaultValue;
 	if (!/^[0-9]+$/.test(raw)) throw new Error(`${key} must be an integer from ${min} to ${max}`);

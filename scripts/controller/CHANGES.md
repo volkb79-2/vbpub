@@ -16,6 +16,13 @@ no separate version number, so entries are grouped by the work that landed.
   synchronous `pi.sendMessage()` refusal counts as a failed attempt and reaches
   the bounded report path. The fake pi API now models the agent-level queue,
   its persistence on consume and its loss on abort.
+- The main bridge (F2) delivers a claim once per watch process: a successful
+  print is the delivery, so the same process never prints the same id again.
+  A restarted watch replays unacknowledged claims once, and the UNACKNOWLEDGED
+  report fires once per message after a real timeout without an ack (30
+  minutes by default, `PI_CTL_BRIDGE_ACK_TIMEOUT_SECONDS`, validated 1..604800
+  seconds, measured from the first print of any process so restarts cannot
+  postpone it). `ack` remains the only thing that ends a claim.
 
 ### Pi sub-controller harness (P-plat-PICTL)
 - Add a dependency-free JavaScript core and explicit pi extension for

@@ -72,6 +72,24 @@ def pi_ctl_mutant(name: str, before: str, after: str) -> Path:
     return target
 
 
+def pi_ctl_bridge_mutant(name: str, before: str, after: str) -> Path:
+    # bridge.mjs imports ./core.mjs, so a bridge mutant needs the unmutated core
+    # beside it; the test entry selects the bridge module explicitly.
+    source = repo / "scripts/controller/pi-ctl/bridge.mjs"
+    original = source.read_text(encoding="utf-8")
+    count = original.count(before)
+    if count != 1:
+        raise SystemExit(f"{source}: expected one mutation target, found {count}: {before!r}")
+    variant = controller / f"pi-ctl-{name}"
+    variant.mkdir(parents=True)
+    shutil.copy2(repo / "scripts/controller/pi-ctl/core.mjs", variant / "core.mjs")
+    (variant / "core.mjs").chmod(0o644)
+    target = variant / "bridge.mjs"
+    target.write_text(original.replace(before, after, 1), encoding="utf-8")
+    target.chmod(0o644)
+    return target
+
+
 def mutation_runner_mutant(name: str, before: str, after: str) -> Path:
     return mutant("scripts/controller/tests/mutation-runner.sh", name, before, after)
 
@@ -1970,4 +1988,21 @@ pi_ctl_mutant(
     "reload-treated-as-fresh",
     '\t\treturn startReason !== null && startReason !== "reload";',
     "\t\treturn true;",
+)
+# F2 (P-plat-PICTL-FIX): the bridge delivers a message once and reports a real
+# timeout once.
+pi_ctl_bridge_mutant(
+    "bridge-prints-repeatedly",
+    "\t\tif (state.printedBy !== instance) {",
+    "\t\tif (true) {",
+)
+pi_ctl_bridge_mutant(
+    "bridge-ack-report-not-persisted",
+    "{ printedBy: state.printedBy, printedAt: state.printedAt, ackTimeoutReported: true }",
+    "{ printedBy: state.printedBy, printedAt: state.printedAt, ackTimeoutReported: false }",
+)
+pi_ctl_bridge_mutant(
+    "bridge-ack-timeout-ignored",
+    "\treturn envInteger(env, ACK_TIMEOUT_ENV, ACK_TIMEOUT_DEFAULT_SECONDS, { min: 1, max: 604_800 }) * 1000;",
+    "\treturn ACK_TIMEOUT_DEFAULT_SECONDS * 1000;",
 )
