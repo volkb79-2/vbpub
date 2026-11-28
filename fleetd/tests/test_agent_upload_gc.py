@@ -324,6 +324,17 @@ def test_real_put_reads_large_valid_submission_history_and_keeps_over_limit_reco
     assert Path(oversized["path"]).exists()
 
 
+def test_put_refuses_job_id_longer_than_submission_record_limit(tmp_path):
+    service, identity, _checkout = _service(tmp_path)
+    _enable_collection(service)
+    too_long_id = "x" * (agent_verbs.MAX_JOB_ID_LENGTH + 1)
+    job_dir = service.paths.jobs_dir / too_long_id
+    job_dir.mkdir(mode=0o700)
+    (job_dir / "request.json").write_text("{}", encoding="utf-8")
+    with pytest.raises(AdmissionError, match="exceeds 128 characters"):
+        _put(service, identity, "in.bundle", b"bounded writer")
+
+
 @pytest.mark.parametrize("book_record", [
     None,
     {"schema": "fleet-admission-terminal/1", "job_id": "orphan-job", "group": "other"},
