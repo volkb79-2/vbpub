@@ -303,6 +303,19 @@ def test_survivor_is_carried_pessimistically_and_keeps_the_r2_claim_failing(
     assert out.count(command) == 1
     assert "--rejudge-carried" not in out
 
+    code, _rejudge_out, rejudge_err, rejudged = _run_text(
+        git_repo,
+        None,
+        tmp_path / "rejudged.jsonl",
+        "--rejudge-outcome",
+        "survived",
+    )
+    assert code == 1, rejudge_err
+    assert _event(rejudged, "resume")["rejudged_total"] == 1
+    assert len([event for event in rejudged if event.get("event") == "candidate"]) == 1
+    (rejudged_record,) = _records(mutation.default_state_root(git_repo.path))
+    assert rejudged_record.get("provenance", {}).get("kind") != "carried"
+
     explicit_state = tmp_path / "state with spaces"
     code, explicit_out, _err, _events = _run_text(
         git_repo,
