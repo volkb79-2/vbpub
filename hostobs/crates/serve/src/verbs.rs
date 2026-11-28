@@ -96,7 +96,7 @@ pub static VERBS: [Verb; VERB_COUNT] = [
     row("unsubscribe", TELEMETRY, Shape::Json, TELEMETRY, false),
     row("snapshot_at", TELEMETRY, Shape::Block, 0, false),
     row("series_batch", TELEMETRY, Shape::Block, 0, false),
-    row("events", TELEMETRY | CONTROL, Shape::Json, 0, false),
+    row("events", TELEMETRY | CONTROL, Shape::Json, TELEMETRY, false),
     row("spans", TELEMETRY | CONTROL, Shape::Json, 0, false),
     row("procs", TELEMETRY, Shape::Json, 0, false),
     row("annotate", OBSERVER | CONTROL, Shape::Json, OBSERVER, false),
@@ -162,7 +162,7 @@ mod tests {
             ("unsubscribe", TEL, Shape::Json, TEL, false),
             ("snapshot_at", TEL, Shape::Block, 0, false),
             ("series_batch", TEL, Shape::Block, 0, false),
-            ("events", TEL | CTL, Shape::Json, 0, false),
+            ("events", TEL | CTL, Shape::Json, TEL, false),
             ("spans", TEL | CTL, Shape::Json, 0, false),
             ("procs", TEL, Shape::Json, 0, false),
             ("annotate", OBR | CTL, Shape::Json, OBR, false),
@@ -259,7 +259,13 @@ mod tests {
             assert_eq!(verb.shape, expect, "{}", verb.name);
             let served = matches!(
                 verb.name,
-                "hello" | "status" | "current" | "subscribe" | "unsubscribe" | "annotate"
+                "hello"
+                    | "status"
+                    | "current"
+                    | "subscribe"
+                    | "unsubscribe"
+                    | "annotate"
+                    | "events"
             );
             assert_eq!(verb.served != 0, served, "{}", verb.name);
             assert!(!(verb.served != 0 && verb.reserved));
@@ -269,19 +275,29 @@ mod tests {
     }
 
     #[test]
-    fn served_at_lists_the_five_p5b_verbs_where_known() {
+    fn served_at_lists_the_p5b_verbs_and_events_where_known() {
         let block = ["hello", "status", "current", "subscribe", "unsubscribe"];
-        assert_eq!(served_at(Level::Observe), block);
-        assert_eq!(served_at(Level::Operator), block);
+        assert_eq!(
+            served_at(Level::Observe),
+            [block.as_slice(), &["events"]].concat()
+        );
+        assert_eq!(
+            served_at(Level::Operator),
+            [block.as_slice(), &["events"]].concat()
+        );
         assert_eq!(served_at(Level::Observer), ["hello", "annotate"]);
         assert_eq!(served_at(Level::Control), ["hello", "status"]);
     }
 
     #[test]
-    fn events_and_spans_remain_unserved() {
-        for name in ["events", "spans"] {
-            assert_eq!(find(name.as_bytes()).expect("verb row").served, 0, "{name}");
-        }
+    fn only_spans_remains_unserved_and_events_is_observe_operator() {
+        let events = find(b"events").expect("events row");
+        assert_eq!(events.served, TEL);
+        assert!(events.served_at(Level::Observe));
+        assert!(events.served_at(Level::Operator));
+        assert!(!events.served_at(Level::Observer));
+        assert!(!events.served_at(Level::Control));
+        assert_eq!(find(b"spans").expect("spans row").served, 0);
     }
 
     #[test]

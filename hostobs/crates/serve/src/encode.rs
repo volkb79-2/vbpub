@@ -1,8 +1,8 @@
 //! The server's encoders (design R1, R14, R25; WIRE.md sections 1.4, 2.1, 4.1, 5.4, 8.2).
 //!
 //! Every function here is pure and returns bytes. Strings that come from the server are built
-//! with [`push_string`], which never emits a raw control character; text that came from a
-//! client is never passed to it (a [`Detail`] holds only schema names, design R14).
+//! with [`push_string`], which never emits a raw control character. R14 governs `message` and
+//! `detail`; `events` items intentionally carry stored client data through [`push_string`].
 //!
 //! - [`control_frame`] writes the 12-byte frame header of WIRE.md section 2.1 (flags 0, reserved
 //!   0) in front of a JSON payload; the section codec of `proto` is for BLOCK frames only.
@@ -11,9 +11,9 @@
 //! - the error envelope is `{"ok":false,"error":{"code","message","detail"}}` with `detail`
 //!   always present; the JSON line variant adds `"corr"` and ends in `\n`.
 
-use hostobs_proto::frame::{FrameType, FRAME_HEADER_LEN, MAGIC};
-
+use crate::backend::EventItem;
 use crate::codes::{Code, Detail};
+use hostobs_proto::frame::{FrameType, FRAME_HEADER_LEN, MAGIC};
 
 /// The length of the binary prefix `HOB\x01` + `u16 major` + `u16 minor`.
 pub const PREFIX_LEN: usize = 8;
@@ -71,6 +71,77 @@ pub fn json_string(text: &str) -> String {
     let mut out = String::with_capacity(text.len().saturating_add(2));
     push_string(&mut out, text);
     out
+}
+
+/// Append one thirteen-key event item, encoding all stored client strings with [`push_string`].
+pub fn push_event_item(out: &mut String, item: &EventItem) {
+    out.push_str("{\"kind\":");
+    push_string(out, item.kind.name());
+    out.push_str(",\"name\":");
+    push_string(out, &item.name);
+    out.push_str(",\"key\":");
+    push_string(out, &item.key);
+    out.push_str(",\"ctx\":{");
+    for (index, (key, value)) in item.ctx.iter().enumerate() {
+        if index > 0 {
+            out.push(',');
+        }
+        push_string(out, key.name());
+        out.push(':');
+        push_string(out, value);
+    }
+    out.push_str("},\"outcome\":");
+    if let Some(outcome) = item.outcome {
+        push_string(out, outcome.name());
+    } else {
+        out.push_str("null");
+    }
+    out.push_str(",\"code\":");
+    if let Some(code) = &item.code {
+        push_string(out, code);
+    } else {
+        out.push_str("null");
+    }
+    out.push_str(",\"attrs\":{");
+    for (index, (key, value)) in item.attrs.iter().enumerate() {
+        if index > 0 {
+            out.push(',');
+        }
+        push_string(out, key);
+        out.push(':');
+        push_string(out, value);
+    }
+    out.push_str("},\"t_mono_ns\":");
+    out.push_str(&item.t_mono_ns.to_string());
+    out.push_str(",\"real_ns\":");
+    out.push_str(&item.real_ns.to_string());
+    out.push_str(",\"issuer\":");
+    push_string(out, &item.issuer);
+    out.push_str(",\"peer\":{\"pid\":");
+    push_optional_number(out, item.peer.pid.map(u64::from));
+    out.push_str(",\"comm\":");
+    if let Some(comm) = &item.peer.comm {
+        push_string(out, comm);
+    } else {
+        out.push_str("null");
+    }
+    out.push_str(",\"cgroup\":");
+    if let Some((dev, inode)) = item.peer.cgroup {
+        out.push_str(&format!("{{\"dev\":{dev},\"inode\":{inode}}}"));
+    } else {
+        out.push_str("null");
+    }
+    out.push_str("},\"span\":");
+    push_optional_number(out, item.span);
+    out.push_str(&format!(",\"inferred\":{}}}", item.inferred));
+}
+
+fn push_optional_number(out: &mut String, value: Option<u64>) {
+    if let Some(value) = value {
+        out.push_str(&value.to_string());
+    } else {
+        out.push_str("null");
+    }
 }
 
 fn push_detail(out: &mut String, detail: &Detail) {

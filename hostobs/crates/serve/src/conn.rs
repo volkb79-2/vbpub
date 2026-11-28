@@ -61,15 +61,18 @@ use hostobs_proto::frame::{FrameType, FRAME_HEADER_LEN, PROTO_MINOR};
 use hostobs_proto::quality;
 use hostobs_proto::stream::{ConnTimers, Detect, Feed, FrameReader, ModeDetect, RawFrame, Timer};
 
-use crate::backend::{AnnotateKind, AnnotateRefusal, Backend, Identity, StatusInfo};
+use crate::backend::{
+    AnnotateKind, AnnotateRefusal, Backend, EventWindow, EventsArgs, Identity, PageRefusal,
+    StatusInfo,
+};
 use crate::classify::{
     classify_with, Call, ConnFacts, Dispatch, Mode, Phase, Prefix, Query, Refusal, SERVER_MAJOR,
 };
 use crate::codes::{Code, Detail, Pool};
 use crate::encode::{
-    annotate_result, closing_evt, current_result, end_error, end_ok, error_line, push_string,
-    rep_error, rep_ok, rep_ok_line, server_prefix, subscribe_result, unknown_mode_line, EndReason,
-    UNSUBSCRIBE_RESULT,
+    annotate_result, closing_evt, current_result, end_error, end_ok, error_line, push_event_item,
+    push_string, rep_error, rep_ok, rep_ok_line, server_prefix, subscribe_result,
+    unknown_mode_line, EndReason, UNSUBSCRIBE_RESULT,
 };
 use crate::limits::{ConnLimits, Level};
 use crate::lines::{LineError, LineFeed, LineReader};
@@ -186,6 +189,89 @@ fn push_array<'a>(out: &mut String, items: impl Iterator<Item = &'a str>) {
         push_string(out, item);
     }
     out.push(']');
+}
+
+fn fnv1a_extend(mut hash: u64, bytes: &[u8]) -> u64 {
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
+}
+
+fn events_digest(args: &EventsArgs) -> u64 {
+    let mut digest = 0xcbf29ce484222325u64;
+    digest = fnv1a_extend(digest, &args.from_real_ns.to_le_bytes());
+    digest = fnv1a_extend(digest, &args.to_real_ns.to_le_bytes());
+    digest = fnv1a_extend(
+        digest,
+        &u32::try_from(args.names.len())
+            .unwrap_or(u32::MAX)
+            .to_le_bytes(),
+    );
+    for name in &args.names {
+        digest = fnv1a_extend(
+            digest,
+            &u32::try_from(name.len()).unwrap_or(u32::MAX).to_le_bytes(),
+        );
+        digest = fnv1a_extend(digest, name.as_bytes());
+    }
+    digest
+}
+
+fn parse_events_cursor(cursor: &str) -> Option<(u64, u64, u64)> {
+    let mut parts = cursor.split(':');
+    if parts.next()? != "v1" {
+        return None;
+    }
+    let epoch = parts.next()?.parse().ok()?;
+    let digest = parts.next()?.parse().ok()?;
+    let ordinal = parts.next()?.parse().ok()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    Some((epoch, digest, ordinal))
+}
+
+fn events_cursor(epoch: u64, digest: u64, ordinal: u64) -> String {
+    format!("v1:{epoch}:{digest}:{ordinal}")
+}
+
+fn events_suffix(window: &EventWindow, next: Option<&str>) -> String {
+    let mut suffix = String::from("],\"next\":");
+    if let Some(cursor) = next {
+        push_string(&mut suffix, cursor);
+    } else {
+        suffix.push_str("null");
+    }
+    suffix.push_str(&format!(",\"displaced\":{}", window.displaced));
+    suffix.push_str(",\"oldest_real_ns\":");
+    if let Some(oldest) = window.oldest_real_ns {
+        suffix.push_str(&oldest.to_string());
+    } else {
+        suffix.push_str("null");
+    }
+    suffix.push_str(&format!(
+        ",\"started_real_ns\":{}}}",
+        window.started_real_ns
+    ));
+    suffix
+}
+
+fn events_reply_len(result_len: usize, corr: u32, json: bool) -> usize {
+    if json {
+        "{\"ok\":true,\"corr\":"
+            .len()
+            .saturating_add(corr.to_string().len())
+            .saturating_add(",\"result\":".len())
+            .saturating_add(result_len)
+            .saturating_add(1)
+    } else {
+        "{\"ok\":true,\"result\":"
+            .len()
+            .saturating_add(result_len)
+            .saturating_add(1)
+    }
 }
 
 /// The `hello` result of WIRE.md section 4.4: `minor` is the negotiated N.
@@ -595,6 +681,54 @@ impl Conn {
         }
     }
 
+    fn events_result(
+        &self,
+        corr: u32,
+        args: &EventsArgs,
+        window: &EventWindow,
+        epoch: u64,
+    ) -> String {
+        let digest = events_digest(args);
+        let limit = usize::try_from(args.limit).unwrap_or(usize::MAX);
+        let count = limit.min(window.items.len());
+        let mut encoded_items = String::new();
+        let mut next = None;
+        for index in 0..count {
+            let item = &window.items[index];
+            let next_after = window.items.get(index + 1).map(|item| item.ordinal);
+            let cursor = next_after.map(|ordinal| events_cursor(epoch, digest, ordinal));
+            let mut encoded = String::new();
+            push_event_item(&mut encoded, item);
+            let comma = usize::from(!encoded_items.is_empty());
+            let suffix = events_suffix(window, cursor.as_deref());
+            let result_len = "{\"events\":["
+                .len()
+                .saturating_add(encoded_items.len())
+                .saturating_add(comma)
+                .saturating_add(encoded.len())
+                .saturating_add(suffix.len());
+            if events_reply_len(result_len, corr, self.is_json())
+                > usize::try_from(self.limits.level.max_reply_bytes).unwrap_or(usize::MAX)
+            {
+                next = Some(events_cursor(epoch, digest, item.ordinal));
+                break;
+            }
+            if comma != 0 {
+                encoded_items.push(',');
+            }
+            encoded_items.push_str(&encoded);
+            next = cursor;
+        }
+        if count == 0 && window.items.is_empty() {
+            next = None;
+        }
+        let suffix = events_suffix(window, next.as_deref());
+        let mut result = String::from("{\"events\":[");
+        result.push_str(&encoded_items);
+        result.push_str(&suffix);
+        result
+    }
+
     /// A fatal outcome that answers a request or a reader error: the final frame is the REP (or
     /// error line).
     fn close_reply(&mut self, hub: &mut SendHub, code: Code, corr: u32, detail: &Detail) {
@@ -954,6 +1088,38 @@ impl Conn {
                     return;
                 }
             },
+            Call::Events(args) => {
+                let identity = backend.identity();
+                let digest = events_digest(args);
+                if let Some(cursor) = args.cursor.as_deref() {
+                    let valid =
+                        parse_events_cursor(cursor).is_some_and(|(epoch, found_digest, _)| {
+                            epoch == identity.epoch && found_digest == digest
+                        });
+                    if !valid {
+                        let bytes =
+                            self.error_bytes(dispatch.corr, Code::CursorInvalid, &Detail::Empty);
+                        self.push(hub, bytes, now_ns);
+                        return;
+                    }
+                }
+                let window = match backend.events(args) {
+                    Ok(window) => window,
+                    Err(refusal) => {
+                        let code = match refusal {
+                            PageRefusal::CursorInvalid => Code::CursorInvalid,
+                            PageRefusal::Internal => Code::Internal,
+                        };
+                        let bytes = self.error_bytes(dispatch.corr, code, &Detail::Empty);
+                        self.push(hub, bytes, now_ns);
+                        return;
+                    }
+                };
+                let result = self.events_result(dispatch.corr, args, &window, identity.epoch);
+                let bytes = self.reply_bytes(dispatch.corr, &result);
+                self.push(hub, bytes, now_ns);
+                return;
+            }
         };
         let bytes = self.reply_bytes(dispatch.corr, &result);
         self.push(hub, bytes, now_ns);
@@ -1020,7 +1186,7 @@ impl Conn {
 #[cfg(test)]
 mod tests {
     use std::cell::Cell;
-    use std::collections::VecDeque;
+    use std::collections::{BTreeMap, VecDeque};
     use std::sync::Arc;
 
     use crate::hub::{ConnId, LiveOutcome, QueryOutcome, QueueLimits, SendHub, TickForms};
@@ -1029,11 +1195,12 @@ mod tests {
     use hostobs_proto::quality;
     use hostobs_proto::stream_dicts::StreamDicts;
 
-    use super::{Call, Conn, Dispatch, Peer, Pools, Reader, State, SERVER_MINOR};
+    use super::{events_digest, Call, Conn, Dispatch, Peer, Pools, Reader, State, SERVER_MINOR};
     use crate::args::SubscribeArgs;
     use crate::backend::{
-        AnnotateRefusal, AnnotateReply, Backend, BackendError, FixedBackend, Identity, StatusInfo,
-        TickData, TickInfo, TierInfo,
+        AnnotateRefusal, AnnotateReply, Backend, BackendError, EventCtxKeyView, EventItem,
+        EventKindView, EventOutcomeView, EventPeerView, EventWindow, FixedBackend, Identity,
+        StatusInfo, TickData, TickInfo, TierInfo,
     };
     use crate::codes::{Code, Detail};
     use crate::encode::{
@@ -1168,6 +1335,7 @@ mod tests {
         current_calls: Cell<usize>,
         /// `annotate` answers in order; the fixed backend answers once this is empty.
         annotate_script: VecDeque<Result<AnnotateReply, AnnotateRefusal>>,
+        events_refusal: Option<crate::backend::PageRefusal>,
     }
 
     impl CountingBackend {
@@ -1176,6 +1344,7 @@ mod tests {
                 inner: FixedBackend::new(),
                 current_calls: Cell::new(0),
                 annotate_script: VecDeque::new(),
+                events_refusal: None,
             }
         }
     }
@@ -1204,6 +1373,16 @@ mod tests {
             match self.annotate_script.pop_front() {
                 Some(answer) => answer,
                 None => self.inner.annotate(conn, peer, args),
+            }
+        }
+
+        fn events(
+            &mut self,
+            args: &crate::backend::EventsArgs,
+        ) -> Result<crate::backend::EventWindow, crate::backend::PageRefusal> {
+            match self.events_refusal {
+                Some(refusal) => Err(refusal),
+                None => self.inner.events(args),
             }
         }
 
@@ -1449,6 +1628,462 @@ mod tests {
         rig
     }
 
+    fn event_item(ordinal: u64, name: &str, t_mono_ns: u64, real_ns: i64) -> EventItem {
+        EventItem {
+            ordinal,
+            kind: EventKindView::Point,
+            name: name.to_owned(),
+            key: name.to_owned(),
+            ctx: BTreeMap::from([(EventCtxKeyView::Run, String::from("r"))]),
+            outcome: Some(EventOutcomeView::Ok),
+            code: None,
+            attrs: BTreeMap::new(),
+            t_mono_ns,
+            real_ns,
+            issuer: String::from("uid:1000"),
+            peer: EventPeerView::default(),
+            span: None,
+            inferred: false,
+        }
+    }
+
+    fn events_req(corr: u32, from: i64, to: i64, limit: u32, cursor: &str) -> Vec<u8> {
+        raw_req(
+            corr,
+            &format!(
+                r#"{{"verb":"events","args":{{"from_real_ns":{from},"to_real_ns":{to},"names":[],"limit":{limit},"cursor":{cursor}}}}}"#
+            ),
+        )
+    }
+
+    fn event_reply(rig: &mut Rig) -> String {
+        let replies = frames(&rig.finish());
+        replies
+            .into_iter()
+            .find(|(kind, _, _)| *kind == FrameType::Rep as u8)
+            .map(|(_, _, payload)| payload)
+            .expect("events REP")
+    }
+
+    fn page_cursor(reply: &str) -> Option<String> {
+        let start = reply.find("\"next\":\"")? + "\"next\":\"".len();
+        let end = reply[start..].find('"')? + start;
+        Some(reply[start..end].to_owned())
+    }
+
+    #[test]
+    fn events_pages_are_ordered_and_bind_cursors_to_epoch_and_window() {
+        let mut rig = ready_bin(Level::Observe);
+        rig.backend.event_window = EventWindow {
+            items: vec![
+                event_item(1, "second", 7, 11),
+                event_item(0, "first", 7, 10),
+                event_item(2, "third", 6, 12),
+            ],
+            oldest_real_ns: Some(10),
+            displaced: 0,
+            started_real_ns: 9,
+        };
+        rig.send(&events_req(2, 0, 20, 3, "null"));
+        let first = event_reply(&mut rig);
+        assert!(
+            first.find("\"name\":\"third\"").unwrap() < first.find("\"name\":\"first\"").unwrap()
+        );
+        assert!(
+            first.find("\"name\":\"first\"").unwrap() < first.find("\"name\":\"second\"").unwrap()
+        );
+        assert!(first.contains("\"next\":null"), "{first}");
+        assert!(first.contains("\"oldest_real_ns\":10"), "{first}");
+        assert!(first.contains("\"displaced\":0"), "{first}");
+        assert!(first.contains("\"started_real_ns\":9"), "{first}");
+
+        rig.send(&events_req(3, 0, 20, 1, "null"));
+        let page_one = event_reply(&mut rig);
+        let cursor = page_cursor(&page_one).expect("page cursor");
+        assert!(cursor.ends_with(":0"), "{cursor}");
+
+        rig.send(&events_req(4, 0, 20, 2, &format!("\"{cursor}\"")));
+        let continued = event_reply(&mut rig);
+        assert!(continued.contains("\"name\":\"first\""), "{continued}");
+        assert!(continued.contains("\"name\":\"second\""), "{continued}");
+        assert!(!continued.contains("\"name\":\"third\""), "{continued}");
+        assert!(continued.contains("\"next\":null"), "{continued}");
+
+        rig.send(&events_req(5, 1, 20, 2, &format!("\"{cursor}\"")));
+        assert!(event_reply(&mut rig).contains("\"code\":\"cursor-invalid\""));
+
+        let other_epoch = cursor.replacen("v1:1:", "v1:2:", 1);
+        rig.send(&events_req(6, 0, 20, 2, &format!("\"{other_epoch}\"")));
+        let wrong_epoch = event_reply(&mut rig);
+        assert!(
+            wrong_epoch.contains("\"code\":\"cursor-invalid\""),
+            "{wrong_epoch}"
+        );
+        assert!(wrong_epoch.contains("\"detail\":{}"), "{wrong_epoch}");
+    }
+
+    #[test]
+    fn events_empty_window_has_ring_facts_and_null_oldest() {
+        let mut rig = ready_bin(Level::Observe);
+        rig.backend.event_window = EventWindow {
+            items: vec![event_item(0, "outside", 1, 10)],
+            oldest_real_ns: Some(10),
+            displaced: 0,
+            started_real_ns: 9,
+        };
+        rig.send(&events_req(2, 10, 10, 1, "null"));
+        let equal = event_reply(&mut rig);
+        assert!(equal.contains("\"events\":[]"), "{equal}");
+        assert!(equal.contains("\"next\":null"), "{equal}");
+        assert!(equal.contains("\"started_real_ns\":9"), "{equal}");
+
+        rig.backend.event_window = EventWindow {
+            oldest_real_ns: None,
+            started_real_ns: 9,
+            ..EventWindow::default()
+        };
+        rig.send(&events_req(3, 0, 20, 1, "null"));
+        let empty = event_reply(&mut rig);
+        assert!(empty.contains("\"oldest_real_ns\":null"), "{empty}");
+        assert!(empty.contains("\"displaced\":0"), "{empty}");
+    }
+
+    #[test]
+    fn events_rejects_a_continuation_ordinal_below_displaced_floor() {
+        let mut rig = ready_bin(Level::Observe);
+        rig.backend.event_window = EventWindow {
+            items: vec![
+                event_item(0, "first", 1, 10),
+                event_item(1, "second", 2, 11),
+            ],
+            oldest_real_ns: Some(10),
+            displaced: 0,
+            started_real_ns: 9,
+        };
+        rig.send(&events_req(2, 0, 20, 1, "null"));
+        let first = event_reply(&mut rig);
+        let cursor = page_cursor(&first).expect("page cursor");
+        assert!(cursor.ends_with(":1"), "{cursor}");
+        rig.backend.event_window.displaced = 2;
+        rig.send(&events_req(3, 0, 20, 1, &format!("\"{cursor}\"")));
+        assert!(event_reply(&mut rig).contains("\"code\":\"cursor-invalid\""));
+    }
+
+    #[test]
+    fn events_continuation_uses_stable_ordinal_after_ring_displacement() {
+        let mut rig = ready_bin(Level::Observe);
+        rig.backend.event_window = EventWindow {
+            items: vec![
+                event_item(0, "first", 1, 10),
+                event_item(1, "second", 2, 11),
+                event_item(2, "third", 3, 12),
+            ],
+            oldest_real_ns: Some(10),
+            displaced: 0,
+            started_real_ns: 9,
+        };
+        rig.send(&events_req(2, 0, 20, 1, "null"));
+        let first = event_reply(&mut rig);
+        let cursor = page_cursor(&first).expect("page cursor");
+        assert!(cursor.ends_with(":1"), "{cursor}");
+
+        rig.backend.event_window.items = vec![
+            event_item(1, "second", 2, 11),
+            event_item(2, "third", 3, 12),
+        ];
+        rig.backend.event_window.displaced = 1;
+        rig.backend.event_window.oldest_real_ns = Some(11);
+        rig.send(&events_req(3, 0, 20, 1, &format!("\"{cursor}\"")));
+        let continued = event_reply(&mut rig);
+        assert!(continued.contains("\"name\":\"second\""), "{continued}");
+        assert!(!continued.contains("\"name\":\"first\""), "{continued}");
+        assert!(!continued.contains("\"name\":\"third\""), "{continued}");
+    }
+
+    #[test]
+    fn events_reply_reports_cumulative_displacement_and_backend_start_time() {
+        let mut rig = ready_bin(Level::Observe);
+        rig.backend.event_window = EventWindow {
+            items: vec![event_item(7, "survivor", 1, 10)],
+            oldest_real_ns: Some(10),
+            displaced: 7,
+            started_real_ns: 9,
+        };
+        rig.send(&events_req(2, 0, 20, 10, "null"));
+        let reply = event_reply(&mut rig);
+        assert!(reply.contains("\"displaced\":7"), "{reply}");
+        assert!(reply.contains("\"oldest_real_ns\":10"), "{reply}");
+        assert!(reply.contains("\"started_real_ns\":9"), "{reply}");
+    }
+
+    #[test]
+    fn events_page_trims_before_reply_cap_and_keeps_connection_open() {
+        let mut rig = ready_bin(Level::Observe);
+        rig.backend.event_window = EventWindow {
+            items: (0..60)
+                .map(|ordinal| {
+                    let mut item = event_item(ordinal, "worst", ordinal, 10 + ordinal as i64);
+                    item.attrs
+                        .insert(String::from("payload"), "x".repeat(9_400));
+                    item
+                })
+                .collect(),
+            oldest_real_ns: Some(10),
+            displaced: 0,
+            started_real_ns: 9,
+        };
+        rig.send(&events_req(2, 0, 100, 1_000, "null"));
+        let reply = event_reply(&mut rig);
+        assert_eq!(rig.conn.state(), State::Ready);
+        assert!(reply.len() <= 448 * 1024, "reply is {} bytes", reply.len());
+        assert!(reply.contains("\"next\":\"v1:1:"), "{reply}");
+        assert!(reply.contains("\"name\":\"worst\""), "{reply}");
+        assert!(reply.matches("\"kind\":").count() >= 46);
+    }
+
+    #[test]
+    fn events_rejects_each_malformed_cursor_with_empty_detail() {
+        let mut rig = ready_bin(Level::Observe);
+        let digest = events_digest(&crate::args::EventsArgs {
+            from_real_ns: 0,
+            to_real_ns: 20,
+            names: Vec::new(),
+            limit: 1,
+            cursor: None,
+        });
+        let malformed = [
+            "v2:1:2:3",                    // wrong version prefix
+            "v1:1:2",                      // wrong field count
+            "v1:1:2:three",                // non-numeric ordinal
+            "v1:1:2:18446744073709551616", // ordinal overflow
+            "v1:1:2:3:4",                  // extra field
+        ];
+        for (index, cursor) in malformed.into_iter().enumerate() {
+            rig.send(&events_req(
+                2 + u32::try_from(index).expect("test case index"),
+                0,
+                20,
+                1,
+                &format!("\"{cursor}\""),
+            ));
+            let reply = event_reply(&mut rig);
+            assert!(reply.contains("\"code\":\"cursor-invalid\""), "{reply}");
+            assert!(reply.contains("\"detail\":{}"), "{reply}");
+        }
+        let wrong_digest = format!("v1:1:{}:0", digest.wrapping_add(1));
+        rig.send(&events_req(8, 0, 20, 1, &format!("\"{wrong_digest}\"")));
+        let reply = event_reply(&mut rig);
+        assert!(reply.contains("\"code\":\"cursor-invalid\""), "{reply}");
+        assert!(reply.contains("\"detail\":{}"), "{reply}");
+    }
+
+    #[test]
+    fn events_single_oversized_item_is_not_emitted_and_cursor_keeps_its_ordinal() {
+        let mut rig = ready_bin(Level::Observe);
+        let mut item = event_item(41, "oversized", 1, 10);
+        item.attrs
+            .insert(String::from("payload"), "x".repeat(500_000));
+        rig.backend.event_window = EventWindow {
+            items: vec![item],
+            oldest_real_ns: Some(10),
+            displaced: 0,
+            started_real_ns: 9,
+        };
+        rig.send(&events_req(2, 0, 20, 1, "null"));
+        let reply = event_reply(&mut rig);
+        // WIRE §4.10 requires ending before an item that would exceed the cap. It does not
+        // permit dropping that item, so the continuation remains positioned at ordinal 41.
+        assert!(reply.contains("\"events\":[]"), "{reply}");
+        assert!(reply.contains("\"next\":\"v1:1:"), "{reply}");
+        assert!(
+            page_cursor(&reply).is_some_and(|cursor| cursor.ends_with(":41")),
+            "{reply}"
+        );
+        assert!(reply.contains("\"displaced\":0"), "{reply}");
+        assert!(reply.contains("\"oldest_real_ns\":10"), "{reply}");
+        assert!(reply.contains("\"started_real_ns\":9"), "{reply}");
+        assert_eq!(rig.conn.state(), State::Ready);
+    }
+
+    #[test]
+    fn events_backend_refusals_preserve_their_wire_code_and_empty_detail() {
+        for (refusal, code) in [
+            (crate::backend::PageRefusal::Internal, "internal"),
+            (crate::backend::PageRefusal::CursorInvalid, "cursor-invalid"),
+        ] {
+            let mut rig = ready_bin(Level::Observe);
+            let mut backend = CountingBackend::new();
+            backend.events_refusal = Some(refusal);
+            rig.conn.on_bytes(
+                &events_req(2, 0, 20, 1, "null"),
+                rig.now,
+                &mut rig.hub,
+                &mut backend,
+                &mut rig.streams,
+            );
+            rig.pump(usize::MAX);
+            let reply = text(&rig.finish());
+            assert!(reply.contains(&format!("\"code\":\"{code}\"")), "{reply}");
+            assert!(reply.contains("\"detail\":{}"), "{reply}");
+        }
+    }
+
+    #[test]
+    fn events_json_trim_and_binary_trim_return_only_real_items() {
+        for mut rig in [ready_bin(Level::Observe), ready_json(Level::Control)] {
+            let json = matches!(rig.conn.reader, Reader::Lines(_));
+            rig.backend.event_window = EventWindow {
+                items: (0..60)
+                    .map(|ordinal| {
+                        let mut item = event_item(ordinal, "bounded", ordinal, 10 + ordinal as i64);
+                        item.attrs
+                            .insert(String::from("payload"), "x".repeat(9_400));
+                        item
+                    })
+                    .collect(),
+                oldest_real_ns: Some(10),
+                displaced: 0,
+                started_real_ns: 9,
+            };
+            if json {
+                rig.execute(
+                    2,
+                    Call::Events(crate::args::EventsArgs {
+                        from_real_ns: 0,
+                        to_real_ns: 100,
+                        names: Vec::new(),
+                        limit: 1000,
+                        cursor: None,
+                    }),
+                );
+            } else {
+                rig.send(&events_req(2, 0, 100, 1000, "null"));
+            }
+            let out = text(&rig.finish());
+            assert!(out.len() <= 448 * 1024, "{} bytes", out.len());
+            assert!(out.contains("\"next\":\"v1:1:"), "{out}");
+            assert!(out.contains("\"name\":\"bounded\""), "{out}");
+            assert!(out.matches("\"kind\":").count() >= 46, "{out}");
+            assert_eq!(rig.conn.state(), State::Ready);
+        }
+    }
+
+    #[test]
+    fn legal_worst_case_annotation_item_fits_9800_bytes_and_ring_holds_46() {
+        let mut item = event_item(0, &"n".repeat(64), 1, 10);
+        item.kind = EventKindView::End;
+        item.name = "n".repeat(64);
+        item.key = "k".repeat(64);
+        item.ctx = BTreeMap::from([
+            (EventCtxKeyView::Run, "r".repeat(128)),
+            (EventCtxKeyView::Lane, "l".repeat(128)),
+            (EventCtxKeyView::Candidate, "c".repeat(128)),
+            (EventCtxKeyView::Txn, "t".repeat(128)),
+            (EventCtxKeyView::Session, "s".repeat(128)),
+        ]);
+        item.outcome = Some(EventOutcomeView::Fail);
+        item.code = Some("c".repeat(64));
+        item.attrs = (0..8)
+            .map(|index| (format!("a{index:02}{}", "b".repeat(61)), "v".repeat(256)))
+            .collect();
+        item.span = Some(1);
+        let mut encoded = String::new();
+        crate::encode::push_event_item(&mut encoded, &item);
+        assert!(encoded.len() < 9_800, "item is {} bytes", encoded.len());
+        assert!(
+            448 * 1024 / encoded.len() >= 46,
+            "item is {} bytes",
+            encoded.len()
+        );
+
+        let mut rig = ready_bin(Level::Observe);
+        rig.backend.event_window = EventWindow {
+            items: (0..60)
+                .map(|ordinal| {
+                    let mut page_item = item.clone();
+                    page_item.ordinal = ordinal;
+                    page_item.t_mono_ns = ordinal;
+                    page_item.real_ns = 10 + i64::try_from(ordinal).expect("ordinal");
+                    page_item
+                })
+                .collect(),
+            oldest_real_ns: Some(10),
+            displaced: 0,
+            started_real_ns: 9,
+        };
+        rig.send(&events_req(2, 0, 100, 1000, "null"));
+        let reply = event_reply(&mut rig);
+        assert!(reply.len() <= 448 * 1024, "reply is {} bytes", reply.len());
+        assert!(
+            reply.matches("\"kind\":").count() >= 46,
+            "{} items",
+            reply.matches("\"kind\":").count()
+        );
+    }
+
+    #[test]
+    fn events_limit_one_never_exposes_the_backend_sentinel_and_limit_can_change() {
+        let mut rig = ready_bin(Level::Observe);
+        rig.backend.event_window = EventWindow {
+            items: vec![
+                event_item(4, "first", 1, 10),
+                event_item(5, "second", 2, 11),
+                event_item(6, "third", 3, 12),
+                event_item(7, "fourth", 4, 13),
+            ],
+            oldest_real_ns: Some(10),
+            displaced: 0,
+            started_real_ns: 9,
+        };
+        rig.send(&events_req(2, 0, 20, 1, "null"));
+        let first = event_reply(&mut rig);
+        assert!(first.contains("\"name\":\"first\""), "{first}");
+        assert!(!first.contains("\"name\":\"second\""), "{first}");
+        let cursor = page_cursor(&first).expect("continuation");
+        rig.send(&events_req(3, 0, 20, 9, &format!("\"{cursor}\"")));
+        let continued = event_reply(&mut rig);
+        assert!(continued.contains("\"name\":\"second\""), "{continued}");
+        assert!(continued.contains("\"next\":null"), "{continued}");
+        rig.send(&events_req(4, 0, 20, 3, "null"));
+        let larger_page = event_reply(&mut rig);
+        assert!(larger_page.contains("\"name\":\"third\""), "{larger_page}");
+        let smaller_page_cursor = page_cursor(&larger_page).expect("third item continuation");
+        rig.send(&events_req(
+            5,
+            0,
+            20,
+            1,
+            &format!("\"{smaller_page_cursor}\""),
+        ));
+        let smaller_page = event_reply(&mut rig);
+        assert!(
+            smaller_page.contains("\"name\":\"fourth\""),
+            "{smaller_page}"
+        );
+        assert!(
+            !smaller_page.contains("\"name\":\"third\""),
+            "{smaller_page}"
+        );
+        assert!(smaller_page.contains("\"next\":null"), "{smaller_page}");
+        rig.send(&events_req(4, 0, 20, 1, "null"));
+        let _first_page = event_reply(&mut rig);
+        rig.send(&events_req(6, 0, 12, 10, "null"));
+        let at_window_end = event_reply(&mut rig);
+        assert!(
+            at_window_end.contains("\"name\":\"second\""),
+            "{at_window_end}"
+        );
+        assert!(
+            !at_window_end.contains("\"name\":\"third\""),
+            "{at_window_end}"
+        );
+        assert!(at_window_end.contains("\"next\":null"), "{at_window_end}");
+        rig.backend.event_window.items = vec![event_item(4, "first", 1, 10)];
+        rig.send(&events_req(7, 0, 20, 2, "null"));
+        let at_ring_end = event_reply(&mut rig);
+        assert!(at_ring_end.contains("\"next\":null"), "{at_ring_end}");
+    }
+
     fn await_rig() -> Rig {
         let mut rig = Rig::new(Level::Observe);
         rig.send(&client_prefix(2));
@@ -1592,7 +2227,8 @@ mod tests {
         let body = &parsed[0].2;
         assert!(body.contains("\"level\":\"observe\""));
         assert!(body.contains("\"epoch\":1"));
-        let verbs = "\"verbs\":[\"hello\",\"status\",\"current\",\"subscribe\",\"unsubscribe\"]";
+        let verbs =
+            "\"verbs\":[\"hello\",\"status\",\"current\",\"subscribe\",\"unsubscribe\",\"events\"]";
         assert!(body.contains(verbs));
         let codes = "\"quality_codes\":[{\"code\":0,\"name\":\"ok\"}";
         assert!(body.contains(codes));
@@ -2828,7 +3464,7 @@ mod tests {
             ("features", r#"["peak_reset","damon"]"#),
             (
                 "verbs",
-                r#"["hello","status","current","subscribe","unsubscribe"]"#,
+                r#"["hello","status","current","subscribe","unsubscribe","events"]"#,
             ),
             ("quality_codes", codes.as_str()),
         ];

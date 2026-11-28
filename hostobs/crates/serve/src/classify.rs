@@ -17,7 +17,8 @@
 //! 9. the verb is known but not served at this level by this package: `unknown-verb`;
 //! 10. a one-block verb (`current`, `snapshot_at`) while the connection's Query pool holds
 //!     unwritten blocks: `too-many-requests` (other verbs are never refused by it);
-//! 11. the argument schema (`hello`, `status`, `current`, `subscribe`, `unsubscribe`, `annotate`):
+//! 11. the argument schema (`hello`, `status`, `current`, `subscribe`, `unsubscribe`, `annotate`,
+//!     `events`):
 //!     `bad-request` with the schema path, or, for a JSON-mode `hello` with a `proto.major`
 //!     other than 1, `unsupported-version` (fatal, R8); a binary `hello.proto` must equal the
 //!     client's own prefix (R7).
@@ -30,7 +31,7 @@ use hostobs_proto::envelope::{check_req, members, EnvelopeError, Kind};
 use hostobs_proto::frame::{FrameType, PROTO_MINOR};
 
 use crate::args::{self, bounded_key, HelloArgs, SubscribeArgs};
-use crate::backend::AnnotateArgs;
+use crate::backend::{AnnotateArgs, EventsArgs};
 use crate::codes::{Code, Detail};
 use crate::limits::{IntervalRule, Level};
 use crate::selection::Selection;
@@ -120,6 +121,8 @@ pub enum Call {
     Unsubscribe(u32),
     /// `annotate` with its checked event fields.
     Annotate(AnnotateArgs),
+    /// `events` with its checked page request.
+    Events(EventsArgs),
 }
 
 /// A request that passed every check.
@@ -318,6 +321,10 @@ fn call_of(
             Ok(args) => Ok(Call::Annotate(args)),
             Err(error) => Err(bad_args(corr, &error)),
         },
+        "events" => match args::events(text) {
+            Ok(args) => Ok(Call::Events(args)),
+            Err(error) => Err(bad_args(corr, &error)),
+        },
         // Unreachable while `verb_gate` passes only served verbs with a schema here: a served
         // verb without one is a server defect, never the client's `unknown-verb`.
         _ => Err(refuse(Code::Internal, corr)),
@@ -397,8 +404,8 @@ pub fn classify_with(query: &Query<'_>, facts: &ConnFacts) -> Result<Dispatch, R
 #[cfg(test)]
 mod tests {
     use super::{
-        call_after_served, call_of, classify, classify_with, Call, ConnFacts, Dispatch, Mode,
-        Phase, Prefix, Query, Refusal, HELLO_CORR, SERVER_MAJOR,
+        call_after_served, call_of, classify, classify_with, Call, ConnFacts, Dispatch, EventsArgs,
+        Mode, Phase, Prefix, Query, Refusal, HELLO_CORR, SERVER_MAJOR,
     };
     use crate::args::HelloArgs;
     use crate::codes::{Code, Detail};
@@ -903,14 +910,25 @@ mod tests {
 
     #[test]
     fn step_9_a_known_verb_that_is_not_served_is_unknown_verb() {
-        for verb in ["events", "spans", "procs", "snapshot_at"] {
+        for verb in ["spans", "procs", "snapshot_at"] {
             let text = req(verb, "{}");
             assert_plain(&binary(text.as_bytes()), Code::UnknownVerb, 5);
         }
-        for verb in ["events", "spans"] {
-            let text = line(verb, "{}", 5);
+        {
+            let text = line("spans", "{}", 5);
             assert_refusal(&json(text.as_bytes()), Code::UnknownVerb, 5, &Detail::Empty);
         }
+        let text = req("events", "{}");
+        let query = Query {
+            level: Level::Observer,
+            ..binary(text.as_bytes())
+        };
+        assert_refusal(&query, Code::Forbidden, 5, &Detail::Empty);
+        let query = Query {
+            level: Level::Control,
+            ..binary(text.as_bytes())
+        };
+        assert_refusal(&query, Code::UnknownVerb, 5, &Detail::Empty);
     }
 
     #[test]
@@ -929,7 +947,7 @@ mod tests {
 
     #[test]
     fn step_9_beats_step_10() {
-        let text = req("events", "{\"a\":1,\"a\":2}");
+        let text = req("spans", "{\"a\":1,\"a\":2}");
         assert_plain(&binary(text.as_bytes()), Code::UnknownVerb, 5);
         for verb in ["snapshot_at", "series_batch"] {
             let text = req(verb, "{}");
@@ -937,6 +955,13 @@ mod tests {
             let refusal = classify_with(&query, &full_facts()).expect_err("served check wins");
             assert_eq!((refusal.code, refusal.corr), (Code::UnknownVerb, 5));
         }
+        let text = req("events", "{}");
+        let refusal = classify_with(&binary(text.as_bytes()), &full_facts())
+            .expect_err("events schema validation runs after step 9");
+        assert_eq!(
+            (refusal.code, refusal.corr, refusal.detail),
+            (Code::BadRequest, 5, key("from_real_ns"))
+        );
     }
 
     #[test]
@@ -1371,7 +1396,11 @@ mod tests {
             "{\"client\":1,\"proto\":{\"major\":2,\"minor\":2}}",
             2,
         );
-        let unserved_text = req("events", "{}");
+        let unserved_text = req("spans", "{}");
+        let events_text = req(
+            "events",
+            r#"{"from_real_ns":0,"to_real_ns":1,"names":[],"limit":1,"cursor":null}"#,
+        );
         let mismatched_hello_text = req("hello", &hello_with(2, 2));
         let duplicate_status_text = line("status", "{\"pid\":1,\"pid\":1}", 6);
 
@@ -1431,6 +1460,7 @@ mod tests {
             ..json(bad_hello_text.as_bytes())
         };
         let unserved = binary(unserved_text.as_bytes());
+        let events = binary(events_text.as_bytes());
         let mismatched_hello = before_hello(mismatched_hello_text.as_bytes());
         let duplicate_status = json(duplicate_status_text.as_bytes());
 
@@ -1614,6 +1644,19 @@ mod tests {
                     detail: Detail::Empty,
                     fatal: false,
                 },
+            ),
+            (
+                events,
+                OldOutcome::Dispatch(Dispatch {
+                    corr: 5,
+                    call: Call::Events(EventsArgs {
+                        from_real_ns: 0,
+                        to_real_ns: 1,
+                        names: Vec::new(),
+                        limit: 1,
+                        cursor: None,
+                    }),
+                }),
             ),
             (
                 mismatched_hello,

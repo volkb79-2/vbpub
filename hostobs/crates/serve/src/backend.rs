@@ -27,6 +27,161 @@ use crate::limits::Level;
 use crate::selection::Selection;
 use crate::{conn::Peer, hub::ConnId};
 
+pub use crate::args::EventsArgs;
+
+/// Event kind crossing the serve/backend seam.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EventKindView {
+    /// A span begins.
+    Begin,
+    /// A span ends.
+    End,
+    /// A point event.
+    Point,
+}
+
+impl EventKindView {
+    /// The wire spelling.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Begin => "begin",
+            Self::End => "end",
+            Self::Point => "point",
+        }
+    }
+}
+
+/// Event context key crossing the serve/backend seam.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum EventCtxKeyView {
+    /// `run`.
+    Run,
+    /// `lane`.
+    Lane,
+    /// `candidate`.
+    Candidate,
+    /// `txn`.
+    Txn,
+    /// `session`.
+    Session,
+}
+
+impl EventCtxKeyView {
+    /// The wire spelling.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Run => "run",
+            Self::Lane => "lane",
+            Self::Candidate => "candidate",
+            Self::Txn => "txn",
+            Self::Session => "session",
+        }
+    }
+}
+
+/// Event outcome crossing the serve/backend seam.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EventOutcomeView {
+    /// `ok`.
+    Ok,
+    /// `fail`.
+    Fail,
+    /// `error`.
+    Error,
+    /// `skipped`.
+    Skipped,
+    /// `cancelled`.
+    Cancelled,
+    /// `timeout`.
+    Timeout,
+    /// `abandoned`.
+    Abandoned,
+}
+
+impl EventOutcomeView {
+    /// The wire spelling.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Ok => "ok",
+            Self::Fail => "fail",
+            Self::Error => "error",
+            Self::Skipped => "skipped",
+            Self::Cancelled => "cancelled",
+            Self::Timeout => "timeout",
+            Self::Abandoned => "abandoned",
+        }
+    }
+}
+
+/// The unverified peer label on a stored event.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct EventPeerView {
+    /// PID, or null when unavailable.
+    pub pid: Option<u32>,
+    /// Command label, or null when unavailable.
+    pub comm: Option<String>,
+    /// Device and inode pair, or null when unavailable.
+    pub cgroup: Option<(u64, u64)>,
+}
+
+/// One typed event returned by a backend, with its stable ring ordinal.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EventItem {
+    /// Stable acceptance ordinal used only for paging.
+    pub ordinal: u64,
+    /// Event kind.
+    pub kind: EventKindView,
+    /// Event name.
+    pub name: String,
+    /// Event key.
+    pub key: String,
+    /// Client context.
+    pub ctx: BTreeMap<EventCtxKeyView, String>,
+    /// Span outcome, if this is an end.
+    pub outcome: Option<EventOutcomeView>,
+    /// Client event code.
+    pub code: Option<String>,
+    /// Client attributes.
+    pub attrs: BTreeMap<String, String>,
+    /// Server-stamped monotonic nanoseconds.
+    pub t_mono_ns: u64,
+    /// Wall-clock nanoseconds.
+    pub real_ns: i64,
+    /// Stored issuer text.
+    pub issuer: String,
+    /// Unverified peer label.
+    pub peer: EventPeerView,
+    /// Span id, null for points.
+    pub span: Option<u64>,
+    /// Whether the end was inferred.
+    pub inferred: bool,
+}
+
+/// The bounded facts needed to serve one event window.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct EventWindow {
+    /// Matching ring items, ordered by `(t_mono_ns, ordinal)`.
+    pub items: Vec<EventItem>,
+    /// Oldest real time still in the ring.
+    pub oldest_real_ns: Option<i64>,
+    /// Cumulative ring displacements.
+    pub displaced: u64,
+    /// The process start time also reported by `status`.
+    pub started_real_ns: i64,
+}
+
+/// A typed refusal from the event page source.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PageRefusal {
+    /// The requested cursor is no longer available or is malformed at the backend boundary.
+    CursorInvalid,
+    /// The backend failed internally.
+    Internal,
+}
+
 /// The checked `annotate` event kind.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AnnotateKind {
@@ -287,6 +442,8 @@ pub trait Backend {
         peer: &Peer,
         args: &AnnotateArgs,
     ) -> Result<AnnotateReply, AnnotateRefusal>;
+    /// Read one bounded page from the process-local event view.
+    fn events(&mut self, args: &EventsArgs) -> Result<EventWindow, PageRefusal>;
     /// Close spans owned by a connection that the server is removing.
     fn connection_closed(&mut self, conn: ConnId);
 }
@@ -306,6 +463,8 @@ pub struct FixedBackend {
     pub status: StatusInfo,
     /// The answer of [`Backend::current`], keyed by the canonical selection.
     pub current: BTreeMap<Selection, Result<TickData, BackendError>>,
+    /// The events returned by [`Backend::events`].
+    pub event_window: EventWindow,
     /// The test-controlled sequence number of the current published tick.
     pub seq: u64,
     /// The last sequence number announced by [`Turn::begin_turn`].
@@ -325,6 +484,7 @@ impl FixedBackend {
             },
             status: StatusInfo::default(),
             current: BTreeMap::new(),
+            event_window: EventWindow::default(),
             seq: 0,
             seen: 0,
         }
@@ -368,6 +528,44 @@ impl Backend for FixedBackend {
         _args: &AnnotateArgs,
     ) -> Result<AnnotateReply, AnnotateRefusal> {
         Err(AnnotateRefusal::Internal)
+    }
+
+    fn events(&mut self, args: &EventsArgs) -> Result<EventWindow, PageRefusal> {
+        let cursor_ordinal = match args.cursor.as_deref() {
+            None => None,
+            Some(cursor) => cursor
+                .rsplit(':')
+                .next()
+                .and_then(|ordinal| ordinal.parse::<u64>().ok())
+                .map(Some)
+                .ok_or(PageRefusal::CursorInvalid)?,
+        };
+        if cursor_ordinal.is_some_and(|ordinal| ordinal < self.event_window.displaced) {
+            return Err(PageRefusal::CursorInvalid);
+        }
+        let mut window = self.event_window.clone();
+        window.items.retain(|item| {
+            item.real_ns >= args.from_real_ns
+                && item.real_ns < args.to_real_ns
+                && (args.names.is_empty() || args.names.iter().any(|name| name == &item.name))
+        });
+        window
+            .items
+            .sort_by_key(|item| (item.t_mono_ns, item.ordinal));
+        if let Some(ordinal) = cursor_ordinal {
+            let position = window
+                .items
+                .iter()
+                .position(|item| item.ordinal == ordinal)
+                .ok_or(PageRefusal::CursorInvalid)?;
+            window.items.drain(..position);
+        }
+        window.items.truncate(
+            usize::try_from(args.limit)
+                .unwrap_or(usize::MAX)
+                .saturating_add(1),
+        );
+        Ok(window)
     }
 
     fn connection_closed(&mut self, _conn: ConnId) {}

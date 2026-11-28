@@ -299,6 +299,13 @@ impl<B: Backend> Backend for StatusView<'_, B> {
         self.backend.annotate(conn, peer, args)
     }
 
+    fn events(
+        &mut self,
+        args: &crate::backend::EventsArgs,
+    ) -> Result<crate::backend::EventWindow, crate::backend::PageRefusal> {
+        self.backend.events(args)
+    }
+
     fn connection_closed(&mut self, conn: ConnId) {
         self.backend.connection_closed(conn);
     }
@@ -821,6 +828,13 @@ mod tests {
                 t_mono_ns: self.now_ns,
                 span,
             })
+        }
+
+        fn events(
+            &mut self,
+            args: &crate::backend::EventsArgs,
+        ) -> Result<crate::backend::EventWindow, crate::backend::PageRefusal> {
+            self.fixed.events(args)
         }
 
         fn connection_closed(&mut self, conn: ConnId) {
@@ -2404,7 +2418,7 @@ mod tests {
             d.pump(id, usize::MAX);
             let out = text(&d.take_out(id));
             let expected = if level.serves_blocks() {
-                "\"verbs\":[\"hello\",\"status\",\"current\",\"subscribe\",\"unsubscribe\"]"
+                "\"verbs\":[\"hello\",\"status\",\"current\",\"subscribe\",\"unsubscribe\",\"events\"]"
             } else {
                 "\"verbs\":[\"hello\",\"annotate\"]"
             };

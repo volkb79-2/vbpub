@@ -46,6 +46,21 @@ pub const MAX_CLIENT_BYTES: usize = 64;
 /// Longest echoed key (R14).
 pub const MAX_KEY_ECHO: usize = 64;
 
+/// Checked arguments for the `events` window request.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EventsArgs {
+    /// Inclusive lower real-time bound.
+    pub from_real_ns: i64,
+    /// Exclusive upper real-time bound.
+    pub to_real_ns: i64,
+    /// Optional event-name filter; empty means every name.
+    pub names: Vec<String>,
+    /// Maximum number of items in this page.
+    pub limit: u32,
+    /// Opaque continuation cursor.
+    pub cursor: Option<String>,
+}
+
 /// Most digits of an integer (`u64::MAX` has 20).
 const MAX_DIGITS: usize = 20;
 
@@ -517,6 +532,55 @@ fn is_event_name(name: &str) -> bool {
         })
 }
 
+/// Read the complete `events` page request schema.
+pub fn events(args: &[u8]) -> Result<EventsArgs, ArgError> {
+    let object = Obj::parse(args, "")?;
+    object.only(&["from_real_ns", "to_real_ns", "names", "limit", "cursor"])?;
+    let from_real_ns = object.int("from_real_ns")?;
+    let to_real_ns = object.int("to_real_ns")?;
+    if from_real_ns > to_real_ns {
+        return Err(fail("to_real_ns"));
+    }
+    let elements = object.elements("names")?;
+    if elements.len() > 16 {
+        return Err(fail("names"));
+    }
+    let mut names = Vec::with_capacity(elements.len());
+    for (kind, raw) in elements {
+        if kind != Kind::Str {
+            return Err(fail("names"));
+        }
+        let name = unescape(raw, 64).ok_or_else(|| fail("names"))?;
+        if !is_event_name(&name) || names.iter().any(|known| known == &name) {
+            return Err(fail("names"));
+        }
+        names.push(name);
+    }
+    let limit = u32::try_from(object.uint("limit", 1000)?).map_err(|_| fail("limit"))?;
+    if limit == 0 {
+        return Err(fail("limit"));
+    }
+    let cursor_member = object.required("cursor")?;
+    let cursor = if cursor_member.kind == Kind::Null {
+        None
+    } else if cursor_member.kind == Kind::Str {
+        let value = unescape(object.raw(cursor_member), 256).ok_or_else(|| fail("cursor"))?;
+        if has_control(&value) {
+            return Err(fail("cursor"));
+        }
+        Some(value)
+    } else {
+        return Err(fail("cursor"));
+    };
+    Ok(EventsArgs {
+        from_real_ns,
+        to_real_ns,
+        names,
+        limit,
+        cursor,
+    })
+}
+
 fn event_string(
     object: &Obj<'_>,
     name: &str,
@@ -898,8 +962,9 @@ pub fn negotiate(client_minor: u16, server_minor: u16) -> u16 {
 #[cfg(test)]
 mod tests {
     use super::{
-        bounded_key, current, hello, negotiate, parse_int, parse_uint, split_array, status,
-        subscribe, unescape, unsubscribe, ArgError, HelloArgs, Obj, MAX_ELEMENTS, MAX_MEMBERS,
+        bounded_key, current, events, hello, negotiate, parse_int, parse_uint, split_array, status,
+        subscribe, unescape, unsubscribe, ArgError, EventsArgs, HelloArgs, Obj, MAX_ELEMENTS,
+        MAX_MEMBERS,
     };
     use crate::limits::IntervalRule;
 
@@ -940,6 +1005,17 @@ mod tests {
             Err(error) => error.key,
         }
     }
+
+    fn events_refused(raw: &str) -> String {
+        let text = bs(raw);
+        match events(text.as_bytes()) {
+            Ok(args) => panic!("accepted {args:?}"),
+            Err(error) => error.key,
+        }
+    }
+
+    const VALID_EVENTS: &str =
+        r#"{"from_real_ns":0,"to_real_ns":1,"names":[],"limit":1,"cursor":null}"#;
 
     fn point_args(attrs: &str, ctx: &str) -> String {
         format!(
@@ -1683,6 +1759,142 @@ mod tests {
             };
             assert_eq!(annotate_refused(&text), "attrs.boot_id", "{kind}");
         }
+    }
+
+    #[test]
+    fn events_requires_every_member_and_reports_each_schema_path() {
+        assert_eq!(
+            events(VALID_EVENTS.as_bytes()).expect("valid request"),
+            EventsArgs {
+                from_real_ns: 0,
+                to_real_ns: 1,
+                names: Vec::new(),
+                limit: 1,
+                cursor: None,
+            }
+        );
+        for (text, key) in [
+            (
+                r#"{"to_real_ns":1,"names":[],"limit":1,"cursor":null}"#,
+                "from_real_ns",
+            ),
+            (
+                r#"{"from_real_ns":0,"names":[],"limit":1,"cursor":null}"#,
+                "to_real_ns",
+            ),
+            (
+                r#"{"from_real_ns":0,"to_real_ns":1,"limit":1,"cursor":null}"#,
+                "names",
+            ),
+            (
+                r#"{"from_real_ns":0,"to_real_ns":1,"names":[],"cursor":null}"#,
+                "limit",
+            ),
+            (
+                r#"{"from_real_ns":0,"to_real_ns":1,"names":[],"limit":1}"#,
+                "cursor",
+            ),
+        ] {
+            assert_eq!(events_refused(text), key, "missing {key}");
+        }
+        for (text, key) in [
+            (
+                VALID_EVENTS.replace("\"from_real_ns\":0", "\"from_real_ns\":\"0\""),
+                "from_real_ns",
+            ),
+            (
+                VALID_EVENTS.replace("\"to_real_ns\":1", "\"to_real_ns\":null"),
+                "to_real_ns",
+            ),
+            (
+                VALID_EVENTS.replace("\"names\":[]", "\"names\":{}"),
+                "names",
+            ),
+            (
+                VALID_EVENTS.replace("\"limit\":1", "\"limit\":\"1\""),
+                "limit",
+            ),
+            (
+                VALID_EVENTS.replace("\"cursor\":null", "\"cursor\":true"),
+                "cursor",
+            ),
+        ] {
+            assert_eq!(events_refused(&text), key, "wrong type for {key}");
+        }
+    }
+
+    #[test]
+    fn events_filters_and_bounds_are_exact() {
+        let seventeen = (0..17)
+            .map(|index| format!("\"name{index}\""))
+            .collect::<Vec<_>>()
+            .join(",");
+        assert_eq!(
+            events_refused(
+                &VALID_EVENTS.replace("\"names\":[]", &format!("\"names\":[{seventeen}]"))
+            ),
+            "names"
+        );
+        assert_eq!(
+            events_refused(&VALID_EVENTS.replace("\"names\":[]", "\"names\":[\"run\",\"run\"]")),
+            "names"
+        );
+        assert_eq!(
+            events_refused(&VALID_EVENTS.replace("\"names\":[]", "\"names\":[\"Bad\"]")),
+            "names"
+        );
+        let overlong_name = format!("\"{}\"", "a".repeat(65));
+        assert_eq!(
+            events_refused(
+                &VALID_EVENTS.replace("\"names\":[]", &format!("\"names\":[{overlong_name}]"))
+            ),
+            "names"
+        );
+        let thrashguard =
+            VALID_EVENTS.replace("\"names\":[]", "\"names\":[\"thrashguard.custom\"]");
+        assert_eq!(
+            events(thrashguard.as_bytes()).expect("filter name").names,
+            [String::from("thrashguard.custom")]
+        );
+        assert_eq!(
+            events_refused(&VALID_EVENTS.replace("\"limit\":1", "\"limit\":0")),
+            "limit"
+        );
+        assert_eq!(
+            events_refused(&VALID_EVENTS.replace("\"limit\":1", "\"limit\":1001")),
+            "limit"
+        );
+        let overlong_cursor = "x".repeat(257);
+        assert_eq!(
+            events_refused(&VALID_EVENTS.replace(
+                "\"cursor\":null",
+                &format!("\"cursor\":\"{overlong_cursor}\""),
+            )),
+            "cursor"
+        );
+        for control in ["\\n", "\\u007f"] {
+            assert_eq!(
+                events_refused(
+                    &VALID_EVENTS
+                        .replace("\"cursor\":null", &format!("\"cursor\":\"x{control}\""),)
+                ),
+                "cursor",
+                "control escape {control} must be refused independently"
+            );
+        }
+        assert_eq!(
+            events_refused(
+                &VALID_EVENTS.replace("\"cursor\":null", "\"cursor\":\"x\" ,\"ctx\":{}")
+            ),
+            "ctx"
+        );
+        let reversed = VALID_EVENTS.replace("\"from_real_ns\":0", "\"from_real_ns\":2");
+        assert_eq!(events_refused(&reversed), "to_real_ns");
+        let equal = VALID_EVENTS.replace("\"to_real_ns\":1", "\"to_real_ns\":0");
+        assert_eq!(
+            events(equal.as_bytes()).expect("empty window").from_real_ns,
+            0
+        );
     }
 
     #[test]

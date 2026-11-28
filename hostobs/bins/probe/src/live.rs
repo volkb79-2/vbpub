@@ -9,7 +9,8 @@ use hostobs_proto::frame::{Column, Row};
 
 use hostobs_serve::backend::{
     AnnotateArgs, AnnotateCtxKey, AnnotateKind, AnnotateOutcome, AnnotateRefusal, AnnotateReply,
-    Backend, BackendError, Identity, StatusInfo, TickData, TickInfo,
+    Backend, BackendError, EventCtxKeyView, EventItem, EventKindView, EventOutcomeView,
+    EventPeerView, EventWindow, EventsArgs, Identity, PageRefusal, StatusInfo, TickData, TickInfo,
 };
 use hostobs_serve::conn::{CgroupKey as PeerCgroupKey, Peer};
 use hostobs_serve::hub::ConnId;
@@ -394,6 +395,71 @@ impl Backend for ProbeBackend {
             .map_err(annotate_refusal)
     }
 
+    fn events(&mut self, args: &EventsArgs) -> Result<EventWindow, PageRefusal> {
+        let cursor_ordinal = match args.cursor.as_deref() {
+            None => None,
+            Some(cursor) => cursor
+                .rsplit(':')
+                .next()
+                .and_then(|ordinal| ordinal.parse::<u64>().ok())
+                .map(Some)
+                .ok_or(PageRefusal::CursorInvalid)?,
+        };
+        let ring = self.store.events().ring();
+        if cursor_ordinal.is_some_and(|ordinal| ordinal < ring.displaced()) {
+            return Err(PageRefusal::CursorInvalid);
+        }
+        let cursor_key = if let Some(ordinal) = cursor_ordinal {
+            let event = ring
+                .with_ordinals()
+                .find_map(|(found, event)| (found == ordinal).then_some(event))
+                .ok_or(PageRefusal::CursorInvalid)?;
+            let t_mono_ns = u64::try_from(event.t_mono_ns).map_err(|_| PageRefusal::Internal)?;
+            Some((t_mono_ns, ordinal))
+        } else {
+            None
+        };
+        let count = usize::try_from(args.limit)
+            .unwrap_or(usize::MAX)
+            .saturating_add(1);
+        let mut retained = Vec::with_capacity(count);
+        for (ordinal, event) in ring.with_ordinals() {
+            if event.real_ns < args.from_real_ns
+                || event.real_ns >= args.to_real_ns
+                || (!args.names.is_empty() && !args.names.iter().any(|name| name == &event.name))
+            {
+                continue;
+            }
+            let key = (
+                u64::try_from(event.t_mono_ns).map_err(|_| PageRefusal::Internal)?,
+                ordinal,
+            );
+            if cursor_key.is_some_and(|cursor| key < cursor) {
+                continue;
+            }
+            let position = retained
+                .binary_search_by_key(&key, |(held_key, _): &((u64, u64), &Event)| *held_key)
+                .unwrap_or_else(|position| position);
+            if position >= count {
+                continue;
+            }
+            retained.insert(position, (key, event));
+            if retained.len() > count {
+                retained.pop();
+            }
+        }
+        let items = retained
+            .into_iter()
+            .map(|((_, ordinal), event)| event_item_view(ordinal, event))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(EventWindow {
+            items,
+            oldest_real_ns: ring.oldest_real_ns(),
+            displaced: ring.displaced(),
+            started_real_ns: self.published.started_real_ns(),
+        })
+    }
+
     fn connection_closed(&mut self, conn: ConnId) {
         let Some(real_ns) = real_at(&self.published, self.now_ns) else {
             let failed = self.annotator.forget_connection(u64::from(conn.0));
@@ -415,6 +481,64 @@ impl Backend for ProbeBackend {
             eprintln!("{line}");
         }
     }
+}
+
+fn event_item_view(ordinal: u64, event: &Event) -> Result<EventItem, PageRefusal> {
+    let kind = match event.kind {
+        EventKind::Begin => EventKindView::Begin,
+        EventKind::End => EventKindView::End,
+        EventKind::Point => EventKindView::Point,
+    };
+    let outcome = event.outcome.map(|outcome| match outcome {
+        Outcome::Ok => EventOutcomeView::Ok,
+        Outcome::Fail => EventOutcomeView::Fail,
+        Outcome::Error => EventOutcomeView::Error,
+        Outcome::Skipped => EventOutcomeView::Skipped,
+        Outcome::Cancelled => EventOutcomeView::Cancelled,
+        Outcome::Timeout => EventOutcomeView::Timeout,
+        Outcome::Abandoned => EventOutcomeView::Abandoned,
+    });
+    let ctx = event
+        .ctx
+        .iter()
+        .map(|(key, value)| {
+            let key = match key {
+                CtxKey::Run => EventCtxKeyView::Run,
+                CtxKey::Lane => EventCtxKeyView::Lane,
+                CtxKey::Candidate => EventCtxKeyView::Candidate,
+                CtxKey::Txn => EventCtxKeyView::Txn,
+                CtxKey::Session => EventCtxKeyView::Session,
+            };
+            (key, value.clone())
+        })
+        .collect();
+    let peer = event
+        .peer
+        .as_ref()
+        .map_or_else(EventPeerView::default, |peer| EventPeerView {
+            pid: peer.pid.filter(|pid| *pid != 0),
+            comm: peer.comm.clone(),
+            cgroup: peer
+                .cgroup
+                .and_then(|key| (key.dev != 0 || key.inode != 0).then_some((key.dev, key.inode))),
+        });
+    let t_mono_ns = u64::try_from(event.t_mono_ns).map_err(|_| PageRefusal::Internal)?;
+    Ok(EventItem {
+        ordinal,
+        kind,
+        name: event.name.clone(),
+        key: event.key.clone(),
+        ctx,
+        outcome,
+        code: event.code.clone(),
+        attrs: event.attrs.clone(),
+        t_mono_ns,
+        real_ns: event.real_ns,
+        issuer: event.issuer.clone(),
+        peer,
+        span: (event.kind != EventKind::Point).then_some(event.span),
+        inferred: event.inferred,
+    })
 }
 
 fn real_at(published: &Published, now_ns: u64) -> Option<i64> {

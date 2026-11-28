@@ -430,9 +430,9 @@ value must fit the field's own type (`proto.minor` is a `u16`: 65,536 is `bad-re
 4.3 **Verbs by level** (✓ = served; JSON = REP only; BLK = REP + BLOCK* + END; JSON mode exists only
 at observer and control, which serve no BLK verb, §1.3):
 
-P5b-2d serves `current`, `subscribe` and `unsubscribe` at observe and operator. The `hello.verbs`
-array at those levels lists exactly `hello`, `status`, `current`, `subscribe`, `unsubscribe`;
-observer lists `hello`, `annotate`.
+P5b-2d serves `current`, `subscribe` and `unsubscribe` at observe and operator. M3 B6 also serves
+`events` at observe and operator. The `hello.verbs` array at those levels lists exactly `hello`,
+`status`, `current`, `subscribe`, `unsubscribe`, `events`; observer lists `hello`, `annotate`.
 
 | Verb | observe | operator | observer | control | Shape | Since |
 |---|---|---|---|---|---|---|
@@ -440,14 +440,15 @@ observer lists `hello`, `annotate`.
 | status | ✓ | ✓ | | ✓ (relayed) | JSON | M2 |
 | current | ✓ | ✓ | | | BLK | M2 |
 | subscribe / unsubscribe | ✓ | ✓ | | | BLK / JSON | M2 |
-| snapshot_at | ✓ | ✓ | | | BLK | M2 |
-| series_batch | ✓ | ✓ | | | BLK | M2 |
-| events, spans | | | | M6, relayed by `act`; `unknown-verb` until then | JSON | M6 |
-| procs | ✓ (no cmdline) | ✓ (+cmdline) | | | JSON | M2 |
+| snapshot_at | reserved for M2 | reserved for M2 | | | BLK | M2 |
+| series_batch | reserved for M4 | reserved for M4 | | | BLK | M2 |
+| events | ✓ | ✓ | | M6, relayed by `act`; `unknown-verb` until then | JSON | M3 |
+| spans | | | | M6, relayed by `act`; `unknown-verb` until then | JSON | M6 |
+| procs | reserved for M5 (no cmdline) | reserved for M5 (+cmdline) | | | JSON | M2 |
 | annotate | | | ✓ | M6, relayed by `act`; `unknown-verb` until then | JSON | M3 |
-| export | | ✓ | | | BLK | M6 reserved |
-| resource-limits, window-open, window-close | | | ✓ | | JSON | M5 reserved |
-| version, host, session.start/stop/status/watch/list/spans, gc, reload | | | | ✓ | JSON (`watch`: REP + EVT* + END) | M6 reserved |
+| export | reserved for M6 | reserved for M6 | | | BLK | M6 reserved |
+| resource-limits, window-open, window-close | | | reserved for M5 | | JSON | M5 reserved |
+| version, host, session.start/stop/status/watch/list/spans, gc, reload | | | | reserved for M6 | JSON (`watch`: REP + EVT* + END) | M6 reserved |
 
 A known verb at the wrong level is `forbidden`; an unknown verb is `unknown-verb`.
 
@@ -583,12 +584,43 @@ A client continues with the same args and `cursor = next`; the cursor is bound t
 `cursor` and `max_blocks` (a continuation may change its page size); a cursor from another epoch or
 other args is `cursor-invalid`.
 
-4.10 **events / spans** — args `{"from_real_ns": i64, "to_real_ns": i64, "names": [name] (0..16, empty =
-all), "ctx": {"run"|"lane"|"candidate"|"txn"|"session": str ≤ 128} (spans only, 0..5 keys), "limit":
-u32 (1..1000), "cursor": str|null}`. Result `{"events"|"spans": [object], "next": cursor|null,
-"displaced": u64}`; item keys are plan §C.4 (`kind, name, key, ctx, outcome, code, attrs, t_mono_ns,
-real_ns, issuer, inferred`). A page holds at most `limit` items and ends earlier, with `next`, before
+4.10 **events / spans**
+
+**`events` (M3 B6).** All five args are required: `from_real_ns` and `to_real_ns` are i64;
+`names` is an array of 0..16 §C.4 names (empty means all names); `limit` is u32 in 1..=1000;
+`cursor` is null or a string of at most 256 bytes with no control characters. A repeated name is
+`bad-request` at `names`; `from_real_ns > to_real_ns` is `bad-request` at `to_real_ns`, while equal
+bounds produce an empty page. `ctx` is not an `events` arg and is `bad-request` at `ctx`.
+
+The result is `{"events":[item...], "next":cursor|null, "displaced":u64,
+"oldest_real_ns":i64|null, "started_real_ns":i64}`. Every item has exactly these thirteen keys:
+`kind`, `name`, `key`, `ctx`, `outcome`, `code`, `attrs`, `t_mono_ns`, `real_ns`, `issuer`, `peer`,
+`span`, `inferred`. Empty context and attributes are `{}`; absent outcome, code, span, peer pid,
+peer comm and peer cgroup are `null`. `peer` has exactly `pid`, `comm` and `cgroup`; a non-null
+cgroup is `{"dev":u64,"inode":u64}`. Context keys are `run`, `lane`, `candidate`, `txn` and
+`session`. `issuer` is the stored `uid:<n>` text. Items are ordered by `(t_mono_ns, ordinal)`;
+`ordinal` is the ring's accepted-event ordinal and is used for paging, not a deque index.
+
+The process-local RAM ring is the only source; serving `events` reads no segment. A page set covers
+`[from_real_ns, to_real_ns)` completely iff `from_real_ns >= started_real_ns` and
+(`displaced == 0` or, on the first page, `from_real_ns > oldest_real_ns`). A reader that sees a gap
+restarts its read. A window with `from_real_ns < started_real_ns` is incomplete even when the ring
+has not displaced an event.
+
+The opaque cursor is `v1:<epoch>:<digest>:<ordinal>` and is at most 256 bytes. Epoch is the current
+`identity().epoch`; the digest binds the canonical encoding of `from_real_ns`, `to_real_ns` and
+`names`, excluding `limit` (a continuation may change page size). The ordinal names the first item
+not returned. A malformed cursor, another epoch or another bound/filter is `cursor-invalid`; a
+continuation whose ordinal was displaced is also `cursor-invalid`. `next` is null at the window's
+upper bound or ring end. A page holds at most `limit` items and ends earlier, with `next`, before
 the item that would push the REP over `max_reply_bytes` (§5.1 reply sizes).
+
+**`spans` (B7).** Args remain `{"from_real_ns":i64, "to_real_ns":i64, "names":[name] (0..16,
+empty = all), "ctx":{"run"|"lane"|"candidate"|"txn"|"session":str ≤ 128} (0..5 keys),
+"limit":u32 (1..1000), "cursor":str|null}`. Result `{"spans":[object], "next":cursor|null,
+"displaced":u64}`; item keys are plan §C.4 (`kind, name, key, ctx, outcome, code, attrs,
+t_mono_ns, real_ns, issuer, inferred`). A page holds at most `limit` items and ends earlier, with
+`next`, before the item that would push the REP over `max_reply_bytes` (§5.1 reply sizes).
 
 4.11 **procs** — args `{"subject": {"inc": u64}, "descendants": bool, "fields": [str], "limit": u32
 (1..256), "cursor": str|null}`; `fields` ⊆ {`comm`, `ppid`, `state`, `cpu_usec`, `rss_bytes`,
@@ -1336,9 +1368,9 @@ the timer: silent close), `conn-unknown-mode`, `conn-json-first-line` (observer)
 `conn-prefix-surplus` (the 8-byte prefix and a complete `hello` REQ in one write: hello answered),
 `conn-dribbling-reader` (a subscriber reading one byte per 4 s: `slow-client` at its pinned head's
 `pinned_ns + frame_completion_ms + 1`; a second connection's ticks are never shed meanwhile),
-`conn-reply-page-truncated` (retargeted to `procs` in P5b-3, because `events` is M3: `procs` at its
-page limit with a `cmdline` of 4,096 B per item: REP ≤ `max_reply_bytes`, fewer items, `next` set,
-connection stays; the original `events` form, `limit` 1,000 with 8 attrs of 256 B each, returns with M3), `conn-closing-evt` (`Closing` with an
+`conn-reply-page-truncated` (retargeted to `procs` in P5b-3: `procs` at its page limit with a
+`cmdline` of 4,096 B per item: REP ≤ `max_reply_bytes`, fewer items, `next` set, connection stays;
+`events` is now served and its own page bound is covered by the §4.10 events row), `conn-closing-evt` (`Closing` with an
 unwritten head: EVT `closing` written; with a partially written head: no EVT, closed).
 
 P5b-2c and P5b-2d make `conn-not-idle-with-subscription`, `conn-dribbling-reader`, the END half

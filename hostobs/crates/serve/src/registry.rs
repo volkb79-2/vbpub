@@ -556,6 +556,13 @@ mod tests {
             self.fixed.annotate(conn, peer, args)
         }
 
+        fn events(
+            &mut self,
+            args: &crate::backend::EventsArgs,
+        ) -> Result<crate::backend::EventWindow, crate::backend::PageRefusal> {
+            self.fixed.events(args)
+        }
+
         fn connection_closed(&mut self, conn: crate::hub::ConnId) {
             self.fixed.connection_closed(conn);
         }
@@ -590,6 +597,13 @@ mod tests {
             args: &crate::backend::AnnotateArgs,
         ) -> Result<crate::backend::AnnotateReply, crate::backend::AnnotateRefusal> {
             self.fixed.annotate(conn, peer, args)
+        }
+
+        fn events(
+            &mut self,
+            args: &crate::backend::EventsArgs,
+        ) -> Result<crate::backend::EventWindow, crate::backend::PageRefusal> {
+            self.fixed.events(args)
         }
 
         fn connection_closed(&mut self, conn: crate::hub::ConnId) {

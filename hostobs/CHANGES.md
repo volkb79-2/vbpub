@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- **Added (M3 B6):** `events` is served at observe and operator as a paged RAM-ring window with a displacement-aware cursor, `oldest_real_ns` and `started_real_ns`.
 - **Fixed (M3 B2/B8/B9 review nits and follow-up round 2):** the Debian setup order and group grants are explicit; `cgevents.populated` is documented as subtree-wide; the Python selection reference now matches Rust refusal order, with mirrored refusal cases and a minor-1 client handshake case; CONSUMERS documents the `cgroup_id` minor gate and states that a launcher must pass the host key, though none does yet. README, CONSUMERS and LIVE-DEMO now match the current HOB-54/HOB-63/HOB-45 status, 61-file R1 declaration, three-socket plan, operator verbs, absent-cell scope and per-row checker rules; HOB-103 through HOB-106 are filed open.
 - **Added (M3 B5):** `annotate` is served on the observer socket and records typed event/1 frames through the probe's server-thread store append; point idempotency, per-uid token buckets, connection-owned spans, inferred close ends, idle suppression while a span is open, and seal-stall logging are covered by the Rust and probe conformance contracts. **Breaking for installed configs:** add required `[limits]` keys `annotate_rate_per_s` and `annotate_burst`.
 - **Fixed (docs):** README and CONSUMERS state that `deploy/` installs the observer socket (it ships since M3 B2). The earlier status that the probe did not serve `annotate` has been superseded; the packaging test continues to pin the socket and refuses earlier false packaging claims.
