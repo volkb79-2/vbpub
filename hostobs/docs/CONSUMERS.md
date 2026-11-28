@@ -571,15 +571,17 @@ follow them.
    seal that keeps failing (for example, a full disk) makes every append return `internal` until an
    append succeeds again. Appends are unsynced and can be lost on a host crash.
 
-   A probe restart empties the events ring, spans and idempotency cache. Readers dedupe events on
-   `(name, boot_id, seq)` across that boundary. `annotate_rate_per_s` and `annotate_burst` are
+   A probe restart empties the events ring, spans and idempotency cache. For an idempotent point,
+   readers may dedupe by `(name, boot_id, seq)` using the `attrs` carried by that point; generic
+   event items do not carry that identity. `annotate_rate_per_s` and `annotate_burst` are
    required `[limits]` keys; installed configurations must add both.
 
    **Reading the event ring.** `events` is a process-local RAM window. Treat any request with
    `from_real_ns < started_real_ns` as incomplete; `displaced` resets to zero at restart, so it
    cannot identify events lost before that process started. A page set is complete only under the
-   WIRE §4.10 completeness rule; restart the read when a gap appears. Deduplicate across reads and
-   restarts by `(name, boot_id, seq)`. Size `events_ring_bytes` for the consumer's expected lane
+   WIRE §4.10 completeness rule; restart the read when a gap appears. Order generic items by
+   `(t_mono_ns, ordinal)`. A repeated item across continuation pages is overlap, not a duplicate
+   event; a displaced window means restart the read and accept the reported gap. Size `events_ring_bytes` for the consumer's expected lane
    length: at the roughly 9.5 KB worst item, a 4 MiB ring holds about 440 events, and one observer
    member emitting at the 64-event burst plus 50/s rate can fill it in about 8 seconds. `attrs`
    are not filterable in M3; readers match them client-side.

@@ -446,9 +446,9 @@ P5b-2d serves `current`, `subscribe` and `unsubscribe` at observe and operator. 
 | spans | | | | M6, relayed by `act`; `unknown-verb` until then | JSON | M6 |
 | procs | reserved for M5 (no cmdline) | reserved for M5 (+cmdline) | | | JSON | M2 |
 | annotate | | | ✓ | M6, relayed by `act`; `unknown-verb` until then | JSON | M3 |
-| export | | ✓ | | | BLK | M6 reserved |
-| resource-limits, window-open, window-close | | | ✓ | | JSON | M5 reserved |
-| version, host, session.start/stop/status/watch/list/spans, gc, reload | | | | ✓ | JSON (`watch`: REP + EVT* + END) | M6 reserved |
+| export | reserved for M6 | reserved for M6 | | | BLK | M6 reserved |
+| resource-limits, window-open, window-close | | | reserved for M5 | | JSON | M5 reserved |
+| version, host, session.start/stop/status/watch/list/spans, gc, reload | | | | reserved for M6 | JSON (`watch`: REP + EVT* + END) | M6 reserved |
 
 A known verb at the wrong level is `forbidden`; an unknown verb is `unknown-verb`.
 

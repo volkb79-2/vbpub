@@ -1706,3 +1706,68 @@ can print that eviction succeeded again while the quarantined file remains on di
 **Exit criteria.** Drive the episode only from the segment note and print the quarantine note once.
 
 Source: M3 B5 r2.
+
+## HOB-114 — Real-probe event values lack a complete kind/key/time oracle
+
+**Where:** `bins/probe/tests/live_backend.rs` (production `events` backend acceptance).
+
+The live-backend test pins selected event fields but has no oracle for a real-probe kind/key and
+timestamp value set beyond the fields H6 already pins. A mapping regression could preserve the
+field names while returning the wrong values or relationship between monotonic and wall time.
+
+**Impact.** A production backend regression in this event value mapping could pass without a test
+that checks the complete expected value set.
+
+**Exit criteria.** Add a deterministic production-backend assertion for kind, key, `t_mono_ns` and
+`real_ns` values and their relationship.
+
+Source: M3 B6 review round 2.
+
+## HOB-115 — The events backend seam copies a page and sentinel
+
+**Where:** `crates/serve/src/backend.rs` and `crates/serve/src/conn.rs` (`Backend::events`).
+
+The backend returns a cloned `EventWindow` containing up to `limit + 1` items so `conn.rs` can
+derive a continuation cursor from the sentinel. A typed page carrying `next_ordinal` would avoid
+copying the full page and sentinel across the seam.
+
+**Impact.** Each events request performs an avoidable page allocation and clone at the serving
+boundary.
+
+**Exit criteria.** Replace the cloned page/sentinel convention with a typed page and explicit
+`next_ordinal`, preserving ordering, cursor and reply-cap behavior.
+
+Source: M3 B6 review round 2.
+
+## HOB-116 — Events reply-length arithmetic is duplicated
+
+**Where:** `crates/serve/src/conn.rs` (`events_reply_len`) and `crates/serve/src/encode.rs`.
+
+The two modules independently account for the REP envelope length. A future envelope change could
+make a legal events page appear to exceed the reply cap and produce `internal`.
+
+**Impact.** Duplicated wire-size arithmetic can diverge from the actual encoder and refuse a page
+that fits.
+
+**Exit criteria.** Provide one shared reply-length helper used by both the events page trimmer and
+the REP encoders, with tests covering binary and JSON envelope sizes.
+
+Source: M3 B6 review round 2.
+
+## HOB-117 — The events cursor digest is not authentication
+
+**Where:** `crates/serve/src/conn.rs` (`events_digest`, `parse_events_cursor`).
+
+The cursor digest binds a continuation to its epoch and query arguments; it is not a secret or a
+tamper-resistant authenticator. A tamper-resistant cursor would need a keyed MAC over the version,
+epoch, query digest and ordinal, with a key whose lifetime and rotation match the probe process.
+No current consumer requires cursor authenticity.
+
+**Impact.** A client can construct or alter a cursor; the digest must not be treated as an access
+control or integrity boundary.
+
+**Exit criteria.** Keep the cursor explicitly documented as argument binding unless a consumer
+requirement emerges; if authenticity is required, define key ownership, lifetime and rotation and
+verify a keyed MAC before serving the continuation.
+
+Source: M3 B6 review round 2.
