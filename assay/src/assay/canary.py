@@ -743,7 +743,11 @@ def run_isolated_canary(
         if lane.judge is not None and lane.judge.canary is not None
         else None
     )
-    effective_deadline_s = max(0.0, deadline.expires_at - deadline.monotonic())
+    effective_deadline_s = (
+        max(0.0, deadline.expires_at - deadline.monotonic())
+        if progress_stream is not None
+        else None
+    )
 
     def phase_event(
         phase: str,
@@ -800,7 +804,7 @@ def run_isolated_canary(
     # B006(b): `control_snapshot` is always an ephemeral, assay-owned P22
     # checkout (never the consumer's real worktree), so this is one of the
     # "snapshot-running call sites" allowed to opt in to parent creation.
-    control_started = time.monotonic()
+    control_started = time.monotonic() if progress_stream is not None else None
     phase_event("control", "started")
     with prepared.materialize(timeout=deadline.remaining()) as control_snapshot:
         with contention.ContentionWindow(
@@ -846,7 +850,7 @@ def run_isolated_canary(
         )
         control_outcome = _attribute_control(control_termination)
         control_details = None
-        if control_outcome is not Outcome.PASS:
+        if progress_stream is not None and control_outcome is not Outcome.PASS:
             control_details = {"control_termination": control_termination.value}
             if control_reason_code is not None:
                 control_details["control_reason_code"] = control_reason_code.value
@@ -864,12 +868,13 @@ def run_isolated_canary(
                 )
                 if safe_tail:
                     control_details[stream_name] = safe_tail
+        original_bytes = prepared.read_regular_file(
+            canary_repo_path, timeout=deadline.remaining()
+        )
+    if progress_stream is not None:
         phase_event(
             "control", "finished", duration=time.monotonic() - control_started,
             details=control_details,
-        )
-        original_bytes = prepared.read_regular_file(
-            canary_repo_path, timeout=deadline.remaining()
         )
 
     expected_reason = _EXPECTED_REASON_BY_MECHANISM.get(mechanism)
@@ -910,7 +915,7 @@ def run_isolated_canary(
         )
 
     replacement_bytes = transformed_text.encode("utf-8")
-    transform_started = time.monotonic()
+    transform_started = time.monotonic() if progress_stream is not None else None
     phase_event("transform", "started")
     with prepared.materialize_replacement(
         path=canary_repo_path,
@@ -983,9 +988,10 @@ def run_isolated_canary(
                 receipt_path=receipt_path,
                 nonce=nonce,
             )
-            phase_event("transform", "finished", duration=time.monotonic() - transform_started)
         finally:
             shutil.rmtree(receipt_dir)
+    if progress_stream is not None:
+        phase_event("transform", "finished", duration=time.monotonic() - transform_started)
 
     return _single_target_result(
         mechanism=mechanism,
