@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+from types import SimpleNamespace
 from pathlib import Path
 
 import pytest
@@ -168,3 +169,110 @@ def test_failed_origin_branch_fetch_keeps_the_runtime_error_contract(
 
     with pytest.raises(RuntimeError, match="could not fetch origin/feature/demo"):
         transaction.fetch_origin_branch(root, "feature/demo")
+
+
+def _retention_workspace(tmp_path: Path):
+    root = _repo(tmp_path)
+    project_root = root / "demo"
+    (project_root / "logs").mkdir(parents=True)
+    (project_root / "logs" / "build.log").write_text("build passed\n", encoding="utf-8")
+    (project_root / "dist").mkdir()
+    (project_root / "dist" / "demo.whl").write_bytes(b"wheel bytes")
+    (project_root / "artifacts").mkdir()
+    project = SimpleNamespace(project_root=project_root, artifact_dirs=("dist",))
+    workspace = transaction.ReleaseWorkspace(root, root, BRANCH, BASE)
+    return root, project, workspace
+
+
+def test_successful_build_retention_writes_sorted_manifest_and_reuses_existing_parents(
+    tmp_path,
+):
+    root, project, workspace = _retention_workspace(tmp_path)
+    output_id = transaction.build_output_id(workspace)[0]
+    logs_root = project.project_root / "logs" / output_id
+    artifacts_root = project.project_root / "artifacts" / output_id
+
+    retained = transaction.retain_successful_build_outputs(
+        root, workspace, {"demo": project}, ["demo"], source_mode="origin-main",
+    )
+
+    assert retained == [logs_root, artifacts_root]
+    assert (logs_root / "build.log").read_text(encoding="utf-8") == "build passed\n"
+    manifest_text = (artifacts_root / "build.json").read_text(encoding="utf-8")
+    manifest = json.loads(manifest_text)
+    assert manifest_text == json.dumps(manifest, indent=2, sort_keys=True) + "\n"
+    assert (artifacts_root / "dist" / "demo.whl").read_bytes() == b"wheel bytes"
+
+
+@pytest.mark.parametrize("tree", ["logs", "artifacts"], ids=["logs-tree", "artifact-tree"])
+def test_build_retention_refuses_source_symlinks_without_publishing_partial_outputs(
+    tmp_path, tree,
+):
+    root, project, workspace = _retention_workspace(tmp_path)
+    external = tmp_path / "external.txt"
+    external.write_text("outside evidence\n", encoding="utf-8")
+    link = project.project_root / ("logs/trace.txt" if tree == "logs" else "dist/linked.whl")
+    link.symlink_to(external)
+    output_id = transaction.build_output_id(workspace)[0]
+
+    with pytest.raises(RuntimeError, match="build output contains a symlink"):
+        transaction.retain_successful_build_outputs(
+            root, workspace, {"demo": project}, ["demo"], source_mode="origin-main",
+        )
+
+    assert external.read_text(encoding="utf-8") == "outside evidence\n"
+    assert not (project.project_root / "logs" / output_id).exists()
+    assert not (project.project_root / "artifacts" / output_id).exists()
+    assert link.is_symlink()
+
+
+def test_retention_rename_failure_restores_source_outputs(tmp_path, monkeypatch):
+    root, project, workspace = _retention_workspace(tmp_path)
+    output_id = transaction.build_output_id(workspace)[0]
+    original_replace = Path.replace
+
+    def fail_artifact_publish(source, target):
+        if source.name == "artifacts" and Path(target) == project.project_root / "artifacts" / output_id:
+            raise OSError("artifact destination refused")
+        return original_replace(source, target)
+
+    monkeypatch.setattr(Path, "replace", fail_artifact_publish)
+    with pytest.raises(OSError, match="artifact destination refused"):
+        transaction.retain_successful_build_outputs(
+            root, workspace, {"demo": project}, ["demo"], source_mode="origin-main",
+        )
+
+    assert (project.project_root / "logs" / "build.log").is_file()
+    assert (project.project_root / "dist" / "demo.whl").is_file()
+    assert not (project.project_root / "logs" / output_id).exists()
+    assert not (project.project_root / "artifacts" / output_id).exists()
+
+
+def test_retained_output_identity_ignores_changes_to_a_symlink_target(tmp_path):
+    project_root = tmp_path / "demo"
+    output_id = "20260101T000000Z_" + "a" * 40
+    artifact_root = project_root / "artifacts" / output_id
+    logs_root = project_root / "logs" / output_id
+    (artifact_root / "dist").mkdir(parents=True)
+    logs_root.mkdir(parents=True)
+    (artifact_root / "dist" / "demo.whl").write_bytes(b"wheel")
+    (artifact_root / "build.json").write_text(json.dumps({
+        "schema_version": 1, "kind": "cmru-local-build", "publication": "forbidden",
+        "project": "demo", "build_id": output_id,
+    }), encoding="utf-8")
+    external = tmp_path / "external.log"
+    external.write_text("before\n", encoding="utf-8")
+    (logs_root / "external.log").symlink_to(external)
+    project = SimpleNamespace(project_root=project_root)
+    identity = transaction.retained_build_output_identity(
+        tmp_path, project, "demo", output_id,
+    )
+    external.write_text("changed size after preview\n", encoding="utf-8")
+
+    transaction.delete_retained_build_output(
+        tmp_path, project, "demo", output_id,
+        dry_run=False, expected_identity=identity,
+    )
+
+    assert not artifact_root.exists() and not logs_root.exists()
+    assert external.read_text(encoding="utf-8") == "changed size after preview\n"
