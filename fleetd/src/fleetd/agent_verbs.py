@@ -1227,8 +1227,7 @@ class AgentVerbService:
         if verb == "facts":
             return AgentReply(self._envelope(facts=self._facts()))
         if verb == "have":
-            with self._upload_store_lock():
-                return AgentReply(self._have(str(normalized["repo"])))
+            return AgentReply(self._have(str(normalized["repo"])))
         if verb == "put":
             if body_stream is None:
                 raise AdmissionError(ExitCode.IDENTITY_OR_TRANSPORT, "put request has no streamed body")
@@ -1243,9 +1242,16 @@ class AgentVerbService:
                     ExitCode.REFUSAL,
                     "executor unavailable: fleetd host executor is not configured",
                 )
-            with self._upload_store_lock():
-                self._require_submit_uploads(normalized, identity.group)
-                result = self.admission.submit(normalized, identity, self.executor)
+            prepare_request = None
+            if self.policy.upload_collection_enabled:
+                def prepare_request(digest: str) -> tuple[Path, bool]:
+                    with self._upload_store_lock():
+                        self._require_submit_uploads(normalized, identity.group)
+                        return self.admission._write_request(normalized, identity, digest)
+
+            result = self.admission.submit(
+                normalized, identity, self.executor, prepare_request=prepare_request,
+            )
             return AgentReply(self._envelope(**result))
         if verb == "status":
             result = self.admission.status(str(normalized["job_id"]), identity, self.executor)

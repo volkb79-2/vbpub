@@ -186,7 +186,7 @@ def test_submit_accepts_existing_candidate_and_names_relative_candidate_refusal(
     assert Path(result["path"]).read_bytes() == b"candidate"
 
 
-def test_submit_and_have_enter_store_lock(tmp_path, monkeypatch):
+def test_submit_inventory_is_locked_but_have_is_not(tmp_path, monkeypatch):
     service, identity, checkout = _service(tmp_path)
     (checkout / ".git").write_text("gitdir: ../.git/worktrees/test\n", encoding="utf-8")
     entered = []
@@ -200,15 +200,63 @@ def test_submit_and_have_enter_store_lock(tmp_path, monkeypatch):
 
     monkeypatch.setattr(service, "_upload_store_lock", observed_lock)
     assert service.handle({"verb": "have", "repo": "vbpub"}, identity).document["refs"]
-    assert entered
+    assert entered == []
 
-    entered.clear()
     service.executor = object()
-    service.admission.submit = lambda *_args: {"job_id": "job", "state": "queued"}
+    _enable_collection(service)
+    def prepared_submit(*_args, **kwargs):
+        if kwargs.get("prepare_request"):
+            kwargs["prepare_request"]("a" * 64)
+        return {"job_id": "job", "state": "queued"}
+
+    service.admission.submit = prepared_submit
     request = _submit()
     request["extra_argv"] = ["--verbose"]
     service.handle(request, identity)
     assert entered
+
+
+def test_blocked_admission_does_not_block_unrelated_put_or_have(tmp_path, monkeypatch):
+    service, identity, checkout = _service(tmp_path)
+    _enable_collection(service)
+    service.executor = object()
+    (checkout / ".git").write_text("gitdir: ../.git/worktrees/test\n", encoding="utf-8")
+    admission_entered = threading.Event()
+    release_admission = threading.Event()
+    submit_errors = []
+
+    def blocked_submit(*_args, **_kwargs):
+        admission_entered.set()
+        assert release_admission.wait(10)
+        raise AdmissionError(2, "test admission refusal")
+
+    monkeypatch.setattr(service.admission.book, "submit", blocked_submit)
+
+    def submit_job():
+        try:
+            service.handle(_submit(), identity)
+        except AdmissionError as exc:
+            submit_errors.append(exc.reason)
+
+    submit_thread = threading.Thread(target=submit_job)
+    submit_thread.start()
+    assert admission_entered.wait(10)
+
+    put_done = threading.Event()
+    have_done = threading.Event()
+    put_thread = threading.Thread(target=lambda: (_put(service, identity, "candidates", b"parallel"), put_done.set()))
+    have_thread = threading.Thread(
+        target=lambda: (service.handle({"verb": "have", "repo": "vbpub"}, identity), have_done.set()),
+    )
+    put_thread.start()
+    have_thread.start()
+    assert put_done.wait(10)
+    assert have_done.wait(10)
+    release_admission.set()
+    submit_thread.join()
+    put_thread.join()
+    have_thread.join()
+    assert submit_errors == ["test admission refusal"]
 
 
 def test_collector_classifies_every_submit_request_field(tmp_path):
