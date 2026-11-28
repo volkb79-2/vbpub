@@ -425,6 +425,18 @@ class RealProbeSocket(unittest.TestCase):
                     "attrs": {},
                 },
             )
+            mapped = observer.request(
+                "annotate",
+                {
+                    "kind": "point",
+                    "name": "probe.b6.mapped",
+                    "key": key,
+                    "ctx": {"run": "b6", "lane": "conformance"},
+                    "outcome": None,
+                    "code": None,
+                    "attrs": {"purpose": "fix1"},
+                },
+            )
             end = observer.request(
                 "annotate",
                 {
@@ -464,11 +476,15 @@ class RealProbeSocket(unittest.TestCase):
             items = [item for page in pages for item in page["events"]]
             self.assertEqual(
                 {item["name"] for item in items},
-                {"probe.b6.begin", "probe.b6.point", "probe.b6.end"},
+                {"probe.b6.begin", "probe.b6.point", "probe.b6.mapped", "probe.b6.end"},
             )
-            self.assertEqual({item["span"] for item in items if item["name"] == "probe.b6.begin"}, {begin["span"]})
-            self.assertTrue(all(item["span"] is None for item in items if item["name"] == "probe.b6.point"))
-            self.assertEqual({item["span"] for item in items if item["name"] == "probe.b6.end"}, {end["span"]})
+            by_name = {item["name"]: item for item in items}
+            self.assertEqual(by_name["probe.b6.begin"]["span"], begin["span"])
+            self.assertEqual(by_name["probe.b6.point"]["span"], point["span"])
+            self.assertIsNone(by_name["probe.b6.point"]["span"])
+            self.assertIsNone(by_name["probe.b6.mapped"]["span"])
+            self.assertEqual(by_name["probe.b6.end"]["span"], end["span"])
+            self.assertEqual(by_name["probe.b6.end"]["span"], by_name["probe.b6.begin"]["span"])
             self.assertTrue(
                 all(
                     set(item)
@@ -479,7 +495,29 @@ class RealProbeSocket(unittest.TestCase):
                     for item in items
                 )
             )
-            self.assertTrue(all(set(item["peer"]) == {"pid", "comm", "cgroup"} for item in items))
+            for name in ("probe.b6.begin", "probe.b6.point", "probe.b6.end"):
+                self.assertEqual(by_name[name]["ctx"], {})
+                self.assertEqual(by_name[name]["attrs"], {})
+            self.assertEqual(by_name["probe.b6.mapped"]["ctx"], {"run": "b6", "lane": "conformance"})
+            self.assertEqual(by_name["probe.b6.mapped"]["attrs"], {"purpose": "fix1"})
+            self.assertIsNone(by_name["probe.b6.begin"]["outcome"])
+            self.assertIsNone(by_name["probe.b6.point"]["outcome"])
+            self.assertIsNone(by_name["probe.b6.mapped"]["outcome"])
+            self.assertEqual(by_name["probe.b6.end"]["outcome"], "ok")
+            for item in items:
+                self.assertIsNone(item["code"])
+                self.assertEqual(item["issuer"], f"uid:{os.geteuid()}")
+                self.assertFalse(item["inferred"])
+                peer = item["peer"]
+                self.assertEqual(set(peer), {"pid", "comm", "cgroup"})
+                self.assertTrue(peer["pid"] is None or isinstance(peer["pid"], int))
+                self.assertTrue(peer["comm"] is None or isinstance(peer["comm"], str))
+                cgroup = peer["cgroup"]
+                self.assertTrue(cgroup is None or isinstance(cgroup, dict))
+                if cgroup is not None:
+                    self.assertEqual(set(cgroup), {"dev", "inode"})
+                    self.assertIsInstance(cgroup["dev"], int)
+                    self.assertIsInstance(cgroup["inode"], int)
         finally:
             if observe is not None:
                 observe.close()
