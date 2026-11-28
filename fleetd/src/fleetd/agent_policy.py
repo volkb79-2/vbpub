@@ -46,6 +46,7 @@ class AgentPolicy:
     dev_argv: frozenset[tuple[str, ...]]
     env_values: Mapping[str, frozenset[str]]
     executor_enabled: bool = False
+    upload_collection_enabled: bool = False
 
     def resolve_peer(self, uid: int, gid: int) -> AgentIdentity:
         """Map Linux SO_PEERCRED's UID and primary GID to one identity."""
@@ -223,7 +224,10 @@ def load_agent_policy(path: Path = DEFAULT_AGENT_POLICY_PATH) -> AgentPolicy:
         "extra_argv", "dev_argv", "env_values", "lease_reconcile_interval_s", "lease_bind_timeout_s",
         "max_connections", "legacy_jobs_dir",
     }
-    root = _object(parsed, "agent.toml", policy_keys, {"runner_user", "executor_enabled"})
+    root = _object(
+        parsed, "agent.toml", policy_keys,
+        {"runner_user", "executor_enabled", "upload_collection_enabled"},
+    )
     if type(root["schema_version"]) is not int or root["schema_version"] != 1:
         raise ContractError("agent.toml.schema_version: expected integer 1")
     idle_connection_s = _positive_number(root["idle_connection_s"], "agent.toml.idle_connection_s")
@@ -239,6 +243,9 @@ def load_agent_policy(path: Path = DEFAULT_AGENT_POLICY_PATH) -> AgentPolicy:
     executor_enabled = root.get("executor_enabled", False)
     if type(executor_enabled) is not bool:
         raise ContractError("agent.toml.executor_enabled: expected boolean")
+    upload_collection_enabled = root.get("upload_collection_enabled", False)
+    if type(upload_collection_enabled) is not bool:
+        raise ContractError("agent.toml.upload_collection_enabled: expected boolean")
     runner_user = (
         _safe_name(root["runner_user"], "agent.toml.runner_user")
         if "runner_user" in root else None
@@ -271,5 +278,5 @@ def load_agent_policy(path: Path = DEFAULT_AGENT_POLICY_PATH) -> AgentPolicy:
     return AgentPolicy(
         idle_connection_s, query_timeout_s, legacy_jobs_dir, lease_reconcile_interval_s, lease_bind_timeout_s,
         max_connections, runner_user, identities, repo_roots, requested_by_clients,
-        extra_argv, dev_argv, env_values, executor_enabled,
+        extra_argv, dev_argv, env_values, executor_enabled, upload_collection_enabled,
     )

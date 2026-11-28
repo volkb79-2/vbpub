@@ -64,7 +64,7 @@
 | FD-059 | Measure and design PSI-aware admission before enforcing a prediction | P1 | OPEN (design only) | 2026-11-27 |
 | FD-060 | A granted lease client can stay connected forever without binding | P2 | FIXED IN THIS BRANCH (C3a) | 2026-11-27 |
 | FD-061 | Persist executor result details for terminal status | P2 | FIXED IN THIS BRANCH (C3b-1) | 2026-11-27 |
-| FD-062 | Retain and garbage-collect host upload objects | P2 | OPEN (C3b-2 follow-up) | 2026-11-27 |
+| FD-062 | Retain and garbage-collect host upload objects | P2 | FIXED IN THIS BRANCH (C3b-2; opt-in) | 2026-11-27 |
 | FD-063 | Incrementally count large Assay progress files | P2 | OPEN | 2026-11-27 |
 | FD-064 | A legacy job directory without EXIT after host reboot remains charged | P2 | OPEN | 2026-11-27 |
 | FD-065 | Legacy-job listing is point-in-time and completed directories consume the entry ceiling | P2 | OPEN | 2026-11-27 |
@@ -76,6 +76,7 @@
 | FD-071 | Preserve store collection failure detail in the host result | P2 | FIXED IN THIS BRANCH (C3b-1) | 2026-11-27 |
 | FD-072 | Bind Run-Gate repo/project labels to the request | P2 | FIXED IN THIS BRANCH (C3b-1) | 2026-11-27 |
 | FD-075 | Bound total lane log bytes and summary scan before executor enablement | P1 | OPEN; BLOCKER BEFORE ENABLEMENT | 2026-11-28 |
+| FD-076 | A client upload can be collected before its delayed submit | P2 | OPEN | 2026-11-28 |
 
 ## FD-001 Lite campaign lifecycle
 
@@ -1186,16 +1187,39 @@ charge in place.
 
 ## FD-062 Retain and garbage-collect host upload objects
 
-**State:** OPEN; C3b-2 follow-up. **Priority:** P2. **Filed:** 2026-11-27.
+**State:** FIXED IN THIS BRANCH (C3b-2; collection is opt-in). **Priority:** P2. **Filed:** 2026-11-27.
 
 C3a bounds aggregate stored and in-flight upload bytes with
-`policy.max_upload_store_bytes`, but it does not delete committed objects.
-C3b must define retention and garbage collection for content-addressed upload
-objects. Collection must preserve objects referenced by admitted or terminal
-job records and coordinate with active uploads; no expiry or quota default is
-defined here.
+`policy.max_upload_store_bytes`. C3b-2 adds host-opt-in collection, preserving
+objects referenced by durable job request records, protecting group bundles
+until each job has a valid terminal admission record, and coordinating with
+active uploads. Collection preflights both cap and disk-floor deficits and
+deletes nothing when the reclaimable set is insufficient. A disk-floor breach
+alone still refuses without collection. Re-uploads remain charged. There is no
+expiry or quota default. A durable `request.json` published before admission
+but left without a book record continues protecting its named objects and its
+group's bundles; if submission never reaches a terminal book record, protection
+can persist indefinitely. Valid requests remain classifiable regardless of
+executor/worker output files beside `request.json`; only missing-request job
+directories use the strict writer-shape allowlist.
 
 Source: P-fd-05 C3a round 2 controller ruling (2026-11-27).
+
+## FD-076 A client upload can be collected before its delayed submit
+
+**State:** OPEN. **Priority:** P2. **Filed:** 2026-11-28.
+
+An unreferenced seed, dev or candidate object may be collected after a
+successful `put` and before the client submits a job naming it. `submit`
+refuses with the missing object name and the client must upload it again. A
+bundle may also be collected before submit; submit does not detect the missing
+bundle, and a job whose checkout needs it fails with `CHECKOUT_FAILURE`.
+`have` remains the repo-checkout ref listing and does not report upload
+presence. Keep this window visible to controllers and consumers. A replay
+being streamed while collection removes its prior copy must be republished at
+commit or refused.
+
+Source: P-fd-05 C3b-2 controller ruling (2026-11-28).
 
 ## FD-063 Incrementally count large Assay progress files
 

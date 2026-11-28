@@ -356,12 +356,15 @@ class AgentAdmission:
             # Keeping an unclaimed durable request is safer than hiding an uncertain record.
             pass
 
-    def submit(self, request: Mapping[str, Any], identity: AgentIdentity, executor: AgentExecutor) -> Mapping[str, object]:
+    def submit(
+        self, request: Mapping[str, Any], identity: AgentIdentity, executor: AgentExecutor,
+        *, prepare_request: Callable[[str], tuple[Path, bool]] | None = None,
+    ) -> Mapping[str, object]:
         model = self.request_model(request)
         digest = model.digest()
         lock_fd = self._submit_lock(model.job_id)
         try:
-            return self._submit_locked(request, identity, executor, model, digest)
+            return self._submit_locked(request, identity, executor, model, digest, prepare_request)
         finally:
             os.close(lock_fd)
 
@@ -372,8 +375,12 @@ class AgentAdmission:
         executor: AgentExecutor,
         model: AdmissionRequest,
         digest: str,
+        prepare_request: Callable[[str], tuple[Path, bool]] | None,
     ) -> Mapping[str, object]:
-        request_path, created_request = self._write_request(request, identity, digest)
+        request_path, created_request = (
+            prepare_request(digest) if prepare_request is not None
+            else self._write_request(request, identity, digest)
+        )
         try:
             result = self.book.submit(
                 model,
