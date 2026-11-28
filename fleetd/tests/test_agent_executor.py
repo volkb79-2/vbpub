@@ -3878,6 +3878,94 @@ def _ready_worker(tmp_path, runner=None, *, request=None, docker=None, waiter=la
     return worker, runner, job_dir, checkout
 
 
+@pytest.mark.parametrize("failure", [OSError("spawn failed"), ValueError("invalid spawn arguments")])
+def test_definite_lane_spawn_failure_clears_live_marker_and_finishes_error(tmp_path, failure):
+    actions = []
+
+    class _StartFailureRunner(_VersionRunner):
+        def start(self, _argv, **_kwargs):
+            actions.append("start")
+            raise failure
+
+    class _NoContainers:
+        def job_containers(self, _job_id):
+            actions.append("docker-query")
+            return ()
+
+        def inspect(self, _container_id):
+            raise AssertionError("no container ids were returned")
+
+        def remove_stopped(self, _container_ids):
+            actions.append("docker-remove")
+
+    runner = _StartFailureRunner({})
+    worker, _runner, job_dir, _checkout = _ready_worker(tmp_path, runner, docker=_NoContainers())
+    worker.request.update(project=".", lane="r0-r1", extra_argv=[])
+    worker.group = "controller"
+    worker.request_digest = "a" * 64
+    worker.scope_process_reader = lambda _unit: actions.append("scope-check") or (os.getpid(),)
+    worker._lane_runner_environment = lambda _mode, _facts: {}
+    worker._helper = lambda mode, *_args, **_kwargs: actions.append(f"helper-{mode}") or CommandResult(0, b"", b"")
+    worker._collect = lambda: actions.append("collect") or {}
+    worker._complete_admission = lambda terminal: actions.append(f"release-{terminal['verdict']}")
+    try:
+        with pytest.raises(AdmissionError, match="lane-spawn-failed") as error:
+            worker._run_lane("/usr/bin/run-gate", "host", {"runner_name": "host"}, None)
+
+        state = json.loads((job_dir / "state.json").read_text(encoding="utf-8"))
+        assert state["lane_may_be_live"] is False
+        assert state["lane_spawn_error"] == str(failure)
+        result = worker._handle_run_error(error.value.exit_code, error.value.reason)
+        final_state = json.loads((job_dir / "state.json").read_text(encoding="utf-8"))
+        result_record = json.loads((job_dir / "result.json").read_text(encoding="utf-8"))
+
+        assert result == int(ExitCode.IDENTITY_OR_TRANSPORT)
+        assert final_state["state"] == "failed"
+        assert final_state["verdict"] == result_record["verdict"] == "ERROR"
+        assert "lane-spawn-failed" in result_record["binding"]["reasons"][0]
+        assert actions.index("start") < actions.index("collect")
+        assert actions.index("collect") < actions.index("helper-remove-tree")
+        assert actions.index("helper-remove-tree") < actions.index("release-ERROR")
+        assert actions.count("scope-check") == 2
+    finally:
+        for fd in (worker.project_fd, worker.checkout_fd, worker.repo_root_fd):
+            if fd >= 0:
+                os.close(fd)
+
+
+def test_uncertain_lane_spawn_without_worker_handle_persists_stopping_and_keeps_charge(tmp_path):
+    class _WaitBoundary(Exception):
+        pass
+
+    def _wait_without_writer(_seconds):
+        raise _WaitBoundary()
+
+    class _InterruptedStartRunner(_VersionRunner):
+        def start(self, _argv, **_kwargs):
+            raise RuntimeError("spawn outcome interrupted")
+
+    runner = _InterruptedStartRunner({})
+    worker, _runner, job_dir, _checkout = _ready_worker(tmp_path, runner, waiter=_wait_without_writer)
+    worker.request.update(project=".", lane="r0-r1", extra_argv=[])
+    worker._lane_runner_environment = lambda _mode, _facts: {}
+    worker._helper = lambda _mode, *_args, **_kwargs: CommandResult(0, b"", b"")
+    try:
+        with pytest.raises(RuntimeError, match="spawn outcome interrupted"):
+            worker._run_lane("/usr/bin/run-gate", "host", {"runner_name": "host"}, None)
+
+        result = worker._resume_lane_after_worker_error("spawn outcome interrupted")
+        state = json.loads((job_dir / "state.json").read_text(encoding="utf-8"))
+        assert result == int(ExitCode.QUEUED_WITHDRAWN)
+        assert state["state"] == "stopping"
+        assert state["lane_may_be_live"] is True
+        assert state["reason"] == "lane-start-outcome-uncertain-no-worker-handle"
+        assert not (job_dir / "result.json").exists()
+    finally:
+        for fd in (worker.project_fd, worker.checkout_fd, worker.repo_root_fd):
+            if fd >= 0:
+                os.close(fd)
+
+
 @pytest.mark.parametrize(
     ("stderr", "reason", "permanent"),
     [

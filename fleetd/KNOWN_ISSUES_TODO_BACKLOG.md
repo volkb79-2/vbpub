@@ -1357,7 +1357,16 @@ must discover the durable job, re-establish ownership, prove all processes and
 job containers stopped, finalize the terminal record, and only then release the
 charge. Do not infer safety from an expired process handle or reboot alone.
 
-Source: P-fd-05 C3b-1 fix round 2 controller ruling F5 (2026-11-28).
+The same recovery owner must handle an ambiguous lane-start interruption outside
+the `OSError`/`ValueError` cases that prove no child was created. When the start
+call did not return a process handle, C3b-1 records
+`lane-start-outcome-uncertain-no-worker-handle`, leaves the job stopping and
+charged, and exits rather than waiting for an exit status that no process can
+write. Recovery must discover the actual scope and job containers, prove they
+are stopped, and then finalize or retain the charge on failed proof.
+
+Source: P-fd-05 C3b-1 fix round 2 controller ruling F5 and round 3 controller
+ruling C2 (2026-11-28).
 
 ## FD-075 Bound total lane log bytes and summary scan
 

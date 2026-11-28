@@ -1684,10 +1684,14 @@ class HostJobWorker:
                 return self._finalize_lane_with_retry(status)
             process = self.runner_process
             if process is None:
-                # Start was marked as possibly live before Popen returned. With
-                # no owned process handle there is no safe stop or release.
-                self.waiter(1)
-                continue
+                # A non-OSError/ValueError interruption during start leaves no
+                # proof that a process was not created, and no owner can write
+                # its exit status. Preserve the charge for C3b-2 recovery.
+                self._retry_state_save(
+                    state="stopping", exit_code=ExitCode.QUEUED_WITHDRAWN,
+                    reason="lane-start-outcome-uncertain-no-worker-handle", retry_required=True,
+                )
+                return int(ExitCode.QUEUED_WITHDRAWN)
             try:
                 status = process.poll()
             except Exception as exc:
@@ -1939,7 +1943,16 @@ class HostJobWorker:
                     # conservative marker before taking the never-started path.
                     self._retry_state_save(lane_may_be_live=False, lane_start_attempted=False)
                 raise
-            process = self.runner.start(argv, cwd_fd=self.project_fd, env=env, output_fd=log_fd)
+            try:
+                process = self.runner.start(argv, cwd_fd=self.project_fd, env=env, output_fd=log_fd)
+            except (OSError, ValueError) as exc:
+                detail = str(exc)[:1000]
+                self._retry_state_save(
+                    lane_may_be_live=False, lane_start_attempted=False, lane_spawn_error=detail,
+                )
+                raise AdmissionError(
+                    ExitCode.IDENTITY_OR_TRANSPORT, f"lane-spawn-failed: {detail}",
+                ) from exc
         finally:
             os.close(log_fd)
         self.runner_process = process
