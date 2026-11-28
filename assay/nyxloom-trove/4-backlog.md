@@ -247,6 +247,7 @@ items:
   - {id: B598, title: "P-assay-4f final-review follow-ups M1, M3 and L4-L7", type: bugfix, component: mutation, context_estimate: small}
   - {id: B599, title: "B105 RAM admission counts reclaimable file cache as used", type: bugfix, component: gate, context_estimate: small}
   - {id: B604, title: "B596 changelog pre-flight does not model CMRU's real release history and version derivation", type: bugfix, component: gate, context_estimate: small}
+  - {id: B605, title: "B596 linked-worktree control does not guard a linked checkout", type: bugfix, component: gate, context_estimate: small}
   - {id: B610, title: "Assay merges that touch src/assay must pass self-qualification-provisional before merge", type: bugfix, component: gate, context_estimate: small}
 ---
 
@@ -16273,7 +16274,7 @@ Second half (deliberate, hence documented rather than taken here): `tools/releas
 
 ## B596 — release gate should simulate the cmru CHANGES fold as a pre-flight
 
-**Status: IMPLEMENTED in `5db9c10de`, `9dcd0f946`, `358d4fbcd`, and `7b5fa72dd` (task-7 reader-bound test, pre-flight hardening, linked-worktree config snapshot, and second-review test controls); registered `tooling-tests` gate evidence remains pending. The two-file dev run passed 215 tests and the docs dev run passed 86 tests; neither is gate evidence. Severity: medium.**
+**Status: IMPLEMENTED in `5db9c10de`, `9dcd0f946`, `358d4fbcd`, and `7b5fa72dd` (task-7 reader-bound test, pre-flight hardening, linked-worktree config snapshot, and second-review test controls). Gate evidence at `21daa3a2d` (2026-11-28): `tooling-tests` PASS (`rgw-tooling-tests-20261128T064027-v1001`) and `tester-unified` PASS (`rgw-tester-unified-20261128T064024-r1002`). Follow-ups: B604, B605. Severity: medium.**
 
 **Symptom.** cmru folds `[Unreleased]` into the new release section in the release candidate before the release gate runs. A docs test that reads `[Unreleased]` or assumes only branch-current sections can pass on every package head and then fail after the fold; this happened on the first 12.3.0 attempt and again in the 2026-11-26 manual simulation (`tooling-tests` run `rgw-tooling-tests-20261126T231821-v1001`). The affected test is `test_rust_baseline_docs_match_the_available_assay_surface` (`tests/core/test_docs_examples_and_vocabulary.py:230` at c06b1a829). At that base it still reads current sections only (`:236`, `:249-250`), while the entry it needs is in `[12.3.0]` (`CHANGES.md:388`), so the next fold fails it. The helper it uses, `_current_changes_text` (`[Unreleased]` plus the newest release, `:146`), and the helper's two tests (`:253`, `:267`) came from commit `08e27ea7f`. Commit `153737031` (on main through merge `a4571315c`, q342; not in this branch's base) fixes this one test by reading the whole history. Its original form, `0fb0b687b` (branch-only), also covers a P4 liveness pin of the same shape. Neither makes the release gate run the docs tests against a changelog folded by cmru.
 
@@ -16288,6 +16289,14 @@ Second half (deliberate, hence documented rather than taken here): `tools/releas
 **Wanted.** Add a disposable history fixture that gives CMRU the relevant real commit range and existing tag state, and derive both consecutive release versions through the same plan CMRU uses for `cmru release assay`.
 
 **Close when.** A generated-section regression case demonstrates that a docs assertion which rejects an obsolete entry in the actual current generated section fails in the pre-flight, with the first and following versions derived by CMRU and the source checkout unchanged.
+
+## B605 — B596 linked-worktree control does not guard a linked checkout
+
+**Status: OPEN (filed 2026-11-28 from the B596 third review, `21daa3a2d`); severity: low.** The control that lets a sibling worktree commit and tag creates a linked sibling, but it snapshots the primary repository, whose `.git` is a directory (`gate/tests/test_changes_fold_preflight.py:603-616`). No behaviour defect is known; the coverage is incomplete.
+
+**Wanted.** Controls in which the linked checkout is the guarded subject, including a detached HEAD and `extensions.worktreeConfig` off and on, with its own index and tracked-file changes still detected.
+
+**Close when.** Those controls run in the registered `tooling-tests` lane, and a wrong resolution of the linked checkout's index or `config.worktree` turns one of them red.
 
 ## B597 — an armed no-progress wall stop ends the sweep and can repeat on resume
 
