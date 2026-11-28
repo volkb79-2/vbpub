@@ -2084,3 +2084,18 @@ they exit 5 instead of typing over the selection.
 (`COMPACT_RESUME_SESSION_ID`, or the self-launch `CLAUDE_CODE_SESSION_ID`)
 contains characters outside `[A-Za-z0-9-]`. `tests/test-compact-resume.sh`
 has no case for that refusal.
+
+## CTL-84 — a job launched from a pi bash call dies when the call ends
+
+**Status:** OPEN 2026-11-28; found by the hostobs pi pilot. Severity: Medium.
+
+A child started from a pi bash tool call (observed with `codex-impl.sh`, also
+under `setsid`) dies when the call returns. `pi-pidns-bash-worker.sh` runs each
+call under `bwrap --unshare-pid --die-with-parent`, so a new session does not
+leave the call's PID namespace.
+
+**Workaround.** Hold a long launch under `start_monitor` for its whole run. A
+monitor lasts at most 3600 s (`monitorMaxSeconds`), so a longer job does not fit.
+
+**Wanted.** A supported way for a pi controller to start a job that outlives one
+call and the monitor cap, without weakening the sandbox for ordinary calls.

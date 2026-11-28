@@ -6,6 +6,7 @@ import json
 import os
 import shutil
 import subprocess
+import threading
 import tarfile
 import time
 from pathlib import Path
@@ -11915,6 +11916,767 @@ def test_lane_summary_skips_long_and_partial_unanchored_lines(tmp_path):
         summary, verdict, exit_code = worker._last_lane_summary()
         assert summary == "run-gate: lane 'r0-r1' verdict PASS; exit_code 0"
         assert verdict == "PASS" and exit_code == 0
+    finally:
+        for fd in (worker.project_fd, worker.checkout_fd, worker.repo_root_fd):
+            if fd >= 0:
+                os.close(fd)
+
+
+def test_lane_log_drain_caps_bytes_and_marks_overflow_for_normal_stop(tmp_path):
+    from dataclasses import replace
+
+    worker = _worker(tmp_path, _VersionRunner({}))
+    worker.policy = replace(worker.policy, lane_log_max_bytes=1048576)
+    log_path = tmp_path / "lane.log"
+    log_fd = os.open(log_path, os.O_CREAT | os.O_WRONLY, 0o600)
+    read_fd, write_fd = os.pipe()
+    payload = b"x" * (1048576 + 1)
+
+    def write_payload():
+        try:
+            view = memoryview(payload)
+            while view:
+                count = os.write(write_fd, view)
+                view = view[count:]
+        finally:
+            os.close(write_fd)
+
+    class Process:
+        stdout = os.fdopen(read_fd, "rb", buffering=0)
+
+    writer = threading.Thread(target=write_payload)
+    writer.start()
+    process = Process()
+    worker._drain_lane_log(process.stdout, log_fd)
+    process.stdout.close()
+    writer.join()
+    stop_calls = []
+    worker.runner_process = process
+    worker._request_worker_stop = lambda process: stop_calls.append(process)
+    worker._check_lane_log_limit(process)
+    assert log_path.stat().st_size == 1048576
+    assert worker._lane_log_bytes == 1048576
+    assert worker.lane_error == "lane-log-limit-exceeded"
+    assert worker._lane_log_overflow.is_set()
+    assert stop_calls == [process]
+    os.close(worker.repo_root_fd)
+
+
+def test_lane_log_drain_stops_after_bounded_pipe_capacity_when_lane_exited(tmp_path, monkeypatch):
+    worker = _worker(tmp_path, _VersionRunner({}))
+    read_fd, write_fd = os.pipe()
+    pipe_capacity = fcntl.fcntl(read_fd, fcntl.F_GETPIPE_SZ)
+    log_path = tmp_path / "lane-stopped.log"
+    log_fd = os.open(log_path, os.O_CREAT | os.O_WRONLY, 0o600)
+    delivered = 0
+    real_read = os.read
+
+    def descendant_keeps_writing(fd, size):
+        nonlocal delivered
+        if fd != read_fd:
+            return real_read(fd, size)
+        if delivered >= pipe_capacity * 2:
+            raise BlockingIOError()
+        amount = min(size, pipe_capacity * 2 - delivered)
+        delivered += amount
+        return b"x" * amount
+
+    monkeypatch.setattr(executor_worker_module.os, "read", descendant_keeps_writing)
+
+    class Process:
+        stdout = os.fdopen(read_fd, "rb", buffering=0)
+
+    process = Process()
+    worker._lane_log_stop.set()
+    worker._drain_lane_log(process.stdout, log_fd)
+    process.stdout.close()
+    os.close(write_fd)
+    assert log_path.stat().st_size == pipe_capacity
+    assert worker._lane_log_bytes == pipe_capacity
+    os.close(worker.repo_root_fd)
+
+
+def test_lane_log_write_failure_keeps_draining_and_stop_error_is_handled(tmp_path, monkeypatch):
+    worker = _worker(tmp_path, _VersionRunner({}))
+    read_fd, write_fd = os.pipe()
+    os.write(write_fd, b"diagnostic output")
+    os.close(write_fd)
+    log_fd = os.open(tmp_path / "unwritable-lane.log", os.O_CREAT | os.O_WRONLY, 0o600)
+    real_write = os.write
+
+    def fail_log_write(fd, data):
+        if fd == log_fd:
+            raise OSError("disk full")
+        return real_write(fd, data)
+
+    monkeypatch.setattr(executor_worker_module.os, "write", fail_log_write)
+
+    class Process:
+        stdout = os.fdopen(read_fd, "rb", buffering=0)
+
+        def poll(self):
+            return None
+
+    process = Process()
+    worker.runner_process = process
+    worker._request_worker_stop = lambda _process: (_ for _ in ()).throw(AdmissionError(2, "stop unavailable"))
+    worker._drain_lane_log(process.stdout, log_fd)
+    process.stdout.close()
+    assert worker._lane_log_write_failed.is_set()
+    assert worker._lane_log_failure_reason == "lane-log-write-failed: disk full"
+    assert worker.lane_error is None
+    worker._check_lane_log_limit(process)
+    assert worker.lane_error == "lane-log-write-failed: disk full"
+    os.close(worker.repo_root_fd)
+
+
+def test_lane_log_error_preserves_prior_error_and_does_not_stop_exited_lane(tmp_path):
+    worker = _worker(tmp_path, _VersionRunner({}))
+    worker.lane_error = "earlier lane error"
+    worker._lane_log_write_failed.set()
+    worker._lane_log_failure_reason = "lane-log-write-failed: disk full"
+    stopped = []
+
+    class ExitedProcess:
+        def poll(self):
+            return 0
+
+    process = ExitedProcess()
+    worker.runner_process = None
+    worker._request_worker_stop = lambda item: stopped.append(item)
+    worker._check_lane_log_limit(process)
+    assert worker.lane_error == "earlier lane error"
+    assert stopped == []
+    os.close(worker.repo_root_fd)
+
+
+def test_lane_log_drain_handles_missing_stream_and_stopped_pipe_events(tmp_path, monkeypatch):
+    eagain_root = tmp_path / "eagain"
+    eagain_root.mkdir()
+    worker = _worker(eagain_root, _VersionRunner({}))
+    empty_fd = os.open(tmp_path / "empty.log", os.O_CREAT | os.O_WRONLY, 0o600)
+    worker._drain_lane_log(None, empty_fd)
+    os.close(worker.repo_root_fd)
+
+    worker = _worker(tmp_path, _VersionRunner({}))
+    read_fd, write_fd = os.pipe()
+    log_fd = os.open(eagain_root / "eagain.log", os.O_CREAT | os.O_WRONLY, 0o600)
+
+    class Process:
+        stdout = os.fdopen(read_fd, "rb", buffering=0)
+
+    process = Process()
+    worker._lane_log_stop.set()
+    worker._drain_lane_log(process.stdout, log_fd)
+    process.stdout.close()
+    os.close(write_fd)
+    os.close(worker.repo_root_fd)
+
+    post_read_root = tmp_path / "post-read"
+    post_read_root.mkdir()
+    worker = _worker(post_read_root, _VersionRunner({}))
+    read_fd, write_fd = os.pipe()
+    log_fd = os.open(post_read_root / "post-read.log", os.O_CREAT | os.O_WRONLY, 0o600)
+    real_read = os.read
+    set_once = [True]
+
+    def stop_after_chunk(fd, size):
+        if fd == read_fd and set_once[0]:
+            set_once[0] = False
+            worker._lane_log_stop.set()
+            return b"buffered"
+        if fd == read_fd:
+            raise BlockingIOError()
+        return real_read(fd, size)
+
+    monkeypatch.setattr(executor_worker_module.os, "read", stop_after_chunk)
+    class PostReadProcess:
+        stdout = os.fdopen(read_fd, "rb", buffering=0)
+
+    process = PostReadProcess()
+    worker._drain_lane_log(process.stdout, log_fd)
+    process.stdout.close()
+    os.close(write_fd)
+    assert (post_read_root / "post-read.log").read_bytes() == b"buffered"
+    os.close(worker.repo_root_fd)
+
+    wait_root = tmp_path / "wait-branch"
+    wait_root.mkdir()
+    worker = _worker(wait_root, _VersionRunner({}))
+    read_fd, write_fd = os.pipe()
+    log_fd = os.open(wait_root / "wait-branch.log", os.O_CREAT | os.O_WRONLY, 0o600)
+
+    class StepStop:
+        set_value = False
+        waits = 0
+
+        def is_set(self):
+            return self.set_value
+
+        def wait(self, _duration):
+            self.waits += 1
+            self.set_value = True
+            return self.waits > 1
+
+    step_stop = StepStop()
+    worker._lane_log_stop = step_stop
+
+    def empty_pipe(fd, _size):
+        if fd == read_fd:
+            raise BlockingIOError()
+        return real_read(fd, _size)
+
+    monkeypatch.setattr(executor_worker_module.os, "read", empty_pipe)
+
+    class WaitProcess:
+        stdout = os.fdopen(read_fd, "rb", buffering=0)
+
+    process = WaitProcess()
+    worker._drain_lane_log(process.stdout, log_fd)
+    process.stdout.close()
+    os.close(write_fd)
+    assert step_stop.waits == 2
+    os.close(worker.repo_root_fd)
+
+
+def test_lane_log_short_write_becomes_write_failure_and_discards(tmp_path, monkeypatch):
+    worker = _worker(tmp_path, _VersionRunner({}))
+    read_fd, write_fd = os.pipe()
+    os.write(write_fd, b"diagnostic")
+    os.close(write_fd)
+    log_fd = os.open(tmp_path / "short-write.log", os.O_CREAT | os.O_WRONLY, 0o600)
+    monkeypatch.setattr(executor_worker_module.os, "write", lambda _fd, _data: 0)
+
+    class Process:
+        stdout = os.fdopen(read_fd, "rb", buffering=0)
+
+    process = Process()
+    worker._drain_lane_log(process.stdout, log_fd)
+    process.stdout.close()
+    assert worker._lane_log_write_failed.is_set()
+    assert worker._lane_log_failure_reason == "lane-log-write-failed: short lane.log write"
+    os.close(worker.repo_root_fd)
+
+
+def test_lane_log_drain_closes_pipe_and_log_fd_after_cleanup_errors(tmp_path, monkeypatch):
+    worker = _worker(tmp_path, _VersionRunner({}))
+    read_fd, write_fd = os.pipe()
+    log_fd = os.open(tmp_path / "cleanup-errors.log", os.O_CREAT | os.O_WRONLY, 0o600)
+    real_close = os.close
+
+    class BrokenClosePipe:
+        def fileno(self):
+            return read_fd
+
+        def close(self):
+            raise OSError("pipe close failed")
+
+    def fail_duplicate_close(fd):
+        if fd == log_fd:
+            raise OSError("duplicate log close failed")
+        real_close(fd)
+
+    real_close(write_fd)
+    monkeypatch.setattr(executor_worker_module.os, "close", fail_duplicate_close)
+    try:
+        worker._drain_lane_log(BrokenClosePipe(), log_fd)
+        assert worker._lane_log_setup_failed.is_set()
+        assert worker._lane_log_setup_error == "lane-log-setup-failed: pipe close failed"
+        with pytest.raises(OSError):
+            os.fstat(read_fd)
+    finally:
+        real_close(log_fd)
+        os.close(worker.repo_root_fd)
+
+
+def test_close_lane_stdout_leaves_a_reused_descriptor_number_alone():
+    read_fd, write_fd = os.pipe()
+    os.close(write_fd)
+
+    class ReusingPipe:
+        def fileno(self):
+            return read_fd
+
+        def close(self):
+            # Stand in for another thread taking the number right after close.
+            replacement = os.open(os.devnull, os.O_RDONLY)
+            os.dup2(replacement, read_fd)
+            os.close(replacement)
+
+    try:
+        assert executor_worker_module.HostJobWorker._close_lane_stdout(ReusingPipe()) is None
+        os.fstat(read_fd)
+    finally:
+        os.close(read_fd)
+
+
+def test_lane_log_drain_reports_a_log_descriptor_that_will_not_close(tmp_path, monkeypatch):
+    worker = _worker(tmp_path, _VersionRunner({}))
+    log_fd = os.open(tmp_path / "log-close.log", os.O_CREAT | os.O_WRONLY, 0o600)
+    real_close = os.close
+
+    def fail_log_close(fd):
+        if fd == log_fd:
+            raise OSError("duplicate log close failed")
+        real_close(fd)
+
+    monkeypatch.setattr(executor_worker_module.os, "close", fail_log_close)
+    try:
+        worker._drain_lane_log(None, log_fd)
+        assert worker._lane_log_setup_failed.is_set()
+        assert worker._lane_log_setup_error == "lane-log-setup-failed: duplicate log close failed"
+    finally:
+        real_close(log_fd)
+        os.close(worker.repo_root_fd)
+
+
+def test_lane_log_drain_keeps_the_first_error_when_the_pipe_close_fails_too(tmp_path):
+    worker = _worker(tmp_path, _VersionRunner({}))
+    log_fd = os.open(tmp_path / "two-errors.log", os.O_CREAT | os.O_WRONLY, 0o600)
+
+    class UnusablePipe:
+        closed = True
+
+        def fileno(self):
+            raise OSError("pipe fileno failed")
+
+        def close(self):
+            raise OSError("pipe close failed")
+
+    try:
+        worker._drain_lane_log(UnusablePipe(), log_fd)
+        assert worker._lane_log_setup_error == "lane-log-setup-failed: pipe fileno failed"
+        with pytest.raises(OSError):
+            os.fstat(log_fd)
+    finally:
+        os.close(worker.repo_root_fd)
+
+
+def test_close_lane_stdout_returns_the_close_error_when_the_number_is_gone():
+    class GonePipe:
+        def fileno(self):
+            return -1
+
+        def close(self):
+            raise OSError("pipe close failed")
+
+    error = executor_worker_module.HostJobWorker._close_lane_stdout(GonePipe())
+    assert str(error) == "pipe close failed"
+
+
+def test_record_lane_exit_persists_only_the_first_observed_status(tmp_path):
+    worker = _worker(tmp_path, _VersionRunner({}))
+    saves = []
+    worker._retry_state_save = lambda **updates: saves.append(updates)
+    try:
+        worker._record_lane_exit(7)
+        worker._record_lane_exit(7)
+        assert worker._lane_exit_status == 7
+        assert len(saves) == 1
+        assert saves[0]["lane_process_status"] == 7
+    finally:
+        os.close(worker.repo_root_fd)
+
+
+@pytest.mark.parametrize("close_error", [False, True])
+def test_run_lane_joins_pipe_drainer_and_keeps_normal_exit_output(tmp_path, close_error):
+    worker = _worker(tmp_path, _VersionRunner({}))
+    worker.runner_identity = RunnerIdentity("runner", 1001, 1002, (1002,))
+    worker.request = {"repo": "vbpub", "project": ".", "lane": "r0-r1", "extra_argv": [], "base": None}
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    worker.repo_root = repo
+    worker.checkout_rel = ".fleetd-worktrees/controller-run-1"
+    worker.checkout_fd = os.open(checkout, os.O_RDONLY | os.O_DIRECTORY)
+    worker.job_dir.mkdir(parents=True)
+    (worker.job_dir / "state.json").write_text(json.dumps({
+        "schema": "fleet-host-job-state/1", "job_id": worker.job_id, "state": "running",
+        "guard": {"present": False}, "lane_mode": "host",
+    }), encoding="utf-8")
+    worker._helper = lambda mode, *args, cwd_fd=None: (
+        executor_worker_module._prepare_event(cwd_fd, args[1]), CommandResult(0)
+    )[1]
+    worker._read_events = lambda *, final=True: []
+    payload = b"normal buffered lane output\n"
+    read_fd, write_fd = os.pipe()
+
+    raw_stdout_fd = read_fd
+
+    class RawStdout:
+        closed = False
+        close_calls = 0
+
+        def fileno(self):
+            return raw_stdout_fd
+
+        def close(self):
+            self.close_calls += 1
+            if close_error and self.close_calls == 1:
+                raise OSError("injected close error")
+            if not self.closed:
+                try:
+                    os.close(raw_stdout_fd)
+                except OSError:
+                    pass
+                self.closed = True
+
+    raw_stdout = RawStdout()
+
+    class LaneOutput:
+        def fileno(self):
+            return raw_stdout.fileno()
+
+        def close(self):
+            if close_error:
+                raise OSError("injected close error")
+            raw_stdout.close()
+
+    class Process:
+        pid = 876
+        stdout = LaneOutput()
+
+        @staticmethod
+        def poll():
+            return 0
+
+    process = Process()
+
+    class Runner:
+        def start(self, *_args, **_kwargs):
+            os.write(write_fd, payload)
+            os.close(write_fd)
+            return process
+
+    worker.runner = Runner()
+    try:
+        assert worker._run_lane("run-gate", "host", {"runner_name": None}, None) == 0
+        assert (worker.job_dir / "lane.log").read_bytes() == payload
+        assert worker._lane_log_bytes == len(payload)
+        assert raw_stdout.closed is not close_error
+        with pytest.raises(OSError):
+            os.fstat(raw_stdout_fd)
+    finally:
+        if not raw_stdout.closed:
+            raw_stdout.close_calls = 1
+            raw_stdout.close()
+        for fd in (worker.project_fd, worker.checkout_fd, worker.repo_root_fd):
+            if fd >= 0:
+                os.close(fd)
+
+
+@pytest.mark.parametrize("failure", [
+    "dup", "thread-start", "dup-stop-refused", "thread-start-close-error",
+    "drain-fileno-refused", "drain-fcntl-refused", "dup-after-exit", "stdout-lookup",
+    "dup-stop-oserror", "thread-start-dup-close-error",
+])
+def test_run_lane_log_setup_failure_stops_live_child_and_records_exit(tmp_path, monkeypatch, failure):
+    worker = _worker(tmp_path, _VersionRunner({}))
+    worker.runner_identity = RunnerIdentity("runner", 1001, 1002, (1002,))
+    worker.request = {"repo": "vbpub", "project": ".", "lane": "r0-r1", "extra_argv": [], "base": None}
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    worker.repo_root = repo
+    worker.checkout_rel = ".fleetd-worktrees/controller-run-1"
+    worker.checkout_fd = os.open(checkout, os.O_RDONLY | os.O_DIRECTORY)
+    worker.job_dir.mkdir(parents=True)
+    (worker.job_dir / "state.json").write_text(json.dumps({
+        "schema": "fleet-host-job-state/1", "job_id": worker.job_id, "state": "running",
+        "guard": {"present": False}, "lane_mode": "host",
+    }), encoding="utf-8")
+    worker._helper = lambda mode, *args, cwd_fd=None: (
+        executor_worker_module._prepare_event(cwd_fd, args[1]), CommandResult(0)
+    )[1]
+    worker._read_events = lambda *, final=True: []
+    read_fd, write_fd = os.pipe()
+    write_fd_open = [True]
+
+    class LaneOutput:
+        def __init__(self):
+            self.raw = os.fdopen(read_fd, "rb", buffering=0)
+
+        @property
+        def closed(self):
+            return self.raw.closed
+
+        def fileno(self):
+            if failure == "drain-fileno-refused":
+                raise OSError("injected fileno failure")
+            return self.raw.fileno()
+
+        def close(self):
+            self.raw.close()
+            if failure == "thread-start-close-error":
+                raise OSError("injected stdout close failure")
+
+    lane_output = LaneOutput()
+
+    class Process:
+        pid = 991
+        status = None
+        poll_calls = 0
+        stdout_reads = 0
+
+        @property
+        def stdout(self):
+            self.stdout_reads += 1
+            if failure == "stdout-lookup":
+                raise OSError("injected stdout lookup failure")
+            return lane_output
+
+        def poll(self):
+            self.poll_calls += 1
+            if self.poll_calls > 12:
+                pytest.fail("fake process was polled beyond its finite stop sequence")
+            return self.status
+
+    process = Process()
+    if failure == "dup-after-exit":
+        process.status = 0
+
+    class Runner:
+        log_fd = None
+
+        def start(self, *_args, output_fd, **_kwargs):
+            self.log_fd = output_fd
+            return process
+
+    runner = Runner()
+    worker.runner = runner
+    stopped = []
+
+    class Signals:
+        def terminate_group(self, pid):
+            stopped.append(pid)
+            process.status = 143
+            if write_fd_open[0]:
+                os.close(write_fd)
+                write_fd_open[0] = False
+
+    worker.process_signals = Signals()
+    if failure in {"dup-stop-refused", "drain-fileno-refused", "drain-fcntl-refused"}:
+        def refuse_stop(_process):
+            raise AdmissionError(ExitCode.REFUSAL, "injected stop refusal")
+
+        worker._request_worker_stop = refuse_stop
+    if failure == "dup-stop-oserror":
+        def break_stop(_process):
+            raise OSError("injected stop state failure")
+
+        worker._request_worker_stop = break_stop
+    saved_states = []
+    original_save_state = worker._save_state
+
+    def capture_state(**updates):
+        if "state" in updates:
+            saved_states.append(updates["state"])
+        return original_save_state(**updates)
+
+    worker._save_state = capture_state
+    recorded_exits = []
+    original_record_exit = worker._record_lane_exit
+
+    def capture_exit(status):
+        recorded_exits.append(status)
+        return original_record_exit(status)
+
+    worker._record_lane_exit = capture_exit
+    duplicate_fds = []
+    real_dup = os.dup
+    if failure in {"dup", "dup-stop-refused", "dup-after-exit", "dup-stop-oserror"}:
+        def fail_log_dup(fd):
+            if fd == runner.log_fd:
+                raise OSError("dup failed")
+            return real_dup(fd)
+
+        monkeypatch.setattr(executor_worker_module.os, "dup", fail_log_dup)
+    elif failure.startswith("thread-start") or failure in {"drain-fileno-refused", "drain-fcntl-refused"}:
+        def record_dup(fd):
+            duplicate = real_dup(fd)
+            if fd == runner.log_fd:
+                duplicate_fds.append(duplicate)
+            return duplicate
+
+        monkeypatch.setattr(executor_worker_module.os, "dup", record_dup)
+        if failure == "thread-start-dup-close-error":
+            real_close = os.close
+
+            def close_then_report(fd):
+                real_close(fd)
+                if fd in duplicate_fds:
+                    monkeypatch.setattr(executor_worker_module.os, "close", real_close)
+                    raise OSError("injected duplicate close failure")
+
+            monkeypatch.setattr(executor_worker_module.os, "close", close_then_report)
+        if failure.startswith("thread-start"):
+            monkeypatch.setattr(
+                executor_worker_module.threading.Thread, "start",
+                lambda _thread: (_ for _ in ()).throw(RuntimeError("thread start failed")),
+            )
+        else:
+            class SynchronousThread:
+                def __init__(self, *, target, args, daemon):
+                    self.target = target
+                    self.args = args
+                    self.daemon = daemon
+                    self.joined = False
+
+                def start(self):
+                    self.target(*self.args)
+
+                def join(self):
+                    self.joined = True
+                    return None
+
+            monkeypatch.setattr(executor_worker_module.threading, "Thread", SynchronousThread)
+            if failure == "drain-fcntl-refused":
+                real_fcntl = executor_worker_module.fcntl.fcntl
+
+                def fail_pipe_capacity(fd, command):
+                    if fd == read_fd and command == fcntl.F_GETPIPE_SZ:
+                        raise OSError("injected pipe capacity failure")
+                    return real_fcntl(fd, command)
+
+                monkeypatch.setattr(executor_worker_module.fcntl, "fcntl", fail_pipe_capacity)
+    try:
+        waiter_calls = []
+        memory_lock = None
+        if failure == "dup-after-exit":
+            memory_lock = os.open(tmp_path / "memory.lock", os.O_CREAT | os.O_RDWR, 0o600)
+
+        def bounded_waiter(_seconds):
+            waiter_calls.append(None)
+            if len(waiter_calls) > 4:
+                pytest.fail("worker loop exceeded its finite fake wait sequence")
+            if failure in {"dup-stop-refused", "drain-fileno-refused", "drain-fcntl-refused"} and len(waiter_calls) == 2:
+                process.status = 143
+                if write_fd_open[0]:
+                    os.close(write_fd)
+                    write_fd_open[0] = False
+
+        worker.waiter = bounded_waiter
+        expected_status = 0 if failure == "dup-after-exit" else 143
+        if failure == "dup-stop-oserror":
+            with pytest.raises(OSError, match="injected stop state failure"):
+                worker._run_lane("run-gate", "host", {"runner_name": None}, memory_lock)
+            assert lane_output.closed
+            return
+        assert worker._run_lane("run-gate", "host", {"runner_name": None}, memory_lock) == expected_status
+        state = worker._state()
+        assert worker.lane_error.startswith("lane-log-setup-failed:")
+        assert stopped == ([] if failure in {"dup-stop-refused", "drain-fileno-refused", "drain-fcntl-refused", "dup-after-exit"} else [process.pid])
+        assert state["lane_process_status"] == expected_status
+        assert state["lane_may_be_live"] is False
+        if failure not in {"dup-stop-refused", "drain-fileno-refused", "drain-fcntl-refused", "dup-after-exit"}:
+            assert state["stop_signal"] == "sent"
+        # With no stream object there is nothing the worker could close.
+        assert lane_output.closed is (failure != "stdout-lookup")
+        assert worker.runner_process is None
+        assert (worker._lane_log_thread is not None) is (failure in {"drain-fileno-refused", "drain-fcntl-refused"})
+        if failure in {"drain-fileno-refused", "drain-fcntl-refused"}:
+            assert worker._lane_log_thread.joined
+        assert process.stdout_reads == 1
+        if failure == "dup-after-exit":
+            assert recorded_exits == [0]
+            assert "running" not in saved_states
+            assert saved_states[-1] == "collecting"
+        for descriptor in duplicate_fds:
+            with pytest.raises(OSError):
+                os.fstat(descriptor)
+    finally:
+        if not lane_output.closed:
+            lane_output.raw.close()
+        if write_fd_open[0]:
+            os.close(write_fd)
+        for fd in (worker.project_fd, worker.checkout_fd, worker.repo_root_fd):
+            if fd >= 0:
+                os.close(fd)
+
+
+def test_lane_summary_long_line_continuation_does_not_read_past_ceiling(tmp_path, monkeypatch):
+    from dataclasses import replace
+
+    worker, _runner, job_dir, _checkout = _ready_worker(tmp_path)
+    worker.request["lane"] = "r0-r1"
+    worker.policy = replace(worker.policy, lane_log_max_bytes=65540)
+    (job_dir / "lane.log").write_bytes(
+        b"x" * 65540 + b"\nrun-gate: lane 'r0-r1' verdict PASS; exit_code 0\n",
+    )
+    bytes_read = 0
+    real_read = os.read
+
+    def count_read(fd, size):
+        nonlocal bytes_read
+        chunk = real_read(fd, size)
+        bytes_read += len(chunk)
+        return chunk
+
+    monkeypatch.setattr(executor_worker_module.os, "read", count_read)
+    try:
+        with pytest.raises(AdmissionError, match="anchored Run-Gate summary is missing"):
+            worker._last_lane_summary()
+        assert bytes_read == 65540
+    finally:
+        for fd in (worker.project_fd, worker.checkout_fd, worker.repo_root_fd):
+            if fd >= 0:
+                os.close(fd)
+
+
+def test_lane_summary_skips_multichunk_unanchored_line_and_finds_following_summary(tmp_path):
+    worker, _runner, job_dir, _checkout = _ready_worker(tmp_path)
+    worker.request["lane"] = "r0-r1"
+    summary = b"run-gate: lane 'r0-r1' verdict PASS; exit_code 0\n"
+    (job_dir / "lane.log").write_bytes(b"x" * 200000 + b"\n" + summary)
+    try:
+        assert worker._last_lane_summary() == (
+            "run-gate: lane 'r0-r1' verdict PASS; exit_code 0", "PASS", 0,
+        )
+    finally:
+        for fd in (worker.project_fd, worker.checkout_fd, worker.repo_root_fd):
+            if fd >= 0:
+                os.close(fd)
+
+
+def test_lane_summary_rejects_oversized_anchored_line(tmp_path):
+    worker, _runner, job_dir, _checkout = _ready_worker(tmp_path)
+    worker.request["lane"] = "r0-r1"
+    prefix = b"run-gate: lane 'r0-r1' verdict "
+    (job_dir / "lane.log").write_bytes(prefix + b"x" * 70000 + b"\n")
+    try:
+        with pytest.raises(AdmissionError, match="anchored Run-Gate summary is too large"):
+            worker._last_lane_summary()
+    finally:
+        for fd in (worker.project_fd, worker.checkout_fd, worker.repo_root_fd):
+            if fd >= 0:
+                os.close(fd)
+
+
+def test_lane_summary_rejects_incomplete_anchored_line(tmp_path):
+    worker, _runner, job_dir, _checkout = _ready_worker(tmp_path)
+    worker.request["lane"] = "r0-r1"
+    (job_dir / "lane.log").write_bytes(b"run-gate: lane 'r0-r1' verdict PASS; exit_code 0")
+    try:
+        with pytest.raises(AdmissionError, match="anchored Run-Gate summary is incomplete"):
+            worker._last_lane_summary()
+    finally:
+        for fd in (worker.project_fd, worker.checkout_fd, worker.repo_root_fd):
+            if fd >= 0:
+                os.close(fd)
+
+
+def test_lane_summary_scan_stops_at_configured_ceiling(tmp_path):
+    from dataclasses import replace
+
+    worker, _runner, job_dir, _checkout = _ready_worker(tmp_path)
+    worker.request["lane"] = "r0-r1"
+    worker.policy = replace(worker.policy, lane_log_max_bytes=16)
+    (job_dir / "lane.log").write_bytes(b"x" * 16)
+    try:
+        with pytest.raises(AdmissionError, match="anchored Run-Gate summary is missing"):
+            worker._last_lane_summary()
     finally:
         for fd in (worker.project_fd, worker.checkout_fd, worker.repo_root_fd):
             if fd >= 0:

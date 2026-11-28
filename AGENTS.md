@@ -942,6 +942,10 @@ in `/proc/self/fdinfo/<fd>`. A hand-started pi without the pane descriptor is re
 `--print-command` shows the lock path and requirement without starting anything. The
 registered suite checks that tester-unified provides `flock`.
 
+A process started from a pi bash tool call ends with that call, also under `setsid`.
+Hold a long launch (for example `codex-impl.sh`) under `start_monitor`, which lasts at
+most 3600 s (CTL-84).
+
 ```bash
 scripts/controller/pi-ctl-launch.sh hostobs
 PI_CTL_PROVIDER=opendesign_github2 scripts/controller/pi-ctl-launch.sh hostobs

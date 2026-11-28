@@ -104,22 +104,51 @@ objects named by durable job requests, and refuses the put without deleting
 anything if the reclaimable set cannot make it fit. Re-uploads count toward the
 cap and do not trigger collection. An uploaded object can be collected before a
 later submit names it; a missing seed/dev/candidate object makes submit refuse
-with its name, and the controller can upload it again. A bundle collected
-before submit is not detected there; a job whose checkout needs that bundle
-fails with `CHECKOUT_FAILURE`. `have` continues to list repo checkout refs and
-does not report upload presence. A replay collected while its request body is
-streaming is committed again or refused. Collection preflights both store-cap
+with its name, and the controller can upload it again. With collection
+enabled, each `in.bundle` put (including a repeated put) records under the
+upload-store lock, in private state outside `uploads/`, the same-group job ids
+whose `request.json` is already published. A bundle is collectable only when
+all group jobs have valid terminal book records and at least one terminal job
+was published after the latest put. Missing, unreadable, malformed, or
+non-private records keep the bundle and do not refuse collection; collection
+removes a valid record. A bundle with no later submit or no usable record stays
+until manual removal and counts against the cap. Over-cap refusal reports the
+bytes held by unsubmitted bundles. A different same-group job submitted after
+the put can make the bundle collectable once every group job is terminal.
+Seed, dev, and candidate objects keep today's behavior: submit refuses a
+missing object by name and the client re-uploads it. A missing bundle is not
+detected by submit; a job whose checkout needs it fails with
+`CHECKOUT_FAILURE`. `have` continues to list repo checkout refs and does not
+report upload presence. A replay collected while its request body is streaming
+is committed again or refused. Collection preflights both store-cap
 and disk-floor deficits and deletes nothing if the reclaimable set is too
 small. A floor-only breach refuses without collection, and the floor is
 rechecked after collection. For a valid durable `request.json`, executor and
 worker outputs beside it do not block collection; the request contents and
-admission-book state determine which uploads remain protected.
+admission-book state determine which uploads remain protected. Seed/dev/
+candidate collection before submit is by design (FD-076).
+
+The optional closed-schema integer `lane_log_max_bytes` defaults to 268435456
+(256 MiB) and accepts 1048576 through 4294967296. The worker counts merged
+stdout and stderr and bounds `lane.log`; overflow stops the lane through the
+normal stop path and binds terminal ERROR after stop proof. A log write error
+also drains and discards output, requests stop, and reports
+`lane-log-write-failed`. A drainer creation, start, or pipe-reader bootstrap
+failure after the child starts keeps the process handle, requests stop, and
+closes the captured stdout pipe and duplicate log descriptor. The worker
+reports `lane-log-setup-failed` after stop proof. It records an already
+observed exit once without returning state to `running`. The summary scan reads
+raw chunks and counts every fetched byte against the ceiling; the post-exit
+pipe drain is bounded as well. No lane runtime limit is imposed. Arbitrary files
+created in the checkout remain an open aggregate storage issue (FD-077). Bundle
+submission record reads support the maximum listed job history and maximum job
+id length; records above that derived limit are invalid and keep the bundle.
 
 The optional closed-schema key `executor_enabled` accepts only a TOML boolean.
 If absent it is false; a present non-boolean refuses policy loading. While
 false, `fleetd-agent` wires no executor, and submit, status and cancel preserve
 the C3a no-executor refusal before any durable request record or admission
-charge. Keep it false until FD-067, FD-068 and FD-075 are closed and Run-Gate
+charge. Keep it false until FD-067 and FD-068 are closed and Run-Gate
 revision 78 is released and deployed. `mode = "host"` also requires FD-069 to close;
 `mode = "exec"` requires the live persistent-runner probe in FD-070. The
 executor uses the host worker's `CGROUP_PARENT_DEV_GATES` value for prerequisite
@@ -234,7 +263,7 @@ charged until disconnect and exact-name reconciliation confirms absence.
 A missing or refusing local socket returns 3 with no fallback transport.
 C3b-1 conditionally wires the executor when `executor_enabled = true`, while
 C3b-2a wires the legacy-job and Docker providers. Keep the key false until
-FD-067, FD-068 and FD-075 are closed and Run-Gate revision 78 is released and deployed;
+FD-067 and FD-068 are closed and Run-Gate revision 78 is released and deployed;
 host-mode submissions additionally wait for FD-069. Exec-mode submissions
 require the FD-070 live persistent-runner probe. With the key absent or false,
 submit, status and cancel retain the C3a no-executor refusal before request

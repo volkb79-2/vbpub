@@ -1037,3 +1037,21 @@ SIGTERM handler, run a child that SIGTERMs its parent; the handler records and
 the call returns normally.
 
 Source: P-core-10 Opus review round 2, 2026-11-24.
+
+## CLI-EXT-52 — host-load-independent R0/R1 test and gate configuration
+
+**Status:** Fixed for `r0-r1`; follow-up remains for `r3` and `gate`.
+**Type:** Test and gate configuration. **Area:** Run-Gate liveness.
+
+Two host-load hazards affected the `r0-r1` verdict. The process-tree test
+captured a child immediately after reading `$!`, before `exec` had replaced
+the shell command with `sleep`. The lane also had a 10-minute wall budget,
+which could expire during a healthy two-pass run. The test now waits for the
+expected last process-tree line, with witness tests for both eventual success
+and expiry. The lane emits unbuffered per-test output, has a 15-minute
+`stall_timeout` that watches command-output silence, and has no wall budget.
+No silence bound has been measured.
+
+Follow-up: `[lanes.r3]` and `[lanes.gate]` still have wall budgets. Review
+their progress visibility and remove those wall bounds once they have
+appropriate progress-based liveness declarations.

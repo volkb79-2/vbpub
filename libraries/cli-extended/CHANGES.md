@@ -52,6 +52,12 @@ know when upgrading; it is not generated.
   lane name, `--carry-over`, the command-lane refusal, `select_r2_jobs`,
   `candidate_ram` and the observer/clean-tree/pids declarations. No
   runtime-visible change.
+- **R0/R1 gate reliability (CLI-EXT-52; tests and gate configuration only).**
+  The process-tree test waits for the child to reach its expected `sleep`
+  entry before asserting the snapshot. The `r0-r1` lane now prints each test,
+  uses unbuffered output, and has a 15-minute output-silence bound without a
+  wall budget. No product source changed. The `r3` and aggregate `gate` wall
+  budgets remain a follow-up.
 
 ### Unreleased — `cli_extended.procio`: one bounded subprocess reader
 

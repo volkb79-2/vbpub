@@ -143,6 +143,198 @@ def test_bundle_is_retained_until_job_has_terminal_book_record(tmp_path, monkeyp
     assert not Path(bundle["path"]).exists()
 
 
+def test_bundle_put_records_published_jobs_and_later_same_group_terminal_job_collects(tmp_path, monkeypatch):
+    service, identity, _checkout = _service(tmp_path)
+    _enable_collection(service)
+    prior = service.paths.jobs_dir / "prior-job"
+    prior.mkdir()
+    (prior / "request.json").write_text(json.dumps({
+        "schema": "fleet-host-job-request/1", "group": identity.group,
+        "digest": "f" * 64, "request": _submit(),
+    }), encoding="utf-8")
+    bundle = _put(service, identity, "in.bundle", b"bundle")
+    digest = hashlib.sha256(b"bundle").hexdigest()
+    record_path = service.paths.upload_submissions_dir / f"{identity.group}--{digest}.json"
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    assert record["job_ids"] == ["prior-job"]
+
+    later = service.paths.jobs_dir / "later-job"
+    later.mkdir()
+    (later / "request.json").write_text(json.dumps({
+        "schema": "fleet-host-job-request/1", "group": identity.group,
+        "digest": "e" * 64, "request": _submit(),
+    }), encoding="utf-8")
+    monkeypatch.setattr(service.admission.book, "read_record", lambda job_id: {
+        "schema": "fleet-admission-terminal/1", "job_id": job_id, "group": identity.group,
+    })
+    with service._upload_store_lock():
+        assert service._collect_upload_objects_locked(len(b"bundle"), len(b"bundle")) == len(b"bundle")
+    assert not Path(bundle["path"]).exists()
+    assert not record_path.exists()
+
+
+def test_bundle_with_missing_or_malformed_submission_record_is_kept(tmp_path):
+    service, identity, _checkout = _service(tmp_path)
+    _enable_collection(service)
+    bundle = _put(service, identity, "in.bundle", b"bundle")
+    digest = hashlib.sha256(b"bundle").hexdigest()
+    record_path = service.paths.upload_submissions_dir / f"{identity.group}--{digest}.json"
+    record_path.write_text("not json", encoding="utf-8")
+    record_path.chmod(0o600)
+    with service._upload_store_lock():
+        assert service._collect_upload_objects_locked(len(b"bundle"), len(b"bundle")) == 0
+    assert Path(bundle["path"]).exists()
+
+
+def test_bundle_submission_scans_only_published_same_group_jobs_and_handles_absent_jobs(tmp_path, monkeypatch):
+    service, identity, _checkout = _service(tmp_path)
+    jobs = service.paths.jobs_dir
+    jobs.rmdir()
+    assert service._published_group_jobs_locked(identity.group) == []
+    assert service._terminal_upload_jobs_locked() == {}
+
+    jobs.mkdir(mode=0o700)
+    (jobs / "no-request").mkdir()
+    for job_id, group in (("other-job", "another"), ("same-job", identity.group)):
+        job_dir = jobs / job_id
+        job_dir.mkdir()
+        (job_dir / "request.json").write_text(json.dumps({
+            "schema": "fleet-host-job-request/1", "group": group,
+            "digest": "d" * 64, "request": _submit(),
+        }), encoding="utf-8")
+    assert service._published_group_jobs_locked(identity.group) == ["same-job"]
+    monkeypatch.setattr(
+        service.admission.book, "read_record",
+        lambda _job_id: (_ for _ in ()).throw(AdmissionError(2, "book read denied")),
+    )
+    with pytest.raises(AdmissionError, match="cannot inspect terminal upload job.*book read denied"):
+        service._terminal_upload_jobs_locked()
+
+
+def test_bundle_submission_record_writer_refuses_nonprivate_directory_and_short_write(tmp_path, monkeypatch):
+    service, identity, _checkout = _service(tmp_path)
+    directory = service.paths.upload_submissions_dir
+    directory.chmod(0o755)
+    with pytest.raises(AdmissionError, match="record directory is not private"):
+        service._write_bundle_submission_record_locked(identity.group, "a" * 64)
+    directory.chmod(0o700)
+
+    monkeypatch.setattr(agent_verbs.os, "write", lambda _fd, _data: 0)
+    with pytest.raises(AdmissionError, match="cannot write bundle submission record: short"):
+        service._write_bundle_submission_record_locked(identity.group, "a" * 64)
+    assert list(directory.iterdir()) == []
+
+
+def test_bundle_submission_reader_keeps_nonprivate_oversized_and_malformed_records(tmp_path, monkeypatch):
+    service, identity, _checkout = _service(tmp_path)
+    directory = service.paths.upload_submissions_dir
+    digest = "a" * 64
+    path = directory / f"{identity.group}--{digest}.json"
+    path.write_text("{}", encoding="utf-8")
+    path.chmod(0o600)
+    assert service._bundle_submission_job_ids(identity.group, digest) is None
+
+    path.write_text("x" * 65537, encoding="utf-8")
+    path.chmod(0o600)
+    assert service._bundle_submission_job_ids(identity.group, digest) is None
+
+    path.write_text("{}", encoding="utf-8")
+    real_read = os.read
+    monkeypatch.setattr(agent_verbs.os, "read", lambda fd, size: b"x" * 65537 if fd != -1 else real_read(fd, size))
+    assert service._bundle_submission_job_ids(identity.group, digest) is None
+    monkeypatch.undo()
+
+    directory.chmod(0o755)
+    assert service._bundle_submission_job_ids(identity.group, digest) is None
+    directory.chmod(0o700)
+
+
+def test_bundle_unlink_tolerates_already_missing_submission_record(tmp_path):
+    service, identity, _checkout = _service(tmp_path)
+    _enable_collection(service)
+    bundle = _put(service, identity, "in.bundle", b"bundle")
+    digest = hashlib.sha256(b"bundle").hexdigest()
+    (service.paths.upload_submissions_dir / f"{identity.group}--{digest}.json").unlink()
+    service._unlink_upload_object(agent_verbs._UploadObjectRef(
+        identity.group, "in.bundle", digest, len(b"bundle"), 0.0,
+    ))
+    assert not Path(bundle["path"]).exists()
+
+
+def test_collector_stops_after_reclaiming_enough_and_leaves_later_candidate(tmp_path):
+    service, identity, _checkout = _service(tmp_path)
+    _enable_collection(service)
+    first = _put(service, identity, "candidates", b"first")
+    second = _put(service, identity, "candidates", b"second")
+    with service._upload_store_lock():
+        reclaimed = service._collect_upload_objects_locked(1, 100)
+    assert reclaimed >= 1
+    assert not Path(first["path"]).exists() or not Path(second["path"]).exists()
+    assert Path(first["path"]).exists() or Path(second["path"]).exists()
+
+
+def test_real_put_reads_large_valid_submission_history_and_keeps_over_limit_record(tmp_path, monkeypatch):
+    service, identity, _checkout = _service(tmp_path)
+    _enable_collection(service)
+    template = _submit()
+    jobs = []
+    for index in range(520):
+        prefix = f"{identity.group}-{index:05d}-"
+        job_id = prefix + "x" * (128 - len(prefix))
+        jobs.append(job_id)
+        job_dir = service.paths.jobs_dir / job_id
+        job_dir.mkdir(mode=0o700)
+        request_path = job_dir / "request.json"
+        request_path.write_text(json.dumps({
+            "schema": "fleet-host-job-request/1", "group": identity.group,
+            "digest": f"{index:064x}", "request": template,
+        }), encoding="utf-8")
+        request_path.chmod(0o600)
+
+    bundle = _put(service, identity, "in.bundle", b"large history bundle")
+    digest = hashlib.sha256(b"large history bundle").hexdigest()
+    record_path = service.paths.upload_submissions_dir / f"{identity.group}--{digest}.json"
+    assert record_path.stat().st_size > 65536
+    assert service._bundle_submission_job_ids(identity.group, digest) == set(jobs)
+
+    later_id = f"{identity.group}-later"
+    later_dir = service.paths.jobs_dir / later_id
+    later_dir.mkdir(mode=0o700)
+    later_record = later_dir / "request.json"
+    later_record.write_text(json.dumps({
+        "schema": "fleet-host-job-request/1", "group": identity.group,
+        "digest": "f" * 64, "request": template,
+    }), encoding="utf-8")
+    later_record.chmod(0o600)
+    monkeypatch.setattr(service.admission.book, "read_record", lambda job_id: {
+        "schema": "fleet-admission-terminal/1", "job_id": job_id, "group": identity.group,
+    })
+    with service._upload_store_lock():
+        assert service._collect_upload_objects_locked(len(b"large history bundle"), 1_000_000) == len(b"large history bundle")
+    assert not Path(bundle["path"]).exists()
+
+    oversized = _put(service, identity, "in.bundle", b"over-limit history")
+    oversized_digest = hashlib.sha256(b"over-limit history").hexdigest()
+    oversized_record = service.paths.upload_submissions_dir / f"{identity.group}--{oversized_digest}.json"
+    oversized_record.write_bytes(b"x" * (agent_verbs._MAX_BUNDLE_SUBMISSION_RECORD_BYTES + 1))
+    oversized_record.chmod(0o600)
+    assert service._bundle_submission_job_ids(identity.group, oversized_digest) is None
+    with service._upload_store_lock():
+        assert service._collect_upload_objects_locked(len(b"over-limit history"), 1_000_000) == 0
+    assert Path(oversized["path"]).exists()
+
+
+def test_put_refuses_job_id_longer_than_submission_record_limit(tmp_path):
+    service, identity, _checkout = _service(tmp_path)
+    _enable_collection(service)
+    too_long_id = "x" * (agent_verbs.MAX_JOB_ID_LENGTH + 1)
+    job_dir = service.paths.jobs_dir / too_long_id
+    job_dir.mkdir(mode=0o700)
+    (job_dir / "request.json").write_text("{}", encoding="utf-8")
+    with pytest.raises(AdmissionError, match="exceeds 128 characters"):
+        _put(service, identity, "in.bundle", b"bounded writer")
+
+
 @pytest.mark.parametrize("book_record", [
     None,
     {"schema": "fleet-admission-terminal/1", "job_id": "orphan-job", "group": "other"},

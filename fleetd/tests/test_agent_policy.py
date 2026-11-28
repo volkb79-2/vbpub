@@ -108,6 +108,24 @@ def test_executor_enabled_refuses_non_boolean_values(tmp_path, value):
         load_agent_policy(path)
 
 
+@pytest.mark.parametrize("value", [1048576, 268435456, 4294967296])
+def test_lane_log_max_bytes_accepts_range_values(tmp_path, value):
+    path = tmp_path / "agent.toml"
+    source = _policy_text(tmp_path / "checkouts").replace("query_timeout_s = 5", f"query_timeout_s = 5\nlane_log_max_bytes = {value}")
+    path.write_text(source, encoding="utf-8")
+    assert load_agent_policy(path).lane_log_max_bytes == value
+
+
+@pytest.mark.parametrize("value", [1048575, 4294967297, 1.5, True])
+def test_lane_log_max_bytes_refuses_invalid_values(tmp_path, value):
+    path = tmp_path / "agent.toml"
+    rendered = str(value).lower() if isinstance(value, bool) else str(value)
+    source = _policy_text(tmp_path / "checkouts").replace("query_timeout_s = 5", f"query_timeout_s = 5\nlane_log_max_bytes = {rendered}")
+    path.write_text(source, encoding="utf-8")
+    with pytest.raises(ContractError, match="lane_log_max_bytes"):
+        load_agent_policy(path)
+
+
 @pytest.mark.parametrize("runner_user", ['1', '"unsafe/name"'])
 def test_disabled_policy_still_validates_a_present_runner_user(tmp_path, runner_user):
     path = tmp_path / "agent.toml"
