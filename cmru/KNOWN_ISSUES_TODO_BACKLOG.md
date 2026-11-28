@@ -4495,22 +4495,19 @@ The lanes under items 2 and 3 must stay byte-identical, because the whole-source
 **Status:** OPEN; severity: low. It overstates the KI-220 contract (the group is signalled, the leader reaped);
 `cli_extended.procio` has the same wording.
 
-## KI-223 - three transaction.py text/capture flips are equivalent for their Git probes
+## KI-223 - two transaction.py text-mode flips are equivalent for decoded Git output
 
 **Status:** CLOSED BY EQUIVALENCE; severity: low.
 
 - **Evidence.** In `assert_build_source_publishable` and
   `_valid_local_branch_name`, product code reads only `CompletedProcess.returncode`.
   The `text=True` flips `079230d990d2` and `6c33be21bf85` only change the type of
-  unused `stdout`/`stderr`, so no input can distinguish them through the
-  function's return or exception behavior. For `4c87eca3075d`, the local-ref
-  helper rejects empty and leading-dash names before constructing the fixed
-  command `git check-ref-format refs/heads/<branch>`. The branch is one
-  prefixed argv value, not another option; `check-ref-format` without `--print`
-  reports validity only through its exit status and emits no output for valid
-  or invalid refnames. The helper reads only that status. Therefore removing
-  `capture_output=True` cannot write a Git diagnostic for any input it accepts.
-- **Resolution.** The fake keyword-dictionary witness was removed. Real local
-  repository tests cover the boolean results; only observable mutations are
-  required to fail a behavioral test. The all-30 probe confirmed 27 killed
-  mutations and these three survivors as equivalent.
+  unused `stdout`/`stderr` when the command succeeds and both streams decode
+  successfully. This equivalence is limited to that case: no test or proof
+  establishes behavior for undecodable Git output, where text decoding could
+  raise before the return code is read.
+- **Resolution.** The fake keyword-dictionary witness was removed. A real
+  repository behavior test sets `GIT_TRACE=1` only around the local-ref product
+  call and requires empty caller streams; Git's trace makes capture removal
+  observable, so `4c87eca3075d` is behaviorally killed. The all-30 probe
+  confirmed 28 killed mutations and the two text-mode equivalents above.

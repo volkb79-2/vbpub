@@ -256,7 +256,7 @@ def test_a_refused_build_source_ancestor_check_writes_no_git_diagnostic(
         )
     captured = capfd.readouterr()
     assert captured.out == ""
-    assert direct.stderr not in captured.err
+    assert captured.err == ""
 
 
 # --- resume_workspace (legacy adoption) -------------------------------------
@@ -320,3 +320,13 @@ def test_local_branch_probe_returns_boolean_results(tmp_path):
 
     assert transaction._valid_local_branch_name("feature/x", root) is True
     assert transaction._valid_local_branch_name("bad..name", root) is False
+
+
+def test_local_branch_probe_keeps_git_trace_out_of_caller(capfd, monkeypatch, tmp_path):
+    root = _repo(tmp_path)
+    monkeypatch.setenv("GIT_TRACE", "1")
+
+    assert transaction._valid_local_branch_name("feature/x", root) is True
+    captured = capfd.readouterr()
+    assert captured.out == ""
+    assert captured.err == ""
