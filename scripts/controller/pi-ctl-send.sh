@@ -193,5 +193,4 @@ target=$inbox/$id-from-$sender.msg
 reject_symlink_components "$inbox"
 mv -- "$message_temp" "$target" || refuse "cannot publish the message to $target"
 message_temp=
-body_temp=
 printf '%s\n' "$id"
