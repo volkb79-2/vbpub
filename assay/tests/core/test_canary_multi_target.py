@@ -40,7 +40,7 @@ from conftest import (
     prepared_snapshot,
 )
 
-from assay import canary, runner
+from assay import canary, mutation, runner
 from assay.adapters.python import PythonAdapter
 from assay.canary import run_isolated_canaries
 from assay.config import CanaryConfig
@@ -159,7 +159,7 @@ class _NoOpTransformAdapter(PythonAdapter):
         return text, "injected nothing at all"
 
 
-def _run(repo: GitRepo, lane, *, adapter=None, gate=None, monotonic=None):
+def _run(repo: GitRepo, lane, *, adapter=None, gate=None, monotonic=None, progress_stream=None):
     gate = gate if gate is not None else _Gate()
     with patch.object(canary.secrets, "token_hex", return_value=NONCE):
         verdict = runner.run_lane(
@@ -172,6 +172,7 @@ def _run(repo: GitRepo, lane, *, adapter=None, gate=None, monotonic=None):
             process_runner=gate,
             clock=_clock,
             monotonic=monotonic if monotonic is not None else CountingMonotonic(),
+            progress_stream=progress_stream,
         )
     return verdict, gate
 
@@ -714,3 +715,65 @@ def test_the_declared_order_is_the_attempted_order(
     assert verdict.judgment is not None and verdict.judgment.r3 is not None
     assert verdict.judgment.r3.targets == reversed_targets
     _accepted(verdict)
+
+
+class _ProgressRecorder:
+    def __init__(self):
+        self.events = []
+
+    def __call__(self, event):
+        self.events.append(dict(event))
+
+
+class _ControlFailGate(_Gate):
+    def __call__(self, argv, *, env, cwd, timeout):
+        self.cwds.append(Path(cwd))
+        self.timeouts.append(timeout)
+        call_number = len(self.cwds)
+        transformed = "assay-canary-import-break" in (Path(cwd) / TARGETS[0]).read_text()
+        return completed_process(
+            list(argv),
+            1 if call_number == 2 else 0,
+            "FAILED pkg/test.py::test_control - assertion\n" if call_number == 2 else "",
+            "",
+        )
+
+
+def test_control_failure_details_are_post_judgment_progress_only(git_repo: GitRepo):
+    _seed(git_repo)
+    recorder = _ProgressRecorder()
+    stream = mutation.ProgressStream(recorder, clock=_clock)
+    _run(
+        git_repo,
+        _lane(git_repo, targets=(TARGETS[0],), aggregation=None),
+        gate=_ControlFailGate(),
+        progress_stream=stream,
+    )
+    control = next(
+        event for event in recorder.events
+        if event.get("event") == "canary_attempt"
+        and event.get("phase") == "control"
+        and event.get("state") == "finished"
+    )
+    assert control["control_reason_code"] == ReasonCode.COMMAND_FAILED.value
+    assert control["control_termination"] == "failed"
+    assert control["control_first_failing_test"] == "pkg/test.py::test_control"
+    assert "FAILED pkg/test.py::test_control" in control["control_stdout_tail"]
+
+
+def test_passing_control_progress_has_no_failure_details(git_repo: GitRepo):
+    _seed(git_repo)
+    recorder = _ProgressRecorder()
+    _run(
+        git_repo,
+        _lane(git_repo, targets=(TARGETS[0],), aggregation=None),
+        gate=_Gate(catches=False),
+        progress_stream=mutation.ProgressStream(recorder, clock=_clock),
+    )
+    control = next(
+        event for event in recorder.events
+        if event.get("event") == "canary_attempt"
+        and event.get("phase") == "control"
+        and event.get("state") == "finished"
+    )
+    assert not any(key.startswith("control_") for key in control)

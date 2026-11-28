@@ -94,6 +94,7 @@ from .coverage_parsers.model import CoverageProfile
 from .diff import AddedLines
 from .errors import AssayError, Outcome, ReasonCode
 from .evaluate import _is_test_filename, evaluate_coverage
+from .failure_summary import first_failing_test
 from .isolation import SnapshotRepository
 from .process_tree import ProcessTreeEvidence
 from .runner import (
@@ -744,7 +745,13 @@ def run_isolated_canary(
     )
     effective_deadline_s = max(0.0, deadline.expires_at - deadline.monotonic())
 
-    def phase_event(phase: str, state: str, *, duration: float | None = None) -> None:
+    def phase_event(
+        phase: str,
+        state: str,
+        *,
+        duration: float | None = None,
+        details: Mapping[str, object] | None = None,
+    ) -> None:
         if progress_stream is None:
             return
         event = {
@@ -758,6 +765,8 @@ def run_isolated_canary(
         }
         if duration is not None:
             event["duration_s"] = duration
+        if details:
+            event.update(details)
         try:
             progress_stream.emit(event)
         except Exception:
@@ -836,7 +845,29 @@ def run_isolated_canary(
             observation_required=require_contention_observation,
         )
         control_outcome = _attribute_control(control_termination)
-        phase_event("control", "finished", duration=time.monotonic() - control_started)
+        control_details = None
+        if control_outcome is not Outcome.PASS:
+            control_details = {"control_termination": control_termination.value}
+            if control_reason_code is not None:
+                control_details["control_reason_code"] = control_reason_code.value
+            failing_test = first_failing_test(
+                control_unit.result.stdout_tail, control_unit.result.stderr_tail
+            )
+            if failing_test is not None:
+                control_details["control_first_failing_test"] = failing_test
+            for stream_name, raw_tail in (
+                ("control_stdout_tail", control_unit.result.stdout_tail),
+                ("control_stderr_tail", control_unit.result.stderr_tail),
+            ):
+                safe_tail, _ = _bounded_tail(
+                    raw_tail, sensitive_values=_plan_passthrough_values(plan)
+                )
+                if safe_tail:
+                    control_details[stream_name] = safe_tail
+        phase_event(
+            "control", "finished", duration=time.monotonic() - control_started,
+            details=control_details,
+        )
         original_bytes = prepared.read_regular_file(
             canary_repo_path, timeout=deadline.remaining()
         )
