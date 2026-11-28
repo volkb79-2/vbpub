@@ -40,11 +40,12 @@ from conftest import (
     prepared_snapshot,
 )
 
-from assay import canary, runner
+from assay import canary, mutation, runner
 from assay.adapters.python import PythonAdapter
 from assay.canary import run_isolated_canaries
 from assay.config import CanaryConfig
 from assay.errors import AssayError, Outcome, ReasonCode
+from assay.termination import Termination
 from assay.verify import verify_document
 
 MOMENT = datetime(2026, 9, 3, 12, 0, 0, tzinfo=timezone.utc)
@@ -159,7 +160,7 @@ class _NoOpTransformAdapter(PythonAdapter):
         return text, "injected nothing at all"
 
 
-def _run(repo: GitRepo, lane, *, adapter=None, gate=None, monotonic=None):
+def _run(repo: GitRepo, lane, *, adapter=None, gate=None, monotonic=None, progress_stream=None):
     gate = gate if gate is not None else _Gate()
     with patch.object(canary.secrets, "token_hex", return_value=NONCE):
         verdict = runner.run_lane(
@@ -172,6 +173,7 @@ def _run(repo: GitRepo, lane, *, adapter=None, gate=None, monotonic=None):
             process_runner=gate,
             clock=_clock,
             monotonic=monotonic if monotonic is not None else CountingMonotonic(),
+            progress_stream=progress_stream,
         )
     return verdict, gate
 
@@ -382,6 +384,8 @@ def test_budget_exhaustion_is_its_own_terminal_and_keeps_the_payload(
     scratch.mkdir()
     lane = _lane(git_repo, aggregation="all")
     gate = _Gate()
+    recorder = _ProgressRecorder()
+    progress = mutation.ProgressStream(recorder, clock=_clock)
     # The budget survives the first target's control run and its transform
     # run -- the two entries the gate records -- and is gone from the next
     # sample onwards, so the SECOND target is never entered at all.
@@ -408,6 +412,7 @@ def test_budget_exhaustion_is_its_own_terminal_and_keeps_the_payload(
             adapter=PythonAdapter(),
             process_runner=gate,
             clock=_clock,
+            progress_stream=progress,
         )
 
     assert terminal is not None
@@ -427,6 +432,59 @@ def test_budget_exhaustion_is_its_own_terminal_and_keeps_the_payload(
     assert result.attempts[-1].target == TARGETS[1]
     assert "deadline" in result.attempts[-1].description
     assert len(gate.cwds) == 2, "the second target was never entered"
+    phases = [
+        (event["target_index"], event["phase"], event["state"])
+        for event in recorder.events
+        if event.get("event") == "canary_attempt"
+    ]
+    assert phases == [
+        (0, "control", "started"),
+        (0, "control", "finished"),
+        (0, "transform", "started"),
+    ]
+    assert all(event["watched"] is False for event in recorder.events
+               if event.get("event") == "canary_attempt")
+
+
+def test_multi_target_progress_preserves_declared_target_and_half_order(
+    git_repo: GitRepo,
+    tmp_path: Path,
+):
+    head_rev = _seed(git_repo)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    lane = _lane(git_repo, aggregation="all")
+    recorder = _ProgressRecorder()
+    stream = mutation.ProgressStream(recorder, clock=_clock)
+    with prepared_snapshot(git_repo, commit=head_rev, scratch_root=scratch) as prepared:
+        result, terminal = run_isolated_canaries(
+            lane,
+            prepared=prepared,
+            plan=make_plan(lane),
+            deadline=make_deadline(budget_seconds=60.0),
+            project_root=git_repo.path,
+            resolved_base=None,
+            mechanism="import-break",
+            targets=TARGETS,
+            aggregation="all",
+            adapter=PythonAdapter(),
+            process_runner=_Gate(catches=False),
+            clock=_clock,
+            progress_stream=stream,
+        )
+
+    assert terminal is None
+    assert [attempt.target for attempt in result.attempts] == list(TARGETS)
+    assert [
+        (event["target"], event["target_index"], event["phase"], event["state"])
+        for event in recorder.events
+        if event.get("event") == "canary_attempt"
+    ] == [
+        (target, index, phase, state)
+        for index, target in enumerate(TARGETS)
+        for phase in ("control", "transform")
+        for state in ("started", "finished")
+    ]
 
 
 def test_a_budget_exhausted_r3_claim_reaches_the_wire_with_its_payload(
@@ -694,6 +752,73 @@ def test_a_lane_declaring_no_per_attempt_bound_is_byte_unchanged(git_repo: GitRe
     _accepted(verdict)
 
 
+def test_canary_deadline_diagnostic_reads_once_per_target_only_with_progress(
+    git_repo: GitRepo, tmp_path: Path
+):
+    """Only progress diagnostics read the deadline directly per target."""
+    head_rev = _seed(git_repo)
+
+    class CallerRecordingClock:
+        def __init__(self) -> None:
+            self.callers: list[tuple[str, str]] = []
+
+        def __call__(self) -> float:
+            caller = __import__("sys")._getframe(1)
+            self.callers.append((caller.f_code.co_name, caller.f_code.co_filename))
+            return 0.0
+
+    lane = _lane(git_repo, targets=TARGETS, aggregation="all")
+
+    def run_case(name: str, progress_stream=None):
+        monotonic = CallerRecordingClock()
+        deadline = make_deadline(budget_seconds=300.0, monotonic=monotonic)
+        scratch = tmp_path / name
+        scratch.mkdir()
+        with prepared_snapshot(
+            git_repo, commit=head_rev, scratch_root=scratch
+        ) as prepared:
+            result, terminal = run_isolated_canaries(
+                lane,
+                prepared=prepared,
+                plan=make_plan(lane),
+                deadline=deadline,
+                project_root=git_repo.path,
+                resolved_base=None,
+                mechanism="import-break",
+                targets=TARGETS,
+                aggregation="all",
+                adapter=PythonAdapter(),
+                process_runner=_Gate(catches=False),
+                clock=_clock,
+                progress_stream=progress_stream,
+            )
+        assert terminal is None
+        assert [attempt.disposition for attempt in result.attempts] == [
+            "attempted",
+            "attempted",
+        ]
+        assert monotonic.callers, "the deadline clock witness must not pass vacuously"
+        return monotonic.callers
+
+    without_progress = run_case("without-progress")
+    canary_source = str(Path(canary.__file__).resolve())
+    assert not [
+        caller
+        for caller in without_progress
+        if caller == ("run_isolated_canary", canary_source)
+    ]
+
+    recorder = _ProgressRecorder()
+    with_progress = run_case(
+        "with-progress", mutation.ProgressStream(recorder, clock=_clock)
+    )
+    assert [
+        caller
+        for caller in with_progress
+        if caller == ("run_isolated_canary", canary_source)
+    ] == [("run_isolated_canary", canary_source)] * len(TARGETS)
+
+
 @pytest.mark.parametrize("aggregation", ["any", "all"])
 def test_the_declared_order_is_the_attempted_order(
     git_repo: GitRepo, aggregation: str
@@ -714,3 +839,351 @@ def test_the_declared_order_is_the_attempted_order(
     assert verdict.judgment is not None and verdict.judgment.r3 is not None
     assert verdict.judgment.r3.targets == reversed_targets
     _accepted(verdict)
+
+
+class _ProgressRecorder:
+    def __init__(self):
+        self.events = []
+
+    def __call__(self, event):
+        self.events.append(dict(event))
+
+
+class _ControlFailGate(_Gate):
+    def __call__(self, argv, *, env, cwd, timeout):
+        self.cwds.append(Path(cwd))
+        self.timeouts.append(timeout)
+        call_number = len(self.cwds)
+        return completed_process(
+            list(argv),
+            1 if call_number == 2 else 0,
+            "FAILED pkg/test.py::test_control - assertion\n" if call_number == 2 else "",
+            "",
+        )
+
+
+def test_control_failure_details_are_post_judgment_progress_only(git_repo: GitRepo):
+    _seed(git_repo)
+    recorder = _ProgressRecorder()
+    stream = mutation.ProgressStream(recorder, clock=_clock)
+    _run(
+        git_repo,
+        _lane(git_repo, targets=(TARGETS[0],), aggregation=None),
+        gate=_ControlFailGate(),
+        progress_stream=stream,
+    )
+    control = next(
+        event for event in recorder.events
+        if event.get("event") == "canary_attempt"
+        and event.get("phase") == "control"
+        and event.get("state") == "finished"
+    )
+    assert control["control_reason_code"] == ReasonCode.COMMAND_FAILED.value
+    assert control["control_termination"] == "failed"
+    assert control["control_first_failing_test"] == "pkg/test.py::test_control"
+    assert "FAILED pkg/test.py::test_control" in control["control_stdout_tail"]
+
+
+def test_passing_control_progress_has_no_failure_details(git_repo: GitRepo):
+    _seed(git_repo)
+    recorder = _ProgressRecorder()
+    _run(
+        git_repo,
+        _lane(git_repo, targets=(TARGETS[0],), aggregation=None),
+        gate=_Gate(catches=False),
+        progress_stream=mutation.ProgressStream(recorder, clock=_clock),
+    )
+    control = next(
+        event for event in recorder.events
+        if event.get("event") == "canary_attempt"
+        and event.get("phase") == "control"
+        and event.get("state") == "finished"
+    )
+    assert not any(key.startswith("control_") for key in control)
+
+
+@pytest.mark.parametrize(
+    "termination",
+    [item for item in Termination if item is not Termination.PASSED],
+)
+def test_each_nonpass_control_termination_is_recorded(
+    git_repo: GitRepo, termination: Termination, monkeypatch
+):
+    _seed(git_repo)
+    recorder = _ProgressRecorder()
+    calls = 0
+    real_classify = canary._classify_result
+
+    def classify(**kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return termination
+        return real_classify(**kwargs)
+
+    monkeypatch.setattr(canary, "_classify_result", classify)
+    _run(
+        git_repo,
+        _lane(git_repo, targets=(TARGETS[0],), aggregation=None),
+        gate=_Gate(catches=False),
+        progress_stream=mutation.ProgressStream(recorder, clock=_clock),
+    )
+    control = next(
+        event for event in recorder.events
+        if event.get("event") == "canary_attempt"
+        and event.get("phase") == "control"
+        and event.get("state") == "finished"
+    )
+    assert control["control_termination"] == termination.value
+
+
+def test_pass_command_with_r1_failure_can_have_no_tail(
+    git_repo: GitRepo, monkeypatch
+):
+    _seed(git_repo)
+    recorder = _ProgressRecorder()
+    calls = 0
+    real_judge = canary._judge_unit
+
+    def judge(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return Outcome.FAIL, ReasonCode.UNCOVERED_LINES
+        return real_judge(*args, **kwargs)
+
+    monkeypatch.setattr(canary, "_judge_unit", judge)
+    _run(
+        git_repo,
+        _lane(git_repo, targets=(TARGETS[0],), aggregation=None),
+        gate=_Gate(catches=False),
+        progress_stream=mutation.ProgressStream(recorder, clock=_clock),
+    )
+    control = next(
+        event for event in recorder.events
+        if event.get("event") == "canary_attempt"
+        and event.get("phase") == "control"
+        and event.get("state") == "finished"
+    )
+    assert control["control_reason_code"] == ReasonCode.UNCOVERED_LINES.value
+    assert "control_first_failing_test" not in control
+    assert "control_stdout_tail" not in control
+    assert "control_stderr_tail" not in control
+
+
+class _LeakedControlGate(_Gate):
+    def __call__(self, argv, *, env, cwd, timeout):
+        result = completed_process(list(argv), 0, "", "")
+        if len(self.cwds) == 1:
+            result.process_tree_evidence.update(
+                outliving_descendants=1,
+                descendants=[{"pid": 4242, "ppid": 1, "comm": "child"}],
+            )
+        self.cwds.append(Path(cwd))
+        self.timeouts.append(timeout)
+        return result
+
+
+def test_leaked_control_after_pass_has_termination_and_no_invented_reason(
+    git_repo: GitRepo,
+    monkeypatch,
+):
+    _seed(git_repo)
+    recorder = _ProgressRecorder()
+    monkeypatch.setattr(canary, "_judge_unit", lambda *args, **kwargs: (Outcome.PASS, None))
+    _run(
+        git_repo,
+        _lane(git_repo, targets=(TARGETS[0],), aggregation=None),
+        gate=_LeakedControlGate(catches=False),
+        progress_stream=mutation.ProgressStream(recorder, clock=_clock),
+    )
+    control = next(
+        event for event in recorder.events
+        if event.get("event") == "canary_attempt"
+        and event.get("phase") == "control"
+        and event.get("state") == "finished"
+    )
+    assert control["control_termination"] == Termination.LEAKED.value
+    assert "control_reason_code" not in control
+
+
+def test_control_diagnostic_tail_is_bounded_and_redacted(
+    git_repo: GitRepo, monkeypatch
+):
+    _seed(git_repo)
+    recorder = _ProgressRecorder()
+    monkeypatch.setattr(canary, "_plan_passthrough_values", lambda _plan: ("SECRET",))
+
+    class VerboseFailGate(_Gate):
+        def __call__(self, argv, *, env, cwd, timeout):
+            self.cwds.append(Path(cwd))
+            self.timeouts.append(timeout)
+            failed = len(self.cwds) == 2
+            output = ("x" * (runner.COMMAND_TAIL_BYTES + 200) + " SECRET FAILED pkg/test.py::bad\n") if failed else ""
+            return completed_process(list(argv), 1 if failed else 0, output, "")
+
+    _run(
+        git_repo,
+        _lane(git_repo, targets=(TARGETS[0],), aggregation=None),
+        gate=VerboseFailGate(),
+        progress_stream=mutation.ProgressStream(recorder, clock=_clock),
+    )
+    control = next(
+        event for event in recorder.events
+        if event.get("event") == "canary_attempt"
+        and event.get("phase") == "control"
+        and event.get("state") == "finished"
+    )
+    tail = control["control_stdout_tail"]
+    assert len(tail.encode("utf-8")) <= runner.COMMAND_TAIL_BYTES
+    assert "SECRET" not in tail
+    assert "******" in tail
+
+
+def test_canary_progress_emit_failure_does_not_change_result(git_repo: GitRepo, tmp_path: Path):
+    head_rev = _seed(git_repo)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+
+    class BrokenStream:
+        def emit(self, _event):
+            raise OSError("progress destination failed")
+
+    lane = _lane(git_repo, targets=(TARGETS[0],), aggregation=None)
+    with prepared_snapshot(git_repo, commit=head_rev, scratch_root=scratch) as prepared:
+        result, terminal = run_isolated_canaries(
+            lane,
+            prepared=prepared,
+            plan=make_plan(lane),
+            deadline=make_deadline(budget_seconds=60.0),
+            project_root=git_repo.path,
+            resolved_base=None,
+            mechanism="import-break",
+            targets=(TARGETS[0],),
+            aggregation=None,
+            adapter=PythonAdapter(),
+            process_runner=_Gate(catches=False),
+            clock=_clock,
+            progress_stream=BrokenStream(),
+        )
+
+    assert terminal is None
+    assert result.attempts[0].disposition == "attempted"
+
+
+@pytest.mark.parametrize("failure", [ValueError("bad producer event"), TypeError("bad producer value")])
+def test_canary_progress_producer_errors_propagate(
+    git_repo: GitRepo, tmp_path: Path, failure: Exception
+):
+    head_rev = _seed(git_repo)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+
+    class BrokenProducer:
+        def emit(self, _event):
+            raise failure
+
+    with prepared_snapshot(git_repo, commit=head_rev, scratch_root=scratch) as prepared:
+        with pytest.raises(type(failure), match="bad producer"):
+            run_isolated_canaries(
+                _lane(git_repo, targets=(TARGETS[0],), aggregation=None),
+                prepared=prepared,
+                plan=make_plan(_lane(git_repo, targets=(TARGETS[0],), aggregation=None)),
+                deadline=make_deadline(budget_seconds=60.0),
+                project_root=git_repo.path,
+                resolved_base=None,
+                mechanism="import-break",
+                targets=(TARGETS[0],),
+                aggregation=None,
+                adapter=PythonAdapter(),
+                process_runner=_Gate(catches=False),
+                clock=_clock,
+                progress_stream=BrokenProducer(),
+            )
+
+
+def test_budget_expiry_after_half_start_has_no_finish_record(git_repo: GitRepo, tmp_path: Path):
+    head_rev = _seed(git_repo)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    lane = _lane(git_repo, aggregation="all")
+    recorder = _ProgressRecorder()
+    stream = mutation.ProgressStream(recorder, clock=_clock)
+    clock_started = [False]
+    injected_clock = _ExpiringMonotonic(
+        expired=lambda: clock_started[0], budget=1.0
+    )
+    deadline = make_deadline(budget_seconds=1.0, monotonic=injected_clock)
+    clock_started[0] = True
+    with prepared_snapshot(git_repo, commit=head_rev, scratch_root=scratch) as prepared:
+        result, terminal = run_isolated_canaries(
+            lane,
+            prepared=prepared,
+            plan=make_plan(lane),
+            deadline=deadline,
+            project_root=git_repo.path,
+            resolved_base=None,
+            mechanism="import-break",
+            targets=TARGETS,
+            aggregation="all",
+            adapter=PythonAdapter(),
+            process_runner=_Gate(catches=False),
+            clock=_clock,
+            progress_stream=stream,
+        )
+
+    assert terminal is not None and terminal.outcome is Outcome.BUDGET_EXCEEDED
+    phases = [event for event in recorder.events if event.get("event") == "canary_attempt"]
+    assert [(event["phase"], event["state"]) for event in phases] == [("control", "started")]
+    assert result.attempts[0].not_attempted_reason == "budget_exhausted"
+
+
+@pytest.mark.parametrize("phase", ["control", "transform"])
+def test_post_judgment_snapshot_cleanup_failure_has_no_finished_record(
+    git_repo: GitRepo, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, phase: str
+):
+    from contextlib import contextmanager
+
+    head_rev = _seed(git_repo)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    recorder = _ProgressRecorder()
+    stream = mutation.ProgressStream(recorder, clock=_clock)
+    with prepared_snapshot(git_repo, commit=head_rev, scratch_root=scratch) as prepared:
+        method_name = "materialize" if phase == "control" else "materialize_replacement"
+        original = getattr(prepared, method_name)
+
+        @contextmanager
+        def fail_after_cleanup(**kwargs):
+            with original(**kwargs) as snapshot:
+                yield snapshot
+            raise RuntimeError("injected snapshot cleanup failure")
+
+        monkeypatch.setattr(prepared, method_name, fail_after_cleanup)
+        with pytest.raises(RuntimeError, match="snapshot cleanup failure"):
+            run_isolated_canaries(
+                _lane(git_repo, targets=(TARGETS[0],), aggregation=None),
+                prepared=prepared,
+                plan=make_plan(_lane(git_repo, targets=(TARGETS[0],), aggregation=None)),
+                deadline=make_deadline(budget_seconds=60.0),
+                project_root=git_repo.path,
+                resolved_base=None,
+                mechanism="import-break",
+                targets=(TARGETS[0],),
+                aggregation=None,
+                adapter=PythonAdapter(),
+                process_runner=_Gate(catches=False),
+                clock=_clock,
+                progress_stream=stream,
+            )
+
+    phases = [
+        (event["phase"], event["state"])
+        for event in recorder.events if event.get("event") == "canary_attempt"
+    ]
+    expected = [("control", "started")]
+    if phase == "transform":
+        expected.extend(
+            [("control", "finished"), ("transform", "started")]
+        )
+    assert phases == expected

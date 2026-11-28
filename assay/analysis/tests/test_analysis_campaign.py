@@ -1281,6 +1281,20 @@ def test_o1_exit_mapping_follows_the_status_table(tmp_path, monkeypatch):
     _validate(document)
 
 
+def test_campaign_accepts_canary_attempt_after_mutation_end(tmp_path, monkeypatch):
+    root, head, verdict, progress = _complete_fixture(tmp_path, monkeypatch, "r2_pass")
+    records = [json.loads(line) for line in progress.read_text().splitlines()]
+    end_index = next(index for index, item in enumerate(records) if item["event"] == "end")
+    records.insert(end_index + 1, {"event": "canary_attempt"})
+    progress.write_text("".join(json.dumps(item) + "\n" for item in records))
+
+    code, output, error = _invoke(root, head, verdict, progress, command_exit=0)
+
+    assert code == 0
+    assert error == ""
+    assert json.loads(output)["status"] == "complete"
+
+
 def test_o1_a_command_exit_that_differs_from_the_verdict_is_an_evidence_error(tmp_path, monkeypatch):
     root, head, verdict, progress = _complete_fixture(tmp_path, monkeypatch, "r2_pass")
     code, out, err = _invoke(root, head, verdict, progress, command_exit=1)

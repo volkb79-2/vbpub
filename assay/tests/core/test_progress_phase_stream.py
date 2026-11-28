@@ -697,6 +697,14 @@ def test_the_progress_vocabulary_is_enforced_not_merely_documented():
     assert recorder.events == []
 
 
+def test_canary_attempt_is_a_closed_vocabulary_member():
+    recorder = _Recorder()
+    stream = _stream(recorder)
+    stream.emit({"event": "canary_attempt", "phase": "control", "state": "started"})
+    assert recorder.events[0]["event"] == "canary_attempt"
+    assert "candidate_index" not in recorder.events[0]
+
+
 def test_every_record_is_enriched_once_centrally():
     """B065's fields ride on `ProgressStream`, so a producer cannot forget
     them and two producers cannot disagree about what `elapsed_s` measures.

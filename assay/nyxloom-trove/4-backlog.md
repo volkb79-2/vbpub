@@ -7434,7 +7434,7 @@ skips are the pre-existing `requires the tester-unified image's own
 
 ## B064 — progress and resume beyond R2: what R0/R1 could observably report, and why R3's canary is the one tier where both are actually feasible
 
-**Status: DEFERRED for the R3 half (operator triage 2026-09-23; coupled to B007) — PARTIAL (filed 2026-09-02, `f254b702`; R0/R1 half shipped v5.2.0, 2026-09-08) — R0/R1 phase-boundary progress stream shipped (A-444, `mutation.PROGRESS_EVENTS`); R3 per-attempt progress/resume remains unbuilt, coupled to B007's identity.**
+R3 per-attempt progress shipped under B612; per-target resume remains open.
 
 **Filed 2026-09-02** by the controller, from an operator question during Wave
 D: *do R0/R1 runtimes justify progress/resume, and could the canary (R3) have
@@ -16248,7 +16248,7 @@ Second half (deliberate, hence documented rather than taken here): `tools/releas
 
 ## B593 — R3 canary control failures omit the first failing test and bounded output tail
 
-**Status: OPEN (filed 2026-11-27 from vbpub-core 2026-11-26 follow-up 1); severity: medium (diagnostic evidence).**
+**Status: IMPLEMENTED in `3ec5436c0` (control diagnostics); focused canary tests pass on 2026-11-28; registered gate evidence pending.**
 
 **P5 design note.** `docs/DESIGN-CANARY-LIVENESS.md` compares verdict fields with progress-only diagnostics; recommendation: keep B593 diagnostics in canary progress records while v21 remains closed.
 
@@ -16294,7 +16294,7 @@ Second half (deliberate, hence documented rather than taken here): `tools/releas
 
 ## B612 — P5: R3 canary liveness or explicit unwatched disclosure
 
-**Status: OPEN (filed 2026-11-28); severity: medium.** Design note: `docs/DESIGN-CANARY-LIVENESS.md`. The recommendation is to retain `budget_per_attempt`, disclose that canary halves are unwatched, and carry B593's control diagnostics in progress records while the v21 verdict delta remains closed.
+**Status: IMPLEMENTED in `69942c7c0`, `8ab930f08`, `3ec5436c0`, `910c9582a`, and `c35e97bb5`; focused affected tests pass on 2026-11-28 (310 passed); registered gate evidence pending.** Design note: `docs/DESIGN-CANARY-LIVENESS.md`. The recommendation is to retain `budget_per_attempt`, disclose that canary halves are unwatched, and carry B593's control diagnostics in progress records while the v21 verdict delta remains closed. A half that raises after `started` has no `finished` record.
 
 **Wanted.** Implement the selected P5 option, including honest per-half watch/budget disclosure and the B593 control reason, first failing test and bounded output tail.
 
@@ -16302,13 +16302,23 @@ Second half (deliberate, hence documented rather than taken here): `tools/releas
 
 ## B613 — P5 note: a reclassified non-PASS canary control can have no reason code
 
-**Status: OPEN (filed 2026-11-28, sol check `assay-p5note-r2`); severity: medium.** Part of the B612 implementation package.
+**Status: IMPLEMENTED in `3ec5436c0`; focused null-reason regression test passes on 2026-11-28; registered gate evidence pending.** Part of the B612 implementation package.
 
 **Symptom.** `docs/DESIGN-CANARY-LIVENESS.md` option (b) item 3 takes the control diagnostic's reason from `control_reason_code`. The control is judged and then reclassified (`src/assay/canary.py:793-811`, `:189-195`): a judged PASS with a leaked process tree classifies as LEAKED (`src/assay/termination.py:86-89`), the control becomes INCONCLUSIVE and `control_reason_code` stays `None`. A record built as the note says would omit the cause.
 
 **Wanted.** After `_attribute_control`, emit `control_reason_code` when present and include the classified `control_termination` for every non-PASS control. Do not invent a `ReasonCode`.
 
 **Close when.** A registered-lane test covers a non-PASS control with a null reason code (for example a leaked process tree after `_judge_unit` returns PASS), and the note states the same rule.
+
+## B614 — The canary deadline-read witness compares an unresolved caller path
+
+**Status: OPEN (filed 2026-11-28 from the delta review of the B612 test witness at `a0e848141`); severity: medium (test portability, no source defect).**
+
+**Symptom.** `test_canary_deadline_diagnostic_reads_once_per_target_only_with_progress` (`tests/core/test_canary_multi_target.py`) compares the calling frame's raw `co_filename` with `Path(canary.__file__).resolve()`. In a checkout imported through a symlinked path the two can differ although the same file is meant. The progress half then fails with no defect in the code; the no-progress half matches nothing, so only the positive assertion keeps the test from passing vacuously. Established by reading, not reproduced.
+
+**Wanted.** Resolve the recorded caller filename (`Path(filename).resolve()`) before both comparisons.
+
+**Close when.** Both comparisons use resolved paths and the test passes in a registered lane.
 
 ## B595 — native R2 tail retries can start with any positive lane time when the candidate budget is disabled
 

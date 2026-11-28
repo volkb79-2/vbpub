@@ -993,6 +993,13 @@ def _check_progress(
                 )
             current_run["terminal_exit"] = event["exit_code"]
             current_run["terminal_event"] = event
+        elif kind == "canary_attempt":
+            if (
+                current_run is None
+                or current_run["end"] is None
+                or current_run["terminal_exit"] is not None
+            ):
+                raise ValueError(f"progress canary_attempt event {index} is out of run order")
         elif kind == "resume_merged":
             if (
                 current_run is None

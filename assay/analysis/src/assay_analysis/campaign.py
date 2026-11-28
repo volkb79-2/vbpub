@@ -336,7 +336,10 @@ def _read_progress(
             raise ValueError(f"progress event names wrong lane at line {line_number}")
         if current["terminal_seen"]:
             raise ValueError(f"progress contains events after verdict_written at line {line_number}")
-        if current["sweep_end_seen"] and event["event"] != "verdict_written":
+        if current["sweep_end_seen"] and event["event"] not in (
+            "verdict_written",
+            "canary_attempt",
+        ):
             raise ValueError(f"progress contains sweep events after end at line {line_number}")
         if event["event"] == "end":
             current["sweep_end_seen"] = True

@@ -672,6 +672,13 @@ last-event age without the verdict. A lane that looks hung for nine minutes
 is legible with these flags on; it is not legible with them off, which is
 the mistake to check for before concluding assay itself is silent.
 
+For R3, the same closed vocabulary includes `canary_attempt` records for the
+control and transformed halves. Both are explicitly unwatched; the configured
+`budget_per_attempt` and lane budget remain binding. The normal run summary
+discloses those bounds even when no progress file is requested. Progress
+readers must recognize the producer's vocabulary: an older reader can reject
+the entire stream when it encounters a new event.
+
 **The numeric bound stays mandatory for R0/R1 anyway, and that is a ruling
 (A-447), not an oversight.** `budget = "unbounded"` is legal — but *only*
 when every unit of the lane's work carries its own bound: R2 requires

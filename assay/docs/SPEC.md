@@ -203,6 +203,12 @@ What would help more, or be cleaner (non-normative):
   control plus a transformed run; aggregation is `any` (first PASS
   short-circuits) or `all`. `src/assay/verdict.py:869`,
   `src/assay/verdict.py:878`, `src/assay/canary.py:1279`
+- **RIG-415** Neither canary half is watched by the R2 liveness monitor.
+  The configured `judge.canary.budget_per_attempt` and lane `budget` remain
+  binding. The run summary discloses both; `canary_attempt` progress records
+  report each half and its effective deadline when progress is enabled.
+  Control failure details appear only on non-PASS control records.
+  `src/assay/canary.py:732`, `src/assay/cli.py:4156`
 - **RIG-420** Per target: broken control, malformed mechanism or no-op
   transform → `INCONCLUSIVE/CANARY_INCONCLUSIVE`; transformed run PASSes or
   fails with a reason other than the expected one → `FAIL/CANARY_SURVIVED`;
@@ -479,7 +485,12 @@ with `ERROR/BAD_LANE_CONFIG` on any other lane. `src/assay/cli.py:2394`,
   (default 60 s, floor 5 s). assay emits progress; stall detection of a
   whole lane belongs to the caller. `src/assay/cli.py:688`,
   `src/assay/cli.py:707`, `src/assay/runner.py:1178`,
-  `src/assay/runner.py:1179`
+  `src/assay/runner.py:1179`. R3 additionally emits `canary_attempt` records
+  after R2's mutation `end`; the vocabulary remains diagnostic and does not
+  change verdicts or budgets (`src/assay/mutation.py:1234`).
+  A half that raises after its `started` record has no `finished` record; the
+  raised error remains the run's terminal result. In particular, expiry while
+  materializing a half does not synthesize a completion or control diagnostic.
 
 ### 6.2 Implemented liveness bounds
 
