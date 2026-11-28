@@ -248,6 +248,7 @@ items:
   - {id: B599, title: "B105 RAM admission counts reclaimable file cache as used", type: bugfix, component: gate, context_estimate: small}
   - {id: B604, title: "B596 changelog pre-flight does not model CMRU's real release history and version derivation", type: bugfix, component: gate, context_estimate: small}
   - {id: B605, title: "B596 linked-worktree control does not guard a linked checkout", type: bugfix, component: gate, context_estimate: small}
+  - {id: B606, title: "Carried-survivor rejudge reminder omits the actual lane and explicit state directory", type: bugfix, component: mutation, context_estimate: small}
   - {id: B610, title: "Assay merges that touch src/assay must pass self-qualification-provisional before merge", type: bugfix, component: gate, context_estimate: small}
 ---
 
@@ -16254,13 +16255,19 @@ Second half (deliberate, hence documented rather than taken here): `tools/releas
 
 ## B594 — per-attempt canary expiry is reported as a lane-wide deadline expiry
 
-**Status: OPEN (filed 2026-11-27 from vbpub-core 2026-11-26 follow-up 2); severity: low (misleading diagnosis).**
+**Status: FIXED in `4ee6a6c0c` (deadline scope and expiry tests); severity: low (misleading diagnosis).**
 
-**Symptom.** `run_isolated_canary` tightens the lane deadline to the canary's `budget_per_attempt` (`src/assay/canary.py:737-740`), but `LaneDeadline.remaining()` raises the fixed message “the lane-wide deadline expired” for any finite deadline (`src/assay/runner.py:392`). Thus an attempt-level expiry names the wrong clock. Established by reading; not reproduced with a live gate in this filing.
+**Symptom.** `run_isolated_canary` tightens the lane deadline to the canary's `budget_per_attempt` (`src/assay/canary.py:737-740`), but `LaneDeadline.remaining()` previously raised the fixed message “the lane-wide deadline expired” for any finite deadline (`src/assay/runner.py:392`). Thus an attempt-level expiry named the wrong clock. Established by reading; no live gate was run for the filing.
 
-**Wanted.** Preserve whether the active deadline is lane-wide or per-attempt and report the matching scope when it expires.
+**Fix.** The error says “the per-attempt canary budget expired” only when that bound is strictly nearer. A nearer lane deadline, or no per-attempt bound, retains “the lane-wide deadline expired”. Tests cover both expiries and the nearer-lane case (`tests/core/test_canary_multi_target.py`, `4ee6a6c0c`).
 
-**Close when.** A registered-lane test proves a per-attempt expiry identifies the attempt budget, while a true lane expiry continues to identify the lane budget.
+## B606 — carried-survivor rejudge reminder omits the actual lane and explicit state directory
+
+**Status: FIXED in `9e90d160b` (CLI message, exact-command assertions, consumer documentation); severity: low (misleading command).**
+
+**Symptom.** After carrying a survivor, the reminder printed a literal `<lane>` and omitted the explicit `--state-dir`, so copying the suggested rejudge command could target the wrong store. It also did not say that selection-changing `--file`, `--shard` and appended arguments must be repeated.
+
+**Fix.** The message prints the actual lane and shell-quotes the explicit state directory when supplied. It reminds the operator to repeat selection-changing options. `tests/core/test_mutation_carry_forward.py` pins the command with and without `--state-dir` (`9e90d160b`); the subsequent rejudge behavior is covered in `63f602751`.
 
 ## B595 — native R2 tail retries can start with any positive lane time when the candidate budget is disabled
 
