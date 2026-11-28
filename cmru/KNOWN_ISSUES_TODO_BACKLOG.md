@@ -14,7 +14,7 @@
 
 | ID | Status | Fix commit |
 | --- | --- | --- |
-| KI-224 | OPEN (withdrawn unsafe witness; final all-30 probe pending) | — |
+| KI-224 | OPEN (final review probe: 24 KILLED, two equivalent, four open under KI-225) | — |
 | KI-225 | OPEN (2026-11-28: recursive transaction mkdir can recreate a removed Git common directory or project root during an in-flight operation) | — |
 | KI-220 | CLOSED BY DESIGN (2026-11-27; controller ruling clarified the timeout contract, and the test now checks group disappearance with bounded polling) | branch |
 | KI-215 | CLOSED BY DESIGN (prose claims are checked by review; the structural test pins each CMRU Assay lane's mode and absence of `judge.base_source`) | — |
@@ -204,7 +204,7 @@ manifest syntax/source forms outside its supported registry subset.
 
 ### KI-224 — batch 2 transaction R2 survivors
 
-**Status:** OPEN. The final all-30 probe after review corrections is pending.
+**Status:** OPEN. The final all-30 probe measured 24 KILLED, two equivalent, and four open.
 `ddc55befcd6f` is killed by
 `test_origin_branch_error_prefers_stdout_when_git_has_no_stderr`. `45f04d579d01` is witnessed
 by `test_retention_rollback_preserves_original_artifact_error_after_new_logs_writer`: the
@@ -225,14 +225,15 @@ Two equivalence proofs remain:
   the preceding handler. Reachable return/yield and exception behavior, files and modes are
   unchanged; no caller stderr or undecodable subprocess output is involved.
 
-The final probe counts are pending. `9dd13b6f41a9` and `4a724fcc7a5b` remain equivalent only
-for the specific cases proved above; the four directory-removal cases remain open under KI-225.
+The final probe confirms 24 KILLED, two equivalent, and four open. `9dd13b6f41a9` and
+`4a724fcc7a5b` remain equivalent only for the specific cases proved above; the four
+directory-removal cases remain open under KI-225.
 The earlier attribution for `14a2f1be5a86` is corrected: its witness is the
 `[trailing-dot]` case. `[trailing-slash]` is still rejected by the later component check.
 
 The original batch probe ran all 30 candidates against the two existing test files. The final
 probe covered all 30 against those files and `tests/test_transaction_r2_survivors_b2.py`:
-record its measured KILLED/equivalent/open counts here. No product source was changed.
+24 KILLED, two equivalent survivors, and four open survivors. No product source was changed.
 
 ### KI-225 — transaction directory creation can resurrect removed roots
 
