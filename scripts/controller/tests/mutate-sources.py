@@ -59,8 +59,11 @@ def mutant(source: str, name: str, before: str, after: str, destination: Path = 
 
 
 mutant("scripts/controller/compact-resume.sh", "compact-resume-no-changed-receipt",
-       '    if [[ -n $receipt_now && $receipt_now != "$receipt_before" ]]; then',
-       '    if [[ -n $receipt_now ]]; then')
+       '  [[ -n $receipt && $receipt != "$receipt_before" ]] || return 1',
+       '  [[ -n $receipt ]] || return 1')
+mutant("scripts/controller/compact-resume.sh", "compact-resume-no-session-id-check",
+       '    [[ $session_id == "$expected_session_id" ]] || return 1',
+       '    [[ -n $session_id ]] || return 1')
 mutant("scripts/controller/hooks/ctx-hooks.py", "compact-receipt-any-source",
        '        if source == "compact":\n            write_compact_receipt(hook, log_path)',
        '        if True:\n            write_compact_receipt(hook, log_path)')

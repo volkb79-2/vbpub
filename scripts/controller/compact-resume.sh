@@ -4,7 +4,8 @@ set -u
 # compact-resume.sh <tmux-pane-id> <compact-guidance-file> <resume-prompt-file> <log-file>
 # DEFAULT restart of an interactive Claude Code session in a tmux pane: wait until the pane is
 # idle, send `/compact ` and its guidance as separate literal chunks, confirm the
-# SessionStart(compact) receipt, wait until it finishes (then idle again; max 60 min),
+# changed SessionStart(compact) receipt belongs to the expected session when its id is
+# known, wait until it finishes (then idle again; max 60 min),
 # and type the resume prompt and Enter.
 # The session is kept as a summary and its background work (subagents, Monitors, background
 # shells, codex runs) survives, unlike /clear (clear-resume.sh). Measured 2026-11-24: 442k -> ~60k
@@ -22,9 +23,13 @@ set -u
 # taken by ctl-keepalive.sh) was not obtained within 2 min (nothing sent). A pane that is not ready
 # for a reason the helper cannot read logs that reason once per wait, with the footer; 8 no changed
 # SessionStart(compact) receipt was observed after /compact, so the resume prompt was not sent (the
-# session may have compacted if its hook is missing). Progress goes to <log-file>. Footer markers
+# session may have compacted if its hook is missing, or its receipt may name another session).
+# Expected id: COMPACT_RESUME_SESSION_ID, else CLAUDE_CODE_SESSION_ID when TMUX_PANE is the target.
+# With no known id, any changed receipt for the pane is accepted; a different session sharing it
+# can therefore confirm compaction.
+# Progress goes to <log-file>. Footer markers
 # and the shared idle logic: resume-lib.sh. Test seams (tests/test-compact-resume.sh):
-# COMPACT_RESUME_{POLL,IDLE_TRIES,TYPE_PAUSE,FINAL_WAIT,START_TRIES,DONE_TRIES,SETTLE,LOCK_DIR,LOCK_WAIT,RECEIPT_DIR}.
+# COMPACT_RESUME_{POLL,IDLE_TRIES,TYPE_PAUSE,FINAL_WAIT,START_TRIES,DONE_TRIES,SETTLE,LOCK_DIR,LOCK_WAIT,RECEIPT_DIR,SESSION_ID}.
 # Receipt confirmation defaults to a 120-second window (60 polls at 2 seconds).
 RESUME_PREFIX=COMPACT_RESUME
 # shellcheck source=resume-lib.sh
@@ -39,6 +44,19 @@ check_log
 [[ -r $prompt_file ]] || { say "ERROR prompt file unreadable: $prompt_file"; exit 2; }
 check_pane
 resolve_pane   # the target may be a session name: lock and send on the canonical %pane id
+expected_session_id=${COMPACT_RESUME_SESSION_ID:-}
+if [[ -z $expected_session_id && ${TMUX_PANE:-} == "$pane" ]]; then
+  expected_session_id=${CLAUDE_CODE_SESSION_ID:-}
+fi
+if [[ -n $expected_session_id && ! $expected_session_id =~ ^[A-Za-z0-9-]+$ ]]; then
+  say "ERROR invalid expected session id"
+  exit 2
+fi
+if [[ -n $expected_session_id ]]; then
+  say "expected compact receipt session_id=$expected_session_id"
+else
+  say "no expected compact receipt session id; any changed receipt for this pane is accepted"
+fi
 lock_pane      # the keep-alive watcher pings under the same per-pane lock; a held lock is waited for (max 2 min)
 say "start pane=$pane guidance=$guidance_file prompt=$prompt_file"
 idle_or_exit "$idle_tries" 3 "pane never idle within 30 min"
@@ -47,6 +65,15 @@ say "pane idle, input empty; footer before: $(foot | grep -o 'ctx [0-9?]*k\?' | 
 receipt_dir=$(seam RECEIPT_DIR "${CONTROLLER_HOME:-$HOME/controller}/compact-receipts")
 receipt_path=$receipt_dir/$pane.json
 receipt_before=$(cat -- "$receipt_path" 2>/dev/null || :)
+receipt_confirms() {
+  local receipt=$1 session_id
+  [[ -n $receipt && $receipt != "$receipt_before" ]] || return 1
+  if [[ -n $expected_session_id ]]; then
+    session_id=$(sed -n 's/.*"session_id"[[:space:]]*:[[:space:]]*"\([A-Za-z0-9-]*\)".*/\1/p' <<<"$receipt")
+    [[ $session_id == "$expected_session_id" ]] || return 1
+  fi
+  return 0
+}
 send_chunks '/compact '
 [[ -z $guidance ]] || send_chunks "$guidance"
 sleep "$type_pause"
@@ -57,7 +84,7 @@ for phase_name in window completion; do
   [[ $phase_name == completion ]] && phase_tries=$done_tries
   for _ in $(seq "$phase_tries"); do
     receipt_now=$(cat -- "$receipt_path" 2>/dev/null || :)
-    if [[ -n $receipt_now && $receipt_now != "$receipt_before" ]]; then
+    if receipt_confirms "$receipt_now"; then
       started=1
       break 2
     fi
@@ -69,16 +96,24 @@ for phase_name in window completion; do
       quiet=$((quiet + 1))
     fi
     if [[ $quiet -ge 3 && $phase_name == completion ]]; then
+      receipt_now=$(cat -- "$receipt_path" 2>/dev/null || :)
+      if receipt_confirms "$receipt_now"; then started=1; break 2; fi
       say "ERROR no changed compaction receipt at $receipt_path; the SessionStart(compact) hook may be missing; resume prompt NOT sent"
       exit 8
     fi
     sleep "$poll"
   done
   if [[ $phase_name == window && $quiet -ge 3 ]]; then
+    receipt_now=$(cat -- "$receipt_path" 2>/dev/null || :)
+    if receipt_confirms "$receipt_now"; then started=1; break; fi
     say "ERROR no changed compaction receipt at $receipt_path; the SessionStart(compact) hook may be missing; resume prompt NOT sent"
     exit 8
   fi
 done
+if [[ $started -ne 1 ]]; then
+  receipt_now=$(cat -- "$receipt_path" 2>/dev/null || :)
+  if receipt_confirms "$receipt_now"; then started=1; fi
+fi
 if [[ $started -ne 1 ]]; then
   say "ERROR compaction not finished within 60 min (no receipt); resume prompt NOT sent"
   exit 4

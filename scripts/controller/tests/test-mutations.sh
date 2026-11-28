@@ -69,6 +69,9 @@ expect_killed mutation-runner-override-error-killed \
 expect_killed compact-resume-no-changed-receipt \
   env COMPACT_RESUME_SCRIPT="$ROOT/mutants/scripts/controller/compact-resume-no-changed-receipt" \
     bash "$SCRIPT_DIR/test-compact-resume.sh"
+expect_killed compact-resume-no-session-id-check \
+  env COMPACT_RESUME_SCRIPT="$ROOT/mutants/scripts/controller/compact-resume-no-session-id-check" \
+    bash "$SCRIPT_DIR/test-compact-resume.sh"
 expect_killed compact-receipt-any-source \
   env CTX_HOOKS_SCRIPT="$ROOT/mutants/scripts/controller/compact-receipt-any-source" \
     bash "$SCRIPT_DIR/test-ctx-hooks.sh"

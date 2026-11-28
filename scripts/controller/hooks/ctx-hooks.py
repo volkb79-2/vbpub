@@ -245,10 +245,11 @@ def log(path: Path | None, record: dict) -> None:
         pass
 
 
-def write_compact_receipt(hook: dict, log_path: Path | None) -> None:
+def write_compact_receipt(args: argparse.Namespace, hook: dict, log_path: Path | None) -> None:
     """Record a top-level compact SessionStart without making the hook fail."""
     pane = os.environ.get("TMUX_PANE", "")
     if (not re.fullmatch(r"%[0-9]+", pane) or hook.get("agent_id")
+            or session_kind(args, hook) == "spawned"
             or (os.environ.get("CTX_HOOK_ROLE") or "").strip().lower() == "agent"):
         return
     directory = Path(os.environ.get("CONTROLLER_HOME") or (Path.home() / "controller")) / "compact-receipts"
@@ -1279,7 +1280,7 @@ def run(mode: str, args: argparse.Namespace) -> int:
     if mode == "session-start":
         source = str(hook.get("source") or "startup")
         if source == "compact":
-            write_compact_receipt(hook, log_path)
+            write_compact_receipt(args, hook, log_path)
         if state is None:
             log(log_path, {"ev": "SessionStart", "source": source, "error": "no state dir"})
             return 0

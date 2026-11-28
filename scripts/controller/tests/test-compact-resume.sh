@@ -6,6 +6,7 @@ set -uo pipefail
 # deterministic under any host load. The script's poll interval is shortened through its test seams.
 unset COMPACT_RESUME_POLL COMPACT_RESUME_IDLE_TRIES COMPACT_RESUME_TYPE_PAUSE COMPACT_RESUME_FINAL_WAIT \
   COMPACT_RESUME_START_TRIES COMPACT_RESUME_DONE_TRIES COMPACT_RESUME_SETTLE COMPACT_RESUME_RECEIPT_DIR
+unset CLAUDE_CODE_SESSION_ID COMPACT_RESUME_SESSION_ID TMUX_PANE
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 SCRIPT=${COMPACT_RESUME_SCRIPT:-$SCRIPT_DIR/../compact-resume.sh}
 # shellcheck source=pane-frame-lib.sh
@@ -115,7 +116,7 @@ scenario happy "B I I I" "I K K I I I"
 run '%9' "$D/guidance.txt" "$D/prompt.txt" "$D/log"
 [[ $RC -eq 0 ]] || fail "happy path exit $RC"
 want=$( { echo "has-session %9"; rep 5 "capture start"; echo "send-keys %9 -l <text 1>"; echo "send-keys %9 -l <text 2>"; echo "send-keys %9 Enter"
-          rep 11 "capture compact"; echo "send-keys %9 -l <text 3>"; echo "send-keys %9 Enter"; echo "capture compact"; } )
+          rep 10 "capture compact"; echo "send-keys %9 -l <text 3>"; echo "send-keys %9 Enter"; echo "capture compact"; } )
 [[ $(calls) == "$want" ]] || { calls >&2; fail "happy path call sequence"; }
 cmp -s "$D/sent-start" "$D/expected-start.txt" || fail "/compact line was not sent exactly"
 cmp -s "$D/sent-compact" "$D/expected-resume.txt" || fail "resume prompt was not sent exactly"

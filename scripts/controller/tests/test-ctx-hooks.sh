@@ -139,6 +139,9 @@ cmp -s "$ROOT/receipt-first.json" "$RECEIPT" || fail 'subagent compaction wrote 
 CTX_HOOK_ROLE=agent run "$ROOT/receipt-agent-role.out" session-start "$MAIN_JSON" \
   --state-dir "$STATE" --extract "$BIN/fake-extract"
 cmp -s "$ROOT/receipt-first.json" "$RECEIPT" || fail 'agent role compaction wrote a receipt'
+CTX_SESSION_KIND=spawned run "$ROOT/receipt-spawned-kind.out" session-start "$MAIN_JSON" \
+  --state-dir "$STATE" --extract "$BIN/fake-extract"
+cmp -s "$ROOT/receipt-first.json" "$RECEIPT" || fail 'spawned session kind wrote a receipt'
 printf 'blocked\n' > "$ROOT/controller-home-file"
 before_output=$ROOT/receipt-unwritable.out
 CONTROLLER_HOME=$ROOT/controller-home-file hook session-start "$MAIN_JSON" --state-dir "$STATE" --extract "$BIN/fake-extract" \
