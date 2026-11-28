@@ -14,7 +14,7 @@
 
 | ID | Status | Fix commit |
 | --- | --- | --- |
-| KI-224 | OPEN (2026-11-28 batch 2 transaction R2 probe: 22/30 killed; 8 survive without an equivalence proof) | — |
+| KI-224 | OPEN pending final probe (2026-11-28 batch 2: seven equivalence proofs recorded; one new diagnostic witness awaits mutation confirmation) | — |
 | KI-220 | CLOSED BY DESIGN (2026-11-27; controller ruling clarified the timeout contract, and the test now checks group disappearance with bounded polling) | branch |
 | KI-215 | CLOSED BY DESIGN (prose claims are checked by review; the structural test pins each CMRU Assay lane's mode and absence of `judge.base_source`) | — |
 | KI-214 | FIXED IN THIS BRANCH (the campaign test docstring names the repository root `.gitignore` as the source of the output-ignore patterns) | branch |
@@ -203,14 +203,46 @@ manifest syntax/source forms outside its supported registry subset.
 
 ### KI-224 — batch 2 transaction R2 survivors
 
-**Status:** OPEN. The batch 2 probe ran all 30 candidates against
+**Status:** OPEN pending final mutation probe. The batch 2 probe initially left eight candidates.
+`ddc55befcd6f` now has a focused behavior witness for a failing remote lookup with empty stderr
+and non-empty stdout. Seven other candidates have these equivalence arguments:
+
+- `d25580fc963e`, `70c7796b6763`, `c2e3338fe004`, `01735170cf8a` flip `parents=True` to
+  `False` on directory creation. For tag attempts, `_ensure_scope_dir()` has already created the
+  exact scope directory; for absence records, the Git common directory is the existing parent;
+  for retained outputs, `_project_roots_for_retention()` requires the project root to exist, so
+  each target parent is at most one missing directory below an existing parent. Recursive and
+  non-recursive `mkdir` therefore return the same result or exception and create the same leaf
+  with the same mode. Existing leaves are accepted by `exist_ok=True` in both versions. No caller
+  stderr or decoded subprocess output is involved.
+- `9dd13b6f41a9` changes `or` to `and` in the absence-record ref validation. Every ref in that
+  record is subsequently required to match `read_release_tag_attempts()`, whose reader accepts
+  only valid tag refs. A malformed ref therefore fails the later attempt-match clause even if
+  this earlier validation predicate is relaxed; valid refs make both sides false. JSON object
+  keys are strings. Return value and exception type/message are identical, and the reader writes
+  no files or modes and runs no subprocess, so caller stderr under `GIT_TRACE=1` and undecodable
+  subprocess output cannot differ.
+- `45f04d579d01` changes the rollback bookkeeping assignment after
+  `target_logs.replace(staged_logs)` succeeds. On success, `target_logs` has already been moved
+  out of the destination, so the later `target_logs.exists()` cleanup condition is false with
+  either flag. If the restore raises, execution never reaches the assignment. The same original
+  artifact-rename exception propagates, with the same files and modes; this code emits no caller
+  stderr and decodes no subprocess output.
+- `4a724fcc7a5b` changes the descriptor assertion from `and` to `or`. Both descriptors are set
+  only after their respective successful `os.open()` calls. If either open fails, the exception
+  handler closes any earlier descriptor and raises before reaching the assertion. Thus every
+  reachable assertion has both descriptors non-`None`; return/yield and exception behavior,
+  file modes, caller stderr under `GIT_TRACE=1`, and undecodable-output behavior are unchanged.
+
+The final probe must confirm the seven listed candidates still survive and the new `ddc55befcd6f`
+behavior test kills its mutant before KI-224 can close.
+
+The batch 2 probe ran all 30 candidates against
 `tests/test_transaction_r2_bf1_records.py`, `tests/test_transaction_r2_survivors.py`,
 and `tests/test_transaction_r2_survivors_b2.py`. It killed 22 and left these eight
-without a witness or proof: `d25580fc963e`, `70c7796b6763`, `9dd13b6f41a9`,
-`ddc55befcd6f`, `c2e3338fe004`, `01735170cf8a`, `45f04d579d01`, and
-`4a724fcc7a5b`. The batch remains incomplete until each is killed by a caller-visible
-behavior test or receives a proof that covers filesystem effects, caller stderr under
-`GIT_TRACE=1`, and undecodable output where relevant. No product code was changed.
+without a witness or proof at that time: `d25580fc963e`, `70c7796b6763`, `9dd13b6f41a9`,
+`ddc55befcd6f`, `c2e3338fe004`, `01735170cf8a`, `45f04d579d01`, and `4a724fcc7a5b`.
+No product code was changed.
 
 
 > **KI-12 … KI-16 shipped together** in `merge(cmru): KI-12..KI-17 and S15 tool
