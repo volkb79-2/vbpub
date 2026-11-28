@@ -749,6 +749,26 @@ def test_analysis_pilot_accepts_canary_attempt_after_mutation_end(tmp_path: Path
     checker.verify_pilot(**evidence)
 
 
+@pytest.mark.parametrize("placement", ["before_end", "after_terminal"])
+def test_analysis_pilot_rejects_canary_attempt_outside_post_end_window(
+    tmp_path: Path, placement: str
+):
+    evidence = _valid_pilot(tmp_path)
+    events = [json.loads(line) for line in evidence["progress_raw"].splitlines()]
+    index = next(
+        i for i, item in enumerate(events)
+        if item["event"] == ("end" if placement == "before_end" else "verdict_written")
+    )
+    if placement == "before_end":
+        events.insert(index, {"event": "canary_attempt"})
+    else:
+        events.insert(index + 1, {"event": "canary_attempt"})
+    evidence["progress_raw"] = _producer_progress_bytes(events)
+
+    with pytest.raises(ValueError, match="canary_attempt.*out of run order"):
+        checker.verify_pilot(**evidence)
+
+
 def test_analysis_pilot_ignores_unrelated_prior_progress_segments(tmp_path: Path):
     evidence = _valid_pilot(tmp_path)
     events = [json.loads(line) for line in evidence["progress_raw"].splitlines()]
