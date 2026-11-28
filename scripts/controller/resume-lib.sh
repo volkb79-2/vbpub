@@ -197,13 +197,15 @@ send_chunks() { # literal UTF-8 text in <=400-character chunks (`--` stops flag 
     tmux send-keys -t "$pane" -l -- "$chunk" || { say "ERROR send-keys failed (text)"; exit 6; }
     sleep "$type_pause"
   done < <(printf '%s' "$text" | perl -0777 -ne '
-    use Encode qw(decode FB_CROAK);
-    my $s = decode("UTF-8", $_, FB_CROAK);
+    my $s = $_;
+    utf8::decode($s) or die "invalid UTF-8\n";
     while (length $s) {
       my $n = length($s) > 400 ? 400 : length($s);
       if ($n < length($s)) { my $space = rindex(substr($s, 0, $n), " "); $n = $space + 1 if $space >= 0; }
       $n-- if $n < length($s) && substr($s, $n - 1, 1) eq ";";
-      print substr($s, 0, $n, ""), "\0";
+      my $out = substr($s, 0, $n, "");
+      utf8::encode($out);
+      print $out, "\0";
     }
   ')
 }

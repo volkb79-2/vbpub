@@ -175,8 +175,15 @@ COMPACT_RESUME_START_TRIES=3 run '%9' "$D/guidance.txt" "$D/prompt.txt" "$D/log"
 [[ $RC -eq 0 ]] || fail "chunked text exit $RC"
 cmp -s "$D/sent-start" "$D/expected-start.txt" || fail "chunked command/guidance changed text or lost a semicolon"
 for raw in "$D"/raw.*; do
-  perl -e 'use Encode qw(decode FB_CROAK); local $/; my $s=decode("UTF-8", <> , FB_CROAK); exit(length($s) <= 400 && $s !~ /;\z/ ? 0 : 1)' "$raw" || fail "chunk exceeds 400 characters, splits UTF-8, or ends in semicolon: $raw"
+  perl -e 'local $/; my $s=<>; utf8::decode($s) or die "invalid UTF-8\n"; exit(length($s) <= 400 && $s !~ /;\z/ ? 0 : 1)' "$raw" || fail "chunk exceeds 400 characters, splits UTF-8, or ends in semicolon: $raw"
 done
+# Latin-1-range Unicode needs explicit UTF-8 encoding after Perl decodes the input.
+scenario latin1 "I" "K K I I I"
+printf 'éü§·' >"$D/guidance.txt"
+printf '/compact éü§·' >"$D/expected-start.txt"
+COMPACT_RESUME_START_TRIES=3 run '%9' "$D/guidance.txt" "$D/prompt.txt" "$D/log"
+[[ $RC -eq 0 ]] || fail "Latin-1-range UTF-8 exit $RC"
+cmp -s "$D/sent-start" "$D/expected-start.txt" || fail "Latin-1-range characters were not byte-identical"
 # Guidance itself may mention Compacting; without a live spinner it remains unconfirmed.
 scenario guidance-mentions-spinner "I" "I"
 printf 'Compacting is only text in this guidance.\n' >"$D/guidance.txt"
