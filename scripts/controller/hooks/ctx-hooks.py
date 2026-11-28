@@ -73,6 +73,11 @@ retired untracked `.controller-state/hooks/ctx.py` are kept, so re-pointing
                  block of HANDOFF.md (its FIRST ACTION and READ FIRST lines),
                  THIS session's readback path and size when its own last build
                  succeeded, otherwise the failure and the exact manual command.
+                 A top-level compact source also atomically writes a
+                 session/timestamp/nonce receipt to
+                 `$CONTROLLER_HOME/compact-receipts/$TMUX_PANE.json` (default
+                 `$HOME/controller/compact-receipts/`); compact-resume uses it
+                 to confirm that the session completed compaction.
   stop           a user-visible scrollback marker (time and context fill).
 
 Thresholds (operator 2026-11-24; the 500k/650k ceilings are gone): controller
@@ -151,7 +156,9 @@ import re
 import shlex
 import subprocess
 import sys
+import tempfile
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 STEP = 50_000          # the ladder's cadence
@@ -236,6 +243,38 @@ def log(path: Path | None, record: dict) -> None:
             handle.write(json.dumps(record, sort_keys=True) + "\n")
     except Exception:
         pass
+
+
+def write_compact_receipt(hook: dict, log_path: Path | None) -> None:
+    """Record a top-level compact SessionStart without making the hook fail."""
+    pane = os.environ.get("TMUX_PANE", "")
+    if (not re.fullmatch(r"%[0-9]+", pane) or hook.get("agent_id")
+            or (os.environ.get("CTX_HOOK_ROLE") or "").strip().lower() == "agent"):
+        return
+    directory = Path(os.environ.get("CONTROLLER_HOME") or (Path.home() / "controller")) / "compact-receipts"
+    path = directory / f"{pane}.json"
+    payload = {
+        "session_id": str(hook.get("session_id") or ""),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "write_id": time.time_ns(),
+    }
+    temp_name = None
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+        fd, temp_name = tempfile.mkstemp(prefix=f".{pane}.", suffix=".tmp", dir=directory)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, sort_keys=True)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_name, path)
+    except Exception as exc:
+        log(log_path, {"ev": "compact-receipt", "error": str(exc)})
+        if temp_name:
+            try:
+                Path(temp_name).unlink(missing_ok=True)
+            except Exception:
+                pass
 
 
 def options(argv: list[str]) -> tuple[str, argparse.Namespace]:
@@ -1239,6 +1278,8 @@ def run(mode: str, args: argparse.Namespace) -> int:
 
     if mode == "session-start":
         source = str(hook.get("source") or "startup")
+        if source == "compact":
+            write_compact_receipt(hook, log_path)
         if state is None:
             log(log_path, {"ev": "SessionStart", "source": source, "error": "no state dir"})
             return 0
