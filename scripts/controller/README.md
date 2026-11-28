@@ -855,12 +855,15 @@ printf 'two findings\n' | scripts/controller/pi-ctl-send.sh --from platform host
 
 It refuses an invalid role or sender name, an empty body, a body over
 `PI_CTL_MAX_SEND_BYTES` (same default and bounds as the extension), a state root
-that is relative, inside the checkout, or behind a symlink, for the same reasons
+that is relative, inside the checkout, or has a symlink in any path component
+from the root through `inbox/<role>`, for the same reasons
 the extension refuses those: the receiver scans `*.msg` entries, so a malformed
 or misplaced file would only be quarantined later, away from the caller. The
 sender defaults to `main` (`PI_CTL_SEND_FROM` or `--from` changes it), and the
 temporary file never ends in `.msg`, so an interrupted write leaves nothing a
-session could claim.
+session could claim. The component check runs before directory creation and
+again immediately before publication; a filesystem swap between check and use
+remains a race this shell implementation cannot eliminate.
 
 After recording a message id in main's own state, set `message_id` from the
 header and run the `ack` command. A successful print is the delivery: the

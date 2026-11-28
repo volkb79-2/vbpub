@@ -181,6 +181,17 @@ check_inbox_not_a_directory() {
   [[ -z $(find "$STATE/inbox/linkedrole-target" -mindepth 1) ]] || fail 'a refused symlinked inbox still received files'
   rm -f -- "$STATE/inbox/plainrole"
   rm -f -- "$STATE/inbox/linkedrole"
+
+  # An intermediate `inbox` symlink must be refused before mkdir or mktemp
+  # writes anything through it.
+  local linked_root=$ROOT/intermediate-state target=$ROOT/intermediate-target
+  mkdir -p "$linked_root" "$target"
+  ln -s "$target" "$linked_root/inbox"
+  if run_send "$WORK" PI_CTL_ROOT="$linked_root" -- hostobs 'text' > "$out" 2>&1; then
+    fail 'a symlinked inbox component was accepted'
+  fi
+  contains "$out" 'symlink in the state path' 'a symlinked inbox component is refused'
+  [[ -z $(find "$target" -mindepth 1) ]] || fail 'a refused inbox component symlink still received files'
 }
 
 check_message_is_claimed_by_the_extension() {

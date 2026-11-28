@@ -144,6 +144,10 @@ if [[ -n $repository ]]; then
 fi
 
 inbox=$root/inbox/$role
+# Check before mkdir as well as before publication: mkdir -p must never walk
+# through an inbox or role symlink. The repeated pre-publish check narrows the
+# remaining check-then-use race but cannot eliminate it without directory fds.
+reject_symlink_components "$inbox"
 if [[ -e $inbox || -L $inbox ]]; then
   [[ -d $inbox && ! -L $inbox ]] || refuse "the inbox path is not a plain directory: $inbox"
 else
@@ -186,6 +190,7 @@ cat -- "$body_temp" >> "$message_temp" || refuse 'cannot append the message body
 target=$inbox/$id-from-$sender.msg
 # A rename is the atomic publish: the receiver sees either no file or the whole
 # envelope, never a header that a body is still being appended to.
+reject_symlink_components "$inbox"
 mv -- "$message_temp" "$target" || refuse "cannot publish the message to $target"
 message_temp=
 body_temp=

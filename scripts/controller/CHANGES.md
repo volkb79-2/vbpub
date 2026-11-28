@@ -45,7 +45,10 @@ no separate version number, so entries are grouped by the work that landed.
   format, atomic publish by rename with temporaries that never end in `.msg`,
   0700/0600 modes, one printed message id, and a refusal with a reason for an
   invalid role/sender, an empty or oversized body, or a state root that is
-  relative, inside the checkout or behind a symlink. Sender defaults to `main`.
+  relative, inside the checkout or has a symlink in any component through
+  `inbox/<role>`. Components are checked before directory creation and again
+  before publication; a check-then-use swap remains a known race. Sender defaults
+  to `main`.
 
 ### Pi sub-controller harness (P-plat-PICTL)
 - Add a dependency-free JavaScript core and explicit pi extension for
