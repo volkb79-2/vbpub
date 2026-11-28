@@ -14,7 +14,8 @@
 
 | ID | Status | Fix commit |
 | --- | --- | --- |
-| KI-224 | CLOSED BY DESIGN (2026-11-28 batch 2: 23 KILLED, seven equivalent; final 30-ID probe confirmed) | this branch |
+| KI-224 | OPEN (review 2026-11-28: five prior equivalence claims rejected or unresolved; final probe pending) | — |
+| KI-225 | OPEN (review 2026-11-28: recursive transaction mkdir can recreate a removed Git common directory or project root during an in-flight operation) | — |
 | KI-220 | CLOSED BY DESIGN (2026-11-27; controller ruling clarified the timeout contract, and the test now checks group disappearance with bounded polling) | branch |
 | KI-215 | CLOSED BY DESIGN (prose claims are checked by review; the structural test pins each CMRU Assay lane's mode and absence of `judge.base_source`) | — |
 | KI-214 | FIXED IN THIS BRANCH (the campaign test docstring names the repository root `.gitignore` as the source of the output-ignore patterns) | branch |
@@ -203,47 +204,47 @@ manifest syntax/source forms outside its supported registry subset.
 
 ### KI-224 — batch 2 transaction R2 survivors
 
-**Status:** CLOSED BY DESIGN. The batch 2 probe initially left eight candidates.
-`ddc55befcd6f` is killed by `test_origin_branch_error_prefers_stdout_when_git_has_no_stderr`,
-which supplies a failing lookup result with empty stderr and non-empty stdout and observes the
-caller-facing RuntimeError detail. Seven other candidates are equivalent for these reasons:
+**Status:** OPEN pending the corrected final probe. `ddc55befcd6f` is killed by
+`test_origin_branch_error_prefers_stdout_when_git_has_no_stderr`. `d25580fc963e` and
+`45f04d579d01` now have deterministic interleaving tests in
+`test_transaction_r2_survivors_b2.py`. Three prior recursive-mkdir equivalence claims are
+withdrawn: source inspection shows `parents=True` can recreate a removed Git common directory
+or project-root path. Those original behaviors appear unsafe and are recorded under KI-225;
+no test blesses them. These IDs remain open until a safe product behavior is specified and tested:
+`70c7796b6763`, `c2e3338fe004`, and `01735170cf8a`.
 
-- `d25580fc963e`, `70c7796b6763`, `c2e3338fe004`, `01735170cf8a` flip `parents=True` to
-  `False` on directory creation. For tag attempts, `_ensure_scope_dir()` has already created the
-  exact scope directory; for absence records, the Git common directory is the existing parent;
-  for retained outputs, `_project_roots_for_retention()` requires the project root to exist, so
-  each target parent is at most one missing directory below an existing parent. Recursive and
-  non-recursive `mkdir` therefore return the same result or exception and create the same leaf
-  with the same mode. Existing leaves are accepted by `exist_ok=True` in both versions. No caller
-  stderr or decoded subprocess output is involved.
-- `9dd13b6f41a9` changes `or` to `and` in the absence-record ref validation. Every ref in that
-  record is subsequently required to match `read_release_tag_attempts()`, whose reader accepts
-  only valid tag refs. A malformed ref therefore fails the later attempt-match clause even if
-  this earlier validation predicate is relaxed; valid refs make both sides false. JSON object
-  keys are strings. Return value and exception type/message are identical, and the reader writes
-  no files or modes and runs no subprocess, so caller stderr under `GIT_TRACE=1` and undecodable
-  subprocess output cannot differ.
-- `45f04d579d01` changes the rollback bookkeeping assignment after
-  `target_logs.replace(staged_logs)` succeeds. On success, `target_logs` has already been moved
-  out of the destination, so the later `target_logs.exists()` cleanup condition is false with
-  either flag. If the restore raises, execution never reaches the assignment. The same original
-  artifact-rename exception propagates, with the same files and modes; this code emits no caller
-  stderr and decodes no subprocess output.
-- `4a724fcc7a5b` changes the descriptor assertion from `and` to `or`. Both descriptors are set
-  only after their respective successful `os.open()` calls. If either open fails, the exception
-  handler closes any earlier descriptor and raises before reaching the assertion. Thus every
-  reachable assertion has both descriptors non-`None`; return/yield and exception behavior,
-  file modes, caller stderr under `GIT_TRACE=1`, and undecodable-output behavior are unchanged.
+Two equivalence proofs remain:
 
-The final probe at the completed test head confirmed 23 KILLED and these seven SURVIVED as
-equivalent: `d25580fc963e`, `70c7796b6763`, `9dd13b6f41a9`, `c2e3338fe004`,
-`01735170cf8a`, `45f04d579d01`, and `4a724fcc7a5b`. No candidate remains open.
+- `9dd13b6f41a9` relaxes the early absence-record ref-name check. Any invalid string ref still
+  fails the later comparison with `read_release_tag_attempts()`, which only returns valid refs;
+  valid refs pass both forms. JSON object keys are strings. Return value, exception type/message,
+  files and modes are unchanged; the reader emits no caller stderr under `GIT_TRACE=1` and does
+  not decode subprocess output.
+- `4a724fcc7a5b` changes the parent-descriptor assertion from `and` to `or`. Successful
+  `os.open()` calls assign both descriptors before the assertion; a partial-open error exits in
+  the preceding handler. Reachable return/yield and exception behavior, files and modes are
+  unchanged; no caller stderr or undecodable subprocess output is involved.
 
-The batch 2 probe ran all 30 candidates against
-`tests/test_transaction_r2_bf1_records.py`, `tests/test_transaction_r2_survivors.py`,
-and `tests/test_transaction_r2_survivors_b2.py`. It killed 22 and left these eight
-without a witness or proof at that time. The seven proof IDs are listed above; the eighth,
-`ddc55befcd6f`, now has a behavior test. No product code was changed.
+The seven existing survivors are therefore split into two proven equivalents and three open
+product-behavior cases; `ddc55befcd6f` is newly killed, while d255 and 45f are pending final
+probe confirmation. The earlier attribution for `14a2f1be5a86` is corrected: its witness is the
+`[trailing-dot]` case. `[trailing-slash]` is still rejected by the later component check.
+
+The original batch probe ran all 30 candidates against the two existing test files. The final
+probe must cover all 30 against those files and `tests/test_transaction_r2_survivors_b2.py`;
+update this entry and CHANGES from that measured result. No product source was changed.
+
+### KI-225 — transaction directory creation can resurrect removed roots
+
+**Status:** OPEN, filed during the batch-2 review fix. In
+`write_confirmed_absent_release_tag_attempts()`, a previously computed scope path is created
+with `parents=True` after record reads; removal of the Git common directory in that interval can
+cause a partial common directory and sidecar to be recreated. In
+`retain_successful_build_outputs()`, the target `logs` and `artifacts` parents are recursively
+created after staging; if the selected project root is removed while staging, those calls can
+recreate parts of that root before the stale staging path fails. The expected refusal/cleanup
+contract needs design and product tests. This agent changed no product source and did not add a
+test that blesses the recreation.
 
 
 > **KI-12 … KI-16 shipped together** in `merge(cmru): KI-12..KI-17 and S15 tool

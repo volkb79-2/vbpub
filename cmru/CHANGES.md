@@ -32,12 +32,12 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
      the `fix(cmru): ...` commit subject. -->
 
 <!-- cmru: pending release notes begin -->
-- tests(cmru): batch 2 adds caller-visible transaction survivor coverage; the final
-  probe kills 23 of 30 candidates across the batch 1 and batch 2 test files, and
-  KI-224 proves the remaining seven flips equivalent. The tests cover tag-attempt
-  and absence records, ref-name
-  parsing, remote error handling, retained build manifests, symlink refusal,
-  and cleanup identity. No product code changed.
+- tests(cmru): batch 2 adds caller-visible transaction survivor coverage. Review
+  reopened KI-224 after finding three invalid directory-state assumptions and a
+  missing rollback interleaving. Two recursive-mkdir resurrection paths are filed
+  as KI-225; final 30-ID counts are pending. The ref parser witness for
+  `14a2f1be5a86` is `[trailing-dot]`; `[trailing-slash]` is caught by a later
+  component check. No product code changed.
 - tests: cmru's gate judges cmru again. The tester-unified image suite moved to
   `tester-unified/tests/` (KI-194), the real-estate dependency and bootstrap-doc
   order checks moved to the new `estate-lint/` project, and
