@@ -213,7 +213,6 @@ function restartController(f, entries, makeIdPrefix = "restart") {
 		timers: f.timers,
 		verifySessionLock: () => 12,
 	}, { root: f.root, name: "receiver", wrapperPath: f.wrapper });
-	ignored.push(controller);
 	return { handlers, messages, context, controller, consume, get pendingCount() { return pending.length; } };
 }
 
@@ -529,7 +528,7 @@ test("a legacy claim record without the queued flag is treated as queued", async
 	await f.controller.pollInbox();
 	await f.flushPromises();
 	assert.equal(f.calls.length, 1, "an attempt count without the queued fact cannot prove the copy is gone");
-	assert.equal(fs.existsSync(path.join(f.root, "processing", "receiver", `${claimFile}.msg`)), true,
+	assert.equal(fs.existsSync(path.join(f.root, "processing", "receiver", claimFile)), true,
 		"the claim stays on disk for the fresh runtime or for pi's persisted entry");
 });
 
