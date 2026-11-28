@@ -941,8 +941,7 @@ class HostJobWorker:
                             self._lane_log_bytes += count
                             view = view[count:]
                     except (OSError, ValueError) as exc:
-                        if self._lane_log_failure_reason is None:
-                            self._lane_log_failure_reason = f"lane-log-write-failed: {exc}"
+                        self._lane_log_failure_reason = f"lane-log-write-failed: {exc}"
                         self._lane_log_write_failed.set()
                 if len(chunk) > remaining:
                     self._lane_log_overflow.set()

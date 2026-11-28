@@ -12050,6 +12050,143 @@ def test_lane_log_error_preserves_prior_error_and_does_not_stop_exited_lane(tmp_
     os.close(worker.repo_root_fd)
 
 
+def test_lane_log_drain_handles_missing_stream_and_stopped_pipe_events(tmp_path, monkeypatch):
+    eagain_root = tmp_path / "eagain"
+    eagain_root.mkdir()
+    worker = _worker(eagain_root, _VersionRunner({}))
+    empty_fd = os.open(tmp_path / "empty.log", os.O_CREAT | os.O_WRONLY, 0o600)
+    worker._drain_lane_log(object(), empty_fd)
+    os.close(worker.repo_root_fd)
+
+    worker = _worker(tmp_path, _VersionRunner({}))
+    read_fd, write_fd = os.pipe()
+    log_fd = os.open(eagain_root / "eagain.log", os.O_CREAT | os.O_WRONLY, 0o600)
+
+    class Process:
+        stdout = os.fdopen(read_fd, "rb", buffering=0)
+
+    process = Process()
+    worker._lane_log_stop.set()
+    worker._drain_lane_log(process, log_fd)
+    process.stdout.close()
+    os.close(write_fd)
+    os.close(worker.repo_root_fd)
+
+    post_read_root = tmp_path / "post-read"
+    post_read_root.mkdir()
+    worker = _worker(post_read_root, _VersionRunner({}))
+    read_fd, write_fd = os.pipe()
+    log_fd = os.open(post_read_root / "post-read.log", os.O_CREAT | os.O_WRONLY, 0o600)
+    real_read = os.read
+    set_once = [True]
+
+    def stop_after_chunk(fd, size):
+        if fd == read_fd and set_once[0]:
+            set_once[0] = False
+            worker._lane_log_stop.set()
+            return b"buffered"
+        if fd == read_fd:
+            raise BlockingIOError()
+        return real_read(fd, size)
+
+    monkeypatch.setattr(executor_worker_module.os, "read", stop_after_chunk)
+    class PostReadProcess:
+        stdout = os.fdopen(read_fd, "rb", buffering=0)
+
+    process = PostReadProcess()
+    worker._drain_lane_log(process, log_fd)
+    process.stdout.close()
+    os.close(write_fd)
+    assert (post_read_root / "post-read.log").read_bytes() == b"buffered"
+    os.close(worker.repo_root_fd)
+
+
+def test_lane_log_short_write_becomes_write_failure_and_discards(tmp_path, monkeypatch):
+    worker = _worker(tmp_path, _VersionRunner({}))
+    read_fd, write_fd = os.pipe()
+    os.write(write_fd, b"diagnostic")
+    os.close(write_fd)
+    log_fd = os.open(tmp_path / "short-write.log", os.O_CREAT | os.O_WRONLY, 0o600)
+    monkeypatch.setattr(executor_worker_module.os, "write", lambda _fd, _data: 0)
+
+    class Process:
+        stdout = os.fdopen(read_fd, "rb", buffering=0)
+
+    process = Process()
+    worker._drain_lane_log(process, log_fd)
+    process.stdout.close()
+    assert worker._lane_log_write_failed.is_set()
+    assert worker._lane_log_failure_reason == "lane-log-write-failed: short lane.log write"
+    os.close(worker.repo_root_fd)
+
+
+def test_run_lane_joins_pipe_drainer_and_keeps_normal_exit_output(tmp_path):
+    worker = _worker(tmp_path, _VersionRunner({}))
+    worker.runner_identity = RunnerIdentity("runner", 1001, 1002, (1002,))
+    worker.request = {"repo": "vbpub", "project": ".", "lane": "r0-r1", "extra_argv": [], "base": None}
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    worker.repo_root = repo
+    worker.checkout_rel = ".fleetd-worktrees/controller-run-1"
+    worker.checkout_fd = os.open(checkout, os.O_RDONLY | os.O_DIRECTORY)
+    worker.job_dir.mkdir(parents=True)
+    (worker.job_dir / "state.json").write_text(json.dumps({
+        "schema": "fleet-host-job-state/1", "job_id": worker.job_id, "state": "running",
+        "guard": {"present": False}, "lane_mode": "host",
+    }), encoding="utf-8")
+    worker._helper = lambda mode, *args, cwd_fd=None: (
+        executor_worker_module._prepare_event(cwd_fd, args[1]), CommandResult(0)
+    )[1]
+    worker._read_events = lambda *, final=True: []
+    payload = b"normal buffered lane output\n"
+    read_fd, write_fd = os.pipe()
+
+    class Process:
+        pid = 876
+        stdout = os.fdopen(read_fd, "rb", buffering=0)
+
+        @staticmethod
+        def poll():
+            return 0
+
+    process = Process()
+
+    class Runner:
+        def start(self, *_args, **_kwargs):
+            os.write(write_fd, payload)
+            os.close(write_fd)
+            return process
+
+    worker.runner = Runner()
+    try:
+        assert worker._run_lane("run-gate", "host", {"runner_name": None}, None) == 0
+        assert (worker.job_dir / "lane.log").read_bytes() == payload
+        assert worker._lane_log_bytes == len(payload)
+        assert process.stdout.closed
+    finally:
+        for fd in (worker.project_fd, worker.checkout_fd, worker.repo_root_fd):
+            if fd >= 0:
+                os.close(fd)
+
+
+def test_lane_summary_scan_stops_at_configured_ceiling(tmp_path):
+    from dataclasses import replace
+
+    worker, _runner, job_dir, _checkout = _ready_worker(tmp_path)
+    worker.request["lane"] = "r0-r1"
+    worker.policy = replace(worker.policy, lane_log_max_bytes=16)
+    (job_dir / "lane.log").write_bytes(b"x" * 16)
+    try:
+        with pytest.raises(AdmissionError, match="anchored Run-Gate summary is missing"):
+            worker._last_lane_summary()
+    finally:
+        for fd in (worker.project_fd, worker.checkout_fd, worker.repo_root_fd):
+            if fd >= 0:
+                os.close(fd)
+
+
 def test_verdict_binding_records_inspection_errors_and_rejects_invalid_lane(tmp_path):
     worker, _runner, _job_dir, _checkout = _ready_worker(tmp_path)
     worker.request.update(repo="vbpub", lane="r0-r1", sha=SHA)
