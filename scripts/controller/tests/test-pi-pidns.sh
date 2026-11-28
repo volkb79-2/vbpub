@@ -317,10 +317,10 @@ check_live_isolation() {
 
   local owner_file=$ROOT/outer-owner.lock owner_pid owner_ticks outer_ticks
   local owner_command owner_child owner_fd poll
-  local release=$ROOT/owner-release
-  mkfifo "$release" || fail 'could not create the owner-record release FIFO'
-  exec {owner_fd}<>"$release" || fail 'could not open the owner-record release FIFO read-write'
-  owner_command=". '$SCRIPT_DIR/../lib.sh'; CONTROLLER_RUN_LOCK_PATH='$owner_file'; controller_run_record_owner; IFS= read -r -t 60 release_line < '$release'"
+  local owner_release=$ROOT/owner-release
+  mkfifo "$owner_release" || fail 'could not create the owner-record release FIFO'
+  exec {owner_fd}<>"$owner_release" || fail 'could not open the owner-record release FIFO read-write'
+  owner_command=". '$SCRIPT_DIR/../lib.sh'; CONTROLLER_RUN_LOCK_PATH='$owner_file'; controller_run_record_owner; IFS= read -r -t 60 release_line < '$owner_release'"
   TMUX_TMPDIR="$ROOT/tmux-owner" "$SOURCE" -c "$owner_command" > "$ROOT/owner-record.out" 2> "$errors" &
   owner_child=$!
   for ((poll = 0; poll < 600; poll++)); do
