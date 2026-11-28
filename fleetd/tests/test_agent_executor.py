@@ -12189,6 +12189,27 @@ def test_lane_log_drain_closes_pipe_and_log_fd_after_cleanup_errors(tmp_path, mo
         os.close(worker.repo_root_fd)
 
 
+def test_close_lane_stdout_leaves_a_reused_descriptor_number_alone():
+    read_fd, write_fd = os.pipe()
+    os.close(write_fd)
+
+    class ReusingPipe:
+        def fileno(self):
+            return read_fd
+
+        def close(self):
+            # Stand in for another thread taking the number right after close.
+            replacement = os.open(os.devnull, os.O_RDONLY)
+            os.dup2(replacement, read_fd)
+            os.close(replacement)
+
+    try:
+        assert executor_worker_module.HostJobWorker._close_lane_stdout(ReusingPipe()) is None
+        os.fstat(read_fd)
+    finally:
+        os.close(read_fd)
+
+
 def test_record_lane_exit_persists_only_the_first_observed_status(tmp_path):
     worker = _worker(tmp_path, _VersionRunner({}))
     saves = []

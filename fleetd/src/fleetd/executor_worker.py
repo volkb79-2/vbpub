@@ -972,18 +972,18 @@ class HostJobWorker:
                 stream_fd = stream.fileno()
             except Exception:
                 pass
-        close_error = None
         try:
             stream.close()
         except Exception as exc:
-            close_error = exc
-        finally:
-            if stream_fd is not None:
+            # Close the number ourselves only while the stream still owns it:
+            # after a successful close another thread may already hold it.
+            if stream_fd is not None and not getattr(stream, "closed", False):
                 try:
                     os.close(stream_fd)
                 except OSError:
                     pass
-        return close_error
+            return exc
+        return None
 
     def _check_lane_log_limit(self, process: RunnerProcess) -> None:
         if self._lane_log_write_failed.is_set():
