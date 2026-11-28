@@ -1671,36 +1671,44 @@ mod tests {
         let mut rig = ready_bin(Level::Observe);
         rig.backend.event_window = EventWindow {
             items: vec![
-                event_item(0, "first", 7, 10),
                 event_item(1, "second", 7, 11),
-                event_item(2, "third", 8, 12),
+                event_item(0, "first", 7, 10),
+                event_item(2, "third", 6, 12),
             ],
             oldest_real_ns: Some(10),
             displaced: 0,
             started_real_ns: 9,
         };
-        rig.send(&events_req(2, 0, 20, 2, "null"));
+        rig.send(&events_req(2, 0, 20, 3, "null"));
         let first = event_reply(&mut rig);
-        assert!(first.contains("\"name\":\"first\""), "{first}");
+        assert!(
+            first.find("\"name\":\"third\"").unwrap() < first.find("\"name\":\"first\"").unwrap()
+        );
         assert!(
             first.find("\"name\":\"first\"").unwrap() < first.find("\"name\":\"second\"").unwrap()
         );
-        assert!(first.contains("\"next\":\"v1:1:"), "{first}");
+        assert!(first.contains("\"next\":null"), "{first}");
         assert!(first.contains("\"oldest_real_ns\":10"), "{first}");
         assert!(first.contains("\"displaced\":0"), "{first}");
         assert!(first.contains("\"started_real_ns\":9"), "{first}");
-        let cursor = page_cursor(&first).expect("page cursor");
 
-        rig.send(&events_req(3, 0, 20, 1, &format!("\"{cursor}\"")));
+        rig.send(&events_req(3, 0, 20, 1, "null"));
+        let page_one = event_reply(&mut rig);
+        let cursor = page_cursor(&page_one).expect("page cursor");
+        assert!(cursor.ends_with(":0"), "{cursor}");
+
+        rig.send(&events_req(4, 0, 20, 2, &format!("\"{cursor}\"")));
         let continued = event_reply(&mut rig);
-        assert!(continued.contains("\"name\":\"third\""), "{continued}");
+        assert!(continued.contains("\"name\":\"first\""), "{continued}");
+        assert!(continued.contains("\"name\":\"second\""), "{continued}");
+        assert!(!continued.contains("\"name\":\"third\""), "{continued}");
         assert!(continued.contains("\"next\":null"), "{continued}");
 
-        rig.send(&events_req(4, 1, 20, 2, &format!("\"{cursor}\"")));
+        rig.send(&events_req(5, 1, 20, 2, &format!("\"{cursor}\"")));
         assert!(event_reply(&mut rig).contains("\"code\":\"cursor-invalid\""));
 
         let other_epoch = cursor.replacen("v1:1:", "v1:2:", 1);
-        rig.send(&events_req(5, 0, 20, 2, &format!("\"{other_epoch}\"")));
+        rig.send(&events_req(6, 0, 20, 2, &format!("\"{other_epoch}\"")));
         assert!(event_reply(&mut rig).contains("\"code\":\"cursor-invalid\""));
     }
 
@@ -1749,6 +1757,22 @@ mod tests {
         rig.backend.event_window.displaced = 2;
         rig.send(&events_req(3, 0, 20, 1, &format!("\"{cursor}\"")));
         assert!(event_reply(&mut rig).contains("\"code\":\"cursor-invalid\""));
+    }
+
+    #[test]
+    fn events_reply_reports_cumulative_displacement_and_backend_start_time() {
+        let mut rig = ready_bin(Level::Observe);
+        rig.backend.event_window = EventWindow {
+            items: vec![event_item(7, "survivor", 1, 10)],
+            oldest_real_ns: Some(10),
+            displaced: 7,
+            started_real_ns: 9,
+        };
+        rig.send(&events_req(2, 0, 20, 10, "null"));
+        let reply = event_reply(&mut rig);
+        assert!(reply.contains("\"displaced\":7"), "{reply}");
+        assert!(reply.contains("\"oldest_real_ns\":10"), "{reply}");
+        assert!(reply.contains("\"started_real_ns\":9"), "{reply}");
     }
 
     #[test]

@@ -396,32 +396,48 @@ impl Backend for ProbeBackend {
     }
 
     fn events(&mut self, args: &EventsArgs) -> Result<EventWindow, PageRefusal> {
-        let after = match args.cursor.as_deref() {
-            None => 0,
+        let cursor_ordinal = match args.cursor.as_deref() {
+            None => None,
             Some(cursor) => cursor
                 .rsplit(':')
                 .next()
                 .and_then(|ordinal| ordinal.parse::<u64>().ok())
+                .map(Some)
                 .ok_or(PageRefusal::CursorInvalid)?,
         };
         let ring = self.store.events().ring();
-        if args.cursor.is_some() && after < ring.displaced() {
+        if cursor_ordinal.is_some_and(|ordinal| ordinal < ring.displaced()) {
             return Err(PageRefusal::CursorInvalid);
         }
+        let cursor_key = if let Some(ordinal) = cursor_ordinal {
+            let event = ring
+                .with_ordinals()
+                .find_map(|(found, event)| (found == ordinal).then_some(event))
+                .ok_or(PageRefusal::CursorInvalid)?;
+            let t_mono_ns = u64::try_from(event.t_mono_ns).map_err(|_| PageRefusal::Internal)?;
+            Some((t_mono_ns, ordinal))
+        } else {
+            None
+        };
         let count = usize::try_from(args.limit)
             .unwrap_or(usize::MAX)
             .saturating_add(1);
         let mut items = Vec::with_capacity(count);
         for (ordinal, event) in ring.with_ordinals() {
-            if ordinal < after
-                || event.real_ns < args.from_real_ns
+            if event.real_ns < args.from_real_ns
                 || event.real_ns >= args.to_real_ns
                 || (!args.names.is_empty() && !args.names.iter().any(|name| name == &event.name))
             {
                 continue;
             }
+            let key = (
+                u64::try_from(event.t_mono_ns).map_err(|_| PageRefusal::Internal)?,
+                ordinal,
+            );
+            if cursor_key.is_some_and(|cursor| key < cursor) {
+                continue;
+            }
             let item = event_item_view(ordinal, event)?;
-            let key = (item.t_mono_ns, item.ordinal);
             let position = items
                 .binary_search_by_key(&key, |held: &EventItem| (held.t_mono_ns, held.ordinal))
                 .unwrap_or_else(|position| position);

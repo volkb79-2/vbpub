@@ -531,27 +531,35 @@ impl Backend for FixedBackend {
     }
 
     fn events(&mut self, args: &EventsArgs) -> Result<EventWindow, PageRefusal> {
-        let after = match args.cursor.as_deref() {
-            None => 0,
+        let cursor_ordinal = match args.cursor.as_deref() {
+            None => None,
             Some(cursor) => cursor
                 .rsplit(':')
                 .next()
                 .and_then(|ordinal| ordinal.parse::<u64>().ok())
+                .map(Some)
                 .ok_or(PageRefusal::CursorInvalid)?,
         };
-        if args.cursor.is_some() && after < self.event_window.displaced {
+        if cursor_ordinal.is_some_and(|ordinal| ordinal < self.event_window.displaced) {
             return Err(PageRefusal::CursorInvalid);
         }
         let mut window = self.event_window.clone();
         window.items.retain(|item| {
-            item.ordinal >= after
-                && item.real_ns >= args.from_real_ns
+            item.real_ns >= args.from_real_ns
                 && item.real_ns < args.to_real_ns
                 && (args.names.is_empty() || args.names.iter().any(|name| name == &item.name))
         });
         window
             .items
             .sort_by_key(|item| (item.t_mono_ns, item.ordinal));
+        if let Some(ordinal) = cursor_ordinal {
+            let position = window
+                .items
+                .iter()
+                .position(|item| item.ordinal == ordinal)
+                .ok_or(PageRefusal::CursorInvalid)?;
+            window.items.drain(..position);
+        }
         window.items.truncate(
             usize::try_from(args.limit)
                 .unwrap_or(usize::MAX)
