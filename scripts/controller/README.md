@@ -804,6 +804,10 @@ pi by hand without the pane descriptor is refused. `--print-command` shows the
 lock path and flock requirement without starting a process. The gate suite
 checks that tester-unified provides `flock`.
 
+A process started from a pi bash tool call ends with that call, also under
+`setsid`. Hold a long launch (for example `codex-impl.sh`) under
+`start_monitor`, which lasts at most 3600 s (CTL-84).
+
 ```bash
 scripts/controller/pi-ctl-launch.sh hostobs
 PI_CTL_PROVIDER=opendesign_github2 scripts/controller/pi-ctl-launch.sh hostobs
