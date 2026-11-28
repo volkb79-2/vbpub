@@ -1843,6 +1843,13 @@ mod tests {
             events_refused(&VALID_EVENTS.replace("\"names\":[]", "\"names\":[\"Bad\"]")),
             "names"
         );
+        let overlong_name = format!("\"{}\"", "a".repeat(65));
+        assert_eq!(
+            events_refused(
+                &VALID_EVENTS.replace("\"names\":[]", &format!("\"names\":[{overlong_name}]"))
+            ),
+            "names"
+        );
         let thrashguard =
             VALID_EVENTS.replace("\"names\":[]", "\"names\":[\"thrashguard.custom\"]");
         assert_eq!(
@@ -1857,10 +1864,24 @@ mod tests {
             events_refused(&VALID_EVENTS.replace("\"limit\":1", "\"limit\":1001")),
             "limit"
         );
-        let cursor = format!("{}\\n", "x".repeat(256));
-        let malformed_cursor =
-            VALID_EVENTS.replace("\"cursor\":null", &format!("\"cursor\":\"{cursor}\""));
-        assert_eq!(events_refused(&malformed_cursor), "cursor");
+        let overlong_cursor = "x".repeat(257);
+        assert_eq!(
+            events_refused(&VALID_EVENTS.replace(
+                "\"cursor\":null",
+                &format!("\"cursor\":\"{overlong_cursor}\""),
+            )),
+            "cursor"
+        );
+        for control in ["\\n", "\\u007f"] {
+            assert_eq!(
+                events_refused(
+                    &VALID_EVENTS
+                        .replace("\"cursor\":null", &format!("\"cursor\":\"x{control}\""),)
+                ),
+                "cursor",
+                "control escape {control} must be refused independently"
+            );
+        }
         assert_eq!(
             events_refused(
                 &VALID_EVENTS.replace("\"cursor\":null", "\"cursor\":\"x\" ,\"ctx\":{}")
