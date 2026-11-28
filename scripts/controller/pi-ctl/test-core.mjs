@@ -483,9 +483,15 @@ test("an idle async pi rejection reports an inbox claim after two spaced observa
 	assert.equal(f.queuedCount, 0, "the simulated asynchronous rejection queued no message and started no turn");
 	let stateFile = path.join(f.root, "processing", "receiver", fs.readdirSync(path.join(f.root, "processing", "receiver")).find((file) => file.endsWith(".state.json")));
 	let state = JSON.parse(fs.readFileSync(stateFile, "utf8"));
-	assert.equal(state.unconfirmedSince, f.now(), "the first idle poll is persisted as the first observation");
+	assert.equal(state.unconfirmedSince, 0, "the injection poll leaves the initial observation marker unchanged");
 	assert.equal(f.calls.filter(({ message }) => message.customType === "pi-ctl-claim-notice").length, 0,
-		"a single observation is not enough to report a rejection");
+		"the injection poll does not report an asynchronous rejection");
+	await f.controller.pollInbox();
+	await f.flushPromises();
+	state = JSON.parse(fs.readFileSync(stateFile, "utf8"));
+	assert.equal(state.unconfirmedSince, f.now(), "the next idle poll persists the first missing-entry observation");
+	assert.equal(f.calls.filter(({ message }) => message.customType === "pi-ctl-claim-notice").length, 0,
+		"one missing-entry observation is not enough to report a rejection");
 	f.setTime(f.now() + 30_000);
 	await f.controller.pollInbox();
 	await f.flushPromises();
@@ -778,7 +784,7 @@ test("an idle async pi rejection reports a wake-up after two spaced observations
 	let pending = JSON.parse(fs.readFileSync(path.join(f.root, "wakeups", "receiver.json"), "utf8"));
 	assert.equal(pending[0].queued, true);
 	assert.equal(f.queuedCount, 0, "the simulated rejection leaves no queued copy or turn");
-	assert.equal(pending[0].unconfirmedSince, undefined, "the first arming call injects; the next idle poll observes absence");
+	assert.equal(pending[0].unconfirmedSince, 0, "the injected wake-up starts with the zero observation marker");
 	await f.controller.armWakeups();
 	pending = JSON.parse(fs.readFileSync(path.join(f.root, "wakeups", "receiver.json"), "utf8"));
 	assert.equal(pending[0].unconfirmedSince, f.now(), "the first missing-entry observation is persisted");
