@@ -46,6 +46,21 @@ pub const MAX_CLIENT_BYTES: usize = 64;
 /// Longest echoed key (R14).
 pub const MAX_KEY_ECHO: usize = 64;
 
+/// Checked arguments for the `events` window request.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EventsArgs {
+    /// Inclusive lower real-time bound.
+    pub from_real_ns: i64,
+    /// Exclusive upper real-time bound.
+    pub to_real_ns: i64,
+    /// Optional event-name filter; empty means every name.
+    pub names: Vec<String>,
+    /// Maximum number of items in this page.
+    pub limit: u32,
+    /// Opaque continuation cursor.
+    pub cursor: Option<String>,
+}
+
 /// Most digits of an integer (`u64::MAX` has 20).
 const MAX_DIGITS: usize = 20;
 
@@ -515,6 +530,55 @@ fn is_event_name(name: &str) -> bool {
         && bytes.all(|byte| {
             byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'.' | b'_' | b'-')
         })
+}
+
+/// Read the complete `events` page request schema.
+pub fn events(args: &[u8]) -> Result<EventsArgs, ArgError> {
+    let object = Obj::parse(args, "")?;
+    object.only(&["from_real_ns", "to_real_ns", "names", "limit", "cursor"])?;
+    let from_real_ns = object.int("from_real_ns")?;
+    let to_real_ns = object.int("to_real_ns")?;
+    if from_real_ns > to_real_ns {
+        return Err(fail("to_real_ns"));
+    }
+    let elements = object.elements("names")?;
+    if elements.len() > 16 {
+        return Err(fail("names"));
+    }
+    let mut names = Vec::with_capacity(elements.len());
+    for (kind, raw) in elements {
+        if kind != Kind::Str {
+            return Err(fail("names"));
+        }
+        let name = unescape(raw, 64).ok_or_else(|| fail("names"))?;
+        if !is_event_name(&name) || names.iter().any(|known| known == &name) {
+            return Err(fail("names"));
+        }
+        names.push(name);
+    }
+    let limit = u32::try_from(object.uint("limit", 1000)?).map_err(|_| fail("limit"))?;
+    if limit == 0 {
+        return Err(fail("limit"));
+    }
+    let cursor_member = object.required("cursor")?;
+    let cursor = if cursor_member.kind == Kind::Null {
+        None
+    } else if cursor_member.kind == Kind::Str {
+        let value = unescape(object.raw(cursor_member), 256).ok_or_else(|| fail("cursor"))?;
+        if has_control(&value) {
+            return Err(fail("cursor"));
+        }
+        Some(value)
+    } else {
+        return Err(fail("cursor"));
+    };
+    Ok(EventsArgs {
+        from_real_ns,
+        to_real_ns,
+        names,
+        limit,
+        cursor,
+    })
 }
 
 fn event_string(

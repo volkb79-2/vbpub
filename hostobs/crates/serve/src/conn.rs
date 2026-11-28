@@ -954,6 +954,11 @@ impl Conn {
                     return;
                 }
             },
+            Call::Events(_) => {
+                let bytes = self.error_bytes(dispatch.corr, Code::Internal, &Detail::Empty);
+                self.push(hub, bytes, now_ns);
+                return;
+            }
         };
         let bytes = self.reply_bytes(dispatch.corr, &result);
         self.push(hub, bytes, now_ns);
@@ -1592,7 +1597,8 @@ mod tests {
         let body = &parsed[0].2;
         assert!(body.contains("\"level\":\"observe\""));
         assert!(body.contains("\"epoch\":1"));
-        let verbs = "\"verbs\":[\"hello\",\"status\",\"current\",\"subscribe\",\"unsubscribe\"]";
+        let verbs =
+            "\"verbs\":[\"hello\",\"status\",\"current\",\"subscribe\",\"unsubscribe\",\"events\"]";
         assert!(body.contains(verbs));
         let codes = "\"quality_codes\":[{\"code\":0,\"name\":\"ok\"}";
         assert!(body.contains(codes));
@@ -2828,7 +2834,7 @@ mod tests {
             ("features", r#"["peak_reset","damon"]"#),
             (
                 "verbs",
-                r#"["hello","status","current","subscribe","unsubscribe"]"#,
+                r#"["hello","status","current","subscribe","unsubscribe","events"]"#,
             ),
             ("quality_codes", codes.as_str()),
         ];

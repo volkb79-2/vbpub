@@ -636,7 +636,9 @@ fn expected(case: &Case) -> (Option<Code>, u32) {
     if hello && case.phase == Phase::Ready {
         return (Some(Code::BadRequest), corr);
     }
-    if !matches!(case.verb, "hello" | "status" | "current") {
+    if !matches!(case.verb, "hello" | "status" | "current")
+        && !(case.verb == "events" && TELEMETRY.contains(&case.level))
+    {
         return (Some(Code::UnknownVerb), corr);
     }
     (None, corr)
@@ -646,6 +648,7 @@ fn payload_of(case: &Case) -> String {
     let args = match case.verb {
         "hello" => HELLO_ARGS,
         "current" => CURRENT_ARGS,
+        "events" => r#"{"from_real_ns":0,"to_real_ns":1,"names":[],"limit":1,"cursor":null}"#,
         _ => "{}",
     };
     let verb = case.verb;

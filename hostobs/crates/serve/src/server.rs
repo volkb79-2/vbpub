@@ -2404,7 +2404,7 @@ mod tests {
             d.pump(id, usize::MAX);
             let out = text(&d.take_out(id));
             let expected = if level.serves_blocks() {
-                "\"verbs\":[\"hello\",\"status\",\"current\",\"subscribe\",\"unsubscribe\"]"
+                "\"verbs\":[\"hello\",\"status\",\"current\",\"subscribe\",\"unsubscribe\",\"events\"]"
             } else {
                 "\"verbs\":[\"hello\",\"annotate\"]"
             };
