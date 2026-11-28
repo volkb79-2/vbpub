@@ -16149,14 +16149,13 @@ When `budget_per_candidate_seconds` is `None`, the first attempt receives the en
 
 ## B584 — synchronize the normative liveness SPEC with P4
 
-**Status: OPEN (filed 2026-11-26 from P-assay-P4 fix round 1, finding 5); severity: medium (the normative contract currently contradicts shipped behavior).**
+**Status: DONE 2026-11-28 (SPEC commits `455c070e0`..`ea863bf4a`, corrections `059dbbdc3`..`71c92aa35` and `d83ade4d3`; three reviews against the code, the last on `d83ade4d3` with no finding; gates on `d83ade4d3`: `rgw-tooling-tests-20261128T120704-r1002` PASS, `rgw-tester-unified-20261128T120704-r1002` PASS); severity: medium.**
 
 P4 changed the pytest event lifecycle, CPU-derived stop rules, per-test windows,
-and post-`session_finish` handling. `docs/SPEC.md` LIV-070/075/080 and
-LIV-110..140 have not been synchronized and still describe pre-P4 behavior.
-The P4 fix round was explicitly forbidden from editing the SPEC, so this entry
-tracks the required follow-up rather than treating the stale text as a second
-contract.
+and post-`session_finish` handling. This series synchronized `docs/SPEC.md`
+LIV-070/075/080 and LIV-110..140 with those changes. The P4 fix round was
+explicitly forbidden from editing the SPEC, so this entry tracks the required
+follow-up rather than treating the stale text as a second contract.
 
 **Wanted.** Update each listed LIV section to describe the shipped `test_finish`
 event and its progress-counting exclusion, the CPU bounds and their resource
@@ -16165,9 +16164,9 @@ the one-time post-`session_finish` window reset. Preserve the fixed rule that a
 stop is never `killed` and make no schema change unless a separate decision
 authorizes it.
 
-**Close when.** Every listed section is checked against the code and tests,
-the SPEC no longer asserts the pre-P4 behavior, and a docs test or review check
-pins the updated normative wording.
+**Close when.** Every listed section is checked against code and tests; the
+SPEC no longer asserts pre-P4 behaviour; a docs test or review check pins the
+wording.
 
 ## B585 — candidate code can forge P4 liveness progress
 
