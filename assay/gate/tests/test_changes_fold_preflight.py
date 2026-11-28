@@ -614,6 +614,65 @@ def test_checkout_immutability_guard_ignores_sibling_worktree_refs(tmp_path: Pat
         _run_git(sibling, "tag", "sibling-tag", env=env)
 
 
+@pytest.mark.parametrize("worktree_config", [False, True])
+def test_linked_checkout_guard_is_quiet_when_sibling_advances(
+    tmp_path: Path, worktree_config: bool
+):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _initialize_fixture_git(repo, repo, "tracked.txt")
+    env = _minimal_git_environment(tmp_path / "environment")
+    if worktree_config:
+        _run_git(repo, "config", "extensions.worktreeConfig", "true", env=env)
+    linked = tmp_path / "linked"
+    _run_git(repo, "worktree", "add", "--quiet", "--detach", str(linked), "HEAD", env=env)
+
+    assert (linked / ".git").is_file()
+    assert _checkout_snapshot(linked, env)["head_ref"] == "detached"
+    with _unchanged_checkout(linked, env):
+        _run_git(repo, "commit", "--quiet", "--allow-empty", "-m", "advance sibling HEAD", env=env)
+        _run_git(repo, "tag", "sibling-tag", env=env)
+
+
+@pytest.mark.parametrize(
+    ("worktree_config", "mutation"),
+    [
+        (False, "head"),
+        (False, "index"),
+        (False, "tracked-file"),
+        (True, "head"),
+        (True, "index"),
+        (True, "tracked-file"),
+        (True, "worktree-config"),
+    ],
+)
+def test_linked_checkout_guard_detects_own_changes(
+    tmp_path: Path, worktree_config: bool, mutation: str
+):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _initialize_fixture_git(repo, repo, "tracked.txt")
+    env = _minimal_git_environment(tmp_path / "environment")
+    if worktree_config:
+        _run_git(repo, "config", "extensions.worktreeConfig", "true", env=env)
+    linked = tmp_path / "linked"
+    _run_git(repo, "worktree", "add", "--quiet", "--detach", str(linked), "HEAD", env=env)
+    assert (linked / ".git").is_file()
+    before = _checkout_snapshot(linked, env)
+
+    if mutation == "head":
+        _run_git(linked, "commit", "--quiet", "--allow-empty", "-m", "advance linked HEAD", env=env)
+    elif mutation == "index":
+        _run_git(linked, "update-index", "--assume-unchanged", "tracked.txt", env=env)
+    elif mutation == "tracked-file":
+        (linked / "tracked.txt").write_text("linked checkout changed\n", encoding="utf-8")
+    else:
+        _run_git(linked, "config", "--worktree", "user.name", "Linked checkout", env=env)
+
+    with pytest.raises(AssertionError, match="changed tracked files or Git state"):
+        _assert_checkout_unchanged(before, _checkout_snapshot(linked, env))
+
+
 def test_run_docs_tests_rejects_collection_error_as_negative_control(tmp_path: Path, monkeypatch):
     assay_copy = tmp_path / "assay"
     assay_copy.mkdir()
