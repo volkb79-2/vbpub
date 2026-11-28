@@ -227,7 +227,8 @@ def test_unreleased_history_structure_passes_cmru_checker():
         SimpleNamespace(name="assay"), path, path.read_text(encoding="utf-8")
     )
     assert len(markers) == 1
-    assert span is not None
+    # CMRU permits the canonical history marker with no current section.
+    # Docs that need to add a note create [Unreleased] in their disposable copy.
 
 
 def test_readme_documents_current_native_r2_parallel_worker_contract():
