@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import shlex
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -298,8 +299,24 @@ def test_survivor_is_carried_pessimistically_and_keeps_the_r2_claim_failing(
     r2 = next(claim for claim in verdict["claims"] if claim["rigor"] == "R2")
     assert r2["status"] == "FAIL"
     assert code == 1, (out, err)
-    assert "assay run <lane> --resume --rejudge-outcome survived" in out
+    command = "assay run unit --resume --rejudge-outcome survived"
+    assert out.count(command) == 1
     assert "--rejudge-carried" not in out
+
+    explicit_state = tmp_path / "state with spaces"
+    code, explicit_out, _err, _events = _run_text(
+        git_repo,
+        explicit_state,
+        tmp_path / "explicit-state.jsonl",
+        "--carry-forward",
+        str(source_store),
+    )
+    assert code == 1
+    command = (
+        "assay run unit --resume --rejudge-outcome survived --state-dir "
+        + shlex.quote(str(explicit_state))
+    )
+    assert explicit_out.count(command) == 1
 
 
 def test_carry_forward_records_the_outcome_without_progress(
