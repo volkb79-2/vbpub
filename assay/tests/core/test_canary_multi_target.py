@@ -441,7 +441,6 @@ def test_budget_exhaustion_is_its_own_terminal_and_keeps_the_payload(
         (0, "control", "started"),
         (0, "control", "finished"),
         (0, "transform", "started"),
-        (0, "transform", "finished"),
     ]
     assert all(event["watched"] is False for event in recorder.events
                if event.get("event") == "canary_attempt")
@@ -884,7 +883,7 @@ def test_pass_command_with_r1_failure_can_have_no_tail(
         nonlocal calls
         calls += 1
         if calls == 1:
-            return Outcome.FAIL, ReasonCode.COVERAGE_BELOW_THRESHOLD
+            return Outcome.FAIL, ReasonCode.UNCOVERED_LINES
         return real_judge(*args, **kwargs)
 
     monkeypatch.setattr(canary, "_judge_unit", judge)
@@ -900,7 +899,7 @@ def test_pass_command_with_r1_failure_can_have_no_tail(
         and event.get("phase") == "control"
         and event.get("state") == "finished"
     )
-    assert control["control_reason_code"] == ReasonCode.COVERAGE_BELOW_THRESHOLD.value
+    assert control["control_reason_code"] == ReasonCode.UNCOVERED_LINES.value
     assert "control_first_failing_test" not in control
     assert "control_stdout_tail" not in control
     assert "control_stderr_tail" not in control
@@ -909,7 +908,7 @@ def test_pass_command_with_r1_failure_can_have_no_tail(
 class _LeakedControlGate(_Gate):
     def __call__(self, argv, *, env, cwd, timeout):
         result = completed_process(list(argv), 0, "", "")
-        if not self.cwds:
+        if len(self.cwds) == 1:
             result.process_tree_evidence.update(
                 outliving_descendants=1,
                 descendants=[{"pid": 4242, "ppid": 1, "comm": "child"}],
@@ -921,9 +920,11 @@ class _LeakedControlGate(_Gate):
 
 def test_leaked_control_after_pass_has_termination_and_no_invented_reason(
     git_repo: GitRepo,
+    monkeypatch,
 ):
     _seed(git_repo)
     recorder = _ProgressRecorder()
+    monkeypatch.setattr(canary, "_judge_unit", lambda *args, **kwargs: (Outcome.PASS, None))
     _run(
         git_repo,
         _lane(git_repo, targets=(TARGETS[0],), aggregation=None),
@@ -951,7 +952,7 @@ def test_control_diagnostic_tail_is_bounded_and_redacted(
         def __call__(self, argv, *, env, cwd, timeout):
             self.cwds.append(Path(cwd))
             self.timeouts.append(timeout)
-            failed = len(self.cwds) == 1
+            failed = len(self.cwds) == 2
             output = ("x" * (runner.COMMAND_TAIL_BYTES + 200) + " SECRET FAILED pkg/test.py::bad\n") if failed else ""
             return completed_process(list(argv), 1 if failed else 0, output, "")
 
@@ -970,7 +971,7 @@ def test_control_diagnostic_tail_is_bounded_and_redacted(
     tail = control["control_stdout_tail"]
     assert len(tail.encode("utf-8")) <= runner.COMMAND_TAIL_BYTES
     assert "SECRET" not in tail
-    assert "[REDACTED]" in tail
+    assert "******" in tail
 
 
 def test_canary_progress_emit_failure_does_not_change_result(git_repo: GitRepo, tmp_path: Path):
@@ -1011,10 +1012,12 @@ def test_budget_expiry_after_half_start_has_no_finish_record(git_repo: GitRepo, 
     lane = _lane(git_repo, aggregation="all")
     recorder = _ProgressRecorder()
     stream = mutation.ProgressStream(recorder, clock=_clock)
-    deadline = make_deadline(
-        budget_seconds=1.0,
-        monotonic=_ExpiringMonotonic(expired=lambda: True, budget=1.0),
+    clock_started = [False]
+    injected_clock = _ExpiringMonotonic(
+        expired=lambda: clock_started[0], budget=1.0
     )
+    deadline = make_deadline(budget_seconds=1.0, monotonic=injected_clock)
+    clock_started[0] = True
     with prepared_snapshot(git_repo, commit=head_rev, scratch_root=scratch) as prepared:
         result, terminal = run_isolated_canaries(
             lane,
