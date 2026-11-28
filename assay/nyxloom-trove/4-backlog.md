@@ -16312,7 +16312,7 @@ Second half (deliberate, hence documented rather than taken here): `tools/releas
 
 ## B614 — The canary deadline-read witness compares an unresolved caller path
 
-**Status: OPEN (filed 2026-11-28 from the delta review of the B612 test witness at `a0e848141`); severity: medium (test portability, no source defect).**
+**Status: IMPLEMENTED on 2026-11-28; registered gate evidence pending; severity: medium (test portability, no source defect).**
 
 **Symptom.** `test_canary_deadline_diagnostic_reads_once_per_target_only_with_progress` (`tests/core/test_canary_multi_target.py`) compares the calling frame's raw `co_filename` with `Path(canary.__file__).resolve()`. In a checkout imported through a symlinked path the two can differ although the same file is meant. The progress half then fails with no defect in the code; the no-progress half matches nothing, so only the positive assertion keeps the test from passing vacuously. Established by reading, not reproduced.
 

@@ -764,7 +764,9 @@ def test_canary_deadline_diagnostic_reads_once_per_target_only_with_progress(
 
         def __call__(self) -> float:
             caller = __import__("sys")._getframe(1)
-            self.callers.append((caller.f_code.co_name, caller.f_code.co_filename))
+            self.callers.append(
+                (caller.f_code.co_name, str(Path(caller.f_code.co_filename).resolve()))
+            )
             return 0.0
 
     lane = _lane(git_repo, targets=TARGETS, aggregation="all")
