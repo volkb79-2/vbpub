@@ -969,8 +969,12 @@ node scripts/controller/pi-ctl/bridge.mjs ack "$message_id"
 
 Run `watch` in the main controller's monitor. Copy the id from the fixed header into
 `message_id`, record the message in main's own state, then run the one `ack` command above.
-The bridge preserves each claim across restart, respects persisted backoff and reports an
-unacknowledged message after three displays without deleting it.
+A successful print is the delivery: the watch process records the claim it handed over and
+never prints it again, however long the ack takes. A restarted `watch` replays every
+unacknowledged claim once, and reports one once if it was printed but still unacknowledged
+after a real timeout (default 30 minutes, `PI_CTL_BRIDGE_ACK_TIMEOUT_SECONDS` from 1 to
+604800 seconds). The timeout is measured from the first print of any process, so a restart
+cannot postpone it; only `ack` ends a claim, and a report never deletes one.
 
 Inbox bodies are capped at 16 KiB and sends at 64 KiB by default. The send and inbound
 limits default to 10 messages per peer per hour; `PI_CTL_SEND_LIMIT`,
