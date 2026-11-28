@@ -962,8 +962,9 @@ pub fn negotiate(client_minor: u16, server_minor: u16) -> u16 {
 #[cfg(test)]
 mod tests {
     use super::{
-        bounded_key, current, hello, negotiate, parse_int, parse_uint, split_array, status,
-        subscribe, unescape, unsubscribe, ArgError, HelloArgs, Obj, MAX_ELEMENTS, MAX_MEMBERS,
+        bounded_key, current, events, hello, negotiate, parse_int, parse_uint, split_array, status,
+        subscribe, unescape, unsubscribe, ArgError, EventsArgs, HelloArgs, Obj, MAX_ELEMENTS,
+        MAX_MEMBERS,
     };
     use crate::limits::IntervalRule;
 
@@ -1004,6 +1005,17 @@ mod tests {
             Err(error) => error.key,
         }
     }
+
+    fn events_refused(raw: &str) -> String {
+        let text = bs(raw);
+        match events(text.as_bytes()) {
+            Ok(args) => panic!("accepted {args:?}"),
+            Err(error) => error.key,
+        }
+    }
+
+    const VALID_EVENTS: &str =
+        r#"{"from_real_ns":0,"to_real_ns":1,"names":[],"limit":1,"cursor":null}"#;
 
     fn point_args(attrs: &str, ctx: &str) -> String {
         format!(
@@ -1747,6 +1759,121 @@ mod tests {
             };
             assert_eq!(annotate_refused(&text), "attrs.boot_id", "{kind}");
         }
+    }
+
+    #[test]
+    fn events_requires_every_member_and_reports_each_schema_path() {
+        assert_eq!(
+            events(VALID_EVENTS.as_bytes()).expect("valid request"),
+            EventsArgs {
+                from_real_ns: 0,
+                to_real_ns: 1,
+                names: Vec::new(),
+                limit: 1,
+                cursor: None,
+            }
+        );
+        for (text, key) in [
+            (
+                r#"{"to_real_ns":1,"names":[],"limit":1,"cursor":null}"#,
+                "from_real_ns",
+            ),
+            (
+                r#"{"from_real_ns":0,"names":[],"limit":1,"cursor":null}"#,
+                "to_real_ns",
+            ),
+            (
+                r#"{"from_real_ns":0,"to_real_ns":1,"limit":1,"cursor":null}"#,
+                "names",
+            ),
+            (
+                r#"{"from_real_ns":0,"to_real_ns":1,"names":[],"cursor":null}"#,
+                "limit",
+            ),
+            (
+                r#"{"from_real_ns":0,"to_real_ns":1,"names":[],"limit":1}"#,
+                "cursor",
+            ),
+        ] {
+            assert_eq!(events_refused(text), key, "missing {key}");
+        }
+        for (text, key) in [
+            (
+                VALID_EVENTS.replace("\"from_real_ns\":0", "\"from_real_ns\":\"0\""),
+                "from_real_ns",
+            ),
+            (
+                VALID_EVENTS.replace("\"to_real_ns\":1", "\"to_real_ns\":null"),
+                "to_real_ns",
+            ),
+            (
+                VALID_EVENTS.replace("\"names\":[]", "\"names\":{}"),
+                "names",
+            ),
+            (
+                VALID_EVENTS.replace("\"limit\":1", "\"limit\":\"1\""),
+                "limit",
+            ),
+            (
+                VALID_EVENTS.replace("\"cursor\":null", "\"cursor\":true"),
+                "cursor",
+            ),
+        ] {
+            assert_eq!(events_refused(&text), key, "wrong type for {key}");
+        }
+    }
+
+    #[test]
+    fn events_filters_and_bounds_are_exact() {
+        let seventeen = (0..17)
+            .map(|index| format!("\"name{index}\""))
+            .collect::<Vec<_>>()
+            .join(",");
+        assert_eq!(
+            events_refused(
+                &VALID_EVENTS.replace("\"names\":[]", &format!("\"names\":[{seventeen}]"))
+            ),
+            "names"
+        );
+        assert_eq!(
+            events_refused(&VALID_EVENTS.replace("\"names\":[]", "\"names\":[\"run\",\"run\"]")),
+            "names"
+        );
+        assert_eq!(
+            events_refused(&VALID_EVENTS.replace("\"names\":[]", "\"names\":[\"Bad\"]")),
+            "names"
+        );
+        let thrashguard =
+            VALID_EVENTS.replace("\"names\":[]", "\"names\":[\"thrashguard.custom\"]");
+        assert_eq!(
+            events(thrashguard.as_bytes()).expect("filter name").names,
+            [String::from("thrashguard.custom")]
+        );
+        assert_eq!(
+            events_refused(&VALID_EVENTS.replace("\"limit\":1", "\"limit\":0")),
+            "limit"
+        );
+        assert_eq!(
+            events_refused(&VALID_EVENTS.replace("\"limit\":1", "\"limit\":1001")),
+            "limit"
+        );
+        let cursor = format!("{}\\n", "x".repeat(256));
+        let malformed_cursor =
+            VALID_EVENTS.replace("\"cursor\":null", &format!("\"cursor\":\"{cursor}\""));
+        assert_eq!(events_refused(&malformed_cursor), "cursor");
+        assert_eq!(
+            events_refused(
+                &VALID_EVENTS.replace("\"cursor\":null", "\"cursor\":\"x\" ,\"ctx\":{}")
+            ),
+            "ctx"
+        );
+        let reversed = VALID_EVENTS.replace("\"from_real_ns\":0", "\"from_real_ns\":2");
+        assert_eq!(events_refused(&reversed), "to_real_ns");
+        let equal = VALID_EVENTS.replace("\"to_real_ns\":1", "\"to_real_ns\":0");
+        assert_eq!(
+            events(equal.as_bytes()).expect("empty window").from_real_ns,
+            0
+        );
     }
 
     #[test]

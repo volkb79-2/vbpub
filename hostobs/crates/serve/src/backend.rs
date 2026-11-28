@@ -27,6 +27,8 @@ use crate::limits::Level;
 use crate::selection::Selection;
 use crate::{conn::Peer, hub::ConnId};
 
+pub use crate::args::EventsArgs;
+
 /// The checked `annotate` event kind.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AnnotateKind {

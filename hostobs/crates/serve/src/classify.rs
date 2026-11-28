@@ -30,8 +30,8 @@
 use hostobs_proto::envelope::{check_req, members, EnvelopeError, Kind};
 use hostobs_proto::frame::{FrameType, PROTO_MINOR};
 
-use crate::args::{self, bounded_key, EventsArgs, HelloArgs, SubscribeArgs};
-use crate::backend::AnnotateArgs;
+use crate::args::{self, bounded_key, HelloArgs, SubscribeArgs};
+use crate::backend::{AnnotateArgs, EventsArgs};
 use crate::codes::{Code, Detail};
 use crate::limits::{IntervalRule, Level};
 use crate::selection::Selection;
@@ -404,10 +404,10 @@ pub fn classify_with(query: &Query<'_>, facts: &ConnFacts) -> Result<Dispatch, R
 #[cfg(test)]
 mod tests {
     use super::{
-        call_after_served, call_of, classify, classify_with, Call, ConnFacts, Dispatch, Mode,
-        Phase, Prefix, Query, Refusal, HELLO_CORR, SERVER_MAJOR,
+        call_after_served, call_of, classify, classify_with, Call, ConnFacts, Dispatch, EventsArgs,
+        Mode, Phase, Prefix, Query, Refusal, HELLO_CORR, SERVER_MAJOR,
     };
-    use crate::args::{EventsArgs, HelloArgs};
+    use crate::args::HelloArgs;
     use crate::codes::{Code, Detail};
     use crate::limits::{IntervalRule, Level};
     use crate::verbs::{find, Shape};
