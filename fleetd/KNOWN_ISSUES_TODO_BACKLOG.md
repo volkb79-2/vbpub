@@ -75,8 +75,9 @@
 | FD-070 | Verify exec checkout mount against a real persistent runner before enablement | P1 | OPEN; LIVE PROBE REQUIRED | 2026-11-27 |
 | FD-071 | Preserve store collection failure detail in the host result | P2 | FIXED IN THIS BRANCH (C3b-1) | 2026-11-27 |
 | FD-072 | Bind Run-Gate repo/project labels to the request | P2 | FIXED IN THIS BRANCH (C3b-1) | 2026-11-27 |
-| FD-075 | Bound total lane log bytes and summary scan before executor enablement | P1 | OPEN; BLOCKER BEFORE ENABLEMENT | 2026-11-28 |
-| FD-076 | A client upload can be collected before its delayed submit | P2 | OPEN | 2026-11-28 |
+| FD-075 | Bound total lane log bytes and summary scan before executor enablement | P1 | CLOSED | 2026-11-28 |
+| FD-076 | A client upload can be collected before its delayed submit | P2 | CLOSED; REMAINING WINDOW DOCUMENTED | 2026-11-28 |
+| FD-077 | Lane-controlled checkout files have no aggregate storage ceiling | P2 | OPEN | 2026-11-28 |
 
 ## FD-001 Lite campaign lifecycle
 
@@ -1207,19 +1208,27 @@ Source: P-fd-05 C3a round 2 controller ruling (2026-11-27).
 
 ## FD-076 A client upload can be collected before its delayed submit
 
-**State:** OPEN. **Priority:** P2. **Filed:** 2026-11-28.
+**State:** CLOSED; REMAINING WINDOW DOCUMENTED. **Priority:** P2. **Filed:** 2026-11-28.
 
-An unreferenced seed, dev or candidate object may be collected after a
-successful `put` and before the client submits a job naming it. `submit`
-refuses with the missing object name and the client must upload it again. A
-bundle may also be collected before submit; submit does not detect the missing
-bundle, and a job whose checkout needs it fails with `CHECKOUT_FAILURE`.
-`have` remains the repo-checkout ref listing and does not report upload
-presence. Keep this window visible to controllers and consumers. A replay
-being streamed while collection removes its prior copy must be republished at
+With collection enabled, each `in.bundle` put (including a repeated put)
+atomically records under the upload-store lock, in a private state directory
+outside `uploads/`, the same-group job ids whose `request.json` is published at
+that moment. Collection requires both the existing all-jobs-terminal rule and
+a valid record with at least one terminal same-group job absent from that list.
+Missing, malformed, unreadable, or non-private records keep the bundle and do
+not refuse collection; removing the bundle also removes its record. A bundle
+with no later submit, or without a usable record, stays until manual removal
+and counts against the cap; over-cap refusal reports its held bytes. The
+remaining window is that another same-group job submitted between a put and
+its own submit can make the bundle collectable once every group job is
+terminal. Seed, dev and candidate objects retain today's behavior: they may be
+collected before submit, submit refuses by name, and the client re-uploads.
+That behavior is by design. A missing bundle still is not detected by submit
+and checkout can fail with `CHECKOUT_FAILURE`. `have` remains the repo-checkout
+ref listing. A replay collected while its body streams is republished at
 commit or refused.
 
-Source: P-fd-05 C3b-2 controller ruling (2026-11-28).
+Source: P-fd-05 controller rulings FD-076 (2026-11-28).
 
 ## FD-063 Incrementally count large Assay progress files
 
@@ -1394,15 +1403,39 @@ ruling C2 (2026-11-28).
 
 ## FD-075 Bound total lane log bytes and summary scan
 
-**State:** OPEN; BLOCKER BEFORE ENABLEMENT. **Priority:** P1. **Filed:** 2026-11-28.
+**State:** CLOSED. **Priority:** P1. **Filed:** 2026-11-28.
 
-The lane's stdout and stderr are written to `lane.log` without an aggregate byte
-ceiling, and `_last_lane_summary` scans the whole file. A finite lane can fill
-host storage and make the root summary scan arbitrarily long. Before enabling
-the executor, enforce a total lane-output byte ceiling in the streaming writer;
-on overflow, stop the lane through the normal stop-and-prove path and bind a
-terminal ERROR. Bound the summary scan at the same ceiling. Do not add a lane
-runtime limit. This is not implemented in C3b-1 fix round 3.
+`agent.toml.lane_log_max_bytes` defaults to 268435456 and accepts only an
+integer from 1048576 through 4294967296. The worker drains the merged stdout
+and stderr pipe and writes at most that many bytes to `lane.log`. On the first
+overflow it discards further output while requesting the existing worker stop
+path; after stop proof, finalization binds ERROR with
+`lane-log-limit-exceeded`. A `lane.log` write failure also drains and discards
+remaining output, requests the same stop path, and reports
+`lane-log-write-failed: ...`. A pre-existing cancellation retains CANCELLED
+precedence. If stop cannot be proven, the existing stopping/charged behavior
+applies. A post-start drainer creation, start, or pipe-reader bootstrap failure
+preserves the live process handle, requests stop, closes the captured stdout
+pipe and duplicate log descriptor, and reports `lane-log-setup-failed: ...`
+after stop proof. A stop request that already observes exit records that status
+once and does not restore `running` state. The drainer exits after a bounded
+pipe-capacity drain when the lane process exits. `_last_lane_summary` uses raw
+chunks and counts all fetched bytes against the ceiling. There is no lane
+runtime limit.
 
-Source: P-fd-05 C3b-1 closure review C3 and round 3 controller ruling C3
-(2026-11-28).
+The lane can still create arbitrary files in its checkout; FD-077 tracks that
+separate aggregate-storage exposure.
+
+Source: P-fd-05 controller rulings FD-075 (2026-11-28).
+
+## FD-077 Lane-controlled checkout files have no aggregate storage ceiling
+
+**State:** OPEN. **Priority:** P2. **Filed:** 2026-11-28.
+
+A lane can create or grow arbitrary files in its job checkout. Existing archive
+and individual input ceilings do not cap total checkout growth during the
+lane, so a lane can consume host storage independently of `lane.log`. Define
+and implement a host-enforced aggregate checkout storage bound before relying
+on the executor for untrusted lanes. No lane runtime limit is implied.
+
+Source: P-fd-05 FD-075 implementation inspection (2026-11-28).
