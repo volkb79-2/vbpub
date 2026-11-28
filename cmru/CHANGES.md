@@ -33,9 +33,9 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: pending release notes begin -->
 - tests(cmru): batch 2 adds caller-visible transaction survivor coverage; the final
-  probe killed 22 of the 30 candidates across the batch 1 and batch 2 test files.
-  Eight candidates remain open under KI-224 pending additional witnesses or
-  equivalence proofs. The tests cover tag-attempt and absence records, ref-name
+  probe kills 23 of 30 candidates across the batch 1 and batch 2 test files, and
+  KI-224 proves the remaining seven flips equivalent. The tests cover tag-attempt
+  and absence records, ref-name
   parsing, remote error handling, retained build manifests, symlink refusal,
   and cleanup identity. No product code changed.
 - tests: cmru's gate judges cmru again. The tester-unified image suite moved to

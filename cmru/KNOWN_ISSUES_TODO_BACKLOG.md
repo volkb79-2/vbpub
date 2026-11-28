@@ -14,7 +14,7 @@
 
 | ID | Status | Fix commit |
 | --- | --- | --- |
-| KI-224 | OPEN pending final probe (2026-11-28 batch 2: seven equivalence proofs recorded; one new diagnostic witness awaits mutation confirmation) | — |
+| KI-224 | CLOSED BY DESIGN (2026-11-28 batch 2: 23 KILLED, seven equivalent; final 30-ID probe confirmed) | this branch |
 | KI-220 | CLOSED BY DESIGN (2026-11-27; controller ruling clarified the timeout contract, and the test now checks group disappearance with bounded polling) | branch |
 | KI-215 | CLOSED BY DESIGN (prose claims are checked by review; the structural test pins each CMRU Assay lane's mode and absence of `judge.base_source`) | — |
 | KI-214 | FIXED IN THIS BRANCH (the campaign test docstring names the repository root `.gitignore` as the source of the output-ignore patterns) | branch |
@@ -203,9 +203,10 @@ manifest syntax/source forms outside its supported registry subset.
 
 ### KI-224 — batch 2 transaction R2 survivors
 
-**Status:** OPEN pending final mutation probe. The batch 2 probe initially left eight candidates.
-`ddc55befcd6f` now has a focused behavior witness for a failing remote lookup with empty stderr
-and non-empty stdout. Seven other candidates have these equivalence arguments:
+**Status:** CLOSED BY DESIGN. The batch 2 probe initially left eight candidates.
+`ddc55befcd6f` is killed by `test_origin_branch_error_prefers_stdout_when_git_has_no_stderr`,
+which supplies a failing lookup result with empty stderr and non-empty stdout and observes the
+caller-facing RuntimeError detail. Seven other candidates are equivalent for these reasons:
 
 - `d25580fc963e`, `70c7796b6763`, `c2e3338fe004`, `01735170cf8a` flip `parents=True` to
   `False` on directory creation. For tag attempts, `_ensure_scope_dir()` has already created the
@@ -234,15 +235,15 @@ and non-empty stdout. Seven other candidates have these equivalence arguments:
   reachable assertion has both descriptors non-`None`; return/yield and exception behavior,
   file modes, caller stderr under `GIT_TRACE=1`, and undecodable-output behavior are unchanged.
 
-The final probe must confirm the seven listed candidates still survive and the new `ddc55befcd6f`
-behavior test kills its mutant before KI-224 can close.
+The final probe at the completed test head confirmed 23 KILLED and these seven SURVIVED as
+equivalent: `d25580fc963e`, `70c7796b6763`, `9dd13b6f41a9`, `c2e3338fe004`,
+`01735170cf8a`, `45f04d579d01`, and `4a724fcc7a5b`. No candidate remains open.
 
 The batch 2 probe ran all 30 candidates against
 `tests/test_transaction_r2_bf1_records.py`, `tests/test_transaction_r2_survivors.py`,
 and `tests/test_transaction_r2_survivors_b2.py`. It killed 22 and left these eight
-without a witness or proof at that time: `d25580fc963e`, `70c7796b6763`, `9dd13b6f41a9`,
-`ddc55befcd6f`, `c2e3338fe004`, `01735170cf8a`, `45f04d579d01`, and `4a724fcc7a5b`.
-No product code was changed.
+without a witness or proof at that time. The seven proof IDs are listed above; the eighth,
+`ddc55befcd6f`, now has a behavior test. No product code was changed.
 
 
 > **KI-12 … KI-16 shipped together** in `merge(cmru): KI-12..KI-17 and S15 tool
