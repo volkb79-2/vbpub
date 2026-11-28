@@ -297,10 +297,15 @@ def campaign_bounded_deadline(
     if not is_real(monotonic_now) or not math.isfinite(monotonic_now):
         raise ValueError(f"monotonic_now must be a finite real number, got {monotonic_now!r}")
     remaining = (expires_at_utc - wall_now).total_seconds()
+    campaign_expires_at = monotonic_now + remaining
+    input_expiry_is_nearer = lane_deadline.expires_at < campaign_expires_at
     return LaneDeadline(
-        expires_at=min(lane_deadline.expires_at, monotonic_now + remaining),
+        expires_at=min(lane_deadline.expires_at, campaign_expires_at),
         monotonic=lane_deadline.monotonic,
         honors_termination=lane_deadline.honors_termination,
+        expiry_scope=(
+            lane_deadline.expiry_scope if input_expiry_is_nearer else "lane"
+        ),
     )
 
 

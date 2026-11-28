@@ -250,6 +250,7 @@ items:
   - {id: B605, title: "B596 linked-worktree control does not guard a linked checkout", type: bugfix, component: gate, context_estimate: small}
   - {id: B606, title: "Carried-survivor rejudge reminder omits the actual lane and explicit state directory", type: bugfix, component: mutation, context_estimate: small}
   - {id: B607, title: "B594/B606 review follow-ups: re-run command omits selection options; campaign_bounded_deadline drops expiry scope", type: bugfix, component: mutation, context_estimate: small}
+  - {id: B611, title: "The campaign-nearer deadline test passes without the scope fix", type: bugfix, component: mutation, context_estimate: small}
   - {id: B610, title: "Assay merges that touch src/assay must pass self-qualification-provisional before merge", type: bugfix, component: gate, context_estimate: small}
 ---
 
@@ -16272,13 +16273,21 @@ Second half (deliberate, hence documented rather than taken here): `tools/releas
 
 ## B607 — follow-ups from the B594/B606 review: re-run command and a deadline copy
 
-**Status: OPEN (filed 2026-11-28 from the narrow review of `d28273d4d`); severity: medium (item 1), low (item 2).**
+**Status: CLOSED 2026-11-28. Item 2 fixed in `1bee9429a`; item 1 accepted as a limitation by the main controller decision on 2026-11-28. Gate evidence at `3b004c7d8`: `tester-unified` PASS (`rgw-tester-unified-20261128T091919-r1002`), `tooling-tests` PASS (`rgw-tooling-tests-20261128T091919-r1002`), `self-qualification-provisional` PASS (`rgw-self-qualification-provisional-20261128T091921-v1001`). Follow-up: B611. Severity: medium (item 1), low (item 2).**
 
-**Item 1 (medium): the printed re-run command is not runnable on its own.** `src/assay/cli.py:3647-3665` omits `--file`, `--shard` and appended argv from the command. A run started elsewhere with `--file /project/assay.toml` prints `assay run <name> ...` without it, so a copy can select a different lane or find no lane file. The note and `docs/CONSUMERS.md` say to repeat those options, which was the decided scope of B606. Either quote the original lane-file path and selection arguments into the command, or print only the flags to add to the original invocation; pin a run whose current directory resolves a different lane file.
+**Item 1 (medium): the printed re-run command is not runnable on its own.** `src/assay/cli.py:3647-3665` omits `--file`, `--shard` and appended argv from the command. A run started elsewhere with `--file /project/assay.toml` prints `assay run <name> ...` without it, so a copy can select a different lane or find no lane file. The note and `docs/CONSUMERS.md` say to repeat those options, which was the decided scope of B606. **Accepted limitation (main controller decision, 2026-11-28):** leave this behavior unchanged.
 
 **Item 2 (low): `campaign_bounded_deadline` drops the expiry scope.** `src/assay/runner.py:283-304` builds a new `LaneDeadline` without `expiry_scope`, so a copy of an attempt-tightened deadline reports "the lane-wide deadline expired". Not reachable today: the only caller (`src/assay/cli.py:3869`) runs before canary tightening, and the base printed the same text. **Fix:** carry `expiry_scope` in `campaign_bounded_deadline` (keep the input scope while the input expiry is the nearer one, lane scope when the campaign expiry wins), plus 2 tests, one for each case.
 
-**Close when.** Both items are fixed or recorded as accepted limitations, with the two scope tests in a registered lane.
+**Close when.** Item 1 is fixed or recorded as accepted, and the two scope tests run in a registered lane. Met on 2026-11-28.
+
+## B611 — the campaign-nearer deadline test passes without the scope fix
+
+**Status: OPEN (filed 2026-11-28 from the narrow review of `3b004c7d8`); severity: medium (test strength, no runtime defect).** The campaign-nearer and tie test (`tests/core/test_campaign_deadline.py:137`) expects the lane-wide scope, which the old constructor already supplied by default, so it stays green if the `expiry_scope` carry is removed. Only the input-nearer test is red against the base.
+
+**Wanted.** A control for the campaign-nearer case that fails on a wrong implementation, for example one that always keeps the input scope paired with an input-nearer assertion in the same test.
+
+**Close when.** Each of the two scope tests fails against at least one wrong implementation of the carry (base behaviour, or an unconditional copy of the input scope), and both run in a registered lane.
 
 ## B595 — native R2 tail retries can start with any positive lane time when the candidate budget is disabled
 
@@ -16310,9 +16319,9 @@ Second half (deliberate, hence documented rather than taken here): `tools/releas
 
 ## B605 — B596 linked-worktree control does not guard a linked checkout
 
-**Status: OPEN (filed 2026-11-28 from the B596 third review, `21daa3a2d`); severity: low.** The control that lets a sibling worktree commit and tag creates a linked sibling, but it snapshots the primary repository, whose `.git` is a directory (`gate/tests/test_changes_fold_preflight.py:603-616`). No behaviour defect is known; the coverage is incomplete.
+**Status: CLOSED 2026-11-28, fixed in `9f9455968`; `tooling-tests` PASS at `3b004c7d8` (`rgw-tooling-tests-20261128T091919-r1002`). That a wrong path resolution turns the controls red was established by review reading, not by a mutation run.** Filed 2026-11-28 from the B596 third review, `21daa3a2d`; severity: low. The control that lets a sibling worktree commit and tag creates a linked sibling, but it snapshots the primary repository, whose `.git` is a directory (`gate/tests/test_changes_fold_preflight.py:603-616`). No behavior defect was found; the coverage was incomplete.
 
-**Wanted.** Controls in which the linked checkout is the guarded subject, including a detached HEAD and `extensions.worktreeConfig` off and on, with its own index and tracked-file changes still detected.
+**Fix.** Controls in which the linked checkout (`.git` file) is the guarded subject cover detached HEAD, `extensions.worktreeConfig` off and on, sibling branch advancement, and its own HEAD, index, tracked-file, and worktree-config changes. No `_checkout_snapshot` code change was needed.
 
 **Close when.** Those controls run in the registered `tooling-tests` lane, and a wrong resolution of the linked checkout's index or `config.worktree` turns one of them red.
 

@@ -119,6 +119,37 @@ def test_campaign_deadline_limits_the_lane_deadline_and_requires_utc():
         )
 
 
+def test_campaign_bounded_deadline_keeps_nearer_attempt_expiry_scope():
+    lane_deadline = runner.LaneDeadline(
+        expires_at=40.0, monotonic=lambda: 40.0, expiry_scope="attempt"
+    )
+    bounded = runner.campaign_bounded_deadline(
+        lane_deadline,
+        expires_at_utc=UTC_NOW + timedelta(seconds=20),
+        wall_now=UTC_NOW,
+        monotonic_now=30.0,
+    )
+
+    with pytest.raises(AssayError, match="the per-attempt canary budget expired"):
+        bounded.remaining()
+
+
+def test_campaign_bounded_deadline_uses_lane_scope_when_campaign_is_nearer_or_tied():
+    for lane_expiry, campaign_seconds in ((50.0, 5), (35.0, 5)):
+        lane_deadline = runner.LaneDeadline(
+            expires_at=lane_expiry, monotonic=lambda: 35.0, expiry_scope="attempt"
+        )
+        bounded = runner.campaign_bounded_deadline(
+            lane_deadline,
+            expires_at_utc=UTC_NOW + timedelta(seconds=campaign_seconds),
+            wall_now=UTC_NOW,
+            monotonic_now=30.0,
+        )
+
+        with pytest.raises(AssayError, match="the lane-wide deadline expired"):
+            bounded.remaining()
+
+
 def test_campaign_init_reuses_same_identity_without_extending_expiry(
     git_repo: GitRepo, tmp_path: Path
 ):
