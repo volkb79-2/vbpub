@@ -769,7 +769,9 @@ class AgentVerbService:
             or set(record) != {"schema", "group", "digest", "request"}
             or record.get("schema") != "fleet-host-job-request/1"
             or not isinstance(record.get("group"), str)
-            or not record["group"]
+            or _UPLOAD_GROUP_RE.fullmatch(record["group"]) is None
+            or not isinstance(record.get("digest"), str)
+            or _UPLOAD_DIGEST_RE.fullmatch(record["digest"]) is None
             or not isinstance(record.get("request"), dict)
         ):
             raise AdmissionError(

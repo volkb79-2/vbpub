@@ -1,5 +1,7 @@
 from dataclasses import replace
 import hashlib
+import json
+import os
 from pathlib import Path
 import socket
 import threading
@@ -139,6 +141,176 @@ def test_collector_classifies_every_submit_request_field(tmp_path):
     request = _submit()
     with pytest.raises(AdmissionError, match="unknown request field set"):
         service._request_upload_digests(request | {"new_upload_reference": "unknown"}, identity.group, "job")
+
+
+def test_durable_request_inventory_retains_seed_dev_and_candidates(tmp_path):
+    service, identity, _checkout = _service(tmp_path)
+    seed_digest = "a" * 64
+    tracked_digest = "b" * 64
+    untracked_digest = "c" * 64
+    candidate_digest = "d" * 64
+    request = _submit()
+    request["stores"]["seed"] = {"path": "assay-store", "sha256": seed_digest, "bytes": 4}
+    request["dev"] = {
+        "tracked": {"sha256": tracked_digest, "bytes": 1},
+        "untracked": {"sha256": untracked_digest, "bytes": 1},
+        "verb_argv": ["status"], "tty": False, "worktree_key": "test-key",
+    }
+    request["kind"] = "dev"
+    request["extra_argv"] = ["--only-candidates", str(service.paths.candidate_root(identity.group) / candidate_digest)]
+    expected = {seed_digest, tracked_digest, untracked_digest, candidate_digest}
+
+    assert service._request_upload_digests(request, identity.group, "job") == expected
+    job_dir = service.paths.jobs_dir / "job"
+    job_dir.mkdir()
+    (job_dir / "request.json").write_text(json.dumps({
+        "schema": "fleet-host-job-request/1", "group": identity.group,
+        "digest": "e" * 64, "request": request,
+    }), encoding="utf-8")
+    assert service._referenced_upload_objects_locked() == {identity.group: frozenset(expected)}
+
+
+def test_seed_checksum_sidecar_is_retained_with_referenced_archive(tmp_path):
+    service, identity, _checkout = _service(tmp_path)
+    archive = _put(service, identity, "assay-seed-1.tgz", b"archive")
+    checksum = _put(service, identity, "assay-seed-1.tgz.sha256", b"checksum")
+    unused = _put(service, identity, "candidates", b"unused")
+    objects = service._upload_store_objects()
+    references = {identity.group: frozenset({archive["sha256"]})}
+
+    sidecars = agent_verbs._referenced_seed_sidecars(references, objects)
+    assert (identity.group, "assay-seed-1.tgz.sha256") in sidecars
+    archive_object = next(item for item in objects if item.name == "assay-seed-1.tgz")
+    assert agent_verbs._is_referenced_upload_object(archive_object, references, sidecars)
+    request = _submit()
+    request["stores"]["seed"] = {"path": "assay-store", "sha256": archive["sha256"], "bytes": 7}
+    job_dir = service.paths.jobs_dir / "seed-job"
+    job_dir.mkdir()
+    (job_dir / "request.json").write_text(json.dumps({
+        "schema": "fleet-host-job-request/1", "group": identity.group,
+        "digest": "f" * 64, "request": request,
+    }), encoding="utf-8")
+    with service._upload_store_lock():
+        assert service._collect_upload_objects_locked(len(b"unused"), len(b"unused")) >= len(b"unused")
+
+    assert Path(archive["path"]).read_bytes() == b"archive"
+    assert Path(checksum["path"]).read_bytes() == b"checksum"
+    assert not Path(unused["path"]).exists()
+
+
+def test_submit_refuses_missing_dev_and_seed_inputs_by_name(tmp_path):
+    service, identity, _checkout = _service(tmp_path)
+    dev_request = _submit()
+    dev_request["dev"] = {
+        "tracked": {"sha256": "a" * 64, "bytes": 1},
+        "untracked": {"sha256": "b" * 64, "bytes": 1},
+        "verb_argv": ["status"], "tty": False, "worktree_key": "test-key",
+    }
+    dev_request["kind"] = "dev"
+    with pytest.raises(AdmissionError, match="missing upload object dev.tracked.tar/"):
+        service._require_submit_uploads(dev_request, identity.group)
+    seed_request = _submit()
+    seed_request["stores"]["seed"] = {"path": "assay-store", "sha256": "c" * 64, "bytes": 1}
+    with pytest.raises(AdmissionError, match=r"missing upload object assay-seed-\*\.tgz/"):
+        service._require_submit_uploads(seed_request, identity.group)
+
+
+def test_submit_requires_seed_sidecar_and_accepts_complete_seed_pair(tmp_path):
+    service, identity, _checkout = _service(tmp_path)
+    archive = _put(service, identity, "assay-seed-1.tgz", b"archive")
+    request = _submit()
+    request["stores"]["seed"] = {"path": "assay-store", "sha256": archive["sha256"], "bytes": 7}
+    with pytest.raises(AdmissionError, match=r"missing upload object assay-seed-1.tgz\.sha256"):
+        service._require_submit_uploads(request, identity.group)
+    sidecar = _put(service, identity, "assay-seed-1.tgz.sha256", b"checksum")
+
+    service._require_submit_uploads(request, identity.group)
+
+    assert Path(archive["path"]).read_bytes() == b"archive"
+    assert Path(sidecar["path"]).read_bytes() == b"checksum"
+
+
+@pytest.mark.parametrize(
+    ("raw", "reason"),
+    [
+        ("{", "is unreadable"),
+        ("[]", "unknown shape"),
+        (json.dumps({"schema": "fleet-host-job-request/1", "group": "../bad", "digest": "a" * 64, "request": _submit()}), "unknown shape"),
+        (json.dumps({"schema": "fleet-host-job-request/1", "group": "controller", "digest": "bad", "request": _submit()}), "unknown shape"),
+    ],
+)
+def test_malformed_job_records_stop_reference_scan_without_deleting(tmp_path, raw, reason):
+    service, identity, _checkout = _service(tmp_path)
+    old = _put(service, identity, "candidates", b"preserved")
+    job_dir = service.paths.jobs_dir / "job"
+    job_dir.mkdir()
+    (job_dir / "request.json").write_text(raw, encoding="utf-8")
+
+    with pytest.raises(AdmissionError, match=reason):
+        service._referenced_upload_objects_locked()
+
+    assert Path(old["path"]).read_bytes() == b"preserved"
+
+
+def test_collection_record_readers_refuse_bad_names_types_and_sizes(tmp_path, monkeypatch):
+    service, _identity, _checkout = _service(tmp_path)
+    state_fd = service._state_directory_fd()
+    with pytest.raises(AdmissionError, match="is unreadable"):
+        agent_verbs._upload_directory(state_fd, "missing", "test directory").__enter__()
+    try:
+        with pytest.raises(AdmissionError, match="cannot be listed"):
+            monkeypatch.setattr(agent_verbs.os, "scandir", lambda _fd: (_ for _ in ()).throw(OSError("scan failed")))
+            agent_verbs._upload_directory_entries(state_fd, "test listing")
+    finally:
+        os.close(state_fd)
+
+    record_dir = service.paths.jobs_dir / "record"
+    record_dir.mkdir()
+    (record_dir / "child").mkdir()
+    (record_dir / "request.json").write_text("{}", encoding="utf-8")
+    record_fd = os.open(record_dir, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        with pytest.raises(AdmissionError, match="not a regular file"):
+            agent_verbs._read_upload_record(record_fd, "child", "test record")
+        monkeypatch.setattr(agent_verbs, "_MAX_UPLOAD_RECORD_BYTES", 1)
+        with pytest.raises(AdmissionError, match="exceeds 1 bytes"):
+            agent_verbs._read_upload_record(record_fd, "request.json", "test record")
+    finally:
+        os.close(record_fd)
+
+
+@pytest.mark.parametrize(
+    ("change", "reason"),
+    [
+        (lambda r: r.update(stores={"collect": None, "seed": None, "unknown": True}), "unknown stores shape"),
+        (lambda r: r["stores"].update(seed={"sha256": "a" * 64, "bytes": 1, "extra": 1}), "unknown seed descriptor shape"),
+        (lambda r: r["stores"].update(seed={"path": "store", "sha256": "bad", "bytes": 1}), "invalid stores.seed digest"),
+        (lambda r: r.update(dev={"unknown": True}), "unknown dev shape"),
+        (lambda r: r.update(dev={
+            "tracked": {"sha256": "a" * 64, "bytes": 1, "extra": 1},
+            "untracked": {"sha256": "b" * 64, "bytes": 1}, "verb_argv": ["status"],
+            "tty": False, "worktree_key": "test-key",
+        }, kind="dev"), "unknown dev.tracked descriptor shape"),
+        (lambda r: r.update(dev={
+            "tracked": {"sha256": "bad", "bytes": 1},
+            "untracked": {"sha256": "b" * 64, "bytes": 1}, "verb_argv": ["status"],
+            "tty": False, "worktree_key": "test-key",
+        }, kind="dev"), "invalid dev.tracked digest"),
+        (lambda r: r.update(extra_argv="bad"), "unknown extra_argv shape"),
+        (lambda r: r.update(extra_argv=["--only-candidates", "not-a-digest"]), "invalid candidates reference"),
+        (lambda r: r.update(extra_argv=["--only-candidates", "/tmp/other/" + "a" * 64]), "outside the authenticated group"),
+    ],
+)
+def test_malformed_durable_references_refuse_without_store_changes(tmp_path, change, reason):
+    service, identity, _checkout = _service(tmp_path)
+    old = _put(service, identity, "candidates", b"preserved")
+    request = _submit()
+    change(request)
+
+    with pytest.raises(AdmissionError, match=reason):
+        service._request_upload_digests(request, identity.group, "job")
+
+    assert Path(old["path"]).read_bytes() == b"preserved"
 
 
 def test_replay_streaming_during_collection_is_published_again(tmp_path, monkeypatch):
