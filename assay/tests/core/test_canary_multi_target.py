@@ -787,7 +787,6 @@ class _ControlFailGate(_Gate):
         self.cwds.append(Path(cwd))
         self.timeouts.append(timeout)
         call_number = len(self.cwds)
-        transformed = "assay-canary-import-break" in (Path(cwd) / TARGETS[0]).read_text()
         return completed_process(
             list(argv),
             1 if call_number == 2 else 0,
