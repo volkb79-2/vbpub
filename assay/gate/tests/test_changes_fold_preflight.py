@@ -411,7 +411,7 @@ def _checkout_snapshot(repo_root: Path, env: Mapping[str, str] | None = None) ->
         "head": git("rev-parse", "HEAD"),
         "refs": git("for-each-ref", "--format=%(refname) %(objectname) %(symref)"),
         "index": hashlib.sha256(index_path.read_bytes()).hexdigest() if index_path.exists() else "missing",
-        "config": git("config", "--local", "--list", "--show-origin"),
+        "config": git("config", "--list", "--show-origin", "--show-scope"),
         "tracked": repr(file_state),
     }
 
