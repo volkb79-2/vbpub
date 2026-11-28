@@ -1389,7 +1389,7 @@ def test_native_r2_resume_and_progress_contract_is_documented_across_public_docs
         assert "--resume --rejudge-outcome crashed" in text, (
             f"{document.name} omits the crashed-candidate recovery command"
         )
-        assert "--rejudge crashed" not in text, (
+        assert "--rejudge crashed" not in " ".join(text.split()), (
             f"{document.name} uses candidate IDs where an outcome bucket is required"
         )
         assert "resource_limit_changes" in text, (

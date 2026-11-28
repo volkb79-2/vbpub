@@ -248,6 +248,8 @@ items:
   - {id: B599, title: "B105 RAM admission counts reclaimable file cache as used", type: bugfix, component: gate, context_estimate: small}
   - {id: B604, title: "B596 changelog pre-flight does not model CMRU's real release history and version derivation", type: bugfix, component: gate, context_estimate: small}
   - {id: B605, title: "B596 linked-worktree control does not guard a linked checkout", type: bugfix, component: gate, context_estimate: small}
+  - {id: B606, title: "Carried-survivor rejudge reminder omits the actual lane and explicit state directory", type: bugfix, component: mutation, context_estimate: small}
+  - {id: B607, title: "B594/B606 review follow-ups: re-run command omits selection options; campaign_bounded_deadline drops expiry scope", type: bugfix, component: mutation, context_estimate: small}
   - {id: B610, title: "Assay merges that touch src/assay must pass self-qualification-provisional before merge", type: bugfix, component: gate, context_estimate: small}
 ---
 
@@ -16254,19 +16256,35 @@ Second half (deliberate, hence documented rather than taken here): `tools/releas
 
 ## B594 — per-attempt canary expiry is reported as a lane-wide deadline expiry
 
-**Status: OPEN (filed 2026-11-27 from vbpub-core 2026-11-26 follow-up 2); severity: low (misleading diagnosis).**
+**Status: FIXED in `4ee6a6c0c` (deadline scope and expiry tests); severity: low (misleading diagnosis).**
 
-**Symptom.** `run_isolated_canary` tightens the lane deadline to the canary's `budget_per_attempt` (`src/assay/canary.py:737-740`), but `LaneDeadline.remaining()` raises the fixed message “the lane-wide deadline expired” for any finite deadline (`src/assay/runner.py:392`). Thus an attempt-level expiry names the wrong clock. Established by reading; not reproduced with a live gate in this filing.
+**Symptom.** `run_isolated_canary` tightens the lane deadline to the canary's `budget_per_attempt` (`src/assay/canary.py:737-740`), but `LaneDeadline.remaining()` previously raised the fixed message “the lane-wide deadline expired” for any finite deadline (`src/assay/runner.py:392`). Thus an attempt-level expiry named the wrong clock. Established by reading; no live gate was run for the filing.
 
-**Wanted.** Preserve whether the active deadline is lane-wide or per-attempt and report the matching scope when it expires.
+**Fix.** The error says “the per-attempt canary budget expired” only when that bound is strictly nearer. A nearer lane deadline, or no per-attempt bound, retains “the lane-wide deadline expired”. Tests cover both expiries and the nearer-lane case (`tests/core/test_canary_multi_target.py`, `4ee6a6c0c`).
 
-**Close when.** A registered-lane test proves a per-attempt expiry identifies the attempt budget, while a true lane expiry continues to identify the lane budget.
+## B606 — carried-survivor rejudge reminder omits the actual lane and explicit state directory
+
+**Status: FIXED in `9e90d160b` (CLI message, exact-command assertions, consumer documentation); severity: low (misleading command).**
+
+**Symptom.** After carrying a survivor, the reminder printed a literal `<lane>` and omitted the explicit `--state-dir`, so copying the suggested rejudge command could target the wrong store. It also did not say that selection-changing `--file`, `--shard` and appended arguments must be repeated.
+
+**Fix.** The message prints the actual lane and shell-quotes the explicit state directory when supplied. It reminds the operator to repeat selection-changing options. `tests/core/test_mutation_carry_forward.py` pins the command with and without `--state-dir` (`9e90d160b`); the subsequent rejudge behavior is covered in `63f602751`.
+
+## B607 — follow-ups from the B594/B606 review: re-run command and a deadline copy
+
+**Status: OPEN (filed 2026-11-28 from the narrow review of `d28273d4d`); severity: medium (item 1), low (item 2).**
+
+**Item 1 (medium): the printed re-run command is not runnable on its own.** `src/assay/cli.py:3647-3665` omits `--file`, `--shard` and appended argv from the command. A run started elsewhere with `--file /project/assay.toml` prints `assay run <name> ...` without it, so a copy can select a different lane or find no lane file. The note and `docs/CONSUMERS.md` say to repeat those options, which was the decided scope of B606. Either quote the original lane-file path and selection arguments into the command, or print only the flags to add to the original invocation; pin a run whose current directory resolves a different lane file.
+
+**Item 2 (low): `campaign_bounded_deadline` drops the expiry scope.** `src/assay/runner.py:283-304` builds a new `LaneDeadline` without `expiry_scope`, so a copy of an attempt-tightened deadline reports "the lane-wide deadline expired". Not reachable today: the only caller (`src/assay/cli.py:3869`) runs before canary tightening, and the base printed the same text. **Fix:** carry `expiry_scope` in `campaign_bounded_deadline` (keep the input scope while the input expiry is the nearer one, lane scope when the campaign expiry wins), plus 2 tests, one for each case.
+
+**Close when.** Both items are fixed or recorded as accepted limitations, with the two scope tests in a registered lane.
 
 ## B595 — native R2 tail retries can start with any positive lane time when the candidate budget is disabled
 
 **Status: OPEN (filed 2026-11-27 from vbpub-core 2026-11-26 follow-up 3); severity: low (campaign time use).**
 
-**Symptom.** The finding that `budget_per_candidate = "none"` is silently unbounded is false (established by reading): the runner warns that each mutant command is unbounded (`src/assay/runner.py:6031-6038`), and inactive pytest liveness also emits a warning that liveness and hung detection are off (`src/assay/liveness.py:585-597`). The remaining behavior is that the serial retry admission guard compares remaining time with the per-candidate budget only when that budget is non-null (`src/assay/mutation.py:4814-4821`). With the explicit `none` setting, a retry can start whenever the lane deadline has any positive time left; the lane deadline still bounds that attempt. Established by reading; not reproduced with a live gate in this filing.
+**Symptom.** The claim that `budget_per_candidate = "none"` is silently unbounded is false (established by reading): the runner warns that each mutant command is unbounded (`src/assay/runner.py:6031-6038`), and inactive pytest liveness also emits a warning that liveness and hung detection are off (`src/assay/liveness.py:585-597`). The remaining behavior is that the serial retry admission guard compares remaining time with the per-candidate budget only when that budget is non-null (`src/assay/mutation.py:4814-4821`). With the explicit `none` setting, a retry can start whenever the lane deadline has any positive time left; the lane deadline still bounds that attempt. No live gate was run for this filing.
 
 **Wanted.** Define and pin whether an unbounded per-candidate setting permits a best-effort tail retry on any positive lane remainder or whether a separate admission rule should apply. Any reserve must come from a declared or derived source, not a host-specific constant.
 

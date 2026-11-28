@@ -3645,9 +3645,23 @@ def _run_reserved(
                     else mutation.default_state_root(lane_file.project_root)
                 )
                 if mutation_store.carried_survivor_count(store):
+                    rejudge_command = [
+                        "assay",
+                        "run",
+                        lane.name,
+                        "--resume",
+                        "--rejudge-outcome",
+                        "survived",
+                    ]
+                    requested_state_dir = getattr(args, "state_dir", None)
+                    if requested_state_dir is not None:
+                        rejudge_command.extend(
+                            ["--state-dir", os.fspath(requested_state_dir)]
+                        )
                     print(
                         "note: carried survivors stay carried; re-run them with "
-                        "assay run <lane> --resume --rejudge-outcome survived",
+                        f"{shlex.join(rejudge_command)}. Repeat this run's --file, "
+                        "--shard, and appended arguments that change what it selects.",
                         file=out,
                     )
         return verdict.exit_code
