@@ -452,7 +452,7 @@ class RealProbeSocket(unittest.TestCase):
             self.assertEqual(end["span"], begin["span"])
             args = {
                 "from_real_ns": started,
-                "to_real_ns": time.time_ns() + 1_000_000_000,
+                "to_real_ns": 2**63 - 1,
                 "names": [],
                 "limit": 1,
                 "cursor": None,
