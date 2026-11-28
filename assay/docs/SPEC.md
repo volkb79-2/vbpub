@@ -469,36 +469,56 @@ with `ERROR/BAD_LANE_CONFIG` on any other lane. `src/assay/cli.py:2394`,
   `src/assay/cli.py:707`, `src/assay/runner.py:1178`,
   `src/assay/runner.py:1179`
 
-### 6.2 Planned
+### 6.2 Implemented liveness bounds
 
-Sources: `docs/design/no-time-budgets/DESIGN.md` §3.2, §3.4, §7.1 (repo
-root); P4 brief `assay-p4-stall`; operator input 2026-11-25 (items A, C);
-assay review `no-time-budgets-assay.md` findings 1-7.
-
-- **LIV-110** PLANNED. CPU-without-progress bound: when process-tree CPU
-  seconds consumed since the last completed plugin event (test or phase
-  report; output growth and `test_start` do not reset it) exceed
-  `max(3 x baseline_wall, baseline_wall + 60)`, the candidate is killed as
-  `hung`/`CANDIDATE_HUNG` with evidence decision `cpu-without-progress`. It
-  ignores pressure state. CPU accounting is monotonic across child exits.
-- **LIV-120** PLANNED. Per-test bound (Python/pytest): with exactly one test
-  in flight and not under xdist, CPU since that test's start above
-  `max(10 x its baseline setup+call+teardown duration, 60)` CPU-s kills the
-  candidate as `hung`, decision `per-test-cpu-bound`. A test unknown to the
-  baseline gets no per-test bound (LIV-110 is the backstop). Other languages
-  get no assay per-test bound; the external tool's own timeout setting
-  applies and assay does not set it.
-- **LIV-130** PLANNED. Advisory per-candidate budget: where the watch is
-  armed for the run (liveness injected, baseline produced plugin events,
-  candidate CPU readable), `budget_per_candidate` never ends a candidate and
-  one WARN per run is emitted when first exceeded; where not armed, it binds
-  as LIV-030. The progress stream discloses which applied. LIV-020's
-  admission rule stays.
-- **LIV-140** PLANNED. The liveness resource trace cap (1024 samples) never
-  disables a hang verdict; the retained trace is decimated or summarised.
-- **LIV-150** PLANNED. A hang from any bound is `hung`, never `killed`.
-  Proposal for the next verdict-schema cut: a `timeout` bucket counted as
-  detected only for a CPU-based bound the unmutated baseline satisfies.
+- **LIV-110** The CPU-without-progress bound is
+  `max(3 x baseline_wall, baseline_wall + 60 s)` process-tree CPU seconds
+  since spawn or the last completed plugin event. Completed events are `test`
+  (call) and `phase` (setup or teardown) reports. `test_start`, `test_finish`,
+  `session_start`, `session_finish`, and output growth do not count as
+  completed events. The bound ignores pressure, and its CPU series does not
+  decrease when a child exits. A hit is `hung` with decision
+  `cpu-without-progress`; its evidence records measured and required CPU,
+  completed-event count, and the resource snapshot. `src/assay/liveness.py:883`,
+  `src/assay/liveness.py:896`, `src/assay/liveness.py:946`,
+  `src/assay/liveness.py:2478`, `src/assay/liveness.py:2702`,
+  `src/assay/liveness.py:2755`, `src/assay/liveness.py:2774`
+- **LIV-120** The per-test CPU bound applies only to one in-flight pytest test,
+  outside xdist and without overlapping test starts. Its window opens at
+  `test_start`, covers setup, call and teardown, and closes only at the matching
+  `test_finish`; each start, including a rerun of the same node id, opens a
+  fresh window. The bound is `max(10 x baseline setup+call+teardown seconds,
+  60 CPU seconds)`. A node id absent from the baseline has no per-test bound;
+  `session_finish` closes any open window. `src/assay/liveness.py:911`,
+  `src/assay/liveness.py:924`, `src/assay/liveness.py:1650`,
+  `src/assay/liveness.py:1714`, `src/assay/liveness.py:1724`,
+  `src/assay/liveness.py:1725`, `src/assay/liveness.py:2667`,
+  `src/assay/liveness.py:2783`
+- **LIV-130** When liveness is injected and the baseline produced plugin
+  events, the progress watch is armed. While the candidate CPU has been read
+  and its event stream remains intact, `budget_per_candidate` is advisory and
+  emits one warning when first exceeded. If the watch cannot arm, or the event
+  stream breaks at runtime, that budget binds as `budget_exceeded`; a broken
+  stream also disarms the event-derived CPU bounds and no-progress wall stop.
+  The `plan` progress record states the watch regime. `src/assay/runner.py:6067`,
+  `src/assay/runner.py:6082`, `src/assay/mutation.py:2528`,
+  `src/assay/mutation.py:2965`, `src/assay/liveness.py:1621`,
+  `src/assay/liveness.py:2842`, `src/assay/liveness.py:2901`
+- **LIV-140** The resource trace is capped by compacting eligible adjacent
+  samples; it does not truncate evidence or disable hang decisions. The first
+  two samples remain unmerged, and an unknown resource interval starts a new
+  trace. `src/assay/liveness.py:1808`, `src/assay/liveness.py:1852`,
+  `src/assay/liveness.py:2627`
+- **LIV-150** Every liveness stop currently classified as a hang is `hung`,
+  never `killed`. CPU-bound and per-test stops carry their CPU evidence;
+  idle and session-finish stops require their pressure-adjusted trace.
+  `src/assay/liveness.py:668`, `src/assay/liveness.py:2079`,
+  `src/assay/mutation_store.py:1630`
+- **LIV-155** PLANNED (operator decision 2026-11-26; `docs/VERDICT-V21-DELTA.md`
+  §8.2, §8.8). In the next verdict-schema cut, only a load-independent
+  CPU-bound timeout counts as detected and carries a per-candidate
+  `timeout_kind`. Wall-budget stops are not detections. Idle-hang and
+  session-finish-hang remain non-detections while their windows are wall-based.
 - **LIV-160** PLANNED (design §3.3, later release, not scheduled): a lane-level
   `STALLED` outcome with its own exit code, and `CANDIDATE_HUNG` mapped to a
   lane-level `INCONCLUSIVE`. Changes a closed vocabulary.
