@@ -956,6 +956,12 @@ a `/reload` keeps the live agent, so it re-delivers nothing. Only a synchronous 
 (pi did not accept the message) counts as a failed attempt, and only those attempts
 produce the durable report to main. Wake-ups follow the same rule.
 
+At each `agent_end`, the extension logs the count and queues one line when any
+claimed inbox messages are not yet found in pi's persisted entries. It does not start
+a turn, and the claim is never re-injected into the same live runtime because
+pi may still hold it or may have dropped it during abort. Restarting the session
+replays the durable claim. This abort-drop uncertainty is the known issue CTL-71.
+
 `send_message` writes atomically to `inbox/<to>/`; use `to=main` to reach the Claude main
 controller. A shell outside pi uses `scripts/controller/pi-ctl-send.sh <role> <text|->`, which
 writes the same envelope atomically, prints the message id, and refuses an invalid name, an

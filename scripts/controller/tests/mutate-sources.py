@@ -2004,6 +2004,11 @@ pi_ctl_mutant(
     "\t\t\t// mutant: a fresh session runtime does not re-deliver accepted copies",
 )
 pi_ctl_mutant(
+    "claimed-notice-suppressed",
+    "\t\tif (count === 0) return;",
+    "\t\tif (count >= 0) return;",
+)
+pi_ctl_mutant(
     "monitor-keeps-route-keys",
     '\t\t\tif (key.startsWith("OPENDESIGN_API_KEY")) delete childEnv[key];',
     "\t\t\tif (false) delete childEnv[key];",

@@ -79,7 +79,7 @@ function fixture(envExtra = {}) {
 			onSend?.(message, options);
 			calls.push({ message, options });
 			queued.push(message);
-			if (busy) return;
+			if (busy || options?.triggerTurn === false) return;
 			// Only the consuming run persists the message.
 			setImmediate(() => { if (!busy) consumeQueued(); });
 		},
@@ -410,6 +410,39 @@ test("a queued peer message is delivered once however long the agent stays busy"
 	assert.equal(f.calls.length, 1);
 	assert.equal(fs.readdirSync(path.join(f.root, "processing", "receiver")).filter((file) => file.endsWith(".msg")).length, 0,
 		"the persisted entry removes the claim");
+});
+
+test("agent_end reports claimed messages lost on abort without redelivery or a notice turn", async (t) => {
+	const f = fixture();
+	t.after(f.cleanup);
+	f.events.get("agent_end")({}, f.fakeContext);
+	assert.equal(f.calls.filter(({ message }) => message.customType === "pi-ctl-claim-notice").length, 0,
+		"zero unconfirmed claims say nothing");
+	const sender = createController(fakeApiNoop(), {
+		env: { HOME: f.temp, PI_CTL_NAME: "peer", PI_CTL_ROOT: f.root },
+		cwd: f.repo,
+		pid: 987654322,
+		now: () => f.now(),
+		makeId: () => "abort-drop-id",
+		timers: f.timers,
+		verifySessionLock: () => 12,
+	}, { root: f.root, name: "peer" });
+	f.setBusy(true);
+	sender.writePeerMessage("receiver", "the queued copy is dropped by abort");
+	await f.controller.pollInbox();
+	assert.equal(f.calls.filter(({ message }) => message.customType === "pi-ctl-inbox").length, 1);
+	f.dropQueued();
+	f.events.get("agent_end")({}, f.fakeContext);
+	await f.flushPromises();
+	const notices = f.calls.filter(({ message }) => message.customType === "pi-ctl-claim-notice");
+	assert.equal(notices.length, 1);
+	assert.equal(notices[0].message.content, "1 inbox message(s) claimed but not confirmed; restart or ask the sender to resend");
+	assert.equal(notices[0].options.triggerTurn, false, "the notice does not start a model turn");
+	assert.equal(f.calls.filter(({ message }) => message.customType === "pi-ctl-inbox").length, 1,
+		"an abort-dropped accepted message is not delivered again in the same runtime");
+	const log = fs.readFileSync(path.join(f.root, "events", "receiver.jsonl"), "utf8");
+	assert.match(log, /\"event\":\"inbox_claims_unconfirmed\",\"count\":1/);
+	assert.equal(f.queuedCount, 1, "the notice waits in the queue without starting a turn");
 });
 
 test("a queued peer message is delivered once more only after a fresh session start", async (t) => {

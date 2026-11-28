@@ -1890,3 +1890,21 @@ Since about 2026-11-28T00:01Z the forwarded VS Code ssh agent made every ssh fro
 **Proposed minimal fix:** add `-o IdentityAgent=none` where the ssh argv is built (`controller_host_argv`, `scripts/controller/lib.sh:417`, used by `remote-gate.sh:127`), whatever the hosts file says, and check the other ssh callers of that helper.
 
 **Acceptance test idea:** with a fake hosts file that has no `IdentityAgent` option, the recorded ssh argv still contains `-o IdentityAgent=none` exactly once.
+
+## CTL-71 — a claimed inbox message can be lost when pi aborts before persistence
+
+**Status:** OPEN (filed 2026-11-28 from P-plat-PICTL-FIX F1b). The controller
+cannot distinguish a still-queued custom message from one dropped by Escape or
+another abort while the same pi session runtime remains live. At each
+`agent_end`, it logs and queues a one-line notice when a processing claim has no
+persisted pi entry: `N inbox message(s) claimed but not confirmed; restart or
+ask the sender to resend`. The notice does not start a turn, and the durable
+claim is not re-injected into the live queue. Restarting the session runtime
+replays the claim; otherwise the sender may resend after checking its id.
+
+**Where:** `scripts/controller/pi-ctl/core.mjs` claim reconciliation and the
+fake-pi queue model in `scripts/controller/pi-ctl/test-core.mjs`.
+
+**Close when:** pi exposes a reliable way to prove the accepted copy was
+dropped without risking a duplicate in its live queue, with a gate test for
+abort loss and no notice-triggered turn loop.

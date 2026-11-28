@@ -630,6 +630,18 @@ export function createController(pi, injected = {}, overrides = {}) {
 		}
 	}
 
+	function notifyUnconfirmedInboxClaims(ctx) {
+		const entries = sessionEntries(ctx);
+		const unconfirmed = pendingInboxClaimIds().filter((id) => !hasPiConfirmation(entries, "pi-ctl-inbox", id));
+		const count = unconfirmed.length;
+		if (count === 0) return;
+		const content = `${count} inbox message(s) claimed but not confirmed; restart or ask the sender to resend`;
+		log("inbox_claims_unconfirmed", { count });
+		// This is context for the next turn, not a request to start one. Its own
+		// custom type is excluded from the inbox-claim scan, so it cannot recurse.
+		pi.sendMessage({ customType: "pi-ctl-claim-notice", content, display: true, details: { piCtlId: makeId() } }, { triggerTurn: false, deliverAs: "followUp" });
+	}
+
 	function hasPiConfirmation(entries, customType, id) {
 		return entries.some((entry) => entry?.type === "custom_message" && entry.customType === customType && entry.details?.piCtlId === id);
 	}
@@ -1749,6 +1761,7 @@ export function createController(pi, injected = {}, overrides = {}) {
 	pi.on("agent_end", (_event, ctx) => {
 		if (stopped) return;
 		currentContext = ctx;
+		try { notifyUnconfirmedInboxClaims(ctx); } catch { log("inbox_claim_notice_error", {}); }
 		void pollInbox(ctx).catch(() => { if (!stopped) log("inbox_poll_error", { reason: "agent reconciliation failed" }); });
 		void armWakeups(ctx).catch(() => { if (!stopped) log("wakeup_reconcile_error", {}); });
 		triggerSelfCompaction(ctx);

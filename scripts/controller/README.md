@@ -893,6 +893,13 @@ explicit extensions load from argv and no project settings file is written.
 Tests run in the registered `scripts/controller` suite with a fake pi API, not
 against a live provider.
 
+At each `agent_end`, the extension logs the count and queues one line when any
+inbox claims have not been persisted by pi. The notice does not start a turn, and
+the claim is never re-injected into the same live runtime: an abort can drop
+pi's accepted follow-up copy before it is saved. The claim is replayed after a
+session restart; until then, the notice says to restart or ask the sender to
+resend. This unresolved abort-drop case is tracked as CTL-71.
+
 Pi 1.6.0's built-in bash tool starts its shell with only standard input, output
 and error in its `stdio` array (`dist/core/tools/bash.js:75-79`). Node 26 treats
 unspecified child descriptors 3 and above as `ignore` ([child-process stdio
