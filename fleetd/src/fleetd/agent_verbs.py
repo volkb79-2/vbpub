@@ -38,7 +38,14 @@ from .hostside import open_beneath, resolve_assay_lane
 AGENT_SCHEMA = "fleet-host-agent/1"
 MAX_ASSAY_PROGRESS_COUNT_BYTES = 8 * 1024 * 1024
 _COMMIT_RE = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
-_SEMVER_RE = re.compile(
+_UPLOAD_DIGEST_RE = re.compile(r"[0-9a-f]{64}\Z")
+_UPLOAD_GROUP_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\Z")
+_SEED_UPLOAD_NAME_RE = re.compile(r"assay-seed-[0-9]+\.tgz\Z")
+_SEED_CHECKSUM_NAME_RE = re.compile(r"assay-seed-[0-9]+\.tgz\.sha256\Z")
+_UPLOAD_OBJECT_NAMES = frozenset({"in.bundle", "candidates", "dev.tracked.tar", "dev.untracked.tar"})
+_MAX_UPLOAD_RECORDS = 65536
+_MAX_UPLOAD_RECORD_BYTES = 64 * 1024
+_MAX_SEED_CHECKSUM_BYTES = 512_SEMVER_RE = re.compile(
     r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"
     r"(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?\Z"
 )
@@ -57,6 +64,138 @@ _CAPABILITIES: dict[str, list[str]] = {
     "fetch": ["verb", "job_id", "artifact", "offset", "length"],
     "lease": ["verb", "lease_id", "container_name", "footprint", "planned_cores", "priority", "container_id"],
 }
+
+
+@contextmanager
+def _upload_directory(parent_fd: int, name: str, what: str) -> Iterator[int]:
+    """Open one real child directory below a trusted descriptor, failing closed."""
+
+    try:
+        fd = open_beneath(parent_fd, name, directory=True)
+    except (OSError, ValueError) as exc:
+        raise AdmissionError(ExitCode.RUNNER_FAILURE, f"cannot collect upload objects: {what} {name!r} is unreadable: {exc}") from exc
+    try:
+        if not stat.S_ISDIR(os.fstat(fd).st_mode):
+            raise AdmissionError(ExitCode.RUNNER_FAILURE, f"cannot collect upload objects: {what} {name!r} is not a real directory")
+        yield fd
+    finally:
+        os.close(fd)
+
+
+def _upload_directory_entries(directory_fd: int, what: str) -> list[str]:
+    """List a trusted directory without a symlink or an unbounded entry count."""
+
+    try:
+        with os.scandir(directory_fd) as entries:
+            names = []
+            for entry in entries:
+                if len(names) >= _MAX_UPLOAD_RECORDS:
+                    raise AdmissionError(
+                        ExitCode.RUNNER_FAILURE,
+                        f"cannot collect upload objects: {what} exceed the {_MAX_UPLOAD_RECORDS}-entry limit",
+                    )
+                names.append(entry.name)
+    except OSError as exc:
+        raise AdmissionError(ExitCode.RUNNER_FAILURE, f"cannot collect upload objects: {what} cannot be listed: {exc}") from exc
+    return names
+
+
+def _read_upload_record(directory_fd: int, name: str, what: str) -> bytes:
+    """Read one bounded regular record without following a symlink or blocking."""
+
+    try:
+        fd = open_beneath(directory_fd, name)
+    except (OSError, ValueError) as exc:
+        raise AdmissionError(ExitCode.RUNNER_FAILURE, f"cannot collect upload objects: {what} is unreadable: {exc}") from exc
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise AdmissionError(ExitCode.RUNNER_FAILURE, f"cannot collect upload objects: {what} is not a regular file")
+        raw = os.read(fd, _MAX_UPLOAD_RECORD_BYTES + 1)
+    except OSError as exc:
+        raise AdmissionError(ExitCode.RUNNER_FAILURE, f"cannot collect upload objects: {what} is unreadable: {exc}") from exc
+    finally:
+        os.close(fd)
+    if len(raw) > _MAX_UPLOAD_RECORD_BYTES:
+        raise AdmissionError(
+            ExitCode.RUNNER_FAILURE,
+            f"cannot collect upload objects: {what} exceeds {_MAX_UPLOAD_RECORD_BYTES} bytes",
+        )
+    return raw
+
+
+def _known_upload_name(name: str) -> bool:
+    """The closed upload-name set ``put`` may have committed."""
+
+    return (
+        name in _UPLOAD_OBJECT_NAMES
+        or _SEED_UPLOAD_NAME_RE.fullmatch(name) is not None
+        or _SEED_CHECKSUM_NAME_RE.fullmatch(name) is not None
+    )
+
+
+def _record_descriptor_digest(value: object, where: str, name: str) -> str:
+    """Read the content address out of a validated file-descriptor record."""
+
+    if not isinstance(value, Mapping) or not isinstance(value.get("sha256"), str) or _UPLOAD_DIGEST_RE.fullmatch(str(value["sha256"])) is None:
+        raise AdmissionError(
+            ExitCode.RUNNER_FAILURE,
+            f"cannot collect upload objects: job request record {name!r} has an invalid {where} digest",
+        )
+    return str(value["sha256"])
+
+
+@dataclass(frozen=True)
+class _UploadObjectRef:
+    """One committed store object, as the collector must see it."""
+
+    group: str
+    name: str
+    digest: str
+    size: int
+    modified: float
+
+    @property
+    def seed_stem(self) -> str | None:
+        """The seed-archive stem this object belongs to, or ``None``."""
+
+        stem = self.name.removesuffix(".sha256")
+        return stem if _SEED_UPLOAD_NAME_RE.fullmatch(stem) is not None else None
+
+    @property
+    def key(self) -> tuple[str, str]:
+        """The store location ``(group, name)`` this object was committed under."""
+
+        return (self.group, self.name)
+
+
+def _referenced_seed_sidecars(
+    references: Mapping[str, frozenset[str]],
+    objects: tuple[_UploadObjectRef, ...],
+) -> frozenset[tuple[str, str]]:
+    """Sidecars whose seed archive a durable record names.
+
+    A job record names only the seed archive's digest, while the store keeps the
+    archive at ``uploads/<group>/assay-seed-<n>.tgz/<digest>`` and its checksum
+    at ``uploads/<group>/assay-seed-<n>.tgz.sha256/<checksum digest>``.  When the
+    archive is referenced, its sidecar is the same input and is kept with it; a
+    sidecar with no referenced archive is not covered by any record.
+    """
+
+    referenced_archives = {
+        (item.group, item.name) for item in objects
+        if item.seed_stem == item.name and item.digest in references.get(item.group, frozenset())
+    }
+    return frozenset((group, stem + ".sha256") for group, stem in referenced_archives)
+
+
+def _is_referenced_upload_object(
+    item: _UploadObjectRef,
+    references: Mapping[str, frozenset[str]],
+    seed_sidecars: frozenset[tuple[str, str]],
+) -> bool:
+    """A store object survives only while a durable record names it."""
+
+    return item.digest in references.get(item.group, frozenset()) or item.key in seed_sidecars
 
 
 @dataclass(frozen=True)
@@ -107,6 +246,11 @@ class AgentPaths:
         except OSError as exc:
             raise AdmissionError(ExitCode.RUNNER_FAILURE, f"cannot inspect host-created candidates: {exc}") from exc
         return frozenset(paths)
+
+    def candidate_root(self, group: str) -> Path:
+        """The absolute path a committed candidates object is reported under."""
+
+        return self.state_dir.resolve(strict=False) / "uploads" / group / "candidates"
 
 
 @dataclass
@@ -544,6 +688,107 @@ class AgentVerbService:
             ) from exc
         return expected_total, reservation_total, live_partials
 
+    def _state_directory_fd(self) -> int:
+        """Open the private state directory itself, never through a symlink."""
+
+        try:
+            fd = os.open(self.paths.state_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        except OSError as exc:
+            raise AdmissionError(ExitCode.RUNNER_FAILURE, f"cannot inspect the agent state directory: {exc}") from exc
+        try:
+            if not stat.S_ISDIR(os.fstat(fd).st_mode):
+                raise AdmissionError(ExitCode.REFUSAL, "agent state directory is not a real directory")
+        except BaseException:
+            os.close(fd)
+            raise
+        return fd
+
+    def _referenced_upload_objects_locked(self) -> dict[str, frozenset[str]]:
+        """Digests named by durable host records, keyed by authenticated group.
+
+        The only durable records that name an upload object are the job request
+        records written before admission and retained after completion.  They
+        carry the seed digest, the dev payload digests and the host-created
+        candidates path.  Anything unreadable, malformed or of an unknown shape
+        stops the caller rather than guessing a reference.
+        """
+
+        references: dict[str, set[str]] = {}
+        state_fd = self._state_directory_fd()
+        try:
+            with _upload_directory(state_fd, "jobs", "agent job records") as jobs_fd:
+                for name in _upload_directory_entries(jobs_fd, "agent job records"):
+                    with _upload_directory(jobs_fd, name, "agent job record directory") as job_fd:
+                        group, digests = self._job_record_references(job_fd, name)
+                        references.setdefault(group, set()).update(digests)
+        finally:
+            os.close(state_fd)
+        return {group: frozenset(digests) for group, digests in references.items()}
+
+    def _job_record_references(self, job_fd: int, name: str) -> tuple[str, set[str]]:
+        raw = _read_upload_record(job_fd, "request.json", f"job request record {name!r}")
+        try:
+            record = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise AdmissionError(
+                ExitCode.RUNNER_FAILURE,
+                f"cannot collect upload objects: job request record {name!r} is unreadable: {exc}",
+            ) from exc
+        if (
+            not isinstance(record, dict)
+            or set(record) != {"schema", "group", "digest", "request"}
+            or record.get("schema") != "fleet-host-job-request/1"
+            or not isinstance(record.get("group"), str)
+            or not record["group"]
+            or not isinstance(record.get("request"), dict)
+        ):
+            raise AdmissionError(
+                ExitCode.RUNNER_FAILURE,
+                f"cannot collect upload objects: job request record {name!r} has an unknown shape",
+            )
+        return str(record["group"]), self._request_upload_digests(record["request"], str(record["group"]), name)
+
+    def _request_upload_digests(self, request: Mapping[str, Any], group: str, name: str) -> set[str]:
+        digests: set[str] = set()
+        stores = request.get("stores")
+        if stores is not None and not isinstance(stores, Mapping):
+            raise AdmissionError(
+                ExitCode.RUNNER_FAILURE,
+                f"cannot collect upload objects: job request record {name!r} has an unknown stores shape",
+            )
+        seed = stores.get("seed") if isinstance(stores, Mapping) else None
+        if seed is not None:
+            digests.add(_record_descriptor_digest(seed, "stores.seed", name))
+        dev = request.get("dev")
+        if dev is not None:
+            if not isinstance(dev, Mapping):
+                raise AdmissionError(
+                    ExitCode.RUNNER_FAILURE,
+                    f"cannot collect upload objects: job request record {name!r} has an unknown dev shape",
+                )
+            for key in ("tracked", "untracked"):
+                digests.add(_record_descriptor_digest(dev.get(key), f"dev.{key}", name))
+        argv = request.get("extra_argv")
+        if isinstance(argv, list):
+            for index, item in enumerate(argv):
+                if item != "--only-candidates":
+                    continue
+                digests.add(self._candidate_reference(argv[index + 1] if index + 1 < len(argv) else None, group, name))
+        return digests
+
+    def _candidate_reference(self, value: object, group: str, name: str) -> str:
+        if not isinstance(value, str) or not value or _UPLOAD_DIGEST_RE.fullmatch(Path(value).name) is None:
+            raise AdmissionError(
+                ExitCode.RUNNER_FAILURE,
+                f"cannot collect upload objects: job request record {name!r} has an invalid candidates reference",
+            )
+        if not Path(value).is_absolute() or Path(value).parent != self.paths.candidate_root(group):
+            raise AdmissionError(
+                ExitCode.RUNNER_FAILURE,
+                f"cannot collect upload objects: job request record {name!r} names candidates outside the authenticated group store",
+            )
+        return Path(value).name
+
     def _stored_upload_bytes(self) -> int:
         total = 0
         if self.paths.uploads_dir.is_symlink() or not self.paths.uploads_dir.is_dir():
@@ -592,6 +837,139 @@ class AgentVerbService:
             raise AdmissionError(ExitCode.RUNNER_FAILURE, "upload filesystem returned invalid available-byte facts")
         return stats.f_bavail * stats.f_frsize
 
+    def _upload_store_objects(self) -> tuple[_UploadObjectRef, ...]:
+        """List every committed store object, refusing a store entry it does not understand.
+
+        The layout is the one ``put`` writes: ``uploads/<group>/<name>/<sha256>``.
+        A group directory, a name directory and a committed object must all be
+        real, non-symlinked entries; anything else (a stray file, an unreadable
+        entry, an odd name) stops collection instead of silently shrinking the
+        total the store limit is checked against.
+        """
+
+        state_fd = self._state_directory_fd()
+        objects: list[_UploadObjectRef] = []
+        try:
+            with _upload_directory(state_fd, "uploads", "agent upload store") as uploads_fd:
+                for group in _upload_directory_entries(uploads_fd, "agent upload store groups"):
+                    if _UPLOAD_GROUP_RE.fullmatch(group) is None:
+                        raise AdmissionError(
+                            ExitCode.RUNNER_FAILURE,
+                            f"cannot collect upload objects: upload store entry {group!r} is not an upload group directory",
+                        )
+                    with _upload_directory(uploads_fd, group, "agent upload group") as group_fd:
+                        for name in _upload_directory_entries(group_fd, "agent upload names"):
+                            if not _known_upload_name(name):
+                                raise AdmissionError(
+                                    ExitCode.RUNNER_FAILURE,
+                                    f"cannot collect upload objects: upload store entry {group}/{name} is not a known upload name",
+                                )
+                            with _upload_directory(group_fd, name, "agent upload name") as name_fd:
+                                objects.extend(self._upload_name_objects(group, name, name_fd))
+        finally:
+            os.close(state_fd)
+        return tuple(objects)
+
+    def _upload_name_objects(self, group: str, name: str, name_fd: int) -> list[_UploadObjectRef]:
+        found: list[_UploadObjectRef] = []
+        for digest in _upload_directory_entries(name_fd, f"agent upload objects below {group}/{name}"):
+            if _UPLOAD_DIGEST_RE.fullmatch(digest) is None:
+                raise AdmissionError(
+                    ExitCode.RUNNER_FAILURE,
+                    f"cannot collect upload objects: upload store entry {group}/{name}/{digest} is not a content address",
+                )
+            try:
+                fd = open_beneath(name_fd, digest)
+            except (OSError, ValueError) as exc:
+                raise AdmissionError(
+                    ExitCode.RUNNER_FAILURE,
+                    f"cannot collect upload objects: store object {group}/{name}/{digest} is unreadable: {exc}",
+                ) from exc
+            try:
+                info = os.fstat(fd)
+                if not stat.S_ISREG(info.st_mode):
+                    raise AdmissionError(
+                        ExitCode.RUNNER_FAILURE,
+                        f"cannot collect upload objects: store object {group}/{name}/{digest} is not a regular file",
+                    )
+                found.append(_UploadObjectRef(group, name, digest, info.st_size, info.st_mtime))
+            except OSError as exc:
+                raise AdmissionError(
+                    ExitCode.RUNNER_FAILURE,
+                    f"cannot collect upload objects: store object {group}/{name}/{digest} is unreadable: {exc}",
+                ) from exc
+            finally:
+                os.close(fd)
+        return found
+
+    def _collect_upload_objects_locked(self, needed: int, store_limit: int) -> int:
+        """Delete oldest unreferenced objects until ``needed`` bytes are reclaimed.
+
+        Deletion stops as soon as the pending put would fit; it never runs to a
+        target it cannot reach, so an unreachable request leaves the store as it
+        found it.  A reference, a listing failure or an odd store entry stops
+        collection with nothing further deleted.
+        """
+
+        if needed <= 0:
+            return 0
+        try:
+            references = self._referenced_upload_objects_locked()
+            objects = self._upload_store_objects()
+        except AdmissionError as exc:
+            raise AdmissionError(
+                exc.exit_code,
+                f"put refused and nothing was collected: {exc.reason}",
+            ) from exc
+        reclaimed = 0
+        remaining = needed
+        seed_sidecars = _referenced_seed_sidecars(references, objects)
+        ordered = sorted(objects, key=lambda item: (item.modified, item.group, item.name, item.digest))
+        for item in ordered:
+            if remaining <= 0:
+                break
+            if _is_referenced_upload_object(item, references, seed_sidecars):
+                continue
+            self._unlink_upload_object(item)
+            remaining -= item.size
+            reclaimed += item.size
+        return reclaimed
+
+    def _unlink_upload_object(self, item: _UploadObjectRef) -> None:
+        """Remove one committed object through its parent descriptor, never a symlink."""
+
+        state_fd = -1
+        group_fd = -1
+        name_fd = -1
+        try:
+            state_fd = self._state_directory_fd()
+            with _upload_directory(state_fd, "uploads", "agent upload store") as opened_group:
+                group_fd = opened_group
+                with _upload_directory(group_fd, item.group, "agent upload group") as opened_name:
+                    name_fd = opened_name
+                    with _upload_directory(name_fd, item.name, "agent upload name") as opened_object:
+                        os.unlink(item.digest, dir_fd=opened_object)
+                        os.fsync(opened_object)
+        except AdmissionError as exc:
+            raise AdmissionError(
+                exc.exit_code,
+                f"put refused after a partial collection: {exc.reason}",
+            ) from exc
+        except (OSError, ValueError) as exc:
+            raise AdmissionError(
+                ExitCode.RUNNER_FAILURE,
+                f"put refused after a partial collection: cannot delete store object "
+                f"{item.group}/{item.name}/{item.digest}: {exc}",
+            ) from exc
+        finally:
+            for fd in (name_fd, group_fd, state_fd):
+                if fd >= 0:
+                    os.close(fd)
+        self._collection_hook(item)
+
+    def _collection_hook(self, item: _UploadObjectRef) -> None:
+        """An injected seam after each deletion; the default does nothing."""
+
     def _reserve_upload(
         self, expected: int, store_limit: int, floor_bytes: int,
     ) -> _UploadReservation:
@@ -600,6 +978,10 @@ class AgentVerbService:
         with self._upload_store_lock():
             in_flight, remaining, _live = self._recover_upload_reservations_locked()
             stored = self._stored_upload_bytes()
+            required = stored + in_flight + expected - store_limit
+            if required > 0:
+                self._collect_upload_objects_locked(required, store_limit)
+                stored = self._stored_upload_bytes()
             if stored + in_flight + expected > store_limit:
                 raise AdmissionError(
                     ExitCode.REFUSAL,
