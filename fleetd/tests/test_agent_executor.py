@@ -5602,6 +5602,82 @@ def test_worker_finish_unstarted_publishes_only_after_terminal_write_and_retries
             os.close(fd)
 
 
+@pytest.mark.parametrize(
+    ("scenario", "reason"),
+    [
+        ("base-delete-failed", "cannot-delete-job-ref: refs/remote-gate/base"),
+        ("delete-failed", "cannot-delete-seed-ref: refs/heads/main"),
+        ("ref-survived", "seed-ref-resolves-after-deletion: origin/main"),
+        ("query-failed", "cannot-prove-seed-ref-absent: main"),
+    ],
+)
+def test_synchronize_job_refs_requires_proven_main_absence_without_request_base(tmp_path, scenario, reason):
+    class _RefRunner:
+        def __init__(self):
+            self.calls = []
+            self.starts = 0
+
+        def run(self, argv, *, cwd_fd, env, timeout=None):
+            self.calls.append(list(argv))
+            if "update-ref" in argv and "-d" in argv:
+                ref = argv[-1]
+                if scenario == "base-delete-failed" and ref == "refs/remote-gate/base":
+                    return CommandResult(1, b"", b"cannot delete ref")
+                if scenario == "delete-failed" and ref == "refs/heads/main":
+                    return CommandResult(1, b"", b"cannot delete ref")
+                return CommandResult(0, b"", b"")
+            if "rev-parse" in argv:
+                reference = argv[-1].split("^{", 1)[0]
+                if scenario == "query-failed":
+                    return CommandResult(2, b"", b"repository unreadable")
+                if scenario == "ref-survived" and reference == "origin/main":
+                    return CommandResult(0, ("a" * 40 + "\n").encode(), b"")
+                return CommandResult(1, b"", b"")
+            raise AssertionError(f"unexpected runner command: {argv!r}")
+
+        def start(self, *_args, **_kwargs):
+            self.starts += 1
+            raise AssertionError("lane start must not be reached")
+
+    class _NoContainers:
+        def job_containers(self, _job_id):
+            return ()
+
+        def inspect(self, _container_id):
+            raise AssertionError("no container ids were returned")
+
+        def remove_stopped(self, _container_id):
+            return None
+
+    runner = _RefRunner()
+    worker, _runner, job_dir, _checkout = _ready_worker(tmp_path, runner, docker=_NoContainers())
+    worker.request.update(project=".", lane="r0-r1")
+    worker.request.pop("base", None)
+    worker.group = "controller"
+    worker.request_digest = "a" * 64
+    worker.scope_process_reader = lambda _unit: (os.getpid(),)
+    worker._helper = lambda _mode, *_args, **_kwargs: CommandResult(0, b"", b"")
+    worker._collect = lambda: {}
+    worker._complete_admission = lambda _terminal: None
+    try:
+        with pytest.raises(AdmissionError, match=reason) as error:
+            worker._synchronize_job_refs()
+        status = worker._handle_run_error(error.value.exit_code, error.value.reason)
+        terminal_state = json.loads((job_dir / "state.json").read_text(encoding="utf-8"))
+        result = json.loads((job_dir / "result.json").read_text(encoding="utf-8"))
+        assert status == int(ExitCode.IDENTITY_OR_TRANSPORT)
+        assert terminal_state["state"] == "failed"
+        assert terminal_state["verdict"] == result["verdict"] == "ERROR"
+        assert reason in result["binding"]["reasons"]
+        assert runner.starts == 0
+        if scenario == "ref-survived":
+            assert any("rev-parse" in command and "origin/main^{object}" in command for command in runner.calls)
+    finally:
+        for fd in (worker.project_fd, worker.checkout_fd, worker.repo_root_fd):
+            if fd >= 0:
+                os.close(fd)
+
+
 def test_synchronize_job_refs_removes_stale_refs_and_requires_a_present_base(tmp_path):
     class _GitRunner:
         def run(self, argv, *, cwd_fd, env, timeout=None):

@@ -345,11 +345,14 @@ those host-observed facts and collects the closed artifact set plus one
 `assay-store.tgz` and checksum. The admission and lease verbs still use the
 durable C2 book. A live lease connection holds its lease flock until disconnect;
 bind/reconnect verify the immutable container ID and host-inspected lease label.
-The checkout never imports `main` or `origin/main` from a host seed. It deletes
-those refs and uses an explicit request base when supplied. A lane requiring
-`main` or `origin/main` without that base is refused. A verified host seed that
-contains the request sha and required base is sufficient; retained uploads are
-consulted only when either commit is unavailable from that seed.
+The checkout never imports `main` or `origin/main` from a host seed. It checks
+each deletion result, then verifies with Git revision resolution that neither
+name resolves through any ref form, including packed refs. If deletion or
+absence cannot be proven, the job ends as ERROR before a lane starts. An
+explicit request base is installed after validation. A lane requiring `main` or
+`origin/main` without that base is refused. A verified host seed that contains
+the request sha and required base is sufficient; retained uploads are consulted
+only when either commit is unavailable from that seed.
 The worker follows the event file during the lane, inspects each
 `lane-started` container while it is present, and durably saves that observation.
 A container already gone at observation is an ERROR. The final binding uses the

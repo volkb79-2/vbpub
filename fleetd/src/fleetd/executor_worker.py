@@ -1247,14 +1247,40 @@ class HostJobWorker:
                 detail=f"cannot install requested base {base}",
             )
         else:
-            self._run([
+            result = self._run([
                 "git", "-C", str(self.repo_root / self.checkout_rel), "update-ref", "-d", "refs/remote-gate/base",
             ], cwd_fd=self.repo_root_fd)
+            if result.returncode != 0:
+                raise AdmissionError(
+                    ExitCode.IDENTITY_OR_TRANSPORT,
+                    "cannot-delete-job-ref: refs/remote-gate/base",
+                )
 
         for ref in ("refs/remotes/origin/main", "refs/heads/main"):
-            self._run([
+            result = self._run([
                 "git", "-C", str(self.repo_root / self.checkout_rel), "update-ref", "-d", ref,
             ], cwd_fd=self.repo_root_fd)
+            if result.returncode != 0:
+                raise AdmissionError(
+                    ExitCode.IDENTITY_OR_TRANSPORT,
+                    f"cannot-delete-seed-ref: {ref}",
+                )
+
+        for name in ("main", "origin/main"):
+            result = self._run([
+                "git", "-C", str(self.repo_root / self.checkout_rel), "rev-parse", "--verify", "--quiet",
+                "--end-of-options", f"{name}^{{object}}",
+            ], cwd_fd=self.repo_root_fd)
+            if result.returncode == 0:
+                raise AdmissionError(
+                    ExitCode.IDENTITY_OR_TRANSPORT,
+                    f"seed-ref-resolves-after-deletion: {name}",
+                )
+            if result.returncode != 1:
+                raise AdmissionError(
+                    ExitCode.IDENTITY_OR_TRANSPORT,
+                    f"cannot-prove-seed-ref-absent: {name}",
+                )
 
     def _uploaded_objects(self, name: str) -> list[tuple[str, int]]:
         root_fd = os.open(self.state_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
