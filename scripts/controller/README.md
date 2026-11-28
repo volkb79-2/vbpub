@@ -881,6 +881,22 @@ monitor spawn explicitly sets the lock descriptor to `ignore` in an extended
 stdio array, so neither a tool shell nor a monitor started through
 `pi-pidns-bash` keeps the lock after pi exits.
 
+The same wrapper is the one place that keeps the route's API keys away from the
+model: every command it starts -- the model-facing bash tool, `!`/`!!` user
+commands routed through `pi-pidns-extension.js`, and monitors started by the
+extension -- runs behind it, so it unsets every `OPENDESIGN_API_KEY*` variable
+before `bwrap` starts (by prefix, not by the two account names the launcher
+exports today; the extension's own monitor environment drops the same names).
+Pi itself keeps its key: the launcher exports it and pi reads the provider
+profile, but a tool shell no longer inherits it. Implementer runs launched by
+`pi-impl.sh` use the same wrapper and extension, so they get the same strip.
+Known limit: the strip removes what the process environment holds, not what a
+file holds -- a shell command that reads `$HOME/.env.ai` itself can still recover
+a key, so that file keeps its `0600` mode and stays out of argv, logs and
+transcripts. Repository code that needs the variable inside a tool shell would
+have to source the file explicitly; a grep of this repository finds no such
+consumer.
+
 ## Running the registered gate
 
 The toolkit's `suite` lane is declared in `run-gate.toml`. Run it from this

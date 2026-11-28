@@ -1120,6 +1120,12 @@ mutant("scripts/controller/pi-pidns-bash-worker.sh", "pi-pidns-keeps-tmux",
 mutant("scripts/controller/pi-pidns-bash-worker.sh", "pi-pidns-keeps-tmux-pane",
        'unset TMUX TMUX_PANE DOCKER_HOST',
        'unset TMUX DOCKER_HOST')
+mutant("scripts/controller/pi-pidns-bash-worker.sh", "pi-pidns-keeps-route-keys",
+       '    OPENDESIGN_API_KEY*) unset -v "$variable" ;;',
+       '    OPENDESIGN_API_KEY*) : ;;')
+mutant("scripts/controller/pi-pidns-bash-worker.sh", "pi-pidns-strips-one-key-name",
+       '    OPENDESIGN_API_KEY*) unset -v "$variable" ;;',
+       '    OPENDESIGN_API_KEY_VOLKER) unset -v "$variable" ;;')
 mutant("scripts/controller/pi-pidns-bash-worker.sh", "pi-pidns-docker-socket-uncovered",
        '  bwrap_args+=(--bind /dev/null "$docker_socket")',
        '  : # Docker socket remains visible')
@@ -1983,6 +1989,11 @@ pi_ctl_mutant(
     "queued-reset-skipped",
     "\t\t\ttry { resetQueuedForFreshSession(); } catch { log(\"delivery_queue_reset_error\", { reason: startReason }); }",
     "\t\t\t// mutant: a fresh session runtime does not re-deliver accepted copies",
+)
+pi_ctl_mutant(
+    "monitor-keeps-route-keys",
+    '\t\t\tif (key.startsWith("OPENDESIGN_API_KEY")) delete childEnv[key];',
+    "\t\t\tif (false) delete childEnv[key];",
 )
 pi_ctl_mutant(
     "reload-treated-as-fresh",

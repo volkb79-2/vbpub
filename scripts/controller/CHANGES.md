@@ -23,6 +23,13 @@ no separate version number, so entries are grouped by the work that landed.
   minutes by default, `PI_CTL_BRIDGE_ACK_TIMEOUT_SECONDS`, validated 1..604800
   seconds, measured from the first print of any process so restarts cannot
   postpone it). `ack` remains the only thing that ends a claim.
+- Route API keys no longer reach the model (F3): `pi-pidns-bash-worker.sh`
+  unsets every `OPENDESIGN_API_KEY*` variable by prefix before `bwrap` starts,
+  which covers the model-facing bash tool, `!`/`!!` user commands and monitors
+  (implementer runs from `pi-impl.sh` use the same backend). The extension's
+  monitor environment drops the same names instead of a fixed pair, so a new
+  account name cannot silently stay exported. Pi itself keeps its key; reading
+  `$HOME/.env.ai` from a shell stays possible and is documented as the limit.
 
 ### Pi sub-controller harness (P-plat-PICTL)
 - Add a dependency-free JavaScript core and explicit pi extension for

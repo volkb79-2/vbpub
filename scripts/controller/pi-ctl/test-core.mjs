@@ -703,7 +703,13 @@ test("monitor refuses at the start tool boundary until the PID namespace wrapper
 });
 
 test("monitor batches capped lines, stops only its own child, and reports exit or expiry", async (t) => {
-	const f = fixture({ OPENDESIGN_API_KEY_VOLKER: "never-pass-this-key", OPENDESIGN_API_KEY_GITHUB2: "also-secret" });
+	// A third key name stands in for an account added to the route later: the
+	// extension must not depend on knowing the names the launcher exports today.
+	const f = fixture({
+		OPENDESIGN_API_KEY_VOLKER: "never-pass-this-key",
+		OPENDESIGN_API_KEY_GITHUB2: "also-secret",
+		OPENDESIGN_API_KEY_FUTURE_ACCOUNT: "never-pass-this-one-either",
+	});
 	t.after(f.cleanup);
 	const children = [];
 	let spawnOptions;
@@ -725,6 +731,7 @@ test("monitor batches capped lines, stops only its own child, and reports exit o
 	assert.ok(id);
 	assert.equal(spawnOptions.env.OPENDESIGN_API_KEY_VOLKER, undefined);
 	assert.equal(spawnOptions.env.OPENDESIGN_API_KEY_GITHUB2, undefined);
+	assert.equal(spawnOptions.env.OPENDESIGN_API_KEY_FUTURE_ACCOUNT, undefined, "every OPENDESIGN_API_KEY* name is stripped, not a fixed pair");
 	assert.equal(spawnOptions.env.PI_CTL_LOCK_FD, undefined, "the monitor environment does not advertise the session lock descriptor");
 	assert.equal(spawnOptions.stdio[12], "ignore", "Node explicitly closes the session lock before starting the pidns wrapper");
 	children[0].stdout.emit("data", Buffer.from("one\ntwo\n"));

@@ -1001,6 +1001,13 @@ environment values.
 The controller suite covers the harness with a fake pi API; live provider and TUI behavior
 still need an operator smoke run after account access is available.
 
+Every command behind `pi-pidns-bash` -- the model-facing bash tool, `!`/`!!` user
+commands and monitors started by the extension -- loses every `OPENDESIGN_API_KEY*`
+variable: `pi-pidns-bash-worker.sh` unsets them by prefix before `bwrap` starts, and the
+extension's monitor environment drops the same names. Pi itself keeps its key. A shell
+that reads `$HOME/.env.ai` explicitly can still recover one; that is the documented
+limit, and no repository code needs the variable in a tool shell.
+
 The installed pi 1.6.0 bash tool starts its shell with only standard input, output and
 error in the Node `stdio` array (`dist/core/tools/bash.js:75-79`). Node 26 treats
 unspecified child descriptors 3 and above as `ignore` ([child-process stdio

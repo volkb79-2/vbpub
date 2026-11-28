@@ -1026,8 +1026,12 @@ export function createController(pi, injected = {}, overrides = {}) {
 
 	function monitorEnv() {
 		const childEnv = { ...env };
-		delete childEnv.OPENDESIGN_API_KEY_VOLKER;
-		delete childEnv.OPENDESIGN_API_KEY_GITHUB2;
+		// The pidns wrapper strips every OPENDESIGN_API_KEY* name for the shell it
+		// starts, which is the authoritative place; this keeps the monitor's OWN
+		// process image clean as well, including an account name added later.
+		for (const key of Object.keys(childEnv)) {
+			if (key.startsWith("OPENDESIGN_API_KEY")) delete childEnv[key];
+		}
 		delete childEnv.PI_CTL_LOCK_FD;
 		return childEnv;
 	}

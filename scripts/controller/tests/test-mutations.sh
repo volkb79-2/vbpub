@@ -289,6 +289,7 @@ for pi_pidns_case in \
   pi-pidns-no-docker-api-tmpfs:argv pi-pidns-keeps-docker-host:argv \
   pi-pidns-keeps-tmux:argv pi-pidns-keeps-tmux-pane:argv \
   pi-pidns-docker-socket-uncovered:docker-socket \
+  pi-pidns-keeps-route-keys:key-strip pi-pidns-strips-one-key-name:key-strip \
   pi-pidns-fail-open:fail-closed pi-pidns-command-status-zero:command-status; do
   pi_pidns_mutant=${pi_pidns_case%%:*}
   pi_pidns_focus=${pi_pidns_case#*:}
@@ -647,7 +648,7 @@ done
 # https://github.com/v8/v8/blob/main/src/sandbox/sandbox.h
 # https://github.com/nodejs/node/blob/main/deps/v8/include/v8-internal.h
 for pi_ctl_mutant in claim-before-inject name-validation agent-end-only wrapper-required root-symlink-components inherited-flock-required \
-                     queued-claim-reinjected queued-wakeup-reinjected queued-reset-skipped reload-treated-as-fresh; do
+                     queued-claim-reinjected queued-wakeup-reinjected queued-reset-skipped reload-treated-as-fresh monitor-keeps-route-keys; do
   expect_assertion_killed_with_address_space_limit "pi-ctl-$pi_ctl_mutant" 2147483648 \
     env NODE_OPTIONS=--max-old-space-size=256 \
       PI_CTL_CORE_MODULE="$ROOT/mutants/scripts/controller/pi-ctl-$pi_ctl_mutant/core.mjs" \

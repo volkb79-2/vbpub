@@ -30,7 +30,8 @@ cat > "$FAKE_BWRAP" <<'SH'
 set -uo pipefail
 : > "${FAKE_BWRAP_ARGV:?}"
 for arg in "$@"; do printf '%s\0' "$arg" >> "$FAKE_BWRAP_ARGV"; done
-for name in TMUX TMUX_PANE DOCKER_HOST; do
+for name in TMUX TMUX_PANE DOCKER_HOST OPENDESIGN_API_KEY_VOLKER OPENDESIGN_API_KEY_GITHUB2 \
+  OPENDESIGN_API_KEY_FUTURE_ACCOUNT PIDNS_KEPT_VARIABLE; do
   if [[ -v $name ]]; then printf '%s=present\n' "$name"; else printf '%s=unset\n' "$name"; fi
 done > "${FAKE_BWRAP_ENV:?}"
 if [[ ${PYTHONPATH+x} ]]; then
@@ -250,6 +251,30 @@ PY
     'an empty PYTHONPATH entry was not passed through to the bwrap command environment'
 }
 
+check_model_tool_environment_has_no_route_keys() {
+  local tmux_dir=$ROOT/tmux-key-strip
+  rm -f -- "$FAKE_BWRAP_ARGV" "$FAKE_BWRAP_ENV"
+  # Every route key the shell backend is started with, plus one account name the
+  # launcher does not know: the strip must be by prefix, not by a fixed list.
+  env TMUX_TMPDIR="$ROOT/tmux-key-strip" \
+    OPENDESIGN_API_KEY_VOLKER='pidns-test-volker-marker' \
+    OPENDESIGN_API_KEY_GITHUB2='pidns-test-github2-marker' \
+    OPENDESIGN_API_KEY_FUTURE_ACCOUNT='pidns-test-future-marker' \
+    PIDNS_KEPT_VARIABLE='kept-marker' \
+    FAKE_BWRAP_START=1 FAKE_BWRAP_EXIT=0 \
+    "$WRAPPER" -c true > "$ROOT/key-strip.out" 2>&1 \
+    || fail 'the key-strip probe did not reach the bwrap launcher'
+  for name in OPENDESIGN_API_KEY_VOLKER OPENDESIGN_API_KEY_GITHUB2 OPENDESIGN_API_KEY_FUTURE_ACCOUNT; do
+    grep -qF "$name=unset" "$FAKE_BWRAP_ENV" \
+      || fail "$name reached the model-facing shell environment"
+  done
+  # Only the route keys go: the shell keeps everything else it was started with.
+  if ! grep -qF 'PIDNS_KEPT_VARIABLE=present' "$FAKE_BWRAP_ENV"; then
+    fail 'the key strip removed an unrelated variable from the shell environment'
+  fi
+  ! grep -qF 'pidns-test-volker-marker' "$FAKE_BWRAP_ARGV" || fail 'a route key appeared in the bwrap argv'
+}
+
 check_exec_signal_dispositions_restored() {
   local status_file=$ROOT/fake-bwrap-sigign
   local ignored_mask sig_ign
@@ -324,6 +349,7 @@ case ${PI_PIDNS_TEST_FOCUS:-all} in
     check_startup_environment_is_sanitized
     check_python_startup_environment_isolated
     ;;
+  key-strip) check_model_tool_environment_has_no_route_keys ;;
   signals) check_exec_signal_dispositions_restored ;;
   live) check_live_isolation ;;
   all)
@@ -334,6 +360,7 @@ case ${PI_PIDNS_TEST_FOCUS:-all} in
     check_command_status_is_preserved
     check_startup_environment_is_sanitized
     check_python_startup_environment_isolated
+    check_model_tool_environment_has_no_route_keys
     check_exec_signal_dispositions_restored
     check_live_isolation
     ;;
