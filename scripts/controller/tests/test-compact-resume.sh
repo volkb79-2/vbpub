@@ -174,6 +174,10 @@ COMPACT_RESUME_START_TRIES=3 COMPACT_RESUME_DONE_TRIES=3 run '%9' "$D/guidance.t
 [[ ! -e $D/sent.3 ]] || fail "busy without compacting: resume prompt was sent"
 # A transcript spinner-shaped line from an earlier turn and prose containing Compacting are not live evidence.
 scenario stale-spinner "I" "STALESPIN"
+stale_frame=$D/frames/compact.001
+if [[ $(grep -cF "$RULE" "$stale_frame") -ne 2 ]] || ! grep -qF '❯' "$stale_frame"; then
+  fail "stale spinner fixture must include a normal prompt box"
+fi
 COMPACT_RESUME_START_TRIES=3 COMPACT_RESUME_DONE_TRIES=3 run '%9' "$D/guidance.txt" "$D/prompt.txt" "$D/log"
 [[ $RC -eq 8 ]] || fail "stale spinner text exit $RC (want 8)"
 [[ ! -e $D/sent.3 ]] || fail "stale spinner text: resume prompt was sent"
@@ -185,7 +189,7 @@ COMPACT_RESUME_START_TRIES=3 run '%9' "$D/guidance.txt" "$D/prompt.txt" "$D/log"
 [[ $RC -eq 0 ]] || fail "chunked text exit $RC"
 cmp -s "$D/sent-start" "$D/expected-start.txt" || fail "chunked command/guidance changed text or lost a semicolon"
 for raw in "$D"/raw.*; do
-  perl -e 'local $/; my $s=<>; utf8::decode($s) or die "invalid UTF-8\n"; exit(length($s) <= 400 && $s !~ /(?<!\\);\z/ ? 0 : 1)' "$raw" || fail "chunk exceeds 400 characters, splits UTF-8, or has an unescaped trailing semicolon: $raw"
+  perl -e 'local $/; my $s=<>; utf8::decode($s) or die "invalid UTF-8\n"; my $n=length($s); $n-- if $s =~ /\\;\z/; exit($n <= 400 && $s !~ /(?<!\\);\z/ ? 0 : 1)' "$raw" || fail "chunk exceeds 400 characters, splits UTF-8, or has an unescaped trailing semicolon: $raw"
 done
 # A semicolon-only chunk and a prompt ending in semicolon both arrive intact.
 scenario semicolons "I" "K K I I I"
