@@ -191,8 +191,7 @@ fn push_array<'a>(out: &mut String, items: impl Iterator<Item = &'a str>) {
     out.push(']');
 }
 
-fn fnv1a(bytes: &[u8]) -> u64 {
-    let mut hash = 0xcbf29ce484222325u64;
+fn fnv1a_extend(mut hash: u64, bytes: &[u8]) -> u64 {
     for byte in bytes {
         hash ^= u64::from(*byte);
         hash = hash.wrapping_mul(0x100000001b3);
@@ -201,19 +200,23 @@ fn fnv1a(bytes: &[u8]) -> u64 {
 }
 
 fn events_digest(args: &EventsArgs) -> u64 {
-    let mut canonical = Vec::new();
-    canonical.extend_from_slice(&args.from_real_ns.to_le_bytes());
-    canonical.extend_from_slice(&args.to_real_ns.to_le_bytes());
-    canonical.extend_from_slice(
+    let mut digest = 0xcbf29ce484222325u64;
+    digest = fnv1a_extend(digest, &args.from_real_ns.to_le_bytes());
+    digest = fnv1a_extend(digest, &args.to_real_ns.to_le_bytes());
+    digest = fnv1a_extend(
+        digest,
         &u32::try_from(args.names.len())
             .unwrap_or(u32::MAX)
             .to_le_bytes(),
     );
     for name in &args.names {
-        canonical.extend_from_slice(&u32::try_from(name.len()).unwrap_or(u32::MAX).to_le_bytes());
-        canonical.extend_from_slice(name.as_bytes());
+        digest = fnv1a_extend(
+            digest,
+            &u32::try_from(name.len()).unwrap_or(u32::MAX).to_le_bytes(),
+        );
+        digest = fnv1a_extend(digest, name.as_bytes());
     }
-    fnv1a(&canonical)
+    digest
 }
 
 fn parse_events_cursor(cursor: &str) -> Option<(u64, u64, u64)> {
