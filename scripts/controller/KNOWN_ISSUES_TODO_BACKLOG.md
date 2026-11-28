@@ -1950,3 +1950,53 @@ the next session start reconciles the monitor state.
 **Close when:** shutdown removes or marks every stopped monitor in durable state
 before the extension returns, with a fake-pi test that reads the state before
 any subsequent start.
+
+## CTL-75 — pi-ctl-send derives the repository from the caller's working directory
+
+**Status:** OPEN (filed 2026-11-28 from the P-plat-PICTL-FIX review; Medium).
+The outside-repository guard searches upward from `$PWD`. A caller launched from
+outside a checkout can point `PI_CTL_ROOT` into that checkout without the guard
+discovering the repository.
+
+**Where:** `scripts/controller/pi-ctl-send.sh` repository-root check.
+
+**Close when:** the repository boundary comes from a trusted source independent
+of the caller's working directory, and a test invokes the sender outside the
+checkout with its state root inside that checkout and verifies no write.
+
+## CTL-76 — pi-ctl-send stages stdin without a bound
+
+**Status:** OPEN (filed 2026-11-28 from the P-plat-PICTL-FIX review; Medium).
+The sender copies all stdin to a temporary file before measuring it against
+`PI_CTL_MAX_SEND_BYTES`; an oversized or endless stream can consume unbounded
+disk space or wait indefinitely before refusal.
+
+**Where:** `scripts/controller/pi-ctl-send.sh` stdin body staging.
+
+**Close when:** staging reads no more than the configured maximum plus one byte,
+refuses overflow promptly, and an oversized-input test proves the temporary
+file's size is bounded.
+
+## CTL-77 — pi-ctl-send ignores inbox chmod failure
+
+**Status:** OPEN (filed 2026-11-28 from the P-plat-PICTL-FIX review; Medium).
+The sender suppresses errors from setting the inbox directory to mode 0700 and
+can publish while an existing directory retains wider permissions.
+
+**Where:** `scripts/controller/pi-ctl-send.sh` inbox permission setup.
+
+**Close when:** a chmod failure refuses publication and the directory mode is
+verified as 0700 before the message is published.
+
+## CTL-78 — fake pi queues triggerTurn:false notices differently from pi 1.6.0
+
+**Status:** OPEN (filed 2026-11-28 from the P-plat-PICTL-FIX review; Medium).
+The fake puts F1b `triggerTurn:false` notices into its follow-up queue. Pi 1.6.0
+appends such a notice to the session immediately when idle and defers it to the
+end of the active run when streaming, without creating a follow-up turn.
+
+**Where:** `scripts/controller/pi-ctl/test-core.mjs` fake `sendMessage()` model.
+
+**Close when:** the fake models immediate idle persistence and the streaming
+pending-custom-message path, with an assertion that the notice is persisted and
+does not start a turn.
