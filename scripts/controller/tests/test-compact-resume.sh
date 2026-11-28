@@ -52,6 +52,7 @@ case $1 in
       # tmux drops an ending ";" but removes the backslash from an ending "\;".
       if [[ ${t: -2} == '\;' ]]; then t=${t:0:${#t}-2}; t+=';'
       elif [[ $t == *';' ]]; then t=${t%?}; fi
+      phase=$(<"$s/phase")
       printf '%s' "$t" >"$s/sent.$n"; printf '%s' "$t" >>"$s/sent-$phase"
       printf '%s' "$t" >>"$s/sent-chunks"
       echo "send-keys $3 -l <text $n>" >>"$s/calls.log"
