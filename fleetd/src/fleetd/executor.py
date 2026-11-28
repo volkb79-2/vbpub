@@ -122,8 +122,22 @@ class SystemdScopeLauncher:
             pass
         try:
             self._reaper_start(process.wait)
-        except Exception as exc:
-            raise AdmissionError(ExitCode.RUNNER_FAILURE, f"cannot reap job scope command {unit}: {exc}") from exc
+        except BaseException as exc:
+            if isinstance(exc, Exception):
+                raise AdmissionError(
+                    ExitCode.RUNNER_FAILURE, f"cannot reap job scope command {unit}: {exc}",
+                ) from exc
+            # An interruption can arrive after the reaper thread was created.
+            # Retry once to ensure the Popen child has an owner, then preserve
+            # the interruption so HostJobExecutor leaves the start unconfirmed.
+            try:
+                self._reaper_start(process.wait)
+            except BaseException as retry_exc:
+                raise AdmissionError(
+                    ExitCode.RUNNER_FAILURE,
+                    f"cannot reap job scope command {unit} after interrupted reaper setup: {retry_exc}",
+                ) from exc
+            raise
 
         worker_pid = self._read_worker_handshake(handshake_read_fd, deadline, unit)
         if worker_pid != process.pid:
@@ -434,7 +448,7 @@ class HostJobExecutor:
                 _atomic_json(job_dir / "state.json", running)
             admission.handoff()
             return running
-        except Exception as exc:
+        except BaseException as exc:
             try:
                 with _job_state_lock(job_dir):
                     current = self.read_state(job_id)
@@ -442,7 +456,7 @@ class HostJobExecutor:
                         failed = dict(current)
                         failed["start_error"] = str(exc)[:1000]
                         _atomic_json(job_dir / "state.json", failed)
-            except (AdmissionError, OSError):
+            except BaseException:
                 pass
             raise
         finally:

@@ -835,6 +835,7 @@ class HostJobWorker:
         self.lane_error: str | None = None
         self.permanent_defect: str | None = None
         self.terminal_completed = False
+        self.interruption_settled = False
         self.memory_lock_fd = -1
 
     def _state(self) -> dict[str, object]:
@@ -1480,9 +1481,14 @@ class HostJobWorker:
         """Keep a post-start failure visible without transferring ownership."""
 
         try:
+            current = self._state()
+            previous = current.get("reason")
+            detail = f"post-start retry required: {reason}"[:1000]
+            if isinstance(previous, str) and previous:
+                detail = previous[:1000] if reason in previous else f"{previous}; {reason}"[:1000]
             self._save_state(
                 state="stopping", exit_code=ExitCode.QUEUED_WITHDRAWN,
-                reason=f"post-start retry required: {reason}", retry_required=True,
+                reason=detail, retry_required=True,
             )
         except Exception:
             # A later retry may succeed; the worker and admission lock remain
@@ -1545,6 +1551,93 @@ class HostJobWorker:
                 except Exception as exc:
                     self._save_post_start_retry(f"lane stop request deferred: {exc}")
             self.waiter(1)
+
+    def _settle_worker_interruption(self, interrupted: BaseException) -> None:
+        """Keep retrying safe completion until ownership can be transferred."""
+
+        reason = f"worker interrupted: {type(interrupted).__name__}: {interrupted}"
+        while True:
+            try:
+                current = self._state()
+                if (
+                    current.get("lane_pid") is not None
+                    or current.get("lane_process_status") is not None
+                    or current.get("lane_may_be_live") is True
+                ):
+                    self._save_post_start_retry(reason)
+                    status = current.get("lane_process_status")
+                    if type(status) is int:
+                        self._finalize_lane_with_retry(status)
+                    else:
+                        self._resume_lane_after_worker_error(reason)
+                else:
+                    self._finish_unstarted(
+                        int(ExitCode.RUNNER_FAILURE),
+                        f"worker interrupted before lane start: {type(interrupted).__name__}: {interrupted}",
+                    )
+                return
+            except BaseException as cleanup_error:
+                try:
+                    self._save_post_start_retry(f"{reason}; cleanup retry: {cleanup_error}")
+                except BaseException:
+                    pass
+                try:
+                    self.waiter(1)
+                except BaseException:
+                    pass
+
+    def _settle_interruption_before_run(self, interrupted: BaseException) -> None:
+        """Wait for the parent start gate before resolving an early interruption."""
+
+        while True:
+            try:
+                confirmed = self._await_scope_confirmation()
+            except BaseException:
+                try:
+                    self.waiter(1)
+                except BaseException:
+                    pass
+                continue
+            if not confirmed:
+                self.interruption_settled = True
+                raise interrupted
+            try:
+                self._finish_unstarted(
+                    int(ExitCode.RUNNER_FAILURE),
+                    f"worker interrupted before lane start: {type(interrupted).__name__}: {interrupted}",
+                )
+            except BaseException:
+                try:
+                    self.waiter(1)
+                except BaseException:
+                    pass
+                continue
+            self.interruption_settled = True
+            return
+
+    def _handle_run_error(self, exit_code: int, reason: str) -> int:
+        """Recover an ordinary worker error without losing an interruption."""
+
+        try:
+            self._log(f"executor stopped exit={exit_code}: {reason}")
+            try:
+                current = self._state()
+            except AdmissionError:
+                current = {}
+            if (
+                current.get("lane_pid") is not None
+                or current.get("lane_process_status") is not None
+                or current.get("lane_may_be_live") is True
+            ):
+                self._save_post_start_retry(reason)
+                status = current.get("lane_process_status")
+                if type(status) is int:
+                    return self._finalize_lane_with_retry(status)
+                return self._resume_lane_after_worker_error(reason)
+            return self._finish_unstarted(exit_code, reason)
+        except BaseException as interrupted:
+            self._settle_worker_interruption(interrupted)
+            raise
 
     def _seed_stores(self) -> None:
         stores = self.request.get("stores")
@@ -3243,7 +3336,12 @@ class HostJobWorker:
     def run(self) -> int:
         """Run checkout and lane prerequisites, then return the Run-Gate status."""
 
-        if not self._await_scope_confirmation():
+        try:
+            confirmed = self._await_scope_confirmation()
+        except BaseException as interrupted:
+            self._settle_interruption_before_run(interrupted)
+            raise
+        if not confirmed:
             return int(ExitCode.RUNNER_FAILURE)
         try:
             self._read_request()
@@ -3277,39 +3375,13 @@ class HostJobWorker:
             status = self._run_lane(binary, mode, facts, memory_lock_fd)
             return self._finalize_lane_with_retry(status)
         except AdmissionError as exc:
-            try:
-                current = self._state()
-            except AdmissionError:
-                current = {}
-            if current.get("lane_process_status") is None and (
-                current.get("lane_pid") is not None or current.get("lane_may_be_live") is True
-            ):
-                return self._resume_lane_after_worker_error(exc.reason)
-            if current.get("lane_process_status") is not None:
-                status = current.get("lane_process_status")
-                if type(status) is int:
-                    self._save_post_start_retry(exc.reason)
-                    return self._finalize_lane_with_retry(status)
-                return self._resume_lane_after_worker_error(exc.reason)
-            self._log(f"executor stopped exit={exc.exit_code}: {exc.reason}")
-            return self._finish_unstarted(int(exc.exit_code), exc.reason)
+            return self._handle_run_error(int(exc.exit_code), exc.reason)
         except Exception as exc:
-            self._log(f"executor stopped exit={ExitCode.RUNNER_FAILURE}: {exc}")
-            try:
-                current = self._state()
-            except AdmissionError:
-                current = {}
-            if (
-                current.get("lane_pid") is not None
-                or current.get("lane_process_status") is not None
-                or current.get("lane_may_be_live") is True
-            ):
-                status = current.get("lane_process_status")
-                self._save_post_start_retry(str(exc))
-                if type(status) is int:
-                    return self._finalize_lane_with_retry(status)
-                return self._resume_lane_after_worker_error(str(exc))
-            return self._finish_unstarted(int(ExitCode.RUNNER_FAILURE), str(exc))
+            return self._handle_run_error(int(ExitCode.RUNNER_FAILURE), str(exc))
+        except BaseException as exc:
+            self._settle_worker_interruption(exc)
+            self.interruption_settled = True
+            raise
         finally:
             if self.memory_lock_fd >= 0:
                 try:
@@ -3719,22 +3791,27 @@ def _worker_main(argv: Sequence[str]) -> int:
     parser.add_argument("--lock-fd", type=int, required=True)
     parser.add_argument("--handshake-fd", type=int, required=True)
     args = parser.parse_args(argv)
+    worker: HostJobWorker | None = None
     try:
         policy = load_agent_policy(args.policy)
         lock_info = os.fstat(args.lock_fd)
         if not stat.S_ISREG(lock_info.st_mode):
             raise AdmissionError(ExitCode.RUNNER_FAILURE, "inherited admission lock is not a regular file")
         fcntl.flock(args.lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        worker = HostJobWorker(args.state_dir, policy, args.job_id, args.lock_fd)
         handshake = f"{os.getpid()}\n".encode("ascii")
         written = os.write(args.handshake_fd, handshake)
         if written != len(handshake):
             raise AdmissionError(ExitCode.RUNNER_FAILURE, "worker start handshake was incomplete")
         os.close(args.handshake_fd)
-        worker = HostJobWorker(args.state_dir, policy, args.job_id, args.lock_fd)
         return worker.run()
     except (AdmissionError, OSError, ValueError) as exc:
         print(f"fleetd-executor-worker: {exc}", file=sys.stderr)
         return int(exc.exit_code) if isinstance(exc, AdmissionError) else int(ExitCode.RUNNER_FAILURE)
+    except BaseException as exc:
+        if worker is not None and not worker.interruption_settled:
+            worker._settle_interruption_before_run(exc)
+        raise
 
 
 def main(argv: Sequence[str] | None = None) -> int:

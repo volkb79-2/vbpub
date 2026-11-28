@@ -403,9 +403,11 @@ class AgentAdmission:
             raise AdmissionError(ExitCode.RUNNER_FAILURE, "job admission returned a non-job handle")
         try:
             state = executor.start(request, result.handle)
-        except Exception as exc:
+        except BaseException as exc:
             with self._uncertain_start_lock:
                 self._uncertain_start_handles[model.job_id] = result.handle
+            if not isinstance(exc, Exception):
+                raise
             raise AdmissionError(
                 ExitCode.RUNNER_FAILURE,
                 f"executor start failed; durable request and admission charge are retained: {exc}",

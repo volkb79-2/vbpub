@@ -448,6 +448,32 @@ def test_scope_launcher_refuses_unreapable_worker_and_unreadable_worker_cgroup()
         os.close(read_fd)
 
 
+def test_scope_launcher_retries_reaper_setup_after_baseexception(monkeypatch):
+    read_fd, write_fd = os.pipe()
+    reaper_calls = []
+
+    def popen(_argv, **kwargs):
+        os.write(kwargs["pass_fds"][1], b"516\n")
+        return type("WorkerProcess", (), {"pid": 516, "wait": lambda _self: 0})()
+
+    def reaper(wait):
+        reaper_calls.append(wait)
+        if len(reaper_calls) == 1:
+            raise KeyboardInterrupt("reaper setup interrupted")
+
+    launcher = SystemdScopeLauncher(1, popen=popen, reaper_start=reaper)
+    try:
+        with pytest.raises(KeyboardInterrupt, match="reaper setup interrupted"):
+            launcher.launch("fleetd-job-x.scope", ["worker"], 8, read_fd, write_fd)
+        assert len(reaper_calls) == 2
+    finally:
+        for fd in (read_fd, write_fd):
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+
 def test_worker_main_verifies_flock_before_handshake_and_execution(tmp_path, monkeypatch):
     state_dir = tmp_path / "state"
     state_dir.mkdir()
@@ -495,6 +521,52 @@ def test_worker_main_verifies_flock_before_handshake_and_execution(tmp_path, mon
             os.close(write_fd)
         except OSError:
             pass
+
+
+def test_worker_main_settles_interruption_after_handshake_before_run(tmp_path, monkeypatch):
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    lock_path = state_dir / "admission.lock"
+    lock_path.touch()
+    lock_fd = os.open(lock_path, os.O_RDWR)
+    read_fd, write_fd = os.pipe()
+    settled = []
+    real_write = os.write
+
+    class _Worker:
+        def __init__(self, *_args):
+            self.interruption_settled = False
+
+        def _settle_interruption_before_run(self, interrupted):
+            settled.append(str(interrupted))
+            self.interruption_settled = True
+
+        def run(self):
+            pytest.fail("interrupted worker must settle before entering run")
+
+    def write(fd, body):
+        written = real_write(fd, body)
+        if fd == write_fd:
+            raise KeyboardInterrupt("after handshake")
+        return written
+
+    monkeypatch.setattr(executor_worker_module, "load_agent_policy", lambda _path: object())
+    monkeypatch.setattr(executor_worker_module, "HostJobWorker", _Worker)
+    monkeypatch.setattr(executor_worker_module.os, "write", write)
+    try:
+        with pytest.raises(KeyboardInterrupt, match="after handshake"):
+            worker_main([
+                "worker", "--state-dir", str(state_dir), "--policy", str(tmp_path / "agent.toml"),
+                "--job-id", "controller-run-1", "--lock-fd", str(lock_fd), "--handshake-fd", str(write_fd),
+            ])
+        assert os.read(read_fd, 64) == f"{os.getpid()}\n".encode()
+        assert settled == ["after handshake"]
+    finally:
+        for fd in (lock_fd, read_fd, write_fd):
+            try:
+                os.close(fd)
+            except OSError:
+                pass
 
 
 def test_executor_state_read_accepts_records_larger_than_legacy_64k_limit(tmp_path):
@@ -3211,6 +3283,27 @@ def test_executor_start_refuses_missing_request_and_retains_charge_on_confirmati
     assert handle.live and not handle.handed_off
 
 
+def test_executor_start_records_baseexception_before_unconfirmed_worker_can_run(tmp_path):
+    executor, _policy_value, state_dir = _executor(tmp_path)
+    request = _submit()
+    request["sha"] = SHA
+    job_dir = _durable_job(state_dir, request)
+    handle = _Handle()
+
+    class _InterruptedScope:
+        def launch(self, *_args):
+            raise KeyboardInterrupt("launch interrupted")
+
+    executor.scope_launcher = _InterruptedScope()
+    with pytest.raises(KeyboardInterrupt, match="launch interrupted"):
+        executor.start(request, handle)
+
+    durable = json.loads((job_dir / "state.json").read_text(encoding="utf-8"))
+    assert durable["start_confirmed"] is False
+    assert durable["start_error"] == "launch interrupted"
+    assert handle.live and not handle.handed_off
+
+
 def test_executor_start_requires_a_live_admission_handle_and_valid_request_record(tmp_path):
     executor, _policy_value, state_dir = _executor(tmp_path)
     request = _submit()
@@ -3835,7 +3928,12 @@ def test_worker_keeps_charge_if_lane_start_outcome_is_uncertain(tmp_path):
 
     def interrupt_retry(seconds):
         waits.append(seconds)
-        raise StopRetry("test ended a pending worker retry")
+        if len(waits) == 1:
+            raise StopRetry("test interrupted a pending worker retry")
+        worker._save_state(
+            lane_process_status=int(executor_module.ExitCode.IDENTITY_OR_TRANSPORT),
+            lane_may_be_live=False,
+        )
 
     def start_attempt(_binary, _mode, _facts, _memory_lock_fd):
         worker._save_state(state="lane-starting", lane_may_be_live=True, lane_start_attempted=True)
@@ -3843,14 +3941,16 @@ def test_worker_keeps_charge_if_lane_start_outcome_is_uncertain(tmp_path):
 
     worker._run_lane = start_attempt
     worker._finish_unstarted = lambda *_args: finalized.append("unstarted")
+    worker._finalize_lane = lambda status: finalized.append(status) or status
     worker.waiter = interrupt_retry
-    with pytest.raises(StopRetry, match="test ended a pending worker retry"):
+    with pytest.raises(StopRetry, match="test interrupted a pending worker retry"):
         worker.run()
     state = worker._state()
-    assert waits == [1]
-    assert state["state"] == "stopping" and state["lane_may_be_live"] is True
+    assert waits == [1, 1]
+    assert state["state"] == "stopping" and state["lane_may_be_live"] is False
+    assert state["lane_process_status"] == int(executor_module.ExitCode.IDENTITY_OR_TRANSPORT)
     assert "start outcome not confirmed" in state["reason"]
-    assert finalized == []
+    assert finalized == [int(executor_module.ExitCode.IDENTITY_OR_TRANSPORT)]
     assert not (job_dir / "result.json").exists()
 
 
@@ -3884,6 +3984,135 @@ def test_worker_retries_transient_finalization_failure_after_lane_exit(tmp_path)
     assert worker.run() == 0
     assert attempts == [0, 0]
     assert waits == [1]
+
+
+def test_worker_baseexception_after_lane_exit_finalizes_before_reraising(tmp_path):
+    worker, _runner, _job_dir, _checkout = _ready_worker(tmp_path)
+    worker.request["sha"] = SHA
+    worker._read_request = lambda: None
+    worker._await_scope_confirmation = lambda: True
+    worker._create_checkout = lambda: None
+    worker._prerequisites = lambda: ("/usr/bin/run-gate", "25.0.1", {
+        "lane": {}, "environment": {"mode": "host"}, "runner_name": None,
+    })
+    worker._wait_for_psi = lambda: None
+    worker._seed_stores = lambda: None
+    worker._memory_admission = lambda: None
+
+    def interrupt_after_exit(*_args):
+        worker._save_state(state="collecting", lane_process_status=0, lane_may_be_live=False)
+        raise KeyboardInterrupt("worker interrupted after lane exit")
+
+    worker._run_lane = interrupt_after_exit
+    finalized = []
+    worker._finalize_lane = lambda status: finalized.append(status) or status
+
+    with pytest.raises(KeyboardInterrupt, match="worker interrupted after lane exit"):
+        worker.run()
+
+    assert finalized == [0]
+
+
+def test_worker_retries_finalization_if_baseexception_interrupts_the_terminal_write(tmp_path):
+    worker, _runner, _job_dir, _checkout = _ready_worker(tmp_path)
+    worker.request["sha"] = SHA
+    worker._read_request = lambda: None
+    worker._await_scope_confirmation = lambda: True
+    worker._create_checkout = lambda: None
+    worker._prerequisites = lambda: ("/usr/bin/run-gate", "25.0.1", {
+        "lane": {}, "environment": {"mode": "host"}, "runner_name": None,
+    })
+    worker._wait_for_psi = lambda: None
+    worker._seed_stores = lambda: None
+    worker._memory_admission = lambda: None
+    worker._run_lane = lambda *_args: (worker._save_state(
+        state="collecting", lane_process_status=0, lane_may_be_live=False,
+    ) and 0)
+    attempts = []
+
+    def interrupt_once(status):
+        attempts.append(status)
+        if len(attempts) == 1:
+            raise KeyboardInterrupt("terminal persistence interrupted")
+        return status
+
+    worker._finalize_lane = interrupt_once
+    with pytest.raises(KeyboardInterrupt, match="terminal persistence interrupted"):
+        worker.run()
+
+    assert attempts == [0, 0]
+
+
+def test_worker_baseexception_while_lane_live_stops_and_proves_exit_before_reraising(tmp_path):
+    worker, _runner, _job_dir, _checkout = _ready_worker(tmp_path)
+    worker.request["sha"] = SHA
+    worker._read_request = lambda: None
+    worker._await_scope_confirmation = lambda: True
+    worker._create_checkout = lambda: None
+    worker._prerequisites = lambda: ("/usr/bin/run-gate", "25.0.1", {
+        "lane": {}, "environment": {"mode": "host"}, "runner_name": None,
+    })
+    worker._wait_for_psi = lambda: None
+    worker._seed_stores = lambda: None
+    worker._memory_admission = lambda: None
+    calls = []
+
+    class _Process:
+        pid = 515
+
+        def poll(self):
+            calls.append("poll")
+            return None if calls.count("poll") < 3 else 0
+
+    class _Signals:
+        def terminate_group(self, pid):
+            calls.append(("term", pid))
+
+    process = _Process()
+    worker.process_signals = _Signals()
+    worker._follow_lane_events = lambda **_kwargs: None
+
+    def interrupt_live_lane(*_args):
+        worker.runner_process = process
+        worker._save_state(
+            state="lane-starting", lane_mode="host", lane_pid=process.pid,
+            lane_may_be_live=True, lane_status_owner="worker",
+        )
+        raise KeyboardInterrupt("worker interrupted while lane is live")
+
+    worker._run_lane = interrupt_live_lane
+    worker.waiter = lambda _seconds: calls.append("wait")
+
+    def finalize(status):
+        calls.append(("finalize", status))
+        return status
+
+    worker._finalize_lane = finalize
+    with pytest.raises(KeyboardInterrupt, match="worker interrupted while lane is live"):
+        worker.run()
+
+    assert calls == ["poll", "poll", ("term", 515), "wait", "poll", ("finalize", 0)]
+
+
+def test_worker_interruption_while_waiting_for_scope_confirmation_finishes_only_after_confirm(tmp_path):
+    worker, _runner, _job_dir, _checkout = _ready_worker(tmp_path)
+    confirmations = []
+    finalized = []
+
+    def confirm_after_interruption():
+        confirmations.append(True)
+        if len(confirmations) == 1:
+            raise KeyboardInterrupt("scope wait interrupted")
+        return True
+
+    worker._await_scope_confirmation = confirm_after_interruption
+    worker._finish_unstarted = lambda code, reason: finalized.append((code, reason)) or int(code)
+
+    with pytest.raises(KeyboardInterrupt, match="scope wait interrupted"):
+        worker.run()
+
+    assert len(confirmations) == 2
+    assert finalized and "interrupted before lane start" in finalized[0][1]
 
 
 def test_worker_run_routes_pre_lane_refusal_to_terminal_completion(tmp_path):
