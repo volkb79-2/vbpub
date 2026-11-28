@@ -1963,6 +1963,24 @@ class AdmissionBook:
         finally:
             _unlock_close(queue_fd)
 
+    def read_record(self, job_id: str) -> Mapping[str, object] | None:
+        """Read any durable admission record without reconciling dead waiters."""
+
+        _validate_name(job_id, "job_id")
+        queue_fd = self._queue_lock()
+        try:
+            for path, reader in (
+                (self._terminal_path(job_id), _read_terminal_record),
+                (self._record_path(job_id), _read_json_record),
+                (self._lease_path(job_id), _read_lease_record),
+                (self._waiting_path(job_id), _read_waiter_record),
+            ):
+                if path.exists() or path.is_symlink():
+                    return reader(path, expected_id=job_id)
+            return None
+        finally:
+            _unlock_close(queue_fd)
+
     def is_live(self, job_id: str) -> bool:
         """Report executor liveness from the per-job flock without deleting its charge."""
 
