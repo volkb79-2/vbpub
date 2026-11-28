@@ -5,7 +5,7 @@ set -uo pipefail
 # output from frame files that advance one per call (the last frame repeats), so the checks are
 # deterministic under any host load. The script's poll interval is shortened through its test seams.
 unset COMPACT_RESUME_POLL COMPACT_RESUME_IDLE_TRIES COMPACT_RESUME_TYPE_PAUSE COMPACT_RESUME_FINAL_WAIT \
-  COMPACT_RESUME_START_TRIES COMPACT_RESUME_DONE_TRIES COMPACT_RESUME_SETTLE
+  COMPACT_RESUME_START_TRIES COMPACT_RESUME_START_POLL COMPACT_RESUME_DONE_TRIES COMPACT_RESUME_SETTLE
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 SCRIPT=${COMPACT_RESUME_SCRIPT:-$SCRIPT_DIR/../compact-resume.sh}
 # shellcheck source=pane-frame-lib.sh
@@ -20,8 +20,8 @@ not_contains() { ! grep -qF -- "$2" "$1" || fail "$3 (unexpected: $2)"; }
 RULE=$(printf '─%.0s' {1..40})
 
 mkdir -p "$ROOT/bin"
-# Phases: "start" until the /compact line has been typed AND submitted, then "compact". send-keys -l
-# texts are stored as sent.1 (the /compact line) and sent.2 (the resume prompt).
+# Phases: "start" until /compact is submitted, then "compact". Every literal send is stored separately
+# and concatenated by phase so tests pin both the chunk calls and the resulting text.
 cat > "$ROOT/bin/tmux" <<'SH'
 #!/usr/bin/env bash
 s=$STUB_DIR
@@ -42,10 +42,15 @@ case $1 in
       [[ -e $s/sendfail ]] && exit 1
       if [[ $5 == -- ]]; then t=$6; else t=$5; [[ $t == -* ]] && exit 1; fi
       n=$(( $(cat "$s/nsent" 2>/dev/null || echo 0) + 1 )); echo "$n" >"$s/nsent"
-      printf '%s' "$t" >"$s/sent.$n"; echo "send-keys $3 -l <text $n>" >>"$s/calls.log"
+      printf '%s' "$t" >"$s/raw.$n"
+      # tmux treats an argument-ending semicolon as a command separator and drops it.
+      [[ $t == *';' ]] && t=${t%;}
+      printf '%s' "$t" >"$s/sent.$n"; printf '%s' "$t" >>"$s/sent-$phase"
+      printf '%s' "$t" >>"$s/sent-chunks"
+      echo "send-keys $3 -l <text $n>" >>"$s/calls.log"
     else
       echo "send-keys $3 $4" >>"$s/calls.log"
-      [[ $(cat "$s/nsent" 2>/dev/null || echo 0) -eq 1 ]] && echo compact >"$s/phase"
+      [[ $(<"$s/phase") == start ]] && echo compact >"$s/phase"
     fi ;;
 esac
 exit 0
@@ -72,7 +77,7 @@ frame() {
     L6B) panel_frame "$f" 6 1 1 ;;
     L12B) panel_frame "$f" 12 1 1 ;;
     LMB) panel_frame "$f" 6 1 1 '⏵⏵ accept edits on' ;;   # busy in another permission mode: no mode-line marker, no trim
-    EMPTY|QMENU|BANG|NORULE|DRAFT|DRAFT_FIX|DRAFT_VERIFY|MENUBOX|H1I|H1B|SPIN|SPIN_EDGE|SPIN_PROSE|PROSE) stray_frame "$f" "$4" ;;   # the shared refusal / H1 / L2 frames
+    EMPTY|QMENU|BANG|NORULE|DRAFT|DRAFT_FIX|DRAFT_VERIFY|MENUBOX|H1I|H1B|SPIN|SPIN_EDGE|STALESPIN|SPIN_PROSE|PROSE) stray_frame "$f" "$4" ;;   # shared refusal / H1 / L2 / stale-scrollback frames
   esac
 }
 # scenario <name> <start frames> <compact frames>: fresh stub dir, guidance, prompt and log
@@ -81,9 +86,9 @@ scenario() {
   read -ra a <<<"$2"; for k in "${a[@]}"; do frame "$D" start $((++i)) "$k"; done; i=0
   read -ra a <<<"$3"; for k in "${a[@]}"; do frame "$D" compact $((++i)) "$k"; done
   printf 'Keep the handover path.\n"quoted" $HOME `tick` -dash\nlast line\n' >"$D/guidance.txt"
-  printf '/compact Keep the handover path. "quoted" $HOME `tick` -dash last line' >"$D/expected-compact.txt"
+  printf '/compact Keep the handover path. "quoted" $HOME `tick` -dash last line' >"$D/expected-start.txt"
   printf -- '- Resume: read the handover.\n$HOME `tick`\nline three\n' >"$D/prompt.txt"
-  printf -- '- Resume: read the handover.\n$HOME `tick`\nline three' >"$D/expected-prompt.txt"
+  printf -- '- Resume: read the handover.\n$HOME `tick`\nline three' >"$D/expected-resume.txt"
 }
 # run <args...>: the script under the stub, short polls; sets RC
 run() {
@@ -97,27 +102,35 @@ rep() { local n=$1; shift; local i; for ((i = 0; i < n; i++)); do printf '%s\n' 
 #    and submitted, the first idle frame is skipped while waiting for the spinner, the Compacting
 #    spinner counts as busy, then 3 idle checks, and only then the resume prompt, exactly, then Enter.
 #    start: B I I I (4 checks) + footer-before = 5 captures.
-#    compact: I K K I I I (start wait: I, K; idle wait: K I I I) + done footer = 7, 3 checks before the
-#    prompt = 10, send, final footer = 1.
+#    compact: I K K I I I (start wait: I, K; idle wait: K I I I) + done footer + 3 checks before the
+#    prompt + final footer = 11 captures.
 scenario happy "B I I I" "I K K I I I"
 run '%9' "$D/guidance.txt" "$D/prompt.txt" "$D/log"
 [[ $RC -eq 0 ]] || fail "happy path exit $RC"
-want=$( { echo "has-session %9"; rep 5 "capture start"; echo "send-keys %9 -l <text 1>"; echo "send-keys %9 Enter"
-          rep 10 "capture compact"; echo "send-keys %9 -l <text 2>"; echo "send-keys %9 Enter"; echo "capture compact"; } )
+want=$( { echo "has-session %9"; rep 5 "capture start"; echo "send-keys %9 -l <text 1>"; echo "send-keys %9 -l <text 2>"; echo "send-keys %9 Enter"
+          rep 11 "capture compact"; echo "send-keys %9 -l <text 3>"; echo "send-keys %9 Enter"; echo "capture compact"; } )
 [[ $(calls) == "$want" ]] || { calls >&2; fail "happy path call sequence"; }
-cmp -s "$D/sent.1" "$D/expected-compact.txt" || fail "/compact line was not sent exactly"
-cmp -s "$D/sent.2" "$D/expected-prompt.txt" || fail "resume prompt was not sent exactly"
+cmp -s "$D/sent-start" "$D/expected-start.txt" || fail "/compact line was not sent exactly"
+cmp -s "$D/sent-compact" "$D/expected-resume.txt" || fail "resume prompt was not sent exactly"
+cmp -s "$D/sent.1" <(printf '/compact ') || fail "the command prefix was not a separate first send"
 contains "$D/log" "pane idle, input empty; footer before: ctx 442k" "idle logged with the footer"
-contains "$D/log" "compaction running" "compaction start logged"
+contains "$D/log" "compaction spinner observed" "compaction start logged"
 contains "$D/log" "compaction done; footer:" "compaction end logged"
 contains "$D/log" "resume prompt sent; footer:" "final footer logged"
+
+# A short-lived spinner above the prompt box is caught by the bounded active-spinner scan.
+scenario fast-spinner "I" "SPIN I I I"
+COMPACT_RESUME_START_TRIES=3 COMPACT_RESUME_DONE_TRIES=3 run '%9' "$D/guidance.txt" "$D/prompt.txt" "$D/log"
+[[ $RC -eq 0 ]] || fail "fast spinner exit $RC"
+contains "$D/log" "compaction spinner observed" "fast spinner confirmation logged"
+cmp -s "$D/sent-compact" "$D/expected-resume.txt" || fail "fast spinner: resume prompt not sent after completion"
 
 # 2. Idle blips (fewer than 3 in a row) do not count as idle, before the /compact or during it.
 scenario blips "I B I I B I I I" "K I I K I I K I I I"
 run '%9' "$D/guidance.txt" "$D/prompt.txt" "$D/log"
 [[ $RC -eq 0 ]] || fail "idle blips exit $RC"
 [[ $(calls | grep -c '^capture compact') -eq 15 ]] || { calls >&2; fail "blips: compact captures (start 1 + wait 9 + done footer + 3 checks + final footer)"; }
-cmp -s "$D/sent.2" "$D/expected-prompt.txt" || fail "blips: resume prompt not sent"
+cmp -s "$D/sent-compact" "$D/expected-resume.txt" || fail "blips: resume prompt not sent"
 
 # 3. Never idle (continuously busy): exit 3, nothing sent.
 scenario busy "B" "I"
@@ -134,17 +147,48 @@ scenario stuck "I" "K"
 COMPACT_RESUME_DONE_TRIES=5 run '%9' "$D/guidance.txt" "$D/prompt.txt" "$D/log"
 [[ $RC -eq 4 ]] || fail "never finishing exit $RC (want 4)"
 contains "$D/log" "ERROR compaction not finished" "never finishing logged"
-cmp -s "$D/sent.1" "$D/expected-compact.txt" || fail "never finishing: /compact not sent"
-[[ ! -e $D/sent.2 ]] || fail "never finishing: the resume prompt was sent"
-[[ $(calls | grep -c '^send-keys') -eq 2 ]] || fail "never finishing: only the /compact line and its Enter expected"
+cmp -s "$D/sent-start" "$D/expected-start.txt" || fail "never finishing: /compact not sent"
+[[ ! -e $D/sent.3 ]] || fail "never finishing: the resume prompt was sent"
+[[ $(calls | grep -c '^send-keys') -eq 3 ]] || fail "never finishing: only the command, guidance and Enter expected"
 not_contains "$D/log" "compaction done" "never finishing: logged as done"
 
-# 5. The spinner is never seen (compaction already over or never started): WARN, the prompt is still sent.
+# 5. Busy without a compaction spinner is not confirmation: exit 8 and send no resume prompt.
 scenario nospin "I" "I"
 COMPACT_RESUME_START_TRIES=3 run '%9' "$D/guidance.txt" "$D/prompt.txt" "$D/log"
-[[ $RC -eq 0 ]] || fail "no spinner exit $RC"
-contains "$D/log" "WARN compaction never showed busy" "WARN logged"
-cmp -s "$D/sent.2" "$D/expected-prompt.txt" || fail "no spinner: resume prompt not sent"
+[[ $RC -eq 8 ]] || fail "no spinner exit $RC (want 8)"
+contains "$D/log" "ERROR no compaction spinner observed" "missing confirmation logged"
+[[ ! -e $D/sent.3 ]] || fail "no spinner: resume prompt was sent"
+scenario busy-no-spinner "I" "B"
+COMPACT_RESUME_START_TRIES=3 COMPACT_RESUME_DONE_TRIES=3 run '%9' "$D/guidance.txt" "$D/prompt.txt" "$D/log"
+[[ $RC -eq 8 ]] || fail "busy without compacting exit $RC (want 8)"
+[[ ! -e $D/sent.3 ]] || fail "busy without compacting: resume prompt was sent"
+# A transcript spinner-shaped line from an earlier turn and prose containing Compacting are not live evidence.
+scenario stale-spinner "I" "STALESPIN"
+COMPACT_RESUME_START_TRIES=3 COMPACT_RESUME_DONE_TRIES=3 run '%9' "$D/guidance.txt" "$D/prompt.txt" "$D/log"
+[[ $RC -eq 8 ]] || fail "stale spinner text exit $RC (want 8)"
+[[ ! -e $D/sent.3 ]] || fail "stale spinner text: resume prompt was sent"
+# Chunk boundaries are <=400 Unicode characters, valid in the C locale, preserve `;`, and retain text order.
+scenario chunked "I" "K K I I I"
+{ printf '%0399d' 0; printf ';'; printf ' é%.0s' {1..410}; } >"$D/guidance.txt"
+{ printf '/compact '; cat "$D/guidance.txt"; } >"$D/expected-start.txt"
+COMPACT_RESUME_START_TRIES=3 run '%9' "$D/guidance.txt" "$D/prompt.txt" "$D/log"
+[[ $RC -eq 0 ]] || fail "chunked text exit $RC"
+cmp -s "$D/sent-start" "$D/expected-start.txt" || fail "chunked command/guidance changed text or lost a semicolon"
+for raw in "$D"/raw.*; do
+  perl -e 'use Encode qw(decode FB_CROAK); local $/; my $s=decode("UTF-8", <> , FB_CROAK); exit(length($s) <= 400 && $s !~ /;\z/ ? 0 : 1)' "$raw" || fail "chunk exceeds 400 characters, splits UTF-8, or ends in semicolon: $raw"
+done
+# Guidance itself may mention Compacting; without a live spinner it remains unconfirmed.
+scenario guidance-mentions-spinner "I" "I"
+printf 'Compacting is only text in this guidance.\n' >"$D/guidance.txt"
+COMPACT_RESUME_START_TRIES=3 run '%9' "$D/guidance.txt" "$D/prompt.txt" "$D/log"
+[[ $RC -eq 8 && ! -e $D/sent.3 ]] || fail "guidance text falsely confirmed compaction"
+# An empty guidance file still submits the bare slash command.
+scenario empty-guidance "I" "K K I I I"
+: >"$D/guidance.txt"
+COMPACT_RESUME_START_TRIES=3 run '%9' "$D/guidance.txt" "$D/prompt.txt" "$D/log"
+[[ $RC -eq 0 ]] || fail "empty guidance exit $RC"
+[[ $(calls | grep -c '^send-keys') -eq 4 ]] || fail "empty guidance must send bare command, Enter, prompt and Enter"
+cmp -s "$D/sent.1" <(printf '/compact ') || fail "empty guidance did not send bare /compact"
 
 # 5b. A failing send-keys exits 6, is not logged as sent and nothing more is sent (the happy path types a
 #     resume prompt starting with "-", which the stub rejects without "--": the old code lost it silently).
@@ -159,14 +203,14 @@ not_contains "$D/log" "compaction running" "send failure: went on waiting for a 
 # 5c. Text in the input row: nothing is sent until it is empty again, before the /compact and before the resume
 #     prompt (text typed DURING the compaction does not stall the compaction wait); the LAST input row counts
 #     (an older non-empty one in the scrollback does not); NBSP-only is empty.
-#     start: T T I I I + footer = 6; compact: I K K I T I I | T T I I I = 12.
+#     start: T T I I I + footer = 6; compact: I K K I T I I | T T I I I = 13.
 scenario typing "T T I I I" "I K K I T I I T T I I I"
 run '%9' "$D/guidance.txt" "$D/prompt.txt" "$D/log"
 [[ $RC -eq 0 ]] || fail "typing exit $RC"
-want=$( { echo "has-session %9"; rep 6 "capture start"; echo "send-keys %9 -l <text 1>"; echo "send-keys %9 Enter"
-          rep 12 "capture compact"; echo "send-keys %9 -l <text 2>"; echo "send-keys %9 Enter"; echo "capture compact"; } )
+want=$( { echo "has-session %9"; rep 6 "capture start"; echo "send-keys %9 -l <text 1>"; echo "send-keys %9 -l <text 2>"; echo "send-keys %9 Enter"
+          rep 13 "capture compact"; echo "send-keys %9 -l <text 3>"; echo "send-keys %9 Enter"; echo "capture compact"; } )
 [[ $(calls) == "$want" ]] || { calls >&2; fail "typing: nothing may be sent before the input row is empty"; }
-scenario scroll "S" "I"
+scenario scroll "S" "K I I I"
 COMPACT_RESUME_START_TRIES=3 run '%9' "$D/guidance.txt" "$D/prompt.txt" "$D/log"
 [[ $RC -eq 0 ]] || fail "older non-empty input row in the scrollback blocked the send (exit $RC)"
 [[ $(calls | grep -c '^capture start') -eq 4 ]] || fail "scrollback row: expected 3 checks + the footer"
@@ -181,11 +225,11 @@ not_contains <(calls) "send-keys" "input never empty: keys were sent"
 scenario typedlate "I" "K I I I T"
 COMPACT_RESUME_IDLE_TRIES=5 run '%9' "$D/guidance.txt" "$D/prompt.txt" "$D/log"
 [[ $RC -eq 5 ]] || fail "input never empty before the prompt exit $RC (want 5)"
-[[ $(calls | grep -c '^send-keys') -eq 2 && ! -e $D/sent.2 ]] || { calls >&2; fail "input never empty before the prompt: only the /compact line and its Enter may be sent"; }
+[[ $(calls | grep -c '^send-keys') -eq 3 && ! -e $D/sent.3 ]] || { calls >&2; fail "input never empty before the prompt: only the command, guidance and Enter may be sent"; }
 
 # 5e. A dim prompt suggestion in the input row (ESC[2m ... ESC[0m) is not typed text: the helper proceeds;
 #     plain text after a coloured marker is: nothing is sent (the stub serves the escapes only for capture -e).
-scenario dim "G" "I"
+scenario dim "G" "K I I I"
 COMPACT_RESUME_START_TRIES=3 run '%9' "$D/guidance.txt" "$D/prompt.txt" "$D/log"
 [[ $RC -eq 0 ]] || fail "dim suggestion blocked the send (exit $RC)"
 [[ $(calls | grep -c '^capture start') -eq 4 ]] || fail "dim suggestion: expected 3 checks + the footer"
@@ -213,12 +257,12 @@ COMPACT_RESUME_IDLE_TRIES=5 run '%9' "$D/guidance.txt" "$D/prompt.txt" "$D/log"
 [[ $RC -eq 3 ]] || fail "other permission mode: exit $RC (want 3, the pane is busy)"
 not_contains <(calls) "send-keys" "other permission mode: keys were sent into a running turn"
 # 5h. The REAL idle agents panel with the unfocused hint stays ready: the trim must not break the happy path.
-scenario panel-idle "LI" "I I"
+scenario panel-idle "LI" "K I I I"
 COMPACT_RESUME_START_TRIES=3 run '%9' "$D/guidance.txt" "$D/prompt.txt" "$D/log"
 [[ $RC -eq 0 ]] || fail "idle agents panel exit $RC"
 [[ $(calls | grep -c '^capture start') -eq 4 ]] || fail "idle agents panel: expected 3 idle checks + the footer"
-cmp -s "$D/sent.1" "$D/expected-compact.txt" || fail "idle agents panel: the /compact line was not sent exactly"
-cmp -s "$D/sent.2" "$D/expected-prompt.txt" || fail "idle agents panel: the resume prompt was not sent exactly"
+cmp -s "$D/sent-start" "$D/expected-start.txt" || fail "idle agents panel: the /compact line was not sent exactly"
+cmp -s "$D/sent-compact" "$D/expected-resume.txt" || fail "idle agents panel: the resume prompt was not sent exactly"
 
 # 5i. M2: a pane the helper cannot POSITIVELY recognise as an idle prompt box is never typed into. These four are the
 #     PIN the review found missing (they already read busy at 4708ed03e): delete the `st == 2` refusal in pane_state, or
@@ -253,12 +297,12 @@ contains "$D/log" "WARN pane not ready: a dialog is open" "refusal MENUBOX: the 
 #     box is recognised, the pane reads busy at every poll, /compact is never sent). The same frame with `esc to interrupt`
 #     on the mode line must stay busy (that case already reads busy on the base through the no-box scan: a pin, not a
 #     regression).
-scenario h1-idle "H1I" "I"
+scenario h1-idle "H1I" "K I I I"
 COMPACT_RESUME_START_TRIES=3 run '%9' "$D/guidance.txt" "$D/prompt.txt" "$D/log"
 [[ $RC -eq 0 ]] || fail "H1: the live main pane's labelled top rule must read ready (exit $RC)"
 [[ $(calls | grep -c '^capture start') -eq 4 ]] || fail "H1: expected 3 idle checks + the footer on the labelled box"
-cmp -s "$D/sent.1" "$D/expected-compact.txt" || fail "H1: the /compact line was not sent exactly on the labelled box"
-cmp -s "$D/sent.2" "$D/expected-prompt.txt" || fail "H1: the resume prompt was not sent exactly on the labelled box"
+cmp -s "$D/sent-start" "$D/expected-start.txt" || fail "H1: the /compact line was not sent exactly on the labelled box"
+cmp -s "$D/sent-compact" "$D/expected-resume.txt" || fail "H1: the resume prompt was not sent exactly on the labelled box"
 scenario h1-busy "H1B" "I"
 COMPACT_RESUME_IDLE_TRIES=5 run '%9' "$D/guidance.txt" "$D/prompt.txt" "$D/log"
 [[ $RC -eq 3 ]] || fail "H1 busy: exit $RC (want 3, the labelled box is busy)"
@@ -272,12 +316,12 @@ for kind in SPIN SPIN_EDGE; do
   not_contains <(calls) "send-keys" "L2 $kind: keys were sent while a compaction was running above the box"
   [[ $(grep -c 'WARN pane not ready: compaction spinner above the prompt box' "$D/log") -eq 1 ]] || fail "L2 $kind: spinner reason was not logged exactly once"
 done
-# A glyph-like transcript line without an ellipsis is ready; prose must not strand the helper.
+# A glyph-like transcript line without an ellipsis is not confirmation after submission.
 for kind in SPIN_PROSE PROSE; do
   scenario "l2-$kind" "$kind" "I"
   COMPACT_RESUME_START_TRIES=3 run '%9' "$D/guidance.txt" "$D/prompt.txt" "$D/log"
-  [[ $RC -eq 0 ]] || fail "L2 $kind: transcript prose must not read busy (exit $RC)"
-  contains "$D/log" "WARN compaction never showed busy" "L2 $kind: prose was mistaken for a spinner"
+  [[ $RC -eq 8 ]] || fail "L2 $kind: transcript prose must not confirm compaction (exit $RC)"
+  [[ ! -e $D/sent.3 ]] || fail "L2 $kind: unconfirmed compaction sent the resume prompt"
   [[ $(calls | grep -c '^capture start') -eq 4 ]] || fail "L2 $kind: expected 3 idle checks + the footer"
 done
 

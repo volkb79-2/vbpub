@@ -191,8 +191,24 @@ lock_pane() { # one lock per pane id, shared with ctl-keepalive.sh (it pings a p
   flock -w "$(seam LOCK_WAIT 120)" "$pane_lock_fd" || { say "ERROR pane $pane is locked by another resume helper or the keep-alive watcher; nothing sent"; exit 7; }
 }
 check_pane() { tmux has-session -t "$pane" 2>/dev/null || { say "ERROR no pane $pane"; exit 2; }; }
-send_text() { # literal text (`--` stops flag parsing: a text starting with `-`), a pause, then Enter; failure exits 6
-  tmux send-keys -t "$pane" -l -- "$1" || { say "ERROR send-keys failed (text)"; exit 6; }
+send_chunks() { # literal UTF-8 text in <=400-character chunks (`--` stops flag parsing); failure exits 6
+  local text=$1 chunk
+  while IFS= read -r -d '' chunk; do
+    tmux send-keys -t "$pane" -l -- "$chunk" || { say "ERROR send-keys failed (text)"; exit 6; }
+    sleep "$type_pause"
+  done < <(printf '%s' "$text" | perl -0777 -ne '
+    use Encode qw(decode FB_CROAK);
+    my $s = decode("UTF-8", $_, FB_CROAK);
+    while (length $s) {
+      my $n = length($s) > 400 ? 400 : length($s);
+      if ($n < length($s)) { my $space = rindex(substr($s, 0, $n), " "); $n = $space + 1 if $space >= 0; }
+      $n-- if $n < length($s) && substr($s, $n - 1, 1) eq ";";
+      print substr($s, 0, $n, ""), "\0";
+    }
+  ')
+}
+send_text() { # literal text, a pause, then Enter
+  send_chunks "$1"
   sleep "$type_pause"
   tmux send-keys -t "$pane" Enter || { say "ERROR send-keys failed (Enter)"; exit 6; }
 }

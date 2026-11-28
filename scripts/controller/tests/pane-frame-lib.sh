@@ -45,6 +45,7 @@ H1RULE="$(printf '─%.0s' {1..40}) ◉ xhigh · /effort  vbpub-main-controller 
 #   H1B      ... the same, with `esc to interrupt` on the box's mode line: it must NOT be typed into
 #   SPIN     an L2 spinner `✶ Compacting …` above the top rule, outside the bottom window
 #   SPIN_EDGE the same spinner on the sixth non-blank line above the top rule (the scan boundary)
+#   STALESPIN an earlier spinner-shaped transcript line beyond that active-spinner window
 #   SPIN_PROSE `● Compacting now.` above the box: transcript prose, not a spinner
 #   PROSE    the same place, prose that merely CONTAINS `Compacting`: it must not make the pane busy
 stray_frame() {
@@ -59,7 +60,7 @@ stray_frame() {
     MENUBOX) { printf '%b\n' "$MENU" ''; printf '%b\n' "$rule" '❯\xc2\xa0' "$rule" '  ctx 41%'; } >"$dest" ;;
     H1I) printf '%b\n' 'output' "$H1RULE" '❯\xc2\xa0' "$rule" '  ctx 41%' '  ⏵⏵ bypass permissions on · 1 monitor · ← 8 agents · ↓ to manage' >"$dest" ;;
     H1B) printf '%b\n' 'output' "$H1RULE" '❯\xc2\xa0' "$rule" '  ctx 41%' '  ⏵⏵ bypass permissions on · esc to interrupt · ← 8 agents' >"$dest" ;;
-    SPIN|SPIN_EDGE|SPIN_PROSE|PROSE) # the Compacting line is never directly above the top rule: compact-resume's 6-line bottom
+    SPIN|SPIN_EDGE|STALESPIN|SPIN_PROSE|PROSE) # the Compacting line is never directly above the top rule: compact-resume's 6-line bottom
       # window reaches that one row (and rightly reads any `Compacting` there as busy), so only the L2 scan sees these lines
       if [[ $2 == SPIN ]]; then
         printf '%b\n' 'output' '  ✔ Update installed · restart to apply' \
@@ -68,6 +69,9 @@ stray_frame() {
       elif [[ $2 == SPIN_EDGE ]]; then
         printf '%b\n' '  ✶ Compacting conversation… (3s)…' '  notice: 1' '  notice: 2' \
           '  notice: 3' '  notice: 4' '  notice: 5' >"$dest"
+      elif [[ $2 == STALESPIN ]]; then
+        printf '%b\n' '  ✶ Compacting conversation… (3s)…' '  notice: 1' '  notice: 2' \
+          '  notice: 3' '  notice: 4' '  notice: 5' '  notice: 6' '  notice: 7' '  notice: 8' >"$dest"
       elif [[ $2 == SPIN_PROSE ]]; then
         printf '%b\n' 'output' '  ● Compacting now.' '  notice: 1' >"$dest"
       else

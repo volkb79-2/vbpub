@@ -78,7 +78,7 @@ together.
 | CTL-68 | P-plat-35 review follow-ups: progress lines stop while the mutation queue drains; a missing runner mutant file counts as killed | Nice-to-have | OPEN |
 | CTL-69 | Pi automatic compaction summaries grow without bound and omit older in-flight status | Medium | OPEN 2026-11-27 |
 | CTL-79 | `pi-ctl-send.sh` has a check-then-use window after its symlink scan | Known limit | BY DESIGN 2026-11-28 (main ruling) |
-| CTL-80 | `compact-resume.sh` can deliver `/compact` as pasted text and then send the resume prompt although no compaction ran | High | OPEN 2026-11-28 |
+| CTL-80 | `compact-resume.sh` can deliver `/compact` as pasted text and then send the resume prompt although no compaction ran | High | FIXED 2026-11-28 (P-plat-CTL80) |
 | CTL-81 | A fresh pi controller session saves the previous session's monitor-restart notice as its original goal | Medium | OPEN 2026-11-28 |
 
 ---
@@ -2022,7 +2022,9 @@ does not start a turn.
 
 ## CTL-80 — compact-resume can paste `/compact` and resume without a compaction
 
-**Status:** OPEN (filed 2026-11-28, reported by main; High). At about 11:28Z on
+**Status:** FIXED 2026-11-28 (P-plat-CTL80). The command prefix and guidance are sent separately; all long literal text is chunked at Unicode-safe boundaries, and the resume prompt is withheld unless a live compaction spinner is captured after submission. Missing confirmation exits 8. Live pane behavior remains for the controller's smoke check.
+
+Filed 2026-11-28, reported by main; High. At about 11:28Z on
 pane `%13` both the `/compact <guidance>` line and the resume prompt arrived in
 Claude Code as pasted content. `/compact` did not run as a command, and the
 script sent the resume prompt as if the compaction had finished. The same script
@@ -2039,11 +2041,10 @@ some length.
 `scripts/controller/compact-resume.sh`, which only logs `WARN compaction never
 showed busy` and continues to the resume prompt.
 
-**Close when:** a long guidance text runs as a `/compact` command (measured on a
-live pane), or is refused before anything is typed; and the resume prompt is
-sent only after the compaction is confirmed (for example by the compacting
-marker, the transcript or a context drop), with a distinct exit code otherwise.
-Until then keep guidance and resume prompts well under 700 characters.
+The tests pin the separate command prefix, bounded chunks (including multibyte
+text and a semicolon at a potential boundary), no-prompt exit 8 without a live
+spinner, stale transcript rejection, and empty-guidance submission. The live
+pane check is still required before relying on the new typing behavior.
 
 ## CTL-81 — a fresh pi session takes a stale monitor notice as its goal
 
