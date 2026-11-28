@@ -246,6 +246,8 @@ items:
   - {id: B597, title: "An armed no-progress wall stop ends the sweep and can repeat on resume", type: bugfix, component: mutation, context_estimate: medium}
   - {id: B598, title: "P-assay-4f final-review follow-ups M1, M3 and L4-L7", type: bugfix, component: mutation, context_estimate: small}
   - {id: B599, title: "B105 RAM admission counts reclaimable file cache as used", type: bugfix, component: gate, context_estimate: small}
+  - {id: B604, title: "B596 changelog pre-flight does not model CMRU's real release history and version derivation", type: bugfix, component: gate, context_estimate: small}
+  - {id: B605, title: "B596 linked-worktree control does not guard a linked checkout", type: bugfix, component: gate, context_estimate: small}
   - {id: B610, title: "Assay merges that touch src/assay must pass self-qualification-provisional before merge", type: bugfix, component: gate, context_estimate: small}
 ---
 
@@ -15929,7 +15931,7 @@ The single error is at `descendants[0]`, so the only difference between an accep
 
 ## B562 — B561 economics unmeasured; backfill and store of record unscheduled
 
-**Status: OPEN (filed 2026-11-24 from the Opus design review); severity: medium.** Phase 1 strict re-proves every carried kill on every release, so its cost is O(all kills): per cmru release about 211 full judges × 304 s plus 4,190 × r kill replays plus one baseline per distinct witness node (C). At r = 5 s the replays take about 6 h, at r = 30 s about 35 h, and r has never been measured. Carry-forward can only reuse what exists, and no complete whole-source store exists (the 2026-11-08 shards cover 36 %; records written before WP2 can never be found by locus). **Wanted.** (1) WP0b now: 20 isolated replays on v1001 (`pytest <file>::<node>` alone on the mutant and on the pristine tree, wall time split into collection and call), plus the distinct and null `first_failing_test` counts over the committed cmru stores. (2) The cmru whole-source backfill (sharded, P1 config plus P2 order, about 3 days × 6 workers on v1001 + r1002) right after WP2 (B563) merges. (3) A durable per-lane store of record at `<project>/.assay/r2-store/<lane>/` (gitignored), shipped with the remote-gate artifacts and re-seeded into the next run (transport: run-gate RG-298 / controller CTL-51); after a complete run it is self-sufficient and older generations are pruned. **Close when.** The WP0b report (r median and p90, node-baseline cost, replay-confirms-kill rate, distinct and null witness counts, D4/WP7 and L1 calls) is in `nyxloom-trove/MEASUREMENTS.md`; `docs/DESIGN-R2-STORE-OF-RECORD.md` is reviewed and agreed by the run-gate and controller owners; the cmru backfill is complete, merged under one judge, verified by `assay verify` and copied into the store of record with its manifest. Source: .controller-state/design-review-2026-11-24/assay.md H1.
+**Status: OPEN (updated 2026-11-28).** The cmru whole-source backfill completed and was merged under one judge: run `rgw-assay-first-release-r2-20261128T013720-r1002`, source commit `5e02d731b72f`, judge `c6e270f2`, 2026-11-28; 5,054 resumed, 0 rejected, 4,328 killed, 723 survived, and 3 `budget_exceeded`. **Caveat (B609):** shard 1 ran twice with one differing verdict; the merge used run `20261124T152154-r1002`. Still open from the close condition: agreement on `docs/DESIGN-R2-STORE-OF-RECORD.md` by the run-gate and controller owners, `assay verify` on the merged result, and copying it into the store of record with its manifest. Severity: medium. The WP0b report remains required in `nyxloom-trove/MEASUREMENTS.md`. Source: `.controller-state/design-review-2026-11-24/assay.md` H1; backfill receipt supplied 2026-11-28.
 
 ## B563 — WP2 before merge: explicit provenance, advisory locus
 
@@ -16272,13 +16274,29 @@ Second half (deliberate, hence documented rather than taken here): `tools/releas
 
 ## B596 — release gate should simulate the cmru CHANGES fold as a pre-flight
 
-**Status: OPEN (filed 2026-11-27 from the 2026-11-26 manual release simulation); severity: medium.**
+**Status: IMPLEMENTED in `5db9c10de`, `9dcd0f946`, `358d4fbcd`, and `7b5fa72dd` (task-7 reader-bound test, pre-flight hardening, linked-worktree config snapshot, and second-review test controls). Gate evidence at `21daa3a2d` (2026-11-28): `tooling-tests` PASS (`rgw-tooling-tests-20261128T064027-v1001`) and `tester-unified` PASS (`rgw-tester-unified-20261128T064024-r1002`). Follow-ups: B604, B605. Severity: medium.**
 
 **Symptom.** cmru folds `[Unreleased]` into the new release section in the release candidate before the release gate runs. A docs test that reads `[Unreleased]` or assumes only branch-current sections can pass on every package head and then fail after the fold; this happened on the first 12.3.0 attempt and again in the 2026-11-26 manual simulation (`tooling-tests` run `rgw-tooling-tests-20261126T231821-v1001`). The affected test is `test_rust_baseline_docs_match_the_available_assay_surface` (`tests/core/test_docs_examples_and_vocabulary.py:230` at c06b1a829). At that base it still reads current sections only (`:236`, `:249-250`), while the entry it needs is in `[12.3.0]` (`CHANGES.md:388`), so the next fold fails it. The helper it uses, `_current_changes_text` (`[Unreleased]` plus the newest release, `:146`), and the helper's two tests (`:253`, `:267`) came from commit `08e27ea7f`. Commit `153737031` (on main through merge `a4571315c`, q342; not in this branch's base) fixes this one test by reading the whole history. Its original form, `0fb0b687b` (branch-only), also covers a P4 liveness pin of the same shape. Neither makes the release gate run the docs tests against a changelog folded by cmru.
 
 **Wanted.** Before the release gate's long lanes, or in a registered lane on every package head, make a disposable copy and fold the changelog with cmru's own functions twice: once for this release and once for the following release. Run the docs tests against both folded states. No design decision is taken here.
 
 **Close when.** A registered pre-flight exercises both consecutive release folds using cmru's implementation and the docs tests pass against both resulting changelogs without mutating the package worktree.
+
+## B604 — B596 changelog pre-flight does not model CMRU's real release history and version derivation
+
+**Status: OPEN (filed 2026-11-28 from the B596 review); severity: medium.** B596 now loads CMRU's real assay project config and passes the release-scope mappings, but its disposable Git history remains deliberately synthetic: one seed commit, an explicit `999.0.0` first version, and one synthetic following-release commit. The generated sections therefore do not contain the real release commit range and the first version is not derived from CMRU's actual tags and release plan. Building real package history is outside the bounded B596 fix.
+
+**Wanted.** Add a disposable history fixture that gives CMRU the relevant real commit range and existing tag state, and derive both consecutive release versions through the same plan CMRU uses for `cmru release assay`.
+
+**Close when.** A generated-section regression case demonstrates that a docs assertion which rejects an obsolete entry in the actual current generated section fails in the pre-flight, with the first and following versions derived by CMRU and the source checkout unchanged.
+
+## B605 — B596 linked-worktree control does not guard a linked checkout
+
+**Status: OPEN (filed 2026-11-28 from the B596 third review, `21daa3a2d`); severity: low.** The control that lets a sibling worktree commit and tag creates a linked sibling, but it snapshots the primary repository, whose `.git` is a directory (`gate/tests/test_changes_fold_preflight.py:603-616`). No behaviour defect is known; the coverage is incomplete.
+
+**Wanted.** Controls in which the linked checkout is the guarded subject, including a detached HEAD and `extensions.worktreeConfig` off and on, with its own index and tracked-file changes still detected.
+
+**Close when.** Those controls run in the registered `tooling-tests` lane, and a wrong resolution of the linked checkout's index or `config.worktree` turns one of them red.
 
 ## B597 — an armed no-progress wall stop ends the sweep and can repeat on resume
 
