@@ -254,6 +254,11 @@ probe covered all 30 against those files and `tests/test_transaction_r2_survivor
   `target_artifacts.parent.mkdir(...)` calls. The first `logs` directory is removed with the
   root; the second recursive mkdir can recreate the project root and `artifacts`, while the
   stale staging operation fails. It does not recreate `logs` after that removal.
+- `e2fcfc263ad8`: during release-output rollback with a newly created evidence parent, the
+  loop that removes empty evidence parents changes from `current != project_root and
+  current.exists()` to `or`. It can continue when `current` is the project root and attempt
+  to remove that root if empty. This harmful root-removal behavior is not asserted; the
+  candidate remains open here.
 
 These original behaviors need a product decision and safe implementation before a test can
 assert them as desirable. No test blesses directory recreation; no product source was changed.
