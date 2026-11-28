@@ -581,7 +581,7 @@ def test_absent_tag_writer_refuses_non_directory_root(monkeypatch, tmp_path, roo
 
 
 def test_directory_helper_creates_missing_levels_and_accepts_existing_intermediate(tmp_path):
-    root = tmp_path / "root"
+    root = _repo(tmp_path) / "helper-root"
     root.mkdir()
     nested = root / "one" / "two"
     transaction._mkdir_below(root, nested, "create nested test directory")
@@ -596,9 +596,14 @@ def test_directory_helper_creates_missing_levels_and_accepts_existing_intermedia
     transaction._mkdir_below(root, link / "through-link", "create through directory link")
     assert (link / "through-link").is_dir()
 
+    regular_file = root / "regular-file"
+    regular_file.write_text("file", encoding="utf-8")
+    with pytest.raises(FileExistsError):
+        transaction._mkdir_below(root, regular_file / "child", "reject non-directory level")
+
 
 def test_directory_helper_preserves_exclusive_leaf_creation(tmp_path):
-    root = tmp_path / "root"
+    root = _repo(tmp_path) / "helper-root"
     root.mkdir()
     existing = root / "existing"
     existing.mkdir()
@@ -608,7 +613,7 @@ def test_directory_helper_preserves_exclusive_leaf_creation(tmp_path):
 
 
 def test_directory_helper_passes_through_non_root_oserror(monkeypatch, tmp_path):
-    root = tmp_path / "root"
+    root = _repo(tmp_path) / "helper-root"
     root.mkdir()
     original = PermissionError("directory denied")
 
@@ -624,7 +629,7 @@ def test_directory_helper_passes_through_non_root_oserror(monkeypatch, tmp_path)
 def test_directory_helper_passes_through_missing_level_error_when_root_still_exists(
     monkeypatch, tmp_path,
 ):
-    root = tmp_path / "root"
+    root = _repo(tmp_path) / "helper-root"
     root.mkdir()
     original = FileNotFoundError("child vanished")
 
@@ -642,7 +647,7 @@ def test_directory_helper_passes_through_missing_level_error_when_root_still_exi
 def test_directory_helper_converts_missing_level_error_when_root_changes(
     monkeypatch, tmp_path, root_replacement,
 ):
-    root = tmp_path / "root"
+    root = _repo(tmp_path) / "helper-root"
     root.mkdir()
     original_mkdir = Path.mkdir
 
