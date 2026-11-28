@@ -14,6 +14,7 @@
 
 | ID | Status | Fix commit |
 | --- | --- | --- |
+| KI-224 | OPEN (2026-11-28 batch 2 transaction R2 probe: 22/30 killed; 8 survive without an equivalence proof) | — |
 | KI-220 | CLOSED BY DESIGN (2026-11-27; controller ruling clarified the timeout contract, and the test now checks group disappearance with bounded polling) | branch |
 | KI-215 | CLOSED BY DESIGN (prose claims are checked by review; the structural test pins each CMRU Assay lane's mode and absence of `judge.base_source`) | — |
 | KI-214 | FIXED IN THIS BRANCH (the campaign test docstring names the repository root `.gitignore` as the source of the output-ignore patterns) | branch |
@@ -199,6 +200,17 @@ fallback. Missing timestamp evidence and unavailable registry metadata fail clos
 manifest syntax/source forms outside its supported registry subset.
 
 ## Known Issues
+
+### KI-224 — batch 2 transaction R2 survivors
+
+**Status:** OPEN. The batch 2 probe ran all 30 candidates against
+`tests/test_transaction_r2_bf1_records.py`, `tests/test_transaction_r2_survivors.py`,
+and `tests/test_transaction_r2_survivors_b2.py`. It killed 22 and left these eight
+without a witness or proof: `d25580fc963e`, `70c7796b6763`, `9dd13b6f41a9`,
+`ddc55befcd6f`, `c2e3338fe004`, `01735170cf8a`, `45f04d579d01`, and
+`4a724fcc7a5b`. The batch remains incomplete until each is killed by a caller-visible
+behavior test or receives a proof that covers filesystem effects, caller stderr under
+`GIT_TRACE=1`, and undecodable output where relevant. No product code was changed.
 
 
 > **KI-12 … KI-16 shipped together** in `merge(cmru): KI-12..KI-17 and S15 tool

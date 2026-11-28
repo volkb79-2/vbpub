@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import dataclasses
 import subprocess
 from types import SimpleNamespace
 from pathlib import Path
@@ -124,8 +125,11 @@ def test_clearing_an_unrelated_absence_proof_leaves_its_file_untouched(tmp_path,
 
 @pytest.mark.parametrize(
     "ref",
-    ["refs/heads/trailing/", "refs/heads/trailing.", "refs/heads/double..dot"],
-    ids=["trailing-slash", "trailing-dot", "double-dot"],
+    [
+        "refs/heads/trailing/", "refs/heads/trailing.",
+        "refs/heads/double..dot", "refs/heads/back\\slash",
+    ],
+    ids=["trailing-slash", "trailing-dot", "double-dot", "backslash"],
 )
 def test_remote_ref_parser_rejects_git_invalid_names(ref):
     with pytest.raises(RuntimeError, match="origin branch lookup returned a malformed ref"):
@@ -167,8 +171,9 @@ def test_failed_origin_branch_fetch_keeps_the_runtime_error_contract(
     monkeypatch.setenv("GIT_ALLOW_PROTOCOL", "https")
     monkeypatch.setattr(transaction, "_origin_branch_oid", lambda *_a, **_k: oid)
 
-    with pytest.raises(RuntimeError, match="could not fetch origin/feature/demo"):
+    with pytest.raises(RuntimeError, match="could not fetch origin/feature/demo") as error:
         transaction.fetch_origin_branch(root, "feature/demo")
+    assert "no diagnostic output" not in str(error.value)
 
 
 def _retention_workspace(tmp_path: Path):
@@ -202,6 +207,23 @@ def test_successful_build_retention_writes_sorted_manifest_and_reuses_existing_p
     manifest = json.loads(manifest_text)
     assert manifest_text == json.dumps(manifest, indent=2, sort_keys=True) + "\n"
     assert (artifacts_root / "dist" / "demo.whl").read_bytes() == b"wheel bytes"
+
+
+def test_build_retention_refuses_to_replace_an_existing_output(tmp_path):
+    root, project, workspace = _retention_workspace(tmp_path)
+    output_id = transaction.build_output_id(workspace)[0]
+    existing = project.project_root / "logs" / output_id
+    existing.mkdir()
+    sentinel = existing / "keep.log"
+    sentinel.write_text("older retained output\n", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="already exists"):
+        transaction.retain_successful_build_outputs(
+            root, workspace, {"demo": project}, ["demo"], source_mode="origin-main",
+        )
+
+    assert sentinel.read_text(encoding="utf-8") == "older retained output\n"
+    assert not (project.project_root / "artifacts" / output_id).exists()
 
 
 @pytest.mark.parametrize("tree", ["logs", "artifacts"], ids=["logs-tree", "artifact-tree"])
@@ -276,3 +298,25 @@ def test_retained_output_identity_ignores_changes_to_a_symlink_target(tmp_path):
 
     assert not artifact_root.exists() and not logs_root.exists()
     assert external.read_text(encoding="utf-8") == "changed size after preview\n"
+
+
+def test_retained_output_cleanup_identity_is_frozen(tmp_path):
+    project_root = tmp_path / "demo"
+    output_id = "20260101T000000Z_" + "a" * 40
+    artifact_root = project_root / "artifacts" / output_id
+    logs_root = project_root / "logs" / output_id
+    (artifact_root / "dist").mkdir(parents=True)
+    logs_root.mkdir(parents=True)
+    (artifact_root / "dist" / "demo.whl").write_bytes(b"wheel")
+    (artifact_root / "build.json").write_text(json.dumps({
+        "schema_version": 1, "kind": "cmru-local-build", "publication": "forbidden",
+        "project": "demo", "build_id": output_id,
+    }), encoding="utf-8")
+    project = SimpleNamespace(project_root=project_root)
+    identity = transaction.retained_build_output_identity(
+        tmp_path, project, "demo", output_id,
+    )
+
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        identity.output_id = "changed"
+    assert identity.output_id == output_id
