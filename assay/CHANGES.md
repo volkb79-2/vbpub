@@ -4,6 +4,10 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
+### Fixed
+- fix(assay): print a usable carried-survivor rejudge command with the lane and explicit state directory (9e90d160b)
+- fix(assay): identify per-attempt canary budget expiry when it is the nearer deadline (4ee6a6c0c)
+
 ### Testing
 - test(assay): preflight two consecutive CMRU changelog folds against docs tests (B596)
 
