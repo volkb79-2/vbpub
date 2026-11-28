@@ -1908,3 +1908,39 @@ fake-pi queue model in `scripts/controller/pi-ctl/test-core.mjs`.
 **Close when:** pi exposes a reliable way to prove the accepted copy was
 dropped without risking a duplicate in its live queue, with a gate test for
 abort loss and no notice-triggered turn loop.
+
+## CTL-72 — self-compaction waits for `agent_end`
+
+**Status:** OPEN (observed 2026-11-28; filed from P-plat-PICTL-FIX). The
+controller checks its token threshold only at `agent_end`. A model run that
+continues without ending its turn therefore delays self-compaction.
+
+**Where:** `scripts/controller/pi-ctl/core.mjs` self-compaction lifecycle hooks.
+
+**Close when:** the extension can request compaction at a supported safe point
+while a long-running turn remains active, with a fake-pi test proving it does
+not interfere with the active run.
+
+## CTL-73 — post-compaction resume readback supports only topic roles
+
+**Status:** OPEN (filed 2026-11-28 from P-plat-PICTL-FIX). The completion
+message directs every role to `scripts/controller/resume-read.sh <role>`, but
+that helper works only for the topic roles.
+
+**Where:** `scripts/controller/pi-ctl/core.mjs` compaction completion message
+and `scripts/controller/resume-read.sh` role handling.
+
+**Close when:** every supported controller role has a correct bounded readback
+path after compaction, with a test for each role class.
+
+## CTL-74 — shutdown leaves stopped monitors in their state files until restart
+
+**Status:** OPEN (observed 2026-11-28; filed from P-plat-PICTL-FIX). A monitor
+stopped during session shutdown remains listed in `monitors/<name>.json` until
+the next session start reconciles the monitor state.
+
+**Where:** `scripts/controller/pi-ctl/core.mjs` monitor shutdown and recovery.
+
+**Close when:** shutdown removes or marks every stopped monitor in durable state
+before the extension returns, with a fake-pi test that reads the state before
+any subsequent start.
