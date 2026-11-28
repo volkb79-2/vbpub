@@ -1114,4 +1114,9 @@ def test_post_judgment_snapshot_cleanup_failure_has_no_finished_record(
         (event["phase"], event["state"])
         for event in recorder.events if event.get("event") == "canary_attempt"
     ]
-    assert phases == [(phase, "started")]
+    expected = [("control", "started")]
+    if phase == "transform":
+        expected.extend(
+            [("control", "finished"), ("transform", "started")]
+        )
+    assert phases == expected

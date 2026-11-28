@@ -293,7 +293,7 @@ def test_r3_summary_discloses_unwatched_halves_and_binding_budgets():
 
     _print_run_summary(verdict, out, lane=r3_lane)
 
-    assert "R3 canary halves: unwatched" in out.getvalue()
+    assert "R3 canary halves (when attempted): unwatched" in out.getvalue()
     assert "per-attempt cap: 12s" in out.getvalue()
     assert "lane deadline: 90s" in out.getvalue()
     assert "configured finite caps remain binding" in out.getvalue()
