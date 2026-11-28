@@ -14,6 +14,8 @@
 
 | ID | Status | Fix commit |
 | --- | --- | --- |
+| KI-224 | OPEN (final review probe: 24 KILLED, two equivalent, four open under KI-225) | — |
+| KI-225 | OPEN (2026-11-28: recursive transaction mkdir can recreate a removed Git common directory or project root during an in-flight operation) | — |
 | KI-220 | CLOSED BY DESIGN (2026-11-27; controller ruling clarified the timeout contract, and the test now checks group disappearance with bounded polling) | branch |
 | KI-215 | CLOSED BY DESIGN (prose claims are checked by review; the structural test pins each CMRU Assay lane's mode and absence of `judge.base_source`) | — |
 | KI-214 | FIXED IN THIS BRANCH (the campaign test docstring names the repository root `.gitignore` as the source of the output-ignore patterns) | branch |
@@ -199,6 +201,62 @@ fallback. Missing timestamp evidence and unavailable registry metadata fail clos
 manifest syntax/source forms outside its supported registry subset.
 
 ## Known Issues
+
+### KI-224 — batch 2 transaction R2 survivors
+
+**Status:** OPEN. The final all-30 probe measured 24 KILLED, two equivalent, and four open.
+`ddc55befcd6f` is killed by
+`test_origin_branch_error_prefers_stdout_when_git_has_no_stderr`. `45f04d579d01` is witnessed
+by `test_retention_rollback_preserves_original_artifact_error_after_new_logs_writer`: the
+caller receives the original artifact-publication error, while the concurrent logs sentinel
+survives under either flag value. The d255 witness was withdrawn because it required unsafe
+Git common-directory recreation. The four directory-removal cases remain open under KI-225:
+`d25580fc963e`, `70c7796b6763`, `c2e3338fe004`, and `01735170cf8a`.
+
+Two equivalence proofs remain:
+
+- `9dd13b6f41a9` relaxes the early absence-record ref-name check. Any invalid string ref still
+  fails the later comparison with `read_release_tag_attempts()`, which only returns valid refs;
+  valid refs pass both forms. JSON object keys are strings. Return value, exception type/message,
+  files and modes are unchanged; the reader emits no caller stderr under `GIT_TRACE=1` and does
+  not decode subprocess output.
+- `4a724fcc7a5b` changes the parent-descriptor assertion from `and` to `or`. Successful
+  `os.open()` calls assign both descriptors before the assertion; a partial-open error exits in
+  the preceding handler. Reachable return/yield and exception behavior, files and modes are
+  unchanged; no caller stderr or undecodable subprocess output is involved.
+
+The final probe confirms 24 KILLED, two equivalent, and four open. `9dd13b6f41a9` and
+`4a724fcc7a5b` remain equivalent only for the specific cases proved above; the four
+directory-removal cases remain open under KI-225.
+The earlier attribution for `14a2f1be5a86` is corrected: its witness is the
+`[trailing-dot]` case. `[trailing-slash]` is still rejected by the later component check.
+
+The original batch probe ran all 30 candidates against the two existing test files. The final
+probe covered all 30 against those files and `tests/test_transaction_r2_survivors_b2.py`:
+24 KILLED, two equivalent survivors, and four open survivors. No product source was changed.
+
+### KI-225 — transaction directory creation can resurrect removed roots
+
+**Status:** OPEN. Source windows and effects:
+
+- `d25580fc963e`: after `clear_release_tag_absence()` returns and before the attempt sidecar's
+  `path.parent.mkdir(parents=True, exist_ok=True)`, removing the Git common directory allows
+  that mkdir to recreate the common directory and scope directory; the attempt sidecar can then
+  be written. The recovery witness was withdrawn; no test blesses this recreation.
+- `70c7796b6763`: after the absence-record read and before the absence sidecar's
+  `path.parent.mkdir(parents=True, exist_ok=True)`, removal of the Git common directory allows
+  the mkdir to recreate the common directory and scope directory before writing the absence
+  sidecar.
+- `c2e3338fe004`: after output staging and before the first retention mkdir for
+  `target_logs.parent`, removing the project root allows recursive mkdir calls to recreate the
+  project root plus `logs` and `artifacts`; the later stale staging operation fails.
+- `01735170cf8a`: removal must occur between the `target_logs.parent.mkdir(...)` and
+  `target_artifacts.parent.mkdir(...)` calls. The first `logs` directory is removed with the
+  root; the second recursive mkdir can recreate the project root and `artifacts`, while the
+  stale staging operation fails. It does not recreate `logs` after that removal.
+
+These original behaviors need a product decision and safe implementation before a test can
+assert them as desirable. No test blesses directory recreation; no product source was changed.
 
 
 > **KI-12 … KI-16 shipped together** in `merge(cmru): KI-12..KI-17 and S15 tool
