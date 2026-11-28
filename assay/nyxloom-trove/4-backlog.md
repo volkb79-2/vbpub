@@ -16149,14 +16149,13 @@ When `budget_per_candidate_seconds` is `None`, the first attempt receives the en
 
 ## B584 — synchronize the normative liveness SPEC with P4
 
-**Status: DONE (SPEC commits `455c070e0`, `d1344d354`, `bcb1f3d6e`, `ea863bf4a`; gate evidence pending; independent review is the pinning check); severity: medium.**
+**Status: OPEN (SPEC update and review corrections landed; narrow re-check and gate evidence pending); severity: medium.**
 
 P4 changed the pytest event lifecycle, CPU-derived stop rules, per-test windows,
-and post-`session_finish` handling. `docs/SPEC.md` LIV-070/075/080 and
-LIV-110..140 have not been synchronized and still describe pre-P4 behavior.
-The P4 fix round was explicitly forbidden from editing the SPEC, so this entry
-tracks the required follow-up rather than treating the stale text as a second
-contract.
+and post-`session_finish` handling. This series synchronized `docs/SPEC.md`
+LIV-070/075/080 and LIV-110..140 with those changes. The P4 fix round was
+explicitly forbidden from editing the SPEC, so this entry tracks the required
+follow-up rather than treating the stale text as a second contract.
 
 **Wanted.** Update each listed LIV section to describe the shipped `test_finish`
 event and its progress-counting exclusion, the CPU bounds and their resource
@@ -16165,8 +16164,9 @@ the one-time post-`session_finish` window reset. Preserve the fixed rule that a
 stop is never `killed` and make no schema change unless a separate decision
 authorizes it.
 
-**Close when.** The independent review pins the updated normative wording;
-gate evidence is pending.
+**Close when.** Every listed section is checked against code and tests; the
+SPEC no longer asserts pre-P4 behaviour; a docs test or review check pins the
+wording.
 
 ## B585 — candidate code can forge P4 liveness progress
 
