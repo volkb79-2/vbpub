@@ -1410,10 +1410,13 @@ integer from 1048576 through 4294967296. The worker drains the merged stdout
 and stderr pipe and writes at most that many bytes to `lane.log`. On the first
 overflow it discards further output while requesting the existing worker stop
 path; after stop proof, finalization binds ERROR with
-`lane-log-limit-exceeded`. A pre-existing cancellation retains CANCELLED
+`lane-log-limit-exceeded`. A `lane.log` write failure also drains and discards
+remaining output, requests the same stop path, and reports
+`lane-log-write-failed: ...`. A pre-existing cancellation retains CANCELLED
 precedence. If stop cannot be proven, the existing stopping/charged behavior
-applies. `_last_lane_summary` reads at most the configured ceiling. There is no
-lane runtime limit.
+applies. The drainer exits after a bounded pipe-capacity drain when the lane
+process exits. `_last_lane_summary` reads at most the configured ceiling.
+There is no lane runtime limit.
 
 The lane can still create arbitrary files in its checkout; FD-077 tracks that
 separate aggregate-storage exposure.

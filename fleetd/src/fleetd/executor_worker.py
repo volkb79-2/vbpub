@@ -895,6 +895,8 @@ class HostJobWorker:
         self.interruption_settled = False
         self.memory_lock_fd = -1
         self._lane_log_overflow = threading.Event()
+        self._lane_log_write_failed = threading.Event()
+        self._lane_log_failure_reason: str | None = None
         self._lane_log_stop = threading.Event()
         self._lane_log_bytes = 0
         self._lane_log_thread: threading.Thread | None = None
@@ -903,42 +905,65 @@ class HostJobWorker:
         stream = getattr(process, "stdout", None)
         if stream is None:
             return
+        stream_fd = stream.fileno()
+        stop_budget: int | None = None
+        pipe_capacity = fcntl.fcntl(stream_fd, fcntl.F_GETPIPE_SZ)
         try:
-            os.set_blocking(stream.fileno(), False)
+            os.set_blocking(stream_fd, False)
             while True:
+                if self._lane_log_stop.is_set():
+                    if stop_budget is None:
+                        stop_budget = pipe_capacity
+                    if stop_budget <= 0:
+                        return
                 try:
-                    chunk = os.read(stream.fileno(), 65536)
+                    chunk = os.read(stream_fd, min(65536, stop_budget) if stop_budget is not None else 65536)
                 except BlockingIOError:
                     if self._lane_log_stop.wait(0.01):
                         return
                     continue
                 if not chunk:
                     return
+                if self._lane_log_stop.is_set():
+                    if stop_budget is None:
+                        stop_budget = pipe_capacity
+                    stop_budget -= len(chunk)
                 ceiling = self.policy.lane_log_max_bytes
                 remaining = max(0, ceiling - self._lane_log_bytes)
-                if len(chunk) > remaining:
-                    if remaining:
-                        view = memoryview(chunk[:remaining])
+                allowed = min(len(chunk), remaining)
+                if allowed and not self._lane_log_overflow.is_set() and not self._lane_log_write_failed.is_set():
+                    view = memoryview(chunk[:allowed])
+                    try:
                         while view:
                             count = os.write(log_fd, view)
+                            if count <= 0:
+                                raise OSError("short lane.log write")
+                            self._lane_log_bytes += count
                             view = view[count:]
-                        self._lane_log_bytes += remaining
+                    except (OSError, ValueError) as exc:
+                        if self._lane_log_failure_reason is None:
+                            self._lane_log_failure_reason = f"lane-log-write-failed: {exc}"
+                        self._lane_log_write_failed.set()
+                if len(chunk) > remaining:
                     self._lane_log_overflow.set()
-                elif not self._lane_log_overflow.is_set():
-                    view = memoryview(chunk)
-                    while view:
-                        count = os.write(log_fd, view)
-                        view = view[count:]
-                    self._lane_log_bytes += len(chunk)
-        except (OSError, ValueError) as exc:
-            self.lane_error = self.lane_error or f"lane-log-write-failed: {exc}"
         finally:
             os.close(log_fd)
 
     def _check_lane_log_limit(self, process: RunnerProcess) -> None:
+        if self._lane_log_write_failed.is_set():
+            self.lane_error = self.lane_error or self._lane_log_failure_reason or "lane-log-write-failed"
         if self._lane_log_overflow.is_set():
             self.lane_error = self.lane_error or "lane-log-limit-exceeded"
-            self._request_worker_stop(process)
+        if self._lane_log_write_failed.is_set() or self._lane_log_overflow.is_set():
+            try:
+                status = process.poll()
+            except Exception:
+                status = None
+            if status is None and self.runner_process is process:
+                try:
+                    self._request_worker_stop(process)
+                except AdmissionError:
+                    pass
 
     def _state(self) -> dict[str, object]:
         raw = _read_regular(self.job_dir / "state.json", limit=MAX_STATE_RECORD_BYTES)
@@ -1994,6 +2019,8 @@ class HostJobWorker:
                 if getattr(process, "stdout", None) is not None:
                     self._lane_log_bytes = 0
                     self._lane_log_overflow.clear()
+                    self._lane_log_write_failed.clear()
+                    self._lane_log_failure_reason = None
                     self._lane_log_stop.clear()
                     self._lane_log_thread = threading.Thread(
                         target=self._drain_lane_log, args=(process, os.dup(log_fd)), daemon=True,
@@ -2014,12 +2041,8 @@ class HostJobWorker:
         status: int | None = None
         if memory_lock_fd is not None:
             try:
-                remaining_settle = _MEMORY_SETTLE_S
-                while remaining_settle > 0:
-                    self._check_lane_log_limit(process)
-                    step = min(0.05, remaining_settle)
-                    self.waiter(step)
-                    remaining_settle -= step
+                self.waiter(_MEMORY_SETTLE_S)
+                self._check_lane_log_limit(process)
                 try:
                     status = process.poll()
                 except Exception:

@@ -420,11 +420,14 @@ The optional closed-schema `agent.toml.lane_log_max_bytes` is an integer from
 1048576 through 4294967296 and defaults to 268435456. The worker drains the
 lane's combined stdout and stderr stream, counts bytes together, and writes no
 more than this ceiling to `lane.log`. On the first byte beyond the ceiling it
-discards further output while requesting the existing worker stop path. Once
-the lane's stop is proven, terminal finalization binds ERROR with reason
+discards further output while requesting the existing worker stop path. A
+`lane.log` write error also switches to draining and discarding, requests the
+same stop path, and binds ERROR with `lane-log-write-failed: ...`. Once the
+lane's stop is proven, terminal finalization binds ERROR with reason
 `lane-log-limit-exceeded`; a stop that cannot be proven retains the existing
 stopping and charge behavior. Existing cancellation precedence remains in
-force. `_last_lane_summary` reads no more than the configured ceiling. The
+force. The drain ends after a bounded pipe-capacity read once the lane process
+exits. `_last_lane_summary` reads no more than the configured ceiling. The
 ceiling does not impose a lane runtime limit. A lane can still create arbitrary
 checkout files; FD-077 tracks that separate storage exposure.
 

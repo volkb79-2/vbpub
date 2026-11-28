@@ -6,6 +6,7 @@ import json
 import os
 import shutil
 import subprocess
+import threading
 import tarfile
 import time
 from pathlib import Path
@@ -11930,22 +11931,122 @@ def test_lane_log_drain_caps_bytes_and_marks_overflow_for_normal_stop(tmp_path):
     log_fd = os.open(log_path, os.O_CREAT | os.O_WRONLY, 0o600)
     read_fd, write_fd = os.pipe()
     payload = b"x" * (1048576 + 1)
-    os.write(write_fd, payload)
-    os.close(write_fd)
+
+    def write_payload():
+        try:
+            view = memoryview(payload)
+            while view:
+                count = os.write(write_fd, view)
+                view = view[count:]
+        finally:
+            os.close(write_fd)
 
     class Process:
         stdout = os.fdopen(read_fd, "rb", buffering=0)
 
-    worker._drain_lane_log(Process(), log_fd)
+    writer = threading.Thread(target=write_payload)
+    writer.start()
+    process = Process()
+    worker._drain_lane_log(process, log_fd)
+    process.stdout.close()
+    writer.join()
     stop_calls = []
     worker._request_worker_stop = lambda process: stop_calls.append(process)
-    process = Process()
     worker._check_lane_log_limit(process)
     assert log_path.stat().st_size == 1048576
     assert worker._lane_log_bytes == 1048576
     assert worker.lane_error == "lane-log-limit-exceeded"
     assert worker._lane_log_overflow.is_set()
     assert stop_calls == [process]
+    os.close(worker.repo_root_fd)
+
+
+def test_lane_log_drain_stops_after_bounded_pipe_capacity_when_lane_exited(tmp_path, monkeypatch):
+    worker = _worker(tmp_path, _VersionRunner({}))
+    read_fd, write_fd = os.pipe()
+    pipe_capacity = fcntl.fcntl(read_fd, fcntl.F_GETPIPE_SZ)
+    log_path = tmp_path / "lane-stopped.log"
+    log_fd = os.open(log_path, os.O_CREAT | os.O_WRONLY, 0o600)
+    delivered = 0
+    real_read = os.read
+
+    def descendant_keeps_writing(fd, size):
+        nonlocal delivered
+        if fd != read_fd:
+            return real_read(fd, size)
+        if delivered >= pipe_capacity * 2:
+            raise BlockingIOError()
+        amount = min(size, pipe_capacity * 2 - delivered)
+        delivered += amount
+        return b"x" * amount
+
+    monkeypatch.setattr(executor_worker_module.os, "read", descendant_keeps_writing)
+
+    class Process:
+        stdout = os.fdopen(read_fd, "rb", buffering=0)
+
+    process = Process()
+    worker._lane_log_stop.set()
+    worker._drain_lane_log(process, log_fd)
+    process.stdout.close()
+    os.close(write_fd)
+    assert log_path.stat().st_size == pipe_capacity
+    assert worker._lane_log_bytes == pipe_capacity
+    os.close(worker.repo_root_fd)
+
+
+def test_lane_log_write_failure_keeps_draining_and_stop_error_is_handled(tmp_path, monkeypatch):
+    worker = _worker(tmp_path, _VersionRunner({}))
+    read_fd, write_fd = os.pipe()
+    os.write(write_fd, b"diagnostic output")
+    os.close(write_fd)
+    log_fd = os.open(tmp_path / "unwritable-lane.log", os.O_CREAT | os.O_WRONLY, 0o600)
+    real_write = os.write
+
+    def fail_log_write(fd, data):
+        if fd == log_fd:
+            raise OSError("disk full")
+        return real_write(fd, data)
+
+    monkeypatch.setattr(executor_worker_module.os, "write", fail_log_write)
+
+    class Process:
+        stdout = os.fdopen(read_fd, "rb", buffering=0)
+
+        def poll(self):
+            return None
+
+    process = Process()
+    worker.runner_process = process
+    worker._request_worker_stop = lambda _process: (_ for _ in ()).throw(AdmissionError(2, "stop unavailable"))
+    worker._drain_lane_log(process, log_fd)
+    process.stdout.close()
+    assert worker._lane_log_write_failed.is_set()
+    assert worker._lane_log_failure_reason == "lane-log-write-failed: disk full"
+    assert worker.lane_error is None
+    worker._check_lane_log_limit(process)
+    assert worker.lane_error == "lane-log-write-failed: disk full"
+    os.close(worker.repo_root_fd)
+
+
+def test_lane_log_error_preserves_prior_error_and_does_not_stop_exited_lane(tmp_path):
+    worker = _worker(tmp_path, _VersionRunner({}))
+    worker.lane_error = "earlier lane error"
+    worker._lane_log_write_failed.set()
+    worker._lane_log_failure_reason = "lane-log-write-failed: disk full"
+    stopped = []
+
+    class ExitedProcess:
+        def poll(self):
+            return 0
+
+    process = ExitedProcess()
+    worker.runner_process = None
+    worker._request_worker_stop = lambda item: stopped.append(item)
+    worker._check_lane_log_limit(process)
+    assert worker.lane_error == "earlier lane error"
+    assert stopped == []
+    os.close(worker.repo_root_fd)
 
 
 def test_verdict_binding_records_inspection_errors_and_rejects_invalid_lane(tmp_path):

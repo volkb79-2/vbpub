@@ -131,8 +131,10 @@ candidate collection before submit is by design (FD-076).
 The optional closed-schema integer `lane_log_max_bytes` defaults to 268435456
 (256 MiB) and accepts 1048576 through 4294967296. The worker counts merged
 stdout and stderr and bounds `lane.log`; overflow stops the lane through the
-normal stop path and binds terminal ERROR after stop proof. The summary scan is
-bounded by the same value. No lane runtime limit is imposed. Arbitrary files
+normal stop path and binds terminal ERROR after stop proof. A log write error
+also drains and discards output, requests stop, and reports
+`lane-log-write-failed`. The summary scan and post-exit pipe drain are bounded
+as well. No lane runtime limit is imposed. Arbitrary files
 created in the checkout remain an open aggregate storage issue (FD-077).
 
 The optional closed-schema key `executor_enabled` accepts only a TOML boolean.
