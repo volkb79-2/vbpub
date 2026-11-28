@@ -54,6 +54,15 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   not the selected tag (KI-211).
 - tests(cmru): the upload-coordinate refusal stubs the release transport, so
   it no longer needs api.github.com to reach its assertion (KI-210).
+- tests(cmru): the first 30 `transaction.py` R2 survivors are killed by two
+  behaviour suites over the durable scope sidecars and the Git/ref guards: an
+  unchecked `_git` read returns instead of raising, a failing Git call's
+  diagnostic prefers stderr and falls back to stdout, the frozen workspace
+  record, legacy-progress refusals quoting Git's own error, the release lock
+  creating its scope directory, a failed `origin/main` fetch staying a
+  `CalledProcessError`, captured diagnostics for the build-source ancestor and
+  local ref-name probes, legacy adoption refusing a relocated Git top, and
+  absence-proof invalidation. Tests only; no product change (bf1).
 - feat(cmru): make the standalone R2 campaign unbudgeted but stall-bounded,
   resumable by shard, and mergeable only from three complete matching evidence
   files; remote runs collect `.assay` with `--collect-store` (KI-213, open in
