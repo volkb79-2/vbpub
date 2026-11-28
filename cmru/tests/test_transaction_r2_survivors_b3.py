@@ -5,6 +5,7 @@ import errno
 import json
 import os
 import shutil
+import subprocess
 from types import SimpleNamespace
 
 import pytest
@@ -13,6 +14,35 @@ from cmru import transaction
 from tests._git_isolation import git_isolation  # noqa: F401
 
 pytestmark = pytest.mark.usefixtures("git_isolation")
+
+
+def _init_repo(root: Path) -> None:
+    root.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", "-b", "main", str(root)], check=True)
+    (root / "seed.txt").write_text("seed\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(root), "add", "seed.txt"], check=True)
+    subprocess.run(
+        ["git", "-C", str(root), "commit", "-q", "-m", "seed"], check=True,
+    )
+
+
+def _release_retention_fixture(tmp_path: Path):
+    repo_root = tmp_path / "repo"
+    candidate = tmp_path / "candidate"
+    _init_repo(repo_root)
+    _init_repo(candidate)
+    project_root = repo_root / "demo"
+    source_root = candidate / "demo"
+    (source_root / "logs").mkdir(parents=True)
+    (source_root / "logs" / "build.log").write_text("build\n", encoding="utf-8")
+    (source_root / "dist").mkdir()
+    (source_root / "dist" / "demo.whl").write_bytes(b"wheel")
+    workspace = transaction.ReleaseWorkspace(
+        repo_root, candidate, "cmru-release-20261128_120000-demo-ab12cd",
+        "a" * 40,
+    )
+    project = SimpleNamespace(project_root=project_root, artifact_dirs=("dist",))
+    return repo_root, workspace, project, "b" * 40
 
 
 def test_cleanup_rollback_restores_artifacts_after_logs_record_was_removed(
@@ -131,3 +161,50 @@ def test_noreplace_collision_returns_false_and_preserves_both_records(tmp_path):
     assert not restored
     assert (parent / "source").read_text(encoding="utf-8") == "staged\n"
     assert (parent / "destination").read_text(encoding="utf-8") == "concurrent\n"
+
+
+def test_release_output_manifest_uses_canonical_sorted_json(tmp_path):
+    repo_root, workspace, project, immutable_id = _release_retention_fixture(tmp_path)
+
+    transaction.retain_success_outputs(
+        repo_root, workspace, {"demo": project}, {"demo": immutable_id},
+        retain_logs=False, retain_artifacts=True, retain_evidence=False,
+    )
+
+    manifest_path = project.project_root / "artifacts" / immutable_id / "release.json"
+    manifest_text = manifest_path.read_text(encoding="utf-8")
+    manifest = json.loads(manifest_text)
+    assert manifest_text == json.dumps(manifest, indent=2, sort_keys=True) + "\n"
+    assert manifest["artifacts"][0]["files"][0]["path"] == "demo.whl"
+
+
+@pytest.mark.parametrize(
+    ("parent_relative", "retain_logs"),
+    [(Path("artifacts"), False), (Path("logs/cmru-release"), True)],
+    ids=["preserve-artifact-parent", "preserve-log-parent"],
+)
+def test_retention_rollback_preserves_a_preexisting_empty_destination_parent(
+    tmp_path, monkeypatch, parent_relative, retain_logs,
+):
+    repo_root, workspace, project, immutable_id = _release_retention_fixture(tmp_path)
+    preexisting_parent = project.project_root / parent_relative
+    preexisting_parent.mkdir(parents=True)
+    real_move = shutil.move
+
+    def fail_artifact_move_after_real_log_move(source, destination):
+        if Path(source).name == "dist":
+            raise OSError("simulated artifact move failure")
+        return real_move(source, destination)
+
+    monkeypatch.setattr(transaction.shutil, "move", fail_artifact_move_after_real_log_move)
+    with pytest.raises(OSError, match="simulated artifact move failure"):
+        transaction.retain_success_outputs(
+            repo_root, workspace, {"demo": project}, {"demo": immutable_id},
+            retain_logs=retain_logs, retain_artifacts=True, retain_evidence=False,
+        )
+
+    assert preexisting_parent.is_dir()
+    if retain_logs:
+        assert (workspace.path / "demo" / "logs" / "build.log").read_text(
+            encoding="utf-8",
+        ) == "build\n"
