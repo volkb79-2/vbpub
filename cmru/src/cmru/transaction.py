@@ -213,6 +213,42 @@ def _common_git_dir(repo_root: Path) -> Path:
     return _shared_worktree().discover_git_root(repo_root)[1]
 
 
+class TransactionDirectoryRootError(RuntimeError):
+    """A transaction directory could not be created beneath its required root."""
+
+
+def _mkdir_below(root: Path, directory: Path, operation: str) -> None:
+    """Create missing directory levels below an existing, real root only."""
+    try:
+        root_info = root.lstat()
+    except FileNotFoundError as exc:
+        raise TransactionDirectoryRootError(
+            f"cannot {operation}: directory root is missing: {root}"
+        ) from exc
+    if not stat.S_ISDIR(root_info.st_mode):
+        raise TransactionDirectoryRootError(
+            f"cannot {operation}: directory root is not a real directory: {root}"
+        )
+    relative = directory.relative_to(root)
+    current = root
+    for part in relative.parts:
+        current /= part
+        try:
+            current.mkdir(exist_ok=True)
+        except FileNotFoundError as exc:
+            try:
+                current_root_info = root.lstat()
+            except FileNotFoundError:
+                raise TransactionDirectoryRootError(
+                    f"cannot {operation}: directory root disappeared: {root}"
+                ) from exc
+            if not stat.S_ISDIR(current_root_info.st_mode):
+                raise TransactionDirectoryRootError(
+                    f"cannot {operation}: directory root is no longer a real directory: {root}"
+                ) from exc
+            raise
+
+
 def _shared_workspace_record(shared: Any, common: Path, path: Path) -> Any | None:
     """Find the shared lifecycle record for one literal Git worktree path."""
     return shared.find_workspace(common, path)
@@ -627,7 +663,7 @@ def create_workspace(
         base = fetch_origin_main(source_root, git_auth=git_auth)
     shared = _shared_worktree()
     parent = source_root / ".worktrees"
-    parent.mkdir(exist_ok=True)
+    _mkdir_below(source_root, parent, "create transaction worktree directory")
     # The visible allocation identity is derived before the final branch/path
     # is named. This avoids the impossible self-reference of hashing a path
     # whose basename contains the hash itself; the durable shared record stores
@@ -872,8 +908,9 @@ def _scope_dir(repo_root: Path) -> Path:
 
 def _ensure_scope_dir(repo_root: Path) -> Path:
     """Create the transaction metadata directory beneath Git's existing common dir."""
-    scope_dir = _scope_dir(repo_root)
-    scope_dir.mkdir(exist_ok=True)
+    common_dir = _common_git_dir(repo_root)
+    scope_dir = common_dir / "cmru-release-scopes"
+    _mkdir_below(common_dir, scope_dir, "create release scope directory")
     return scope_dir
 
 
@@ -1340,7 +1377,7 @@ def write_release_tag_attempts(
     # attempts-file write fails, the candidate remains fail-closed: its older
     # proof cannot accidentally authorize the newly generated local tag.
     clear_release_tag_absence(repo_root, workspace, incoming)
-    path.parent.mkdir(parents=True, exist_ok=True)
+    _mkdir_below(path.parent.parent, path.parent, "create release tag attempt directory")
     temporary = path.with_name(f".{path.name}.{secrets.token_hex(12)}")
     try:
         descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -1417,7 +1454,7 @@ def write_confirmed_absent_release_tag_attempts(
             )
         incoming[ref] = oid
     existing.update(incoming)
-    path.parent.mkdir(parents=True, exist_ok=True)
+    _mkdir_below(path.parent.parent, path.parent, "create absent release tag record directory")
     temporary = path.with_name(f".{path.name}.{secrets.token_hex(12)}")
     try:
         descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -2297,7 +2334,7 @@ def retain_successful_build_outputs(
         moved_logs = False
         try:
             shutil.copytree(source_logs, staged_logs, symlinks=True)
-            staged_artifacts.mkdir()
+            _mkdir_below(stage, staged_artifacts, "create staged build artifacts directory")
             copied_artifacts: list[dict[str, object]] = []
             for raw_dir, source in source_artifacts:
                 target = staged_artifacts / Path(raw_dir).name
@@ -2330,8 +2367,8 @@ def retain_successful_build_outputs(
             # must not turn an immutable output record into an overwrite.
             if target_logs.exists() or target_artifacts.exists():
                 raise RuntimeError(f"{name}: build output destination appeared during retention: {output_id}")
-            target_logs.parent.mkdir(parents=True, exist_ok=True)
-            target_artifacts.parent.mkdir(parents=True, exist_ok=True)
+            _mkdir_below(main_project_root, target_logs.parent, "create retained build logs directory")
+            _mkdir_below(main_project_root, target_artifacts.parent, "create retained build artifacts directory")
             staged_logs.replace(target_logs)
             moved_logs = True
             try:
