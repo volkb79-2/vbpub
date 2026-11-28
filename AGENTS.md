@@ -946,14 +946,39 @@ corresponding defaults. Keep `PI_CTL_ROOT` outside every checkout; it defaults t
 
 The extension polls `inbox/<role>/` once per second. A peer message is renamed into a
 processing claim before injection and carries a stable id. Since pi's `sendMessage()`
-returns `void`, the claim remains until pi's `message_end` event is followed by a persisted
-`custom_message` entry with the same custom type and id. A restart replays unconfirmed
-claims with the same id, so duplicates are visible. Retries back off, stop after three
-attempts and report to main while preserving the claim. Wake-ups use the same id-confirmed
-delivery rule and stay on disk until pi records that wake-up id.
+returns `void` and pi persists a custom message only when a running turn consumes it, a
+claim keeps its id and is never injected twice into the same session runtime: the
+duplicate bug seen in the 2026-11-28 smoke was the extension retrying a message pi had
+already accepted. The claim stays on disk until pi's persisted `custom_message` entry
+shows the same custom type and id, or until a fresh session runtime (`startup`, `resume`,
+`new`, `fork`) proves the old agent-level queue is gone and re-delivers it exactly once;
+a `/reload` keeps the live agent, so it re-delivers nothing. Only a synchronous refusal
+(pi did not accept the message) counts as a failed attempt, and only those attempts
+produce the durable report to main. Wake-ups follow the same rule.
+
+At each `agent_end`, the extension logs the count and queues one line when any
+claimed inbox messages are not yet found in pi's persisted entries. It does not start
+a turn, and the claim is never re-injected into the same live runtime because
+pi may still hold it or may have dropped it during abort. Polling also reports a
+queued id missing from persisted entries after two idle/no-pending observations at
+least 30 seconds apart; the claim stays on disk for a fresh runtime. Restarting
+the session replays the durable claim. Unobservable abort-drop uncertainty while
+busy remains tracked in CTL-71.
+
+At `session_start`, the extension arms one-time role context for the first model
+turn: a persistent context message with a bounded `PI_CTL_PRIME` excerpt and the
+first prompt, which may be typed input, a peer message or a wake-up. It adds
+that message before the model runs, without starting a turn, and saves the
+original goal in the session log so compaction and restart can recover it. A
+persisted marker prevents repeating the role context on resume.
 
 `send_message` writes atomically to `inbox/<to>/`; use `to=main` to reach the Claude main
-controller. Main uses the tested bridge, which replays claims after restart, prints a fixed
+controller. A shell outside pi uses `scripts/controller/pi-ctl-send.sh <role> <text|->`, which
+writes the same envelope atomically, prints the message id, and refuses an invalid name, an
+empty or oversized body, and a state root that is relative, inside the checkout or has a
+symlink in any component through `inbox/<role>` (sender `main` by default,
+`PI_CTL_SEND_FROM`/`--from` to change it). It checks before directory creation and again
+before publication; a check-then-use filesystem swap remains a known race. Main uses the tested bridge, which replays claims after restart, prints a fixed
 peer-message/not-operator-approval header and retains each claim until the explicit id ack:
 
 ```bash
@@ -965,8 +990,12 @@ node scripts/controller/pi-ctl/bridge.mjs ack "$message_id"
 
 Run `watch` in the main controller's monitor. Copy the id from the fixed header into
 `message_id`, record the message in main's own state, then run the one `ack` command above.
-The bridge preserves each claim across restart, respects persisted backoff and reports an
-unacknowledged message after three displays without deleting it.
+A successful print is the delivery: the watch process records the claim it handed over and
+never prints it again, however long the ack takes. A restarted `watch` replays every
+unacknowledged claim once, and reports one once if it was printed but still unacknowledged
+after a real timeout (default 30 minutes, `PI_CTL_BRIDGE_ACK_TIMEOUT_SECONDS` from 1 to
+604800 seconds). The timeout is measured from the first print of any process, so a restart
+cannot postpone it; only `ack` ends a claim, and a report never deletes one.
 
 Inbox bodies are capped at 16 KiB and sends at 64 KiB by default. The send and inbound
 limits default to 10 messages per peer per hour; `PI_CTL_SEND_LIMIT`,
@@ -992,6 +1021,13 @@ intact. The event log records lifecycle facts and token counts, never message bo
 environment values.
 The controller suite covers the harness with a fake pi API; live provider and TUI behavior
 still need an operator smoke run after account access is available.
+
+Every command behind `pi-pidns-bash` -- the model-facing bash tool, `!`/`!!` user
+commands and monitors started by the extension -- loses every `OPENDESIGN_API_KEY*`
+variable: `pi-pidns-bash-worker.sh` unsets them by prefix before `bwrap` starts, and the
+extension's monitor environment drops the same names. Pi itself keeps its key. A shell
+that reads `$HOME/.env.ai` explicitly can still recover one; that is the documented
+limit, and no repository code needs the variable in a tool shell.
 
 The installed pi 1.6.0 bash tool starts its shell with only standard input, output and
 error in the Node `stdio` array (`dist/core/tools/bash.js:75-79`). Node 26 treats

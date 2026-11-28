@@ -6,6 +6,54 @@ no separate version number, so entries are grouped by the work that landed.
 
 ## [Unreleased]
 
+### Pi sub-controller smoke findings (P-plat-PICTL-FIX)
+- Delivery dedupes at pi's follow-up queue: once `pi.sendMessage()` accepts a
+  peer message or wake-up id, the claim is never injected again into that
+  session runtime, no attempt is counted and no stall report is written. The
+  durable claim stays until pi persists the matching `custom_message` entry or
+  a fresh session runtime (`startup`, `resume`, `new`, `fork`) re-delivers it
+  exactly once; `/reload` keeps the live agent and re-delivers nothing. Only a
+  synchronous `pi.sendMessage()` refusal counts as a failed attempt and reaches
+  the bounded report path. A queued id absent from persisted entries during two
+  idle/no-pending observations at least 30 seconds apart is reported as an
+  asynchronous rejection; the claim remains for a fresh runtime, with a
+  persisted idle-poll notice and one bounded delivery report. The fake pi API now models the agent-level queue,
+  its persistence on consume and its loss on abort.
+- At each `agent_end` (F1b), unresolved inbox claims are recorded in the event
+  log and get a one-line notice that does not start a turn. The notice cannot
+  redeliver or recursively count itself. Abort can still drop pi's queued copy
+  before persistence; the durable claim is replayed after restart, and this
+  live-runtime uncertainty is documented as CTL-71. The notice may repeat at
+  each later `agent_end` while the claim remains unconfirmed.
+- A session-start marker arms the role's bounded PRIME excerpt and original
+  goal for the first model turn (PRIME/goal): typed input, a peer message or a
+  wake-up can be the original goal. The one-shot persistent context message is
+  added before the turn without starting one, and the goal is saved in the session log for
+  compaction and restart. Resume does not repeat the context.
+- The main bridge (F2) delivers a claim once per watch process: a successful
+  print is the delivery, so the same process never prints the same id again.
+  A restarted watch replays unacknowledged claims once, and the UNACKNOWLEDGED
+  report fires once per message after a real timeout without an ack (30
+  minutes by default, `PI_CTL_BRIDGE_ACK_TIMEOUT_SECONDS`, validated 1..604800
+  seconds, measured from the first print of any process so restarts cannot
+  postpone it). `ack` remains the only thing that ends a claim.
+- Route API keys no longer reach the model (F3): `pi-pidns-bash-worker.sh`
+  unsets every `OPENDESIGN_API_KEY*` variable by prefix before `bwrap` starts,
+  which covers the model-facing bash tool, `!`/`!!` user commands and monitors
+  (implementer runs from `pi-impl.sh` use the same backend). The extension's
+  monitor environment drops the same names instead of a fixed pair, so a new
+  account name cannot silently stay exported. Pi itself keeps its key; reading
+  `$HOME/.env.ai` from a shell stays possible and is documented as the limit.
+- `scripts/controller/pi-ctl-send.sh <role> <text|->` (F4) queues one peer
+  message into a role's inbox from any local shell: the extension's envelope
+  format, atomic publish by rename with temporaries that never end in `.msg`,
+  0700/0600 modes, one printed message id, and a refusal with a reason for an
+  invalid role/sender, an empty or oversized body, or a state root that is
+  relative, inside the checkout or has a symlink in any component through
+  `inbox/<role>`. Components are checked before directory creation and again
+  before publication; a check-then-use swap remains a known race. Sender defaults
+  to `main`.
+
 ### Pi sub-controller harness (P-plat-PICTL)
 - Add a dependency-free JavaScript core and explicit pi extension for
   peer inboxes, bounded loop guards, persistent wake-ups, PID-namespace

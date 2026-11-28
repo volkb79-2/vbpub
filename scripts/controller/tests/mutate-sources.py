@@ -72,6 +72,24 @@ def pi_ctl_mutant(name: str, before: str, after: str) -> Path:
     return target
 
 
+def pi_ctl_bridge_mutant(name: str, before: str, after: str) -> Path:
+    # bridge.mjs imports ./core.mjs, so a bridge mutant needs the unmutated core
+    # beside it; the test entry selects the bridge module explicitly.
+    source = repo / "scripts/controller/pi-ctl/bridge.mjs"
+    original = source.read_text(encoding="utf-8")
+    count = original.count(before)
+    if count != 1:
+        raise SystemExit(f"{source}: expected one mutation target, found {count}: {before!r}")
+    variant = controller / f"pi-ctl-{name}"
+    variant.mkdir(parents=True)
+    shutil.copy2(repo / "scripts/controller/pi-ctl/core.mjs", variant / "core.mjs")
+    (variant / "core.mjs").chmod(0o644)
+    target = variant / "bridge.mjs"
+    target.write_text(original.replace(before, after, 1), encoding="utf-8")
+    target.chmod(0o644)
+    return target
+
+
 def mutation_runner_mutant(name: str, before: str, after: str) -> Path:
     return mutant("scripts/controller/tests/mutation-runner.sh", name, before, after)
 
@@ -1102,6 +1120,12 @@ mutant("scripts/controller/pi-pidns-bash-worker.sh", "pi-pidns-keeps-tmux",
 mutant("scripts/controller/pi-pidns-bash-worker.sh", "pi-pidns-keeps-tmux-pane",
        'unset TMUX TMUX_PANE DOCKER_HOST',
        'unset TMUX DOCKER_HOST')
+mutant("scripts/controller/pi-pidns-bash-worker.sh", "pi-pidns-keeps-route-keys",
+       '    OPENDESIGN_API_KEY*) unset -v "$variable" ;;',
+       '    OPENDESIGN_API_KEY*) : ;;')
+mutant("scripts/controller/pi-pidns-bash-worker.sh", "pi-pidns-strips-one-key-name",
+       '    OPENDESIGN_API_KEY*) unset -v "$variable" ;;',
+       '    OPENDESIGN_API_KEY_VOLKER) unset -v "$variable" ;;')
 mutant("scripts/controller/pi-pidns-bash-worker.sh", "pi-pidns-docker-socket-uncovered",
        '  bwrap_args+=(--bind /dev/null "$docker_socket")',
        '  : # Docker socket remains visible')
@@ -1118,6 +1142,19 @@ mutant("scripts/controller/pi-pidns-bash", "pi-pidns-signal-dispositions-dropped
        'signal.signal(signal.SIGPIPE, signal.SIG_DFL)\n'
        'signal.signal(signal.SIGXFSZ, signal.SIG_DFL)',
        '')
+# F4 (P-plat-PICTL-FIX): pi-ctl-send.sh writes one extension-shaped envelope.
+mutant("scripts/controller/pi-ctl-send.sh", "pi-ctl-send-symlink-ignored.sh",
+       '    [[ ! -L $current ]] || refuse "symlink in the state path: $current"',
+       '    : # symlinked state path accepted')
+mutant("scripts/controller/pi-ctl-send.sh", "pi-ctl-send-not-atomic.sh",
+       'mv -- "$message_temp" "$target" || refuse "cannot publish the message to $target"',
+       'cp -- "$message_temp" "$target" || refuse "cannot publish the message to $target"')
+mutant("scripts/controller/pi-ctl-send.sh", "pi-ctl-send-size-ignored.sh",
+       '((body_bytes <= max_send_bytes)) || refuse "message exceeds $max_send_bytes bytes"',
+       ': # oversized bodies accepted')
+mutant("scripts/controller/pi-ctl-send.sh", "pi-ctl-send-root-check-dropped.sh",
+       '    "$repository" | "$repository"/*) refuse "PI_CTL_ROOT must be outside the repository: $root" ;;',
+       '    "$repository" | "$repository"/*) : ;;')
 mutant("scripts/controller/codex-impl.sh", "codex-force-retire-early.sh",
        'controller_run_claim "$name" || exit 2\nretire_existing=0',
        'controller_run_claim "$name" || exit 2\n'
@@ -1949,4 +1986,77 @@ pi_ctl_mutant(
     "\tconst sessionLockFd = typeof injected.verifySessionLock === \"function\"\n"
     "\t\t? injected.verifySessionLock(root, name)\n"
     "\t\t: 12;",
+)
+# F1 (P-plat-PICTL-FIX): a message pi already accepted must not be injected again.
+pi_ctl_mutant(
+    "queued-claim-reinjected",
+    "\t\tif (acceptedCopyPending(state)) {",
+    "\t\tif (false) {",
+)
+pi_ctl_mutant(
+    "queued-wakeup-reinjected",
+    "\t\tif (entry.queued === true) {",
+    "\t\tif (false) {",
+)
+pi_ctl_mutant(
+    "async-rejection-report-too-late",
+    "if (time - state.unconfirmedSince < 30_000) return;",
+    "if (time - state.unconfirmedSince < 30_001) return;",
+)
+pi_ctl_mutant(
+    "queued-reset-skipped",
+    "\t\t\ttry { resetQueuedForFreshSession(); } catch { log(\"delivery_queue_reset_error\", { reason: startReason }); }",
+    "\t\t\t// mutant: a fresh session runtime does not re-deliver accepted copies",
+)
+pi_ctl_mutant(
+    "claimed-notice-suppressed",
+    "\t\tif (count === 0) return;",
+    "\t\tif (count >= 0) return;",
+)
+pi_ctl_mutant(
+    "prime-context-omitted",
+    '\t\treturn { message: { customType: "pi-ctl-prime-goal", content: initialContextBlock(ctx), display: false } };',
+    "\t\treturn undefined;",
+)
+pi_ctl_mutant(
+    "original-goal-not-persisted",
+    '\t\tpi.appendEntry?.("pi-ctl-original-goal", { text });',
+    "\t\t// mutant: original goal is not persisted",
+)
+pi_ctl_mutant(
+    "prime-repeats-on-resume",
+    '\t\treturn sessionEntries(ctx).some((entry) => entry?.type === "custom_message" && entry.customType === "pi-ctl-prime-goal");',
+    "\t\treturn false;",
+)
+pi_ctl_mutant(
+    "original-goal-cache-not-reset",
+    "\t\tcachedOriginalGoal = null;",
+    "\t\t// mutant: new session inherits the previous goal cache",
+)
+pi_ctl_mutant(
+    "monitor-keeps-route-keys",
+    '\t\t\tif (key.startsWith("OPENDESIGN_API_KEY")) delete childEnv[key];',
+    "\t\t\tif (false) delete childEnv[key];",
+)
+pi_ctl_mutant(
+    "reload-treated-as-fresh",
+    '\t\treturn startReason !== null && startReason !== "reload";',
+    "\t\treturn true;",
+)
+# F2 (P-plat-PICTL-FIX): the bridge delivers a message once and reports a real
+# timeout once.
+pi_ctl_bridge_mutant(
+    "bridge-prints-repeatedly",
+    "\t\tif (state.printedBy !== instance) {",
+    "\t\tif (true) {",
+)
+pi_ctl_bridge_mutant(
+    "bridge-ack-report-not-persisted",
+    "{ printedBy: state.printedBy, printedAt: state.printedAt, ackTimeoutReported: true }",
+    "{ printedBy: state.printedBy, printedAt: state.printedAt, ackTimeoutReported: false }",
+)
+pi_ctl_bridge_mutant(
+    "bridge-ack-timeout-ignored",
+    "\treturn envInteger(env, ACK_TIMEOUT_ENV, ACK_TIMEOUT_DEFAULT_SECONDS, { min: 1, max: 604_800 }) * 1000;",
+    "\treturn ACK_TIMEOUT_DEFAULT_SECONDS * 1000;",
 )
