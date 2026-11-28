@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator, Mapping
 
-from .admission import AdmissionError, ExitCode, InspectorAnswer
+from .admission import AdmissionError, ExitCode, InspectorAnswer, MAX_JOB_ID_LENGTH
 from .agent_admission import AgentAdmission, AgentExecutor
 from .agent_policy import AgentIdentity, AgentPolicy
 from .agent_protocol import (
@@ -45,6 +45,10 @@ _SEED_CHECKSUM_NAME_RE = re.compile(r"assay-seed-[0-9]+\.tgz\.sha256\Z")
 _UPLOAD_OBJECT_NAMES = frozenset({"in.bundle", "candidates", "dev.tracked.tar", "dev.untracked.tar"})
 _MAX_UPLOAD_RECORDS = 65536
 _MAX_UPLOAD_RECORD_BYTES = 64 * 1024
+_BUNDLE_SUBMISSION_RECORD_ALLOWANCE = 1024
+_MAX_BUNDLE_SUBMISSION_RECORD_BYTES = (
+    _MAX_UPLOAD_RECORDS * (MAX_JOB_ID_LENGTH + 3) + _BUNDLE_SUBMISSION_RECORD_ALLOWANCE
+)
 _UPLOAD_REFERENCE_REQUEST_FIELDS = frozenset({"stores", "dev", "extra_argv"})
 _NON_UPLOAD_REQUEST_FIELDS = frozenset({
     "verb", "job_id", "repo", "sha", "base", "project", "lane", "shard", "resources",
@@ -726,6 +730,11 @@ class AgentVerbService:
             try:
                 result: list[str] = []
                 for job_id in _upload_directory_entries(jobs_fd, "agent job records"):
+                    if len(job_id) > MAX_JOB_ID_LENGTH:
+                        raise AdmissionError(
+                            ExitCode.RUNNER_FAILURE,
+                            f"cannot write bundle submission record: job id {job_id!r} exceeds {MAX_JOB_ID_LENGTH} characters",
+                        )
                     with _upload_directory(jobs_fd, job_id, "agent job record directory") as job_fd:
                         entries = set(_upload_directory_entries(job_fd, f"job record {job_id!r}"))
                         if "request.json" not in entries:
@@ -812,11 +821,20 @@ class AgentVerbService:
             fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
             try:
                 info = os.fstat(fd)
-                if not stat.S_ISREG(info.st_mode) or stat.S_IMODE(info.st_mode) & 0o077 or info.st_size > 65536:
+                if (not stat.S_ISREG(info.st_mode) or stat.S_IMODE(info.st_mode) & 0o077
+                        or info.st_size > _MAX_BUNDLE_SUBMISSION_RECORD_BYTES):
                     return None
-                raw = os.read(fd, 65537)
-                if len(raw) > 65536:
+                chunks: list[bytes] = []
+                total = 0
+                while total <= _MAX_BUNDLE_SUBMISSION_RECORD_BYTES:
+                    chunk = os.read(fd, min(65536, _MAX_BUNDLE_SUBMISSION_RECORD_BYTES + 1 - total))
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                    total += len(chunk)
+                if total > _MAX_BUNDLE_SUBMISSION_RECORD_BYTES:
                     return None
+                raw = b"".join(chunks)
                 value = json.loads(raw.decode("utf-8"))
             finally:
                 os.close(fd)

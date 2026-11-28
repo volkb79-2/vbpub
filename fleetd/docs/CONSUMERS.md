@@ -133,9 +133,13 @@ The optional closed-schema integer `lane_log_max_bytes` defaults to 268435456
 stdout and stderr and bounds `lane.log`; overflow stops the lane through the
 normal stop path and binds terminal ERROR after stop proof. A log write error
 also drains and discards output, requests stop, and reports
-`lane-log-write-failed`. The summary scan and post-exit pipe drain are bounded
-as well. No lane runtime limit is imposed. Arbitrary files
-created in the checkout remain an open aggregate storage issue (FD-077).
+`lane-log-write-failed`. A drainer setup failure after the child starts keeps
+the process handle, requests stop, closes the pipe, and reports
+`lane-log-setup-failed` after stop proof. The summary scan and post-exit pipe
+drain are bounded as well. No lane runtime limit is imposed. Arbitrary files
+created in the checkout remain an open aggregate storage issue (FD-077). Bundle
+submission record reads support the maximum listed job history and maximum job
+id length; records above that derived limit are invalid and keep the bundle.
 
 The optional closed-schema key `executor_enabled` accepts only a TOML boolean.
 If absent it is false; a present non-boolean refuses policy loading. While

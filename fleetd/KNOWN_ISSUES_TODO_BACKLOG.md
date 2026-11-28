@@ -1414,8 +1414,10 @@ path; after stop proof, finalization binds ERROR with
 remaining output, requests the same stop path, and reports
 `lane-log-write-failed: ...`. A pre-existing cancellation retains CANCELLED
 precedence. If stop cannot be proven, the existing stopping/charged behavior
-applies. The drainer exits after a bounded pipe-capacity drain when the lane
-process exits. `_last_lane_summary` reads at most the configured ceiling.
+applies. A post-start drainer setup failure preserves the live process handle,
+requests stop, closes the lane pipe, and reports `lane-log-setup-failed: ...`
+after stop proof. The drainer exits after a bounded pipe-capacity drain when
+the lane process exits. `_last_lane_summary` bounds continuation reads too.
 There is no lane runtime limit.
 
 The lane can still create arbitrary files in its checkout; FD-077 tracks that

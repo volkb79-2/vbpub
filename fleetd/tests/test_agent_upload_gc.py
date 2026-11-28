@@ -273,6 +273,57 @@ def test_collector_stops_after_reclaiming_enough_and_leaves_later_candidate(tmp_
     assert Path(first["path"]).exists() or Path(second["path"]).exists()
 
 
+def test_real_put_reads_large_valid_submission_history_and_keeps_over_limit_record(tmp_path, monkeypatch):
+    service, identity, _checkout = _service(tmp_path)
+    _enable_collection(service)
+    template = _submit()
+    jobs = []
+    for index in range(520):
+        prefix = f"{identity.group}-{index:05d}-"
+        job_id = prefix + "x" * (128 - len(prefix))
+        jobs.append(job_id)
+        job_dir = service.paths.jobs_dir / job_id
+        job_dir.mkdir(mode=0o700)
+        request_path = job_dir / "request.json"
+        request_path.write_text(json.dumps({
+            "schema": "fleet-host-job-request/1", "group": identity.group,
+            "digest": f"{index:064x}", "request": template,
+        }), encoding="utf-8")
+        request_path.chmod(0o600)
+
+    bundle = _put(service, identity, "in.bundle", b"large history bundle")
+    digest = hashlib.sha256(b"large history bundle").hexdigest()
+    record_path = service.paths.upload_submissions_dir / f"{identity.group}--{digest}.json"
+    assert record_path.stat().st_size > 65536
+    assert service._bundle_submission_job_ids(identity.group, digest) == set(jobs)
+
+    later_id = f"{identity.group}-later"
+    later_dir = service.paths.jobs_dir / later_id
+    later_dir.mkdir(mode=0o700)
+    later_record = later_dir / "request.json"
+    later_record.write_text(json.dumps({
+        "schema": "fleet-host-job-request/1", "group": identity.group,
+        "digest": "f" * 64, "request": template,
+    }), encoding="utf-8")
+    later_record.chmod(0o600)
+    monkeypatch.setattr(service.admission.book, "read_record", lambda job_id: {
+        "schema": "fleet-admission-terminal/1", "job_id": job_id, "group": identity.group,
+    })
+    with service._upload_store_lock():
+        assert service._collect_upload_objects_locked(len(b"large history bundle"), 1_000_000) == len(b"large history bundle")
+    assert not Path(bundle["path"]).exists()
+
+    oversized = _put(service, identity, "in.bundle", b"over-limit history")
+    oversized_digest = hashlib.sha256(b"over-limit history").hexdigest()
+    oversized_record = service.paths.upload_submissions_dir / f"{identity.group}--{oversized_digest}.json"
+    oversized_record.write_bytes(b"x" * (agent_verbs._MAX_BUNDLE_SUBMISSION_RECORD_BYTES + 1))
+    oversized_record.chmod(0o600)
+    assert service._bundle_submission_job_ids(identity.group, oversized_digest) is None
+    with service._upload_store_lock():
+        assert service._collect_upload_objects_locked(len(b"over-limit history"), 1_000_000) == 0
+    assert Path(oversized["path"]).exists()
+
+
 @pytest.mark.parametrize("book_record", [
     None,
     {"schema": "fleet-admission-terminal/1", "job_id": "orphan-job", "group": "other"},

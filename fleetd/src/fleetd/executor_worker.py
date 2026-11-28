@@ -898,6 +898,7 @@ class HostJobWorker:
         self._lane_log_write_failed = threading.Event()
         self._lane_log_failure_reason: str | None = None
         self._lane_log_stop = threading.Event()
+        self._lane_log_setup_failed = threading.Event()
         self._lane_log_bytes = 0
         self._lane_log_thread: threading.Thread | None = None
 
@@ -2015,16 +2016,6 @@ class HostJobWorker:
                 raise
             try:
                 process = self.runner.start(argv, cwd_fd=self.project_fd, env=env, output_fd=log_fd)
-                if getattr(process, "stdout", None) is not None:
-                    self._lane_log_bytes = 0
-                    self._lane_log_overflow.clear()
-                    self._lane_log_write_failed.clear()
-                    self._lane_log_failure_reason = None
-                    self._lane_log_stop.clear()
-                    self._lane_log_thread = threading.Thread(
-                        target=self._drain_lane_log, args=(process, os.dup(log_fd)), daemon=True,
-                    )
-                    self._lane_log_thread.start()
             except (OSError, ValueError) as exc:
                 detail = str(exc)[:1000]
                 self._retry_state_save(
@@ -2033,6 +2024,39 @@ class HostJobWorker:
                 raise AdmissionError(
                     ExitCode.IDENTITY_OR_TRANSPORT, f"lane-spawn-failed: {detail}",
                 ) from exc
+            self.runner_process = process
+            self._lane_log_thread = None
+            self._lane_log_bytes = 0
+            self._lane_log_overflow.clear()
+            self._lane_log_write_failed.clear()
+            self._lane_log_failure_reason = None
+            self._lane_log_stop.clear()
+            self._lane_log_setup_failed.clear()
+            duplicate_fd = -1
+            try:
+                if getattr(process, "stdout", None) is not None:
+                    duplicate_fd = os.dup(log_fd)
+                    drain_thread = threading.Thread(
+                        target=self._drain_lane_log, args=(process, duplicate_fd), daemon=True,
+                    )
+                    drain_thread.start()
+                    self._lane_log_thread = drain_thread
+                    duplicate_fd = -1
+            except Exception as exc:
+                self.lane_error = self.lane_error or f"lane-log-setup-failed: {exc}"
+                self._lane_log_setup_failed.set()
+                if duplicate_fd >= 0:
+                    os.close(duplicate_fd)
+                try:
+                    self._request_worker_stop(process)
+                except AdmissionError:
+                    pass
+                stream = getattr(process, "stdout", None)
+                if stream is not None:
+                    try:
+                        stream.close()
+                    except OSError:
+                        pass
         finally:
             os.close(log_fd)
         self.runner_process = process
@@ -2083,6 +2107,11 @@ class HostJobWorker:
                     self._request_worker_stop(process)
                 except AdmissionError:
                     pass
+            if self._lane_log_setup_failed.is_set():
+                try:
+                    self._request_worker_stop(process)
+                except AdmissionError:
+                    pass
             self.waiter(1)
             try:
                 status = process.poll()
@@ -2098,6 +2127,11 @@ class HostJobWorker:
             if status is not None:
                 break
             if cancel_after_wait:
+                try:
+                    self._request_worker_stop(process)
+                except AdmissionError:
+                    pass
+            if status is None and self._lane_log_setup_failed.is_set():
                 try:
                     self._request_worker_stop(process)
                 except AdmissionError:
@@ -3019,7 +3053,11 @@ class HostJobWorker:
                         if line.startswith(prefix):
                             raise AdmissionError(ExitCode.IDENTITY_OR_TRANSPORT, "anchored Run-Gate summary is too large")
                         while line and not line.endswith(b"\n"):
-                            line = stream.readline(65537)
+                            remaining = ceiling - scanned
+                            if remaining <= 0:
+                                break
+                            line = stream.readline(min(65537, remaining))
+                            scanned += len(line)
                         continue
                     if not line.endswith(b"\n"):
                         if line.startswith(prefix):

@@ -12223,6 +12223,118 @@ def test_run_lane_joins_pipe_drainer_and_keeps_normal_exit_output(tmp_path, clos
                 os.close(fd)
 
 
+@pytest.mark.parametrize("failure", ["dup", "thread-start"])
+def test_run_lane_log_setup_failure_stops_live_child_and_records_exit(tmp_path, monkeypatch, failure):
+    worker = _worker(tmp_path, _VersionRunner({}))
+    worker.runner_identity = RunnerIdentity("runner", 1001, 1002, (1002,))
+    worker.request = {"repo": "vbpub", "project": ".", "lane": "r0-r1", "extra_argv": [], "base": None}
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    worker.repo_root = repo
+    worker.checkout_rel = ".fleetd-worktrees/controller-run-1"
+    worker.checkout_fd = os.open(checkout, os.O_RDONLY | os.O_DIRECTORY)
+    worker.job_dir.mkdir(parents=True)
+    (worker.job_dir / "state.json").write_text(json.dumps({
+        "schema": "fleet-host-job-state/1", "job_id": worker.job_id, "state": "running",
+        "guard": {"present": False}, "lane_mode": "host",
+    }), encoding="utf-8")
+    worker._helper = lambda mode, *args, cwd_fd=None: (
+        executor_worker_module._prepare_event(cwd_fd, args[1]), CommandResult(0)
+    )[1]
+    worker._read_events = lambda *, final=True: []
+    read_fd, write_fd = os.pipe()
+
+    class Process:
+        pid = 991
+        stdout = os.fdopen(read_fd, "rb", buffering=0)
+        status = None
+
+        def poll(self):
+            return self.status
+
+    process = Process()
+
+    class Runner:
+        log_fd = None
+
+        def start(self, *_args, output_fd, **_kwargs):
+            self.log_fd = output_fd
+            return process
+
+    runner = Runner()
+    worker.runner = runner
+    stopped = []
+
+    class Signals:
+        def terminate_group(self, pid):
+            stopped.append(pid)
+            process.status = 143
+            os.close(write_fd)
+
+    worker.process_signals = Signals()
+    duplicate_fds = []
+    real_dup = os.dup
+    if failure == "dup":
+        def fail_log_dup(fd):
+            if fd == runner.log_fd:
+                raise OSError("dup failed")
+            return real_dup(fd)
+
+        monkeypatch.setattr(executor_worker_module.os, "dup", fail_log_dup)
+    else:
+        def record_dup(fd):
+            duplicate = real_dup(fd)
+            if fd == runner.log_fd:
+                duplicate_fds.append(duplicate)
+            return duplicate
+
+        monkeypatch.setattr(executor_worker_module.os, "dup", record_dup)
+        monkeypatch.setattr(
+            executor_worker_module.threading.Thread, "start",
+            lambda _thread: (_ for _ in ()).throw(RuntimeError("thread start failed")),
+        )
+    try:
+        assert worker._run_lane("run-gate", "host", {"runner_name": None}, None) == 143
+        state = worker._state()
+        assert worker.lane_error.startswith("lane-log-setup-failed:")
+        assert stopped == [process.pid]
+        assert state["lane_process_status"] == 143
+        assert state["lane_may_be_live"] is False
+        assert state["stop_signal"] == "sent"
+        assert process.stdout.closed
+        assert worker.runner_process is None
+        assert worker._lane_log_thread is None
+        for descriptor in duplicate_fds:
+            with pytest.raises(OSError):
+                os.fstat(descriptor)
+    finally:
+        if not process.stdout.closed:
+            process.stdout.close()
+        for fd in (worker.project_fd, worker.checkout_fd, worker.repo_root_fd):
+            if fd >= 0:
+                os.close(fd)
+
+
+def test_lane_summary_long_line_continuation_does_not_read_past_ceiling(tmp_path):
+    from dataclasses import replace
+
+    worker, _runner, job_dir, _checkout = _ready_worker(tmp_path)
+    worker.request["lane"] = "r0-r1"
+    worker.policy = replace(worker.policy, lane_log_max_bytes=65540)
+    (job_dir / "lane.log").write_bytes(
+        b"x" * 65540 + b"\nrun-gate: lane 'r0-r1' verdict PASS; exit_code 0\n",
+    )
+    try:
+        with pytest.raises(AdmissionError, match="anchored Run-Gate summary is missing"):
+            worker._last_lane_summary()
+    finally:
+        for fd in (worker.project_fd, worker.checkout_fd, worker.repo_root_fd):
+            if fd >= 0:
+                os.close(fd)
+
+
 def test_lane_summary_scan_stops_at_configured_ceiling(tmp_path):
     from dataclasses import replace
 

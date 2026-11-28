@@ -335,7 +335,9 @@ terminal admission record. With collection enabled, every `in.bundle` put
 in private state outside `uploads/`, the group job ids whose `request.json` is
 already published. Collection requires both the existing all-jobs-terminal
 rule and a valid record showing at least one terminal group job published after
-that put. A missing, unreadable, malformed, or non-private record keeps the
+that put. The reader accepts records up to a limit derived from the maximum
+65,536 listed jobs and `MAX_JOB_ID_LENGTH`; larger records are invalid and keep
+the bundle. A missing, unreadable, malformed, or non-private record keeps the
 bundle and does not refuse collection. Collection removes the record. A bundle
 without a later submit, or without a usable record, stays until manual removal
 and counts against the store cap; over-cap refusal reports the bytes held by
@@ -426,9 +428,12 @@ same stop path, and binds ERROR with `lane-log-write-failed: ...`. Once the
 lane's stop is proven, terminal finalization binds ERROR with reason
 `lane-log-limit-exceeded`; a stop that cannot be proven retains the existing
 stopping and charge behavior. Existing cancellation precedence remains in
-force. The drain ends after a bounded pipe-capacity read once the lane process
-exits. `_last_lane_summary` reads no more than the configured ceiling. The
-ceiling does not impose a lane runtime limit. A lane can still create arbitrary
+force. If creating or starting the drainer fails after the child starts, the
+worker keeps its process handle, requests the normal stop path, closes the
+output pipe, and binds ERROR with `lane-log-setup-failed: ...` after stop
+proof. The drain ends after a bounded pipe-capacity read once the lane process
+exits. `_last_lane_summary` applies the byte ceiling to continuation reads of
+long lines as well. The ceiling does not impose a lane runtime limit. A lane can still create arbitrary
 checkout files; FD-077 tracks that separate storage exposure.
 
 The listed repository- and lane-controlled inputs have explicit size and count
