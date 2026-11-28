@@ -70,7 +70,7 @@ def test_local_bare_receiver_runs_without_starting_maintenance(tmp_path, monkeyp
 
     trace_text = trace.read_text(encoding="utf-8")
     assert "git-receive-pack" in trace_text
-    assert "git maintenance run --auto --quiet --detach" not in trace_text
+    assert "maintenance run" not in trace_text
     remaining = subprocess.run(
         ["git", "--git-dir", str(remote), "show-ref", "--verify", "--quiet", f"refs/heads/{branch}"],
         capture_output=True, text=True, check=False,

@@ -31,7 +31,9 @@ def isolate_git(monkeypatch, tmp_path: Path) -> Path:
     isolation = tmp_path / "git-isolation"
     isolation.mkdir(exist_ok=True)
     config = isolation / "gitconfig"
-    config.write_text("", encoding="utf-8")
+    # A local receive-pack drops GIT_CONFIG_COUNT but reads this file: without the setting
+    # a push starts detached maintenance that outlives the test (KI-227).
+    config.write_text("[receive]\n\tautogc = false\n", encoding="utf-8")
     hooks = isolation / "hooks"
     hooks.mkdir(exist_ok=True)
     template = isolation / "template"
@@ -69,7 +71,6 @@ def isolate_git(monkeypatch, tmp_path: Path) -> Path:
         ("init.defaultBranch", "main"), ("maintenance.auto", "false"),
         ("maintenance.autoDetach", "false"), ("gc.auto", "0"),
         ("gc.autoDetach", "false"),
-        ("receive.autogc", "false"),
     )
     monkeypatch.setenv("GIT_CONFIG_COUNT", str(len(config_values)))
     for index, (key, value) in enumerate(config_values):
