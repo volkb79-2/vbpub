@@ -95,6 +95,7 @@ from typing import (
     ContextManager,
     Final,
     Iterator,
+    Literal,
     Mapping,
     Protocol,
     Sequence,
@@ -328,6 +329,7 @@ class LaneDeadline:
     expires_at: float
     monotonic: MonotonicClock
     honors_termination: bool = True
+    expiry_scope: Literal["lane", "attempt"] = "lane"
 
     @classmethod
     def start(
@@ -372,10 +374,13 @@ class LaneDeadline:
                 f"tightened seconds must be a positive finite number or None, "
                 f"got {seconds!r}"
             )
+        attempt_expires_at = self.monotonic() + float(seconds)
+        attempt_is_nearer = attempt_expires_at < self.expires_at
         return type(self)(
-            expires_at=min(self.expires_at, self.monotonic() + float(seconds)),
+            expires_at=min(self.expires_at, attempt_expires_at),
             monotonic=self.monotonic,
             honors_termination=self.honors_termination,
+            expiry_scope="attempt" if attempt_is_nearer else self.expiry_scope,
         )
 
     def remaining(self) -> float:
@@ -389,7 +394,11 @@ class LaneDeadline:
         remaining = self.expires_at - self.monotonic()
         if not math.isfinite(remaining) or remaining <= 0:
             raise AssayError(
-                "the lane-wide deadline expired",
+                (
+                    "the per-attempt canary budget expired"
+                    if self.expiry_scope == "attempt"
+                    else "the lane-wide deadline expired"
+                ),
                 outcome=Outcome.BUDGET_EXCEEDED,
                 reason_code=ReasonCode.LANE_TIMEOUT,
             )
