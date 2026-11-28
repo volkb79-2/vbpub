@@ -86,6 +86,54 @@ def test_absent_jobs_and_uploads_are_empty_on_fresh_state(tmp_path):
     assert service._stored_upload_bytes() == 0
 
 
+def test_bundle_is_retained_until_job_has_terminal_book_record(tmp_path, monkeypatch):
+    service, identity, _checkout = _service(tmp_path)
+    _enable_collection(service)
+    bundle = _put(service, identity, "in.bundle", b"bundle")
+    job_dir = service.paths.jobs_dir / "bundle-job"
+    job_dir.mkdir()
+    request = _submit()
+    (job_dir / "request.json").write_text(json.dumps({
+        "schema": "fleet-host-job-request/1", "group": identity.group,
+        "digest": "e" * 64, "request": request,
+    }), encoding="utf-8")
+    monkeypatch.setattr(service.admission.book, "read_record", lambda _job_id: {
+        "schema": "fleet-admission-waiting/1", "job_id": "bundle-job", "group": identity.group,
+    })
+    with service._upload_store_lock():
+        assert service._collect_upload_objects_locked(len(b"bundle"), len(b"bundle")) == 0
+    assert Path(bundle["path"]).read_bytes() == b"bundle"
+
+    monkeypatch.setattr(service.admission.book, "read_record", lambda _job_id: {
+        "schema": "fleet-admission-terminal/1", "job_id": "bundle-job", "group": identity.group,
+    })
+    with service._upload_store_lock():
+        assert service._collect_upload_objects_locked(len(b"bundle"), len(b"bundle")) == len(b"bundle")
+    assert not Path(bundle["path"]).exists()
+
+
+def test_refused_submit_leaves_collectable_empty_job_directory(tmp_path, monkeypatch):
+    service, identity, _checkout = _service(tmp_path)
+    _enable_collection(service)
+    service.executor = object()
+    old = _put(service, identity, "candidates", b"old-content-long")
+    monkeypatch.setattr(
+        service.admission.book, "submit",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AdmissionError(2, "capacity refused")),
+    )
+    with pytest.raises(AdmissionError, match="capacity refused"):
+        service.handle(_submit(), identity)
+    refused_job_dir = service.paths.jobs_dir / "controller-run-1"
+    assert sorted(path.name for path in refused_job_dir.iterdir()) == ["submit.lock"]
+    assert service.admission.book.read_record("controller-run-1") is None
+
+    _upload_policy(service, store_bytes=100, floors={"checkout": 0})
+    _upload_policy(service, store_bytes=5, floors={"checkout": 0})
+    new = _put(service, identity, "candidates", b"new!!")
+    assert not Path(old["path"]).exists()
+    assert Path(new["path"]).read_bytes() == b"new!!"
+
+
 def test_upload_store_path_that_is_a_regular_file_refuses_accounting(tmp_path):
     service, _identity, _checkout = _service(tmp_path)
     service.paths.uploads_dir.rmdir()
@@ -172,7 +220,7 @@ def test_collector_classifies_every_submit_request_field(tmp_path):
         service._request_upload_digests(request | {"new_upload_reference": "unknown"}, identity.group, "job")
 
 
-def test_durable_request_inventory_retains_seed_dev_and_candidates(tmp_path):
+def test_durable_request_inventory_retains_seed_dev_and_candidates(tmp_path, monkeypatch):
     service, identity, _checkout = _service(tmp_path)
     seed_digest = "a" * 64
     tracked_digest = "b" * 64
@@ -196,6 +244,9 @@ def test_durable_request_inventory_retains_seed_dev_and_candidates(tmp_path):
         "schema": "fleet-host-job-request/1", "group": identity.group,
         "digest": "e" * 64, "request": request,
     }), encoding="utf-8")
+    monkeypatch.setattr(service.admission.book, "read_record", lambda _job_id: {
+        "schema": "fleet-admission-terminal/1", "job_id": "job", "group": identity.group,
+    })
     assert service._referenced_upload_objects_locked() == {identity.group: frozenset(expected)}
 
 

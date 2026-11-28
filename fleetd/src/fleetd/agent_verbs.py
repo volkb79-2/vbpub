@@ -208,6 +208,8 @@ def _is_referenced_upload_object(
 ) -> bool:
     """A store object survives only while a durable record names it."""
 
+    if item.name == "in.bundle" and "*" in references.get(item.group, frozenset()):
+        return True
     return item.digest in references.get(item.group, frozenset()) or item.key in seed_sidecars
 
 
@@ -723,6 +725,7 @@ class AgentVerbService:
         """
 
         references: dict[str, set[str]] = {}
+        protected_bundle_groups: set[str] = set()
         state_fd = self._state_directory_fd()
         try:
             jobs_fd = _open_optional_upload_directory(state_fd, "jobs", "agent job records")
@@ -731,12 +734,43 @@ class AgentVerbService:
             try:
                 for name in _upload_directory_entries(jobs_fd, "agent job records"):
                     with _upload_directory(jobs_fd, name, "agent job record directory") as job_fd:
+                        entries = set(_upload_directory_entries(job_fd, f"job record {name!r}"))
+                        if "request.json" not in entries:
+                            if entries != {"submit.lock"}:
+                                raise AdmissionError(
+                                    ExitCode.RUNNER_FAILURE,
+                                    f"cannot collect upload objects: job record directory {name!r} has no request.json and unexpected entries",
+                                )
+                            try:
+                                book_record = self.admission.book.read_record(name)
+                            except AdmissionError as exc:
+                                raise AdmissionError(
+                                    ExitCode.RUNNER_FAILURE,
+                                    f"cannot collect upload objects: job record directory {name!r} has no request.json and cannot be classified: {exc.reason}",
+                                ) from exc
+                            if book_record is not None:
+                                raise AdmissionError(
+                                    ExitCode.RUNNER_FAILURE,
+                                    f"cannot collect upload objects: job record directory {name!r} has no request.json but has an admission record",
+                                )
+                            continue
                         group, digests = self._job_record_references(job_fd, name)
+                        try:
+                            book_record = self.admission.book.read_record(name)
+                        except AdmissionError as exc:
+                            raise AdmissionError(
+                                ExitCode.RUNNER_FAILURE,
+                                f"cannot collect upload objects: admission record for {name!r} is unreadable: {exc.reason}",
+                            ) from exc
+                        if book_record is None or book_record.get("group") != group or book_record.get("schema") != "fleet-admission-terminal/1":
+                            protected_bundle_groups.add(group)
                         references.setdefault(group, set()).update(digests)
             finally:
                 os.close(jobs_fd)
         finally:
             os.close(state_fd)
+        for group in protected_bundle_groups:
+            references.setdefault(group, set()).add("*")
         return {group: frozenset(digests) for group, digests in references.items()}
 
     def _job_record_references(self, job_fd: int, name: str) -> tuple[str, set[str]]:
