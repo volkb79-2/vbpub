@@ -1381,6 +1381,7 @@ test("start_job sends one end notice and excludes it from the saved original goa
 	assert.ok(notices[0].message.content.includes(`'scripts/controller/job-check.sh' 'job-one' '${f.jobWorktree}' 'luna'`));
 	f.events.get("before_agent_start")({ messageType: "custom", message: { customType: "pi-ctl-job", content: notices[0].message.content } }, f.fakeContext);
 	assert.equal(f.sessionEntries.some((entry) => entry.customType === "pi-ctl-original-goal"), false);
+	await f.flushPromises();
 });
 
 test("start_job binds same-name launches to their own owner token", async (t) => {
@@ -1407,6 +1408,7 @@ test("start_job binds same-name launches to their own owner token", async (t) =>
 	launchChildren[0].child.emit("close", 0, null);
 	assert.equal(f.calls.filter(({ message }) => message.customType === "pi-ctl-job").length, 1,
 		"the owner launch sends its own single end notice");
+	await f.flushPromises();
 });
 
 test("start_job reports a preflighted launch that exits without its owner record", async (t) => {
@@ -1422,6 +1424,7 @@ test("start_job reports a preflighted launch that exits without its owner record
 	const notices = f.calls.filter(({ message }) => message.customType === "pi-ctl-job");
 	assert.equal(notices.length, 1);
 	assert.match(notices[0].message.content, /exited without starting \(exit 7\)/);
+	await f.flushPromises();
 });
 
 function fakeApiNoop() {
