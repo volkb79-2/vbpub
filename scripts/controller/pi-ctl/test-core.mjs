@@ -938,6 +938,7 @@ test("session-start PRIME context captures the first prompt once and survives re
 		await f.events.get("session_start")({ type: "session_start", reason: "startup" }, ctx);
 		assert.equal(f.calls.length, 0, "arming the session context does not start a model turn");
 		const firstResult = f.events.get("before_agent_start")({ systemPrompt: "base prompt", ...firstPrompt }, ctx);
+		assert.ok(firstResult?.message, "the first prompt produces PRIME context");
 		assert.equal(firstResult.message.customType, "pi-ctl-prime-goal");
 		assert.match(firstResult.message.content, /Role rules marker: preserve the T4 queue/);
 		assert.match(firstResult.message.content, new RegExp(firstPrompt.messageType === "user" ? "typed startup goal" : firstPrompt.message.content));
