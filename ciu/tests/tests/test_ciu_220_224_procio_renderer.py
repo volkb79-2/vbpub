@@ -414,6 +414,7 @@ _UNBOUNDED_EXCEPTIONS = {
     ("diagnose.py", "_run", "subprocess.run", 0): "Diagnose is an unbounded captured Docker query; bounded-drain migration is owned by CIU-233.",
     ("host_enroll.py", "_run", "subprocess.run", 0): "Host enrollment has unbounded captured probes; bounded-drain migration is owned by CIU-233.",
     ("transport_ssh.py", "_ssh_exec_subprocess", "subprocess.run", 0): "SSH execution inherits terminal stdio so prompts and Ctrl-C stay attached.",
+    ("transport_ssh.py", "_ssh_probe_subprocess", "subprocess.Popen", 0): "Popen has no timeout argument; this SSH probe streams empty stdin under an absolute deadline and enforces a combined output cap.",
     ("transport_ssh.py", "ssh_sync", "subprocess.run", 0): "rsync inherits terminal stdio for progress and terminal signal delivery.",
     ("transport_ssh.py", "scp_file", "subprocess.run", 0): "scp inherits terminal stdio for progress and terminal signal delivery.",
     ("workspace.py", "discover_committed_roots", "subprocess.run", 0): "Git-tree inventory is an unbounded captured query; bounded-drain migration is owned by CIU-233.",

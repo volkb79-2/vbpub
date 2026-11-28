@@ -774,6 +774,98 @@ backlog burn-down package a per-project wrapper brief points at). Read the [desi
 for the reasons behind the boundaries, and the [consumer guide](docs/CONSUMERS.md)
 for copyable setup and run examples.
 
+### Pi sub-controllers (`pi-ctl-launch.sh`)
+
+`scripts/controller/pi-ctl-launch.sh <role>` starts a persistent pi session in
+tmux named `vbpub-<role>`. It resumes the last session id after the extension
+signals a successful `session_start`; `--fresh <role>` selects a new id but
+keeps the previous id if the new pane fails to become ready, and
+`--print-command <role>` displays the resolved command without starting tmux or
+reading credentials. The state root defaults to `$HOME/controller/pi-ctl` and
+must stay outside the repository. Role names use letters, digits, `.`, `_`, and
+`-`, starting with a letter or digit and at most 64 characters.
+
+Every component of the configured `PI_CTL_ROOT` path is checked as written,
+before path normalization; any symlink component is refused, including a final
+symlink followed by `/` or a symlink before `..`. This applies to system-owned
+components as well. If a system path component is a symlink, choose an absolute
+physical path with no symlink components. The parent-directory swap race after
+this check is BY DESIGN: it requires a hostile process with the same user
+identity, which already has read and write access to the state root. This check
+is not a tamper boundary against that user.
+
+The pane requires util-linux `flock`, opens the persistent
+`locks/<role>.lock` file and keeps its kernel lock for the full pi process
+lifetime. The file is never unlinked or replaced; the kernel releases the lock
+when pi exits or crashes. A symlink or non-regular lock path is refused. The
+extension checks that its inherited descriptor names this role's regular lock
+file and that `/proc/self/fdinfo/<fd>` reports a held exclusive flock. Starting
+pi by hand without the pane descriptor is refused. `--print-command` shows the
+lock path and flock requirement without starting a process. The gate suite
+checks that tester-unified provides `flock`.
+
+```bash
+scripts/controller/pi-ctl-launch.sh hostobs
+PI_CTL_PROVIDER=opendesign_github2 scripts/controller/pi-ctl-launch.sh hostobs
+scripts/controller/pi-ctl-launch.sh --fresh hostobs
+scripts/controller/pi-ctl-launch.sh --print-command hostobs
+```
+
+Defaults are provider `opendesign_volker`, model
+`deepseek-v4.1-flash-eco`, thinking `max`, and the current repository root as
+the working directory. Set `PI_CTL_PROVIDER=opendesign_github2` to switch to
+the other Open Design account. The tmux pane alone sources `$HOME/.env.ai`;
+it clears both provider keys first, then exports only
+`OPENDESIGN_API_KEY_VOLKER` or `OPENDESIGN_API_KEY_GITHUB2` to pi according to
+the selected provider. Override the launch with `PI_CTL_MODEL`,
+`PI_CTL_THINKING`, `PI_CTL_CWD`, `PI_CTL_ROOT`, `PI_CTL_SESSION_DIR`, or
+`PI_CTL_PRIME`. Keep credentials in `$HOME/.env.ai`, never in argv, tmux
+arguments, command output, or logs.
+
+The launcher selects `pi-pidns-extension.js` and `pi-ctl/extension.mjs`
+explicitly with `--no-extensions`; it also uses `--no-approve` so an unattended
+launch ignores trust-gated project-local resources without a trust dialog. It
+does not create project `.pi/settings.json`. Pi's configured global model
+catalogue remains the operator-owned `$HOME/.pi/agent/models.json`.
+
+The `pi-ctl/` extension provides `send_message`, persisted wake-up
+schedule/list/cancel tools, bounded monitor start/list/stop tools, inbox polling,
+an event log and context recovery. Main receives peer messages through the
+tested bridge, which prints a fixed untrusted-peer header and id, replays
+unacknowledged claims after restart with persisted backoff, and removes a claim
+only after an explicit acknowledgment:
+
+```bash
+# Start this in the main controller's monitor, from the repository root.
+node scripts/controller/pi-ctl/bridge.mjs watch
+# Later, from a main shell after recording the message id:
+node scripts/controller/pi-ctl/bridge.mjs ack "$message_id"
+```
+
+After recording a message id in main's own state, set `message_id` from the
+header and run the `ack` command. The extension inbox follows the same
+at-least-once rule: it retains a claim until pi's persisted custom-message entry
+confirms the type and id, then retries at most three times before reporting to
+main. Wake-ups keep their persisted id until pi confirms delivery. Peer messages
+are untrusted and never auto-replied to; send and receive limits default to 10
+per peer per hour; inbox bodies default to 16 KiB and sends to 64 KiB; wake-ups
+are 10 seconds to 24 hours with 32 pending. Monitors use the private-PID-namespace
+wrapper, wait for its readiness marker, and end within one hour. Compaction
+starts only from `agent_end` at 150,000 tokens by default and tells the session
+to run `scripts/controller/resume-read.sh <role>` afterward. The launcher uses
+`--no-approve` to ignore trust-gated project-local resources without a prompt;
+explicit extensions load from argv and no project settings file is written.
+Tests run in the registered `scripts/controller` suite with a fake pi API, not
+against a live provider.
+
+Pi 1.6.0's built-in bash tool starts its shell with only standard input, output
+and error in its `stdio` array (`dist/core/tools/bash.js:75-79`). Node 26 treats
+unspecified child descriptors 3 and above as `ignore` ([child-process stdio
+documentation](https://nodejs.org/api/child_process.html#optionsstdio)). The
+monitor spawn explicitly sets the lock descriptor to `ignore` in an extended
+stdio array, so neither a tool shell nor a monitor started through
+`pi-pidns-bash` keeps the lock after pi exits.
+
 ## Running the registered gate
 
 The toolkit's `suite` lane is declared in `run-gate.toml`. Run it from this

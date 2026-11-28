@@ -902,6 +902,105 @@ readback is worth building at all.
   (`scripts/controller/docs/DESIGN-GUIDE.md`): run records, queue state, host facts,
   credentials and evidence archives still live under `CONTROLLER_HOME`.
 
+### Pi sub-controller harness (`scripts/controller/pi-ctl/`)
+
+Launch a long-running pi sub-controller with `scripts/controller/pi-ctl-launch.sh <role>`.
+The launcher starts tmux session `vbpub-<role>`, keeps one pi session id per role, and
+refuses a matching live lock or tmux session. Use `--fresh` to choose a new session id;
+use `--print-command` to inspect the resolved launch without starting anything. The
+launch uses explicit extensions with `--no-extensions` and `--no-approve`; it does not
+write project `.pi/settings.json` or wait for a trust dialog. Pi's `--no-approve` ignores
+trust-gated project-local resources, while the explicitly named extensions still load.
+
+Every component of the configured `PI_CTL_ROOT` path is checked as written before
+normalization; any symlink component is refused, including a final symlink followed by
+`/` or a symlink before `..`. This applies to system-owned components too. If one is a
+symlink, choose an absolute physical path with no symlink components. The parent-directory
+swap race after checking is BY DESIGN: it requires a hostile process with the same user
+identity, which already has read and write access to the state root. This check is not a
+tamper boundary against that user.
+
+The pane requires util-linux `flock` and holds the kernel lock on the persistent
+`locks/<role>.lock` file for the full pi process lifetime. The file is never unlinked or
+replaced; the kernel releases the lock when pi exits or crashes. Symlink and non-regular
+lock paths are refused. Before creating state, the extension checks its inherited file
+descriptor against this role's lock path and inode and requires an exclusive flock record
+in `/proc/self/fdinfo/<fd>`. A hand-started pi without the pane descriptor is refused.
+`--print-command` shows the lock path and requirement without starting anything. The
+registered suite checks that tester-unified provides `flock`.
+
+```bash
+scripts/controller/pi-ctl-launch.sh hostobs
+PI_CTL_PROVIDER=opendesign_github2 scripts/controller/pi-ctl-launch.sh hostobs
+scripts/controller/pi-ctl-launch.sh --fresh hostobs
+scripts/controller/pi-ctl-launch.sh --print-command hostobs
+```
+
+The defaults are provider `opendesign_volker`, model `deepseek-v4.1-flash-eco`, thinking
+`max`, and the repository root as the working directory. Set `PI_CTL_PROVIDER` to
+`opendesign_github2` to switch accounts; the pane sources `$HOME/.env.ai` and exports
+only the matching `OPENDESIGN_API_KEY_*` key. `PI_CTL_MODEL`, `PI_CTL_THINKING`,
+`PI_CTL_CWD`, `PI_CTL_SESSION_DIR`, `PI_CTL_ROOT`, and `PI_CTL_PRIME` override the
+corresponding defaults. Keep `PI_CTL_ROOT` outside every checkout; it defaults to
+`$HOME/controller/pi-ctl`. State directories are mode 0700 and state files mode 0600.
+
+The extension polls `inbox/<role>/` once per second. A peer message is renamed into a
+processing claim before injection and carries a stable id. Since pi's `sendMessage()`
+returns `void`, the claim remains until pi's `message_end` event is followed by a persisted
+`custom_message` entry with the same custom type and id. A restart replays unconfirmed
+claims with the same id, so duplicates are visible. Retries back off, stop after three
+attempts and report to main while preserving the claim. Wake-ups use the same id-confirmed
+delivery rule and stay on disk until pi records that wake-up id.
+
+`send_message` writes atomically to `inbox/<to>/`; use `to=main` to reach the Claude main
+controller. Main uses the tested bridge, which replays claims after restart, prints a fixed
+peer-message/not-operator-approval header and retains each claim until the explicit id ack:
+
+```bash
+# Start this in the main controller's monitor, from the repository root.
+node scripts/controller/pi-ctl/bridge.mjs watch
+# Later, from a main shell after recording the message id:
+node scripts/controller/pi-ctl/bridge.mjs ack "$message_id"
+```
+
+Run `watch` in the main controller's monitor. Copy the id from the fixed header into
+`message_id`, record the message in main's own state, then run the one `ack` command above.
+The bridge preserves each claim across restart, respects persisted backoff and reports an
+unacknowledged message after three displays without deleting it.
+
+Inbox bodies are capped at 16 KiB and sends at 64 KiB by default. The send and inbound
+limits default to 10 messages per peer per hour; `PI_CTL_SEND_LIMIT`,
+`PI_CTL_INBOUND_LIMIT`, and `PI_CTL_LOOP_WINDOW_SECONDS` adjust them. Excess inbound
+messages stay queued with one notice per rate window. There is no automatic reply. Wake-ups
+persist across restarts, fire once, and allow 10 seconds through 24 hours with at most 32
+pending. Monitors run only through `pi-pidns-bash`; `start_monitor` waits for an
+in-namespace readiness marker before reporting success. They allow up to four watchers for
+at most one hour each, cap lines at 2 KiB, and batch/rate-limit output. Monitor processes
+are not persisted; a restart reports which ones ended and asks the controller to re-arm
+needed watchers. Stop affects only a child process started by that extension.
+
+Self-compaction starts only from `agent_end` at 150,000 context tokens by default. Its
+instructions preserve the original goal, in-flight identifiers and up to 8 KiB of the
+role's `PI_CTL_PRIME` file; after completion the session runs
+`scripts/controller/resume-read.sh <role>`. Pi's automatic compaction hook accepts a
+`CompactionResult`, so the extension supplies a readback summary through that supported
+result instead of returning unsupported custom instructions. A compaction that fails or
+leaves context above the threshold backs off; after three failures the controller writes a
+stable-id notice to `inbox/main/`. The launcher only saves a new session id after the pi
+extension signals successful `session_start`; a failed pane leaves the previous resumable id
+intact. The event log records lifecycle facts and token counts, never message bodies or
+environment values.
+The controller suite covers the harness with a fake pi API; live provider and TUI behavior
+still need an operator smoke run after account access is available.
+
+The installed pi 1.6.0 bash tool starts its shell with only standard input, output and
+error in the Node `stdio` array (`dist/core/tools/bash.js:75-79`). Node 26 treats
+unspecified child descriptors 3 and above as `ignore` ([child-process stdio
+documentation](https://nodejs.org/api/child_process.html#optionsstdio)). The monitor
+spawn explicitly sets the controller lock descriptor to `ignore` in an extended stdio
+array, so neither a tool shell nor a monitor launched through `pi-pidns-bash` can keep
+the lock after pi exits.
+
 ## Persist reusable work in the repository
 
 Outside the repo is scratch: anything reusable, cited, or decided lives in the

@@ -246,6 +246,7 @@ items:
   - {id: B597, title: "An armed no-progress wall stop ends the sweep and can repeat on resume", type: bugfix, component: mutation, context_estimate: medium}
   - {id: B598, title: "P-assay-4f final-review follow-ups M1, M3 and L4-L7", type: bugfix, component: mutation, context_estimate: small}
   - {id: B599, title: "B105 RAM admission counts reclaimable file cache as used", type: bugfix, component: gate, context_estimate: small}
+  - {id: B610, title: "Assay merges that touch src/assay must pass self-qualification-provisional before merge", type: bugfix, component: gate, context_estimate: small}
 ---
 
 # assay — backlog
@@ -16500,3 +16501,15 @@ test (see B578) may be a failure unrelated to the mutant.
 **Close when.** The kill's cause is established from the run's evidence or a
 reproduction, and either the test or classification defect is fixed, or the
 limit is documented for consumers of resumed and merged stores.
+
+## B610 — Assay merges that touch src/assay must pass self-qualification-provisional before merge
+
+**Status: OPEN (filed 2026-11-27 after the assay 12.4.1 release lane failed); severity: high for release readiness, because a known whole-target coverage gap reached a release candidate.**
+
+The q361 B577 merge (`a4b4a3431`) passed `tooling-tests` and `tester-unified`, but did not pass `self-qualification-provisional`. The 12.4.1 candidate at `5f0bef658` then failed that lane with `FAIL/UNCOVERED_LINES` in `src/assay/mutation.py` and `src/assay/mutation_store.py`; the uncovered sidecar paths came from `754d2761a`, `66e3ccb6e`, and `ebd069b5f`.
+
+**Rule.** Every assay merge whose diff touches `assay/src/**` must pass `self-qualification-provisional` on the exact branch head before merge. This is the release lane that measures the 100% whole-target line and branch floor over `src/assay`.
+
+**Coverage gap closed in this branch.** Commit `739c3793d` adds behavioral assertions for every uncovered B577 component-sidecar line and branch from the 12.4.1 candidate. The tests pin the documented pre-injection `PYTHONPATH` identity, mismatch names and redaction, unavailable diagnostics for missing or corrupt metadata, sidecar write cleanup on I/O errors, and the reader's size and shape bounds. The process rule above remains OPEN; this branch does not establish that merge automation enforced it.
+
+**Close when.** The merge checklist mechanically runs `self-qualification-provisional` for every `assay/src/**` change against the exact branch head, and a passing receipt is required before merge.
