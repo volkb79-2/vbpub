@@ -8230,19 +8230,23 @@ def test_uploaded_object_scan_filters_bad_entries_and_wraps_directory_errors(tmp
 
 def test_checkout_ref_synchronization_always_removes_untrusted_main_refs(tmp_path):
     class _Commands:
-        def __init__(self, main_result):
-            self.main_result = main_result
+        def __init__(self):
             self.calls = []
+            self.absence_queries = []
 
         def run(self, argv, **_kwargs):
             self.calls.append(list(argv))
             if "rev-parse" in argv:
-                return self.main_result
+                reference = argv[-1]
+                self.absence_queries.append(reference)
+                if reference in {"main^{object}", "origin/main^{object}"}:
+                    return CommandResult(1, b"", b"missing")
+                raise AssertionError(f"unexpected ref query: {reference!r}")
             return CommandResult(0)
 
     worker, _runner, _job_dir, _checkout = _ready_worker(tmp_path)
     worker.request["base"] = None
-    commands = _Commands(CommandResult(1, b"", b"missing"))
+    commands = _Commands()
     worker.runner = commands
     try:
         worker._synchronize_job_refs()
@@ -8250,14 +8254,16 @@ def test_checkout_ref_synchronization_always_removes_untrusted_main_refs(tmp_pat
         assert any("refs/remote-gate/base" in call for call in deleted)
         assert any("refs/remotes/origin/main" in call for call in deleted)
         assert any("refs/heads/main" in call for call in deleted)
+        assert commands.absence_queries == ["main^{object}", "origin/main^{object}"]
 
         commands.calls.clear()
+        commands.absence_queries.clear()
         worker.request["base"] = SHA
-        commands.main_result = CommandResult(0, f"{SHA}\n".encode(), b"")
         worker._synchronize_job_refs()
         assert any("refs/remote-gate/base" in call and SHA in call for call in commands.calls)
         assert any("refs/remotes/origin/main" in call and "-d" in call for call in commands.calls)
         assert any("refs/heads/main" in call and "-d" in call for call in commands.calls)
+        assert commands.absence_queries == ["main^{object}", "origin/main^{object}"]
     finally:
         for fd in (worker.project_fd, worker.checkout_fd, worker.repo_root_fd):
             if fd >= 0:
@@ -8367,8 +8373,11 @@ def test_create_checkout_verifies_base_checkout_head_and_records_host_sha(tmp_pa
             self.calls.append(call)
             if call[:2] == ["git", "clone"]:
                 (self.repo / self.checkout_rel).mkdir(parents=True, exist_ok=True)
-            if "rev-parse" in call and call[-1] == "HEAD":
-                return CommandResult(0, f"{SHA}\n".encode(), b"")
+            if "rev-parse" in call:
+                if call[-1] == "HEAD":
+                    return CommandResult(0, f"{SHA}\n".encode(), b"")
+                if call[-1] in {"main^{object}", "origin/main^{object}"}:
+                    return CommandResult(1, b"", b"missing")
             return CommandResult(0)
 
     worker, _runner, _job_dir, _checkout = _ready_worker(tmp_path)
@@ -8389,7 +8398,10 @@ def test_create_checkout_verifies_base_checkout_head_and_records_host_sha(tmp_pa
         worker._create_checkout()
         assert any("cat-file" in call and f"{SHA}^{{commit}}" in call for call in commands.calls)
         assert any("checkout" in call and SHA in call for call in commands.calls)
+        assert any("refs/remote-gate/base" in call and SHA in call for call in commands.calls)
         assert any("rev-parse" in call and call[-1] == "HEAD" for call in commands.calls)
+        assert any("rev-parse" in call and call[-1] == "main^{object}" for call in commands.calls)
+        assert any("rev-parse" in call and call[-1] == "origin/main^{object}" for call in commands.calls)
         assert worker._state()["checkout"] == {"ready": True, "sha": SHA}
         assert helper_calls[0][0:2] == ("prepare", ("--relative", ".fleetd-worktrees"))
     finally:
