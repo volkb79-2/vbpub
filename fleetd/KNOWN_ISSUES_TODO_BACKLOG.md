@@ -64,7 +64,7 @@
 | FD-059 | Measure and design PSI-aware admission before enforcing a prediction | P1 | OPEN (design only) | 2026-11-27 |
 | FD-060 | A granted lease client can stay connected forever without binding | P2 | FIXED IN THIS BRANCH (C3a) | 2026-11-27 |
 | FD-061 | Persist executor result details for terminal status | P2 | FIXED IN THIS BRANCH (C3b-1) | 2026-11-27 |
-| FD-062 | Retain and garbage-collect host upload objects | P2 | OPEN (C3b-2 implementation; coverage incomplete) | 2026-11-27 |
+| FD-062 | Retain and garbage-collect host upload objects | P2 | FIXED IN THIS BRANCH (C3b-2; opt-in) | 2026-11-27 |
 | FD-063 | Incrementally count large Assay progress files | P2 | OPEN | 2026-11-27 |
 | FD-064 | A legacy job directory without EXIT after host reboot remains charged | P2 | OPEN | 2026-11-27 |
 | FD-065 | Legacy-job listing is point-in-time and completed directories consume the entry ceiling | P2 | OPEN | 2026-11-27 |
@@ -1187,7 +1187,7 @@ charge in place.
 
 ## FD-062 Retain and garbage-collect host upload objects
 
-**State:** OPEN; C3b-2 implementation is present, but required changed-code coverage is incomplete. **Priority:** P2. **Filed:** 2026-11-27.
+**State:** FIXED IN THIS BRANCH (C3b-2; collection is opt-in). **Priority:** P2. **Filed:** 2026-11-27.
 
 C3a bounds aggregate stored and in-flight upload bytes with
 `policy.max_upload_store_bytes`. C3b-2 adds host-opt-in collection, preserving
