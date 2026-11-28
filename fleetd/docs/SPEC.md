@@ -428,12 +428,17 @@ same stop path, and binds ERROR with `lane-log-write-failed: ...`. Once the
 lane's stop is proven, terminal finalization binds ERROR with reason
 `lane-log-limit-exceeded`; a stop that cannot be proven retains the existing
 stopping and charge behavior. Existing cancellation precedence remains in
-force. If creating or starting the drainer fails after the child starts, the
-worker keeps its process handle, requests the normal stop path, closes the
-output pipe, and binds ERROR with `lane-log-setup-failed: ...` after stop
-proof. The drain ends after a bounded pipe-capacity read once the lane process
-exits. `_last_lane_summary` applies the byte ceiling to continuation reads of
-long lines as well. The ceiling does not impose a lane runtime limit. A lane can still create arbitrary
+force. If creating or starting the drainer, or bootstrapping its pipe reader,
+fails after the child starts, the worker keeps its process handle, requests the
+normal stop path, and closes the captured stdout pipe and duplicate log
+descriptor. The monitor binds ERROR with `lane-log-setup-failed: ...` after
+stop proof, including when stop requests are refused while the lane remains
+live. If a stop request already observes exit, the worker carries that status
+forward, records it once, and does not save `running` afterward. The drain
+ends after a bounded pipe-capacity read once the lane process exits.
+`_last_lane_summary` reads raw chunks, splits lines itself, and counts every
+byte fetched against the ceiling. The ceiling does not impose a lane runtime
+limit. A lane can still create arbitrary
 checkout files; FD-077 tracks that separate storage exposure.
 
 The listed repository- and lane-controlled inputs have explicit size and count

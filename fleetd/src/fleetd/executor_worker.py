@@ -899,17 +899,19 @@ class HostJobWorker:
         self._lane_log_failure_reason: str | None = None
         self._lane_log_stop = threading.Event()
         self._lane_log_setup_failed = threading.Event()
+        self._lane_log_setup_error: str | None = None
         self._lane_log_bytes = 0
         self._lane_log_thread: threading.Thread | None = None
+        self._lane_exit_status: int | None = None
 
-    def _drain_lane_log(self, process: RunnerProcess, log_fd: int) -> None:
-        stream = getattr(process, "stdout", None)
-        if stream is None:
-            return
-        stream_fd = stream.fileno()
-        stop_budget: int | None = None
-        pipe_capacity = fcntl.fcntl(stream_fd, fcntl.F_GETPIPE_SZ)
+    def _drain_lane_log(self, stream: object | None, log_fd: int) -> None:
+        stream_fd: int | None = None
         try:
+            if stream is None:
+                return
+            stream_fd = stream.fileno()
+            stop_budget: int | None = None
+            pipe_capacity = fcntl.fcntl(stream_fd, fcntl.F_GETPIPE_SZ)
             os.set_blocking(stream_fd, False)
             while True:
                 if self._lane_log_stop.is_set():
@@ -946,15 +948,55 @@ class HostJobWorker:
                         self._lane_log_write_failed.set()
                 if len(chunk) > remaining:
                     self._lane_log_overflow.set()
+        except Exception as exc:
+            self._lane_log_setup_error = f"lane-log-setup-failed: {exc}"
+            self._lane_log_setup_failed.set()
         finally:
-            os.close(log_fd)
+            if stream is not None:
+                close_error = self._close_lane_stdout(stream, stream_fd)
+                if close_error is not None:
+                    if self._lane_log_setup_error is None:
+                        self._lane_log_setup_error = f"lane-log-setup-failed: {close_error}"
+                    self._lane_log_setup_failed.set()
+            try:
+                os.close(log_fd)
+            except OSError as exc:
+                if self._lane_log_setup_error is None:
+                    self._lane_log_setup_error = f"lane-log-setup-failed: {exc}"
+                self._lane_log_setup_failed.set()
+
+    @staticmethod
+    def _close_lane_stdout(stream: object, stream_fd: int | None = None) -> Exception | None:
+        if stream_fd is None:
+            try:
+                stream_fd = stream.fileno()
+            except Exception:
+                pass
+        close_error = None
+        try:
+            stream.close()
+        except Exception as exc:
+            close_error = exc
+        finally:
+            if stream_fd is not None:
+                try:
+                    os.close(stream_fd)
+                except OSError:
+                    pass
+        return close_error
 
     def _check_lane_log_limit(self, process: RunnerProcess) -> None:
         if self._lane_log_write_failed.is_set():
             self.lane_error = self.lane_error or self._lane_log_failure_reason or "lane-log-write-failed"
         if self._lane_log_overflow.is_set():
             self.lane_error = self.lane_error or "lane-log-limit-exceeded"
-        if self._lane_log_write_failed.is_set() or self._lane_log_overflow.is_set():
+        if self._lane_log_setup_failed.is_set():
+            self.lane_error = self.lane_error or self._lane_log_setup_error or "lane-log-setup-failed"
+        if (
+            self._lane_log_write_failed.is_set()
+            or self._lane_log_overflow.is_set()
+            or self._lane_log_setup_failed.is_set()
+        ):
             try:
                 status = process.poll()
             except Exception:
@@ -2014,6 +2056,7 @@ class HostJobWorker:
                     # conservative marker before taking the never-started path.
                     self._retry_state_save(lane_may_be_live=False, lane_start_attempted=False)
                 raise
+            self._lane_exit_status = None
             try:
                 process = self.runner.start(argv, cwd_fd=self.project_fd, env=env, output_fd=log_fd)
             except (OSError, ValueError) as exc:
@@ -2032,6 +2075,7 @@ class HostJobWorker:
             self._lane_log_failure_reason = None
             self._lane_log_stop.clear()
             self._lane_log_setup_failed.clear()
+            self._lane_log_setup_error = None
             duplicate_fd = -1
             lane_stdout = None
             try:
@@ -2039,7 +2083,7 @@ class HostJobWorker:
                 if lane_stdout is not None:
                     duplicate_fd = os.dup(log_fd)
                     drain_thread = threading.Thread(
-                        target=self._drain_lane_log, args=(process, duplicate_fd), daemon=True,
+                        target=self._drain_lane_log, args=(lane_stdout, duplicate_fd), daemon=True,
                     )
                     drain_thread.start()
                     self._lane_log_thread = drain_thread
@@ -2054,36 +2098,38 @@ class HostJobWorker:
                 except AdmissionError:
                     pass
                 if lane_stdout is not None:
-                    try:
-                        lane_stdout.close()
-                    except OSError:
-                        pass
+                    close_error = self._close_lane_stdout(lane_stdout)
+                    if close_error is not None and self._lane_log_setup_error is None:
+                        self._lane_log_setup_error = f"lane-log-setup-failed: {close_error}"
         finally:
             os.close(log_fd)
-        self.runner_process = process
-        self._retry_state_save(lane_pid=process.pid, state="running", lane_status_owner="worker")
-        status: int | None = None
+        status: int | None = self._lane_exit_status
+        if status is None:
+            self.runner_process = process
+            self._retry_state_save(lane_pid=process.pid, state="running", lane_status_owner="worker")
+        else:
+            self.runner_process = None
         if memory_lock_fd is not None:
             try:
-                self.waiter(_MEMORY_SETTLE_S)
-                self._check_lane_log_limit(process)
-                try:
-                    status = process.poll()
-                except Exception:
-                    status = None
-                if status is not None:
-                    self.runner_process = None
-                    self._record_lane_exit(status)
-                try:
-                    self._cancel_checkpoint()
-                except AdmissionError as exc:
-                    if exc.exit_code != ExitCode.CANCELLED:
-                        raise
-                    # The lane has started.  The worker owns its process and
-                    # must stop it through the guard/TERM path before waiting
-                    # for exit and collection.
-                if status is None and self._state().get("cancel_requested") is True:
-                    self._request_worker_stop(process)
+                if status is None:
+                    self.waiter(_MEMORY_SETTLE_S)
+                    self._check_lane_log_limit(process)
+                    try:
+                        status = process.poll()
+                    except Exception:
+                        status = None
+                    if status is not None:
+                        self.runner_process = None
+                        self._record_lane_exit(status)
+                    try:
+                        self._cancel_checkpoint()
+                    except AdmissionError as exc:
+                        if exc.exit_code != ExitCode.CANCELLED:
+                            raise
+                        # The lane has started. The worker owns its process and
+                        # must stop it through the guard/TERM path before waiting.
+                    if status is None and self._state().get("cancel_requested") is True:
+                        self._request_worker_stop(process)
             finally:
                 fcntl.flock(memory_lock_fd, fcntl.LOCK_UN)
                 os.close(memory_lock_fd)
@@ -2131,12 +2177,6 @@ class HostJobWorker:
         if self._lane_log_thread is not None:
             self._lane_log_thread.join()
         self._check_lane_log_limit(process)
-        stream = getattr(process, "stdout", None)
-        if stream is not None:
-            try:
-                stream.close()
-            except OSError:
-                pass
         try:
             self._follow_lane_events(final=True)
         except AdmissionError as exc:
@@ -2147,10 +2187,13 @@ class HostJobWorker:
     def _record_lane_exit(self, status: int) -> None:
         """Persist the worker-owned child status before any other lane work."""
 
+        if self._lane_exit_status is not None:
+            return
         self._retry_state_save(
             state="collecting", lane_process_status=status, exit_code=status,
             lane_may_be_live=False, lane_status_owner="worker",
         )
+        self._lane_exit_status = status
 
     def _retry_state_save(self, **updates: object) -> dict[str, object]:
         while True:
@@ -3032,31 +3075,50 @@ class HostJobWorker:
         try:
             if not stat.S_ISREG(os.fstat(fd).st_mode):
                 raise AdmissionError(ExitCode.IDENTITY_OR_TRANSPORT, "lane log is not a regular file")
-            with os.fdopen(os.dup(fd), "rb") as stream:
-                scanned = 0
-                ceiling = self.policy.lane_log_max_bytes
-                while scanned < ceiling:
-                    line = stream.readline(min(65537, ceiling - scanned))
-                    if not line:
-                        break
-                    scanned += len(line)
-                    if len(line) > 65536:
-                        if line.startswith(prefix):
-                            raise AdmissionError(ExitCode.IDENTITY_OR_TRANSPORT, "anchored Run-Gate summary is too large")
-                        while line and not line.endswith(b"\n"):
-                            remaining = ceiling - scanned
-                            if remaining <= 0:
-                                break
-                            line = stream.readline(min(65537, remaining))
-                            scanned += len(line)
+            scanned = 0
+            ceiling = self.policy.lane_log_max_bytes
+            line = bytearray()
+            discarding_long_line = False
+            while scanned < ceiling:
+                chunk = os.read(fd, min(65536, ceiling - scanned))
+                if not chunk:
+                    break
+                scanned += len(chunk)
+                offset = 0
+                while offset < len(chunk):
+                    if discarding_long_line:
+                        newline = chunk.find(b"\n", offset)
+                        if newline < 0:
+                            break
+                        discarding_long_line = False
+                        offset = newline + 1
                         continue
-                    if not line.endswith(b"\n"):
-                        if line.startswith(prefix):
-                            raise AdmissionError(ExitCode.IDENTITY_OR_TRANSPORT, "anchored Run-Gate summary is incomplete")
-                        continue
-                    candidate = line[:-1].removesuffix(b"\r")
-                    if candidate.startswith(prefix):
-                        last = candidate
+                    newline = chunk.find(b"\n", offset)
+                    end = len(chunk) if newline < 0 else newline + 1
+                    segment = chunk[offset:end]
+                    if len(line) + len(segment) > 65536:
+                        starts_with_prefix = (
+                            line.startswith(prefix)
+                            if len(line) >= len(prefix)
+                            else prefix.startswith(line) and segment.startswith(prefix[len(line):])
+                        )
+                        if starts_with_prefix:
+                            raise AdmissionError(
+                                ExitCode.IDENTITY_OR_TRANSPORT, "anchored Run-Gate summary is too large",
+                            )
+                        line.clear()
+                        discarding_long_line = newline < 0
+                    elif newline >= 0:
+                        candidate = bytes(line) + segment[:-1]
+                        candidate = candidate.removesuffix(b"\r")
+                        if candidate.startswith(prefix):
+                            last = candidate
+                        line.clear()
+                    else:
+                        line.extend(segment)
+                    offset = end
+            if not discarding_long_line and line.startswith(prefix):
+                raise AdmissionError(ExitCode.IDENTITY_OR_TRANSPORT, "anchored Run-Gate summary is incomplete")
         finally:
             os.close(fd)
         if last is None:
