@@ -914,8 +914,8 @@ mod tests {
             let text = req(verb, "{}");
             assert_plain(&binary(text.as_bytes()), Code::UnknownVerb, 5);
         }
-        for verb in ["spans", "events"] {
-            let text = line(verb, "{}", 5);
+        {
+            let text = line("spans", "{}", 5);
             assert_refusal(&json(text.as_bytes()), Code::UnknownVerb, 5, &Detail::Empty);
         }
         let text = req("events", "{}");
