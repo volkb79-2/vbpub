@@ -22,6 +22,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import threading
 import time
 import tomllib
 from dataclasses import dataclass
@@ -217,8 +218,8 @@ class SubprocessRunnerCommands:
         self, argv: Sequence[str], *, cwd_fd: int, env: Mapping[str, str], output_fd: int,
     ) -> RunnerProcess:
         return self._popen(
-            list(argv), stdin=subprocess.DEVNULL, stdout=output_fd, stderr=subprocess.STDOUT,
-            env=dict(env), close_fds=True, pass_fds=(cwd_fd, output_fd),
+            list(argv), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            env=dict(env), close_fds=True, pass_fds=(cwd_fd,),
             preexec_fn=self._preexec(cwd_fd), start_new_session=True,
         )
 
@@ -893,6 +894,44 @@ class HostJobWorker:
         self.terminal_completed = False
         self.interruption_settled = False
         self.memory_lock_fd = -1
+        self._lane_log_overflow = threading.Event()
+        self._lane_log_bytes = 0
+        self._lane_log_thread: threading.Thread | None = None
+
+    def _drain_lane_log(self, process: RunnerProcess, log_fd: int) -> None:
+        stream = getattr(process, "stdout", None)
+        if stream is None:
+            return
+        try:
+            while True:
+                chunk = os.read(stream.fileno(), 65536)
+                if not chunk:
+                    return
+                ceiling = self.policy.lane_log_max_bytes
+                remaining = max(0, ceiling - self._lane_log_bytes)
+                if len(chunk) > remaining:
+                    if remaining:
+                        view = memoryview(chunk[:remaining])
+                        while view:
+                            count = os.write(log_fd, view)
+                            view = view[count:]
+                        self._lane_log_bytes += remaining
+                    self._lane_log_overflow.set()
+                elif not self._lane_log_overflow.is_set():
+                    view = memoryview(chunk)
+                    while view:
+                        count = os.write(log_fd, view)
+                        view = view[count:]
+                    self._lane_log_bytes += len(chunk)
+        except (OSError, ValueError) as exc:
+            self.lane_error = self.lane_error or f"lane-log-write-failed: {exc}"
+        finally:
+            os.close(log_fd)
+
+    def _check_lane_log_limit(self, process: RunnerProcess) -> None:
+        if self._lane_log_overflow.is_set():
+            self.lane_error = self.lane_error or "lane-log-limit-exceeded"
+            self._request_worker_stop(process)
 
     def _state(self) -> dict[str, object]:
         raw = _read_regular(self.job_dir / "state.json", limit=MAX_STATE_RECORD_BYTES)
@@ -1945,6 +1984,13 @@ class HostJobWorker:
                 raise
             try:
                 process = self.runner.start(argv, cwd_fd=self.project_fd, env=env, output_fd=log_fd)
+                if getattr(process, "stdout", None) is not None:
+                    self._lane_log_bytes = 0
+                    self._lane_log_overflow.clear()
+                    self._lane_log_thread = threading.Thread(
+                        target=self._drain_lane_log, args=(process, os.dup(log_fd)), daemon=True,
+                    )
+                    self._lane_log_thread.start()
             except (OSError, ValueError) as exc:
                 detail = str(exc)[:1000]
                 self._retry_state_save(
@@ -1960,7 +2006,12 @@ class HostJobWorker:
         status: int | None = None
         if memory_lock_fd is not None:
             try:
-                self.waiter(_MEMORY_SETTLE_S)
+                remaining_settle = _MEMORY_SETTLE_S
+                while remaining_settle > 0:
+                    self._check_lane_log_limit(process)
+                    step = min(0.05, remaining_settle)
+                    self.waiter(step)
+                    remaining_settle -= step
                 try:
                     status = process.poll()
                 except Exception:
@@ -1983,6 +2034,7 @@ class HostJobWorker:
                 os.close(memory_lock_fd)
                 self.memory_lock_fd = -1
         while status is None:
+            self._check_lane_log_limit(process)
             self._follow_lane_events(final=False)
             try:
                 status = process.poll()
@@ -2020,6 +2072,12 @@ class HostJobWorker:
                     self._request_worker_stop(process)
                 except AdmissionError:
                     pass
+        stream = getattr(process, "stdout", None)
+        if stream is not None:
+            try:
+                stream.close()
+            except OSError:
+                pass
         try:
             self._follow_lane_events(final=True)
         except AdmissionError as exc:
@@ -2916,10 +2974,13 @@ class HostJobWorker:
             if not stat.S_ISREG(os.fstat(fd).st_mode):
                 raise AdmissionError(ExitCode.IDENTITY_OR_TRANSPORT, "lane log is not a regular file")
             with os.fdopen(os.dup(fd), "rb") as stream:
-                while True:
-                    line = stream.readline(65537)
+                scanned = 0
+                ceiling = self.policy.lane_log_max_bytes
+                while scanned < ceiling:
+                    line = stream.readline(min(65537, ceiling - scanned))
                     if not line:
                         break
+                    scanned += len(line)
                     if len(line) > 65536:
                         if line.startswith(prefix):
                             raise AdmissionError(ExitCode.IDENTITY_OR_TRANSPORT, "anchored Run-Gate summary is too large")

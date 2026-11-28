@@ -75,8 +75,9 @@
 | FD-070 | Verify exec checkout mount against a real persistent runner before enablement | P1 | OPEN; LIVE PROBE REQUIRED | 2026-11-27 |
 | FD-071 | Preserve store collection failure detail in the host result | P2 | FIXED IN THIS BRANCH (C3b-1) | 2026-11-27 |
 | FD-072 | Bind Run-Gate repo/project labels to the request | P2 | FIXED IN THIS BRANCH (C3b-1) | 2026-11-27 |
-| FD-075 | Bound total lane log bytes and summary scan before executor enablement | P1 | OPEN; BLOCKER BEFORE ENABLEMENT | 2026-11-28 |
+| FD-075 | Bound total lane log bytes and summary scan before executor enablement | P1 | CLOSED | 2026-11-28 |
 | FD-076 | A client upload can be collected before its delayed submit | P2 | OPEN | 2026-11-28 |
+| FD-077 | Lane-controlled checkout files have no aggregate storage ceiling | P2 | OPEN | 2026-11-28 |
 
 ## FD-001 Lite campaign lifecycle
 
@@ -1394,15 +1395,31 @@ ruling C2 (2026-11-28).
 
 ## FD-075 Bound total lane log bytes and summary scan
 
-**State:** OPEN; BLOCKER BEFORE ENABLEMENT. **Priority:** P1. **Filed:** 2026-11-28.
+**State:** CLOSED. **Priority:** P1. **Filed:** 2026-11-28.
 
-The lane's stdout and stderr are written to `lane.log` without an aggregate byte
-ceiling, and `_last_lane_summary` scans the whole file. A finite lane can fill
-host storage and make the root summary scan arbitrarily long. Before enabling
-the executor, enforce a total lane-output byte ceiling in the streaming writer;
-on overflow, stop the lane through the normal stop-and-prove path and bind a
-terminal ERROR. Bound the summary scan at the same ceiling. Do not add a lane
-runtime limit. This is not implemented in C3b-1 fix round 3.
+`agent.toml.lane_log_max_bytes` defaults to 268435456 and accepts only an
+integer from 1048576 through 4294967296. The worker drains the merged stdout
+and stderr pipe and writes at most that many bytes to `lane.log`. On the first
+overflow it discards further output while requesting the existing worker stop
+path; after stop proof, finalization binds ERROR with
+`lane-log-limit-exceeded`. A pre-existing cancellation retains CANCELLED
+precedence. If stop cannot be proven, the existing stopping/charged behavior
+applies. `_last_lane_summary` reads at most the configured ceiling. There is no
+lane runtime limit.
 
-Source: P-fd-05 C3b-1 closure review C3 and round 3 controller ruling C3
-(2026-11-28).
+The lane can still create arbitrary files in its checkout; FD-077 tracks that
+separate aggregate-storage exposure.
+
+Source: P-fd-05 controller rulings FD-075 (2026-11-28).
+
+## FD-077 Lane-controlled checkout files have no aggregate storage ceiling
+
+**State:** OPEN. **Priority:** P2. **Filed:** 2026-11-28.
+
+A lane can create or grow arbitrary files in its job checkout. Existing archive
+and individual input ceilings do not cap total checkout growth during the
+lane, so a lane can consume host storage independently of `lane.log`. Define
+and implement a host-enforced aggregate checkout storage bound before relying
+on the executor for untrusted lanes. No lane runtime limit is implied.
+
+Source: P-fd-05 FD-075 implementation inspection (2026-11-28).
