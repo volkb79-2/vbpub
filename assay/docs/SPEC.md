@@ -430,16 +430,18 @@ with `ERROR/BAD_LANE_CONFIG` on any other lane. `src/assay/cli.py:2394`,
   activate (not Python, or argv does not invoke pytest).
   `src/assay/config.py:3811`, `src/assay/config.py:3834`,
   `src/assay/config.py:3841`, `src/assay/config.py:3853`
-- **LIV-050** An idle or session-finish hang requires a complete resource
-  trace and no new plugin event or stdout/stderr growth for the calibrated
-  idle bound with less than `W/30` tree CPU growth over the trailing `W`
-  (`W` = `liveness_cpu_window`, default 30 s). The session-finish case also
-  requires 30 s since `session_finish`. These windows advance only over clear
-  resource intervals; the separate CPU bounds are LIV-110 and LIV-120.
+- **LIV-050** An idle hang requires a complete resource trace, no new plugin
+  event or stdout/stderr growth for the calibrated idle bound, and less than
+  `W/30` tree CPU growth over the trailing `W` (`W` =
+  `liveness_cpu_window`, default 30 s). A session-finish hang instead requires
+  a complete trace, 30 eligible seconds since `session_finish`, 30 eligible
+  seconds since the last progress, and the same flat-CPU condition. Eligible
+  time advances only over clear resource intervals. The calibrated idle bound
+  is LIV-060; the separate CPU bounds are LIV-110 and LIV-120.
   `src/assay/config.py:681`, `src/assay/liveness.py:738`,
   `src/assay/liveness.py:2143`, `src/assay/liveness.py:2586`,
-  `src/assay/liveness.py:2747`, `src/assay/liveness.py:2748`,
-  `src/assay/liveness.py:2794`
+  `src/assay/liveness.py:2747`, `src/assay/liveness.py:2753`,
+  `src/assay/liveness.py:2802`, `src/assay/liveness.py:2805`
 - **LIV-060** Calibrated idle bounds: `max(3 x worst baseline event gap, F)`
   after the first event and `max(3 x leading gap, F)` before it (`F` =
   `liveness_idle_floor`, default 15 s); without baseline events,
