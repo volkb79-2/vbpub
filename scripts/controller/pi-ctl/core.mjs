@@ -1348,14 +1348,12 @@ export function createController(pi, injected = {}, overrides = {}) {
 		}
 		try { log("job_start", { run: params.run_name, launcher: params.launcher }); } catch { /* the child is already detached */ }
 		const result = await new Promise((resolve) => {
-			job.resolveStart = resolve;
 			const finish = (value) => {
 				if (!job.resolveStart) return;
-				const done = job.resolveStart;
 				job.resolveStart = null;
 				if (job.pollTimer !== null) timers.clearTimeout(job.pollTimer);
 				if (job.startTimeout !== null) timers.clearTimeout(job.startTimeout);
-				done(value);
+				resolve(value);
 			};
 			const poll = () => {
 				job.pollTimer = null;
