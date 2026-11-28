@@ -80,8 +80,6 @@ def _upload_directory(parent_fd: int, name: str, what: str) -> Iterator[int]:
     except (OSError, ValueError) as exc:
         raise AdmissionError(ExitCode.RUNNER_FAILURE, f"cannot collect upload objects: {what} {name!r} is unreadable: {exc}") from exc
     try:
-        if not stat.S_ISDIR(os.fstat(fd).st_mode):
-            raise AdmissionError(ExitCode.RUNNER_FAILURE, f"cannot collect upload objects: {what} {name!r} is not a real directory")
         yield fd
     finally:
         os.close(fd)
@@ -96,12 +94,6 @@ def _open_optional_upload_directory(parent_fd: int, name: str, what: str) -> int
         return None
     except (OSError, ValueError) as exc:
         raise AdmissionError(ExitCode.RUNNER_FAILURE, f"cannot collect upload objects: {what} {name!r} is unreadable: {exc}") from exc
-    try:
-        if not stat.S_ISDIR(os.fstat(fd).st_mode):
-            raise AdmissionError(ExitCode.RUNNER_FAILURE, f"cannot collect upload objects: {what} {name!r} is not a real directory")
-    except BaseException:
-        os.close(fd)
-        raise
     return fd
 
 
@@ -131,8 +123,6 @@ def _read_upload_record(directory_fd: int, name: str, what: str) -> bytes:
     except (OSError, ValueError) as exc:
         raise AdmissionError(ExitCode.RUNNER_FAILURE, f"cannot collect upload objects: {what} is unreadable: {exc}") from exc
     try:
-        if not stat.S_ISREG(os.fstat(fd).st_mode):
-            raise AdmissionError(ExitCode.RUNNER_FAILURE, f"cannot collect upload objects: {what} is not a regular file")
         raw = os.read(fd, _MAX_UPLOAD_RECORD_BYTES + 1)
     except OSError as exc:
         raise AdmissionError(ExitCode.RUNNER_FAILURE, f"cannot collect upload objects: {what} is unreadable: {exc}") from exc
@@ -720,12 +710,6 @@ class AgentVerbService:
             fd = os.open(self.paths.state_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         except OSError as exc:
             raise AdmissionError(ExitCode.RUNNER_FAILURE, f"cannot inspect the agent state directory: {exc}") from exc
-        try:
-            if not stat.S_ISDIR(os.fstat(fd).st_mode):
-                raise AdmissionError(ExitCode.REFUSAL, "agent state directory is not a real directory")
-        except BaseException:
-            os.close(fd)
-            raise
         return fd
 
     def _referenced_upload_objects_locked(self) -> dict[str, frozenset[str]]:
@@ -973,11 +957,6 @@ class AgentVerbService:
                 ) from exc
             try:
                 info = os.fstat(fd)
-                if not stat.S_ISREG(info.st_mode):
-                    raise AdmissionError(
-                        ExitCode.RUNNER_FAILURE,
-                        f"cannot collect upload objects: store object {group}/{name}/{digest} is not a regular file",
-                    )
                 found.append(_UploadObjectRef(group, name, digest, info.st_size, info.st_mtime))
             except OSError as exc:
                 raise AdmissionError(

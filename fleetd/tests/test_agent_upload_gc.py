@@ -280,6 +280,83 @@ def test_collection_record_readers_refuse_bad_names_types_and_sizes(tmp_path, mo
 
 
 @pytest.mark.parametrize(
+    ("entry", "reason"),
+    [
+        ("group", "not an upload group directory"),
+        ("name", "not a known upload name"),
+        ("digest", "not a content address"),
+        ("object_type", "unreadable"),
+    ],
+)
+def test_odd_store_entries_refuse_without_deleting(tmp_path, entry, reason):
+    service, identity, _checkout = _service(tmp_path)
+    old = _put(service, identity, "candidates", b"preserved")
+    uploads = service.paths.uploads_dir
+    if entry == "group":
+        (uploads / "bad group").mkdir()
+    else:
+        name_dir = uploads / identity.group / ("unknown" if entry == "name" else "candidates")
+        name_dir.mkdir(parents=True, exist_ok=True)
+        if entry == "digest":
+            (name_dir / "not-a-digest").write_bytes(b"unexpected")
+        elif entry == "object_type":
+            (name_dir / ("f" * 64)).mkdir()
+
+    with pytest.raises(AdmissionError, match=reason):
+        service._upload_store_objects()
+
+    assert Path(old["path"]).read_bytes() == b"preserved"
+
+
+def test_upload_directory_helpers_refuse_open_read_and_entry_limit_errors(tmp_path, monkeypatch):
+    service, identity, checkout = _service(tmp_path)
+    old = _put(service, identity, "candidates", b"preserved")
+    state_fd = service._state_directory_fd()
+    try:
+        (service.paths.state_dir / "linked").symlink_to(checkout, target_is_directory=True)
+        with pytest.raises(AdmissionError, match="is unreadable"):
+            agent_verbs._open_optional_upload_directory(state_fd, "linked", "test optional directory")
+        (service.paths.state_dir / "not-directory").write_text("file", encoding="utf-8")
+        with pytest.raises(AdmissionError, match="is unreadable"):
+            agent_verbs._upload_directory(state_fd, "not-directory", "test directory").__enter__()
+        monkeypatch.setattr(agent_verbs, "_MAX_UPLOAD_RECORDS", 0)
+        with pytest.raises(AdmissionError, match="entry limit"):
+            agent_verbs._upload_directory_entries(state_fd, "test listing")
+    finally:
+        os.close(state_fd)
+
+    record_fd = os.open(service.paths.jobs_dir, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        with pytest.raises(AdmissionError, match="is unreadable"):
+            agent_verbs._read_upload_record(record_fd, "missing", "test record")
+        (service.paths.jobs_dir / "read-me").write_text("data", encoding="utf-8")
+        with pytest.raises(AdmissionError, match="is unreadable"):
+            monkeypatch.setattr(agent_verbs.os, "read", lambda *_args: (_ for _ in ()).throw(OSError("read denied")))
+            agent_verbs._read_upload_record(record_fd, "read-me", "test record")
+    finally:
+        os.close(record_fd)
+
+    assert Path(old["path"]).read_bytes() == b"preserved"
+
+
+def test_state_directory_open_failure_refuses_collection_without_changes(tmp_path, monkeypatch):
+    service, identity, _checkout = _service(tmp_path)
+    old = _put(service, identity, "candidates", b"preserved")
+    real_open = os.open
+
+    def denied(path, flags, *args, **kwargs):
+        if Path(path) == service.paths.state_dir:
+            raise OSError("state directory denied")
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(agent_verbs.os, "open", denied)
+    with pytest.raises(AdmissionError, match="cannot inspect the agent state directory"):
+        service._state_directory_fd()
+
+    assert Path(old["path"]).read_bytes() == b"preserved"
+
+
+@pytest.mark.parametrize(
     ("change", "reason"),
     [
         (lambda r: r.update(stores={"collect": None, "seed": None, "unknown": True}), "unknown stores shape"),
