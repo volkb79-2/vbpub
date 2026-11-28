@@ -217,7 +217,9 @@ class TransactionDirectoryRootError(RuntimeError):
     """A transaction directory could not be created beneath its required root."""
 
 
-def _mkdir_below(root: Path, directory: Path, operation: str) -> None:
+def _mkdir_below(
+    root: Path, directory: Path, operation: str, *, exist_ok: bool = True,
+) -> None:
     """Create missing directory levels below an existing, real root only."""
     try:
         root_info = root.lstat()
@@ -231,10 +233,10 @@ def _mkdir_below(root: Path, directory: Path, operation: str) -> None:
         )
     relative = directory.relative_to(root)
     current = root
-    for part in relative.parts:
+    for index, part in enumerate(relative.parts):
         current /= part
         try:
-            current.mkdir(exist_ok=True)
+            current.mkdir(exist_ok=exist_ok if index == len(relative.parts) - 1 else True)
         except FileNotFoundError as exc:
             try:
                 current_root_info = root.lstat()
@@ -419,8 +421,9 @@ class _SyncLocalMainResult(NamedTuple):
 @contextmanager
 def release_lock(repo_root: Path) -> Iterator[None]:
     """Serialize local release transactions without relying on a mutable checkout."""
-    lock_path = _common_git_dir(repo_root) / "cmru-release.lock"
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    common_dir = _common_git_dir(repo_root)
+    _mkdir_below(common_dir, common_dir, "create release lock")
+    lock_path = common_dir / "cmru-release.lock"
     with lock_path.open("a+", encoding="utf-8") as handle:
         try:
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -1853,7 +1856,8 @@ def write_release_result(
     if not isinstance(current, dict):
         raise RuntimeError(f"invalid release result record {path}")
     current[project] = immutable_id
-    path.parent.mkdir(parents=True, exist_ok=True)
+    common_dir = path.parent.parent
+    _mkdir_below(common_dir, path.parent, "create release result directory")
     path.write_text(json.dumps(current, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
@@ -2956,7 +2960,9 @@ def retain_success_outputs(
         project_root = getattr(project, "project_root", None)
         if project_root is None:
             raise RuntimeError(f"{name}: cannot retain outputs without project_root")
-        project_root = Path(project_root).resolve()
+        project_root = Path(project_root)
+        _mkdir_below(project_root, project_root, "validate retained release project root")
+        project_root = project_root.resolve()
         relative = project_root.relative_to(workspace.repo_root.resolve())
         child_root = workspace.path / relative
         source_logs = child_root / "logs"
@@ -3043,17 +3049,24 @@ def retain_success_outputs(
         try:
             # All destination creation is deliberately before the first move.
             if retain_logs and source_logs.exists():
-                log_parent.mkdir(parents=True, exist_ok=True)
+                _mkdir_below(project_root, log_parent, "create retained release logs directory")
             if attempt_artifacts:
-                artifact_parent.mkdir(parents=True, exist_ok=True)
-                target_root.mkdir()
+                _mkdir_below(
+                    project_root, target_root, "create retained release artifact record",
+                    exist_ok=False,
+                )
                 created_target_root = True
             if attempt_evidence:
-                evidence_root.parent.mkdir(parents=True, exist_ok=True)
-                evidence_root.mkdir()
+                _mkdir_below(
+                    project_root, evidence_root, "create retained release evidence record",
+                    exist_ok=False,
+                )
                 created_evidence_root = True
                 for _raw_path, _source, target, _kind in evidence_sources:
-                    target.parent.mkdir(parents=True, exist_ok=True)
+                    _mkdir_below(
+                        evidence_root, target.parent,
+                        "create retained release evidence path",
+                    )
                     _assert_no_symlink_components(project_root, target, name)
 
             if retain_logs and source_logs.exists():

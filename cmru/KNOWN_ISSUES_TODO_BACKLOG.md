@@ -237,34 +237,32 @@ probe covered all 30 against those files and `tests/test_transaction_r2_survivor
 
 ### KI-225 — transaction directory creation can resurrect removed roots
 
-**Status:** OPEN (partial fix in `core-cmru-ki225`; 01735170cf8a remains open, along with the separately audited release-lock, result-record and release-output sites). One private root-checking helper now validates the common/project root with `lstat` and creates descendants one level at a time at the changed sites. The d25580fc963e, 70c7796b6763 and c2e3338fe004 windows have behavioral witnesses; the c2 witness records why staging fails before the destination mkdir once its containing project root is removed. Existing tests explicitly depend on recursive creation from a missing root at `release_lock`, the result writer, and release-output retention. Per the task instruction those sites and tests were left unchanged; no test was weakened or replaced.
+**Status:** OPEN only for `e2fcfc263ad8`; the four directory-recreation windows and all audited directory-creation sites are fixed in `core-cmru-ki225`. One private helper validates an existing real root with `lstat` and creates missing descendants one level at a time. The c2 witness records why staging fails before destination creation once its containing project root is removed. The 2026-11-28 controller ruling authorized only three existing-test changes: add the missing root mkdir to the result-record test and release-retention fixture without changing assertions, and replace the old release-lock assertion that the lock was created under missing parents with missing-root refusal and existing-common-directory behavior. No other existing test changed.
 
 Source windows and effects:
 
 - `d25580fc963e` — **fixed**: after `clear_release_tag_absence()` returns and before the attempt
   sidecar directory creation, removing the Git common directory raises
   `TransactionDirectoryRootError`; the common directory remains absent.
-- `70c7796b6763`: after the absence-record read and before the absence sidecar's
-  **fixed**: removing the Git common directory after the absence-record read raises
+- `70c7796b6763` — **fixed**: removing the Git common directory after the absence-record read raises
   `TransactionDirectoryRootError`; the common directory remains absent.
 - `c2e3338fe004` — **fixed**: build-retention destination parents use the checked project root.
   Removing the project root also removes the function's staging tree, so its next staged-log
   integrity read raises the existing `RuntimeError` before destination creation; the root
   remains absent.
-- `01735170cf8a` — **OPEN**: release-output retention still uses recursive parent creation.
-  The existing release-retention tests start with a missing project root and depend on that
-  behavior, so this site was stopped rather than changing or weakening those tests.
+- `01735170cf8a` — **fixed**: removal between retained log-parent and artifact-parent creation
+  raises `TransactionDirectoryRootError`; the project root remains absent.
 - `e2fcfc263ad8`: during release-output rollback with a newly created evidence parent, the
   loop that removes empty evidence parents changes from `current != project_root and
   current.exists()` to `or`. It can continue when `current` is the project root and attempt
   to remove that root if empty. This harmful root-removal behavior is not asserted; the
   candidate remains open here.
 
-`e2fcfc263ad8` remains open and untested. The audit also found preexisting creation behavior
-outside those four windows: `release_lock` creates its common-dir parent recursively, and the
-release-result writer creates its scope parent recursively. Their existing tests require this
-when the mocked common directory is missing, so those items were also stopped. No test asserts
-root recreation as desirable.
+`e2fcfc263ad8` remains open and untested. The release-lock, release-result, build-retention,
+release-retention, sidecar, worktree-parent and fd-relative staging directory creation sites
+are covered by the same root contract. The release-lock test now checks missing-root refusal
+and a lock directly under an existing common directory; the result-record and release-retention
+fixtures create their declared root before exercising successful writes.
 
 
 ### KI-226 — batch 3 transaction R2 equivalence proof
