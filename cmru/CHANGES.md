@@ -34,7 +34,8 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 <!-- cmru: pending release notes begin -->
 - tests(cmru): batch 2 review fixes withdraw the unsafe d255 scope-recovery witness
   and correct the 45f rollback witness: the caller still receives the original
-  artifact-publication error while a concurrent logs sentinel survives. The
+  artifact-publication error while a concurrent logs sentinel survives. The final
+  all-30 probe measured 24 KILLED, two equivalent, and four open. The
   `14a2f1be5a86` witness is
   `[trailing-dot]`; `[trailing-slash]` is caught by a later component check. No
   product code changed.
