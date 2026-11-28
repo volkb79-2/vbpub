@@ -1,6 +1,6 @@
 # Verdict v21: the single schema cut (delta list)
 
-P-assay-09 (B567 part 1), 2026-11-24. Binding: D-A3, D-A8, D-A12 (`.controller-state/PROGRAM-2026-11-24/PLAN-assay.md` §2). **Amended once, by A2 (§8, 2026-11-26); where §8 and §1-§7 disagree, §8 wins.** This list is **closed**: P-assay-17 implements exactly this, and no other package touches the verdict schema, `ReasonCode` or the closed vocabularies. Code references are to main `ec549bbc6`, or to the WP2 branch `assay-20261118_212147-wp2-locus-record` at `4f722514a` (marked "WP2"). Labels: M measured, C computed, E estimate.
+P-assay-09 (B567 part 1), 2026-11-24. Binding: D-A3, D-A8, D-A12 (`.controller-state/PROGRAM-2026-11-24/PLAN-assay.md` §2). **Amended once, by A2 (§8, 2026-11-26); where §8 and §1-§7 disagree, §8 wins.** This list is **closed**: P-assay-17 implements exactly this, and no other package touches the verdict schema, `ReasonCode` or the closed vocabularies. Those are the verdict's vocabularies; the diagnostic progress vocabulary (`mutation.PROGRESS_EVENTS`) is outside this freeze (main controller, 2026-11-28). Code references are to main `ec549bbc6`, or to the WP2 branch `assay-20261118_212147-wp2-locus-record` at `4f722514a` (marked "WP2"). Labels: M measured, C computed, E estimate.
 
 ## 1. Every v21 change
 
