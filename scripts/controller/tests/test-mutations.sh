@@ -34,14 +34,14 @@ if ! CONTROLLER_TEST_PARALLEL_OD_STARTS=0 bash "$SCRIPT_DIR/test-wrappers.sh" > 
   exit 1
 fi
 echo 'PASS unmutated wrapper tests before wrapper mutation checks'
-for baseline in test-job-check.sh test-hardening-tools.sh test-gate-slots.sh test-pi-impl.sh test-pi-pidns.sh test-pi-review.sh test-pi-ctl.sh; do
+for baseline in test-job-check.sh test-hardening-tools.sh test-gate-slots.sh test-pi-impl.sh test-pi-pidns.sh test-pi-review.sh test-pi-ctl.sh test-pi-ctl-send.sh; do
   if ! bash "$SCRIPT_DIR/$baseline" > "$ROOT/${baseline%.sh}-unmutated.log" 2>&1; then
     cat "$ROOT/${baseline%.sh}-unmutated.log" >&2
     echo "FAIL: unmutated $baseline must pass before its mutants are judged" >&2
     exit 1
   fi
 done
-echo 'PASS unmutated job-check, hardening, gate-slot, pi-impl, pi-pidns, pi-review and pi-ctl tests before their mutation checks'
+echo 'PASS unmutated job-check, hardening, gate-slot, pi-impl, pi-pidns, pi-review, pi-ctl and pi-ctl-send tests before their mutation checks'
 export CONTROLLER_TEST_PARALLEL_OD_STARTS=0
 
 expect_killed mutation-runner-missing-result \
@@ -653,6 +653,11 @@ for pi_ctl_mutant in claim-before-inject name-validation agent-end-only wrapper-
     env NODE_OPTIONS=--max-old-space-size=256 \
       PI_CTL_CORE_MODULE="$ROOT/mutants/scripts/controller/pi-ctl-$pi_ctl_mutant/core.mjs" \
       bash "$SCRIPT_DIR/test-pi-ctl.sh"
+done
+for pi_ctl_send_mutant in pi-ctl-send-symlink-ignored pi-ctl-send-not-atomic pi-ctl-send-size-ignored pi-ctl-send-root-check-dropped; do
+  expect_killed "pi-ctl-send-$pi_ctl_send_mutant" \
+    env PI_CTL_SEND_SCRIPT="$ROOT/mutants/scripts/controller/$pi_ctl_send_mutant.sh" \
+      bash "$SCRIPT_DIR/test-pi-ctl-send.sh"
 done
 for pi_ctl_bridge_mutant in bridge-prints-repeatedly bridge-ack-report-not-persisted bridge-ack-timeout-ignored; do
   expect_assertion_killed_with_address_space_limit "pi-ctl-$pi_ctl_bridge_mutant" 2147483648 \

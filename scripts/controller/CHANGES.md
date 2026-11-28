@@ -30,6 +30,12 @@ no separate version number, so entries are grouped by the work that landed.
   monitor environment drops the same names instead of a fixed pair, so a new
   account name cannot silently stay exported. Pi itself keeps its key; reading
   `$HOME/.env.ai` from a shell stays possible and is documented as the limit.
+- `scripts/controller/pi-ctl-send.sh <role> <text|->` (F4) queues one peer
+  message into a role's inbox from any local shell: the extension's envelope
+  format, atomic publish by rename with temporaries that never end in `.msg`,
+  0700/0600 modes, one printed message id, and a refusal with a reason for an
+  invalid role/sender, an empty or oversized body, or a state root that is
+  relative, inside the checkout or behind a symlink. Sender defaults to `main`.
 
 ### Pi sub-controller harness (P-plat-PICTL)
 - Add a dependency-free JavaScript core and explicit pi extension for

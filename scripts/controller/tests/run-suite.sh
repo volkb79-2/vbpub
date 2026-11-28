@@ -25,6 +25,7 @@ files=(
   "$SCRIPT_DIR/../pi-impl.sh"
   "$SCRIPT_DIR/../pi-ctl-launch.sh"
   "$SCRIPT_DIR/../pi-ctl-pane.sh"
+  "$SCRIPT_DIR/../pi-ctl-send.sh"
   "$SCRIPT_DIR/../pi-pidns-bash-worker.sh"
   "$SCRIPT_DIR/../codex-review.sh"
   "$SCRIPT_DIR/../pi-review.sh"
@@ -58,6 +59,7 @@ files=(
   "$SCRIPT_DIR/test-wrappers.sh"
   "$SCRIPT_DIR/test-pi-impl.sh"
   "$SCRIPT_DIR/test-pi-ctl.sh"
+  "$SCRIPT_DIR/test-pi-ctl-send.sh"
   "$SCRIPT_DIR/test-pi-pidns.sh"
   "$SCRIPT_DIR/test-pi-review.sh"
   "$SCRIPT_DIR/test-hardening-tools.sh"
@@ -98,6 +100,7 @@ bash "$SCRIPT_DIR/test-job-check.sh" || exit $?
 bash "$SCRIPT_DIR/test-wrappers.sh" || exit $?
 bash "$SCRIPT_DIR/test-pi-impl.sh" || exit $?
 bash "$SCRIPT_DIR/test-pi-ctl.sh" || exit $?
+bash "$SCRIPT_DIR/test-pi-ctl-send.sh" || exit $?
 bash "$SCRIPT_DIR/test-pi-pidns.sh" || exit $?
 bash "$SCRIPT_DIR/test-pi-review.sh" || exit $?
 bash "$SCRIPT_DIR/test-hardening-tools.sh" || exit $?

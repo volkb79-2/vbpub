@@ -842,6 +842,26 @@ node scripts/controller/pi-ctl/bridge.mjs watch
 node scripts/controller/pi-ctl/bridge.mjs ack "$message_id"
 ```
 
+Any local shell can queue a peer message without pi's `send_message` tool: the
+script writes the same envelope the extension writes, atomically, and prints the
+message id the receiving session will confirm:
+
+```bash
+# One line of text, sender `main`:
+scripts/controller/pi-ctl-send.sh hostobs 'please check the 03:00 run'
+# A body from stdin, from a named sender:
+printf 'two findings\n' | scripts/controller/pi-ctl-send.sh --from platform hostobs -
+```
+
+It refuses an invalid role or sender name, an empty body, a body over
+`PI_CTL_MAX_SEND_BYTES` (same default and bounds as the extension), a state root
+that is relative, inside the checkout, or behind a symlink, for the same reasons
+the extension refuses those: the receiver scans `*.msg` entries, so a malformed
+or misplaced file would only be quarantined later, away from the caller. The
+sender defaults to `main` (`PI_CTL_SEND_FROM` or `--from` changes it), and the
+temporary file never ends in `.msg`, so an interrupted write leaves nothing a
+session could claim.
+
 After recording a message id in main's own state, set `message_id` from the
 header and run the `ack` command. A successful print is the delivery: the
 watching process records which claim it handed to main and never prints it

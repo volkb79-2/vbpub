@@ -1142,6 +1142,19 @@ mutant("scripts/controller/pi-pidns-bash", "pi-pidns-signal-dispositions-dropped
        'signal.signal(signal.SIGPIPE, signal.SIG_DFL)\n'
        'signal.signal(signal.SIGXFSZ, signal.SIG_DFL)',
        '')
+# F4 (P-plat-PICTL-FIX): pi-ctl-send.sh writes one extension-shaped envelope.
+mutant("scripts/controller/pi-ctl-send.sh", "pi-ctl-send-symlink-ignored.sh",
+       '    [[ ! -L $current ]] || refuse "symlink in the state path: $current"',
+       '    : # symlinked state path accepted')
+mutant("scripts/controller/pi-ctl-send.sh", "pi-ctl-send-not-atomic.sh",
+       'mv -- "$message_temp" "$target" || refuse "cannot publish the message to $target"',
+       'cp -- "$message_temp" "$target" || refuse "cannot publish the message to $target"')
+mutant("scripts/controller/pi-ctl-send.sh", "pi-ctl-send-size-ignored.sh",
+       '((body_bytes <= max_send_bytes)) || refuse "message exceeds $max_send_bytes bytes"',
+       ': # oversized bodies accepted')
+mutant("scripts/controller/pi-ctl-send.sh", "pi-ctl-send-root-check-dropped.sh",
+       '    "$repository" | "$repository"/*) refuse "PI_CTL_ROOT must be outside the repository: $root" ;;',
+       '    "$repository" | "$repository"/*) : ;;')
 mutant("scripts/controller/codex-impl.sh", "codex-force-retire-early.sh",
        'controller_run_claim "$name" || exit 2\nretire_existing=0',
        'controller_run_claim "$name" || exit 2\n'
