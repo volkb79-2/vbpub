@@ -511,7 +511,7 @@ class AgentVerbService:
             f"cannot safely recover upload artifact {filename!r}: {reason}; check the named files in the agent incoming directory and repair or remove them only after confirming no upload writer is active",
         )
 
-    def _recover_upload_reservations_locked(self) -> tuple[int, int, set[str]]:
+    def _recover_upload_reservations_locked(self, *, strict: bool = False) -> tuple[int, int, set[str]]:
         expected_total = 0
         reservation_total = 0
         live_partials: set[str] = set()
@@ -542,7 +542,9 @@ class AgentVerbService:
                 kind = "partial"
                 token = name[len("upload-part-"):]
             else:
-                raise self._upload_recovery_refusal(name, "unknown incoming upload artifact; inspect the incoming directory")
+                if strict:
+                    raise self._upload_recovery_refusal(name, "unknown incoming upload artifact; inspect the incoming directory")
+                continue
             if not token or re.fullmatch(r"[A-Za-z0-9_-]+", token) is None:
                 raise self._upload_recovery_refusal(name, "filename token is malformed; check the incoming directory for unexpected names")
             group = groups.setdefault(token, {})
@@ -1006,7 +1008,9 @@ class AgentVerbService:
         if self.paths.incoming_dir.is_symlink() or not self.paths.incoming_dir.is_dir():
             raise AdmissionError(ExitCode.REFUSAL, "agent incoming directory is not a real directory")
         with self._upload_store_lock():
-            in_flight, remaining, _live = self._recover_upload_reservations_locked()
+            in_flight, remaining, _live = self._recover_upload_reservations_locked(
+                strict=self.policy.upload_collection_enabled,
+            )
             stored = self._stored_upload_bytes()
             existing = False
             if group is not None and name is not None and digest is not None:
@@ -1016,17 +1020,17 @@ class AgentVerbService:
                 existing = existing_path.exists()
                 if existing and self._hash_file(existing_path) != (expected, digest):
                     raise AdmissionError(ExitCode.REFUSAL, "existing host-created upload does not match its content address")
-            required = stored + in_flight + (0 if existing else expected) - store_limit
+            required = stored + in_flight + expected - store_limit
             available = self._upload_free_bytes()
             if available - remaining - expected < floor_bytes:
                 raise AdmissionError(
                     ExitCode.REFUSAL,
                     f"put would breach configured disk floor {floor_bytes}",
                 )
-            if required > 0:
+            if required > 0 and self.policy.upload_collection_enabled and not existing:
                 self._collect_upload_objects_locked(required, store_limit)
                 stored = self._stored_upload_bytes()
-            if stored + in_flight + (0 if existing else expected) > store_limit:
+            if stored + in_flight + expected > store_limit:
                 raise AdmissionError(
                     ExitCode.REFUSAL,
                     f"put would exceed policy.max_upload_store_bytes {store_limit}",

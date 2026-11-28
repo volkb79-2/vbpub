@@ -370,6 +370,21 @@ def test_policy_file_read_utf8_and_toml_errors_are_reported(tmp_path, monkeypatc
         agent_policy.load_agent_policy(path)
 
 
+def test_upload_collection_policy_is_optional_and_strict_boolean(tmp_path):
+    _policy(tmp_path)
+    path = tmp_path / "agent.toml"
+    original = path.read_text(encoding="utf-8")
+    assert load_agent_policy(path).upload_collection_enabled is False
+
+    path.write_text(original.replace("max_connections = 4", "max_connections = 4\nupload_collection_enabled = false"), encoding="utf-8")
+    assert load_agent_policy(path).upload_collection_enabled is False
+    path.write_text(original.replace("max_connections = 4", "max_connections = 4\nupload_collection_enabled = true"), encoding="utf-8")
+    assert load_agent_policy(path).upload_collection_enabled is True
+    path.write_text(original.replace("max_connections = 4", "max_connections = 4\nupload_collection_enabled = 1"), encoding="utf-8")
+    with pytest.raises(ContractError, match="upload_collection_enabled: expected boolean"):
+        load_agent_policy(path)
+
+
 @pytest.mark.parametrize(
     ("replace", "message"),
     [
