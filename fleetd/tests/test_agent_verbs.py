@@ -682,6 +682,24 @@ def test_put_creates_host_owned_content_addressed_candidate_file(tmp_path):
     assert service.paths.candidate_paths(identity.group) == frozenset({str(path.resolve())})
 
 
+def test_unlink_upload_object_closes_each_directory_descriptor_once(tmp_path, monkeypatch):
+    service, identity, _checkout = _service(tmp_path)
+    _put(service, identity, "candidates", b"one")
+    item = service._upload_store_objects()[0]
+    real_close = os.close
+    closed = []
+
+    def tracked_close(fd):
+        os.fstat(fd)
+        closed.append(fd)
+        real_close(fd)
+
+    monkeypatch.setattr(agent_verbs.os, "close", tracked_close)
+    service._unlink_upload_object(item)
+
+    assert closed
+
+
 def test_put_store_limit_allows_equality_refuses_plus_one_and_charges_reuploads(tmp_path):
     service, identity, _checkout = _service(tmp_path)
     _upload_policy(service, store_bytes=5, floors={"checkout": 0})

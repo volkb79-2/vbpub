@@ -939,17 +939,13 @@ class AgentVerbService:
         """Remove one committed object through its parent descriptor, never a symlink."""
 
         state_fd = -1
-        group_fd = -1
-        name_fd = -1
         try:
             state_fd = self._state_directory_fd()
-            with _upload_directory(state_fd, "uploads", "agent upload store") as opened_group:
-                group_fd = opened_group
-                with _upload_directory(group_fd, item.group, "agent upload group") as opened_name:
-                    name_fd = opened_name
-                    with _upload_directory(name_fd, item.name, "agent upload name") as opened_object:
-                        os.unlink(item.digest, dir_fd=opened_object)
-                        os.fsync(opened_object)
+            with _upload_directory(state_fd, "uploads", "agent upload store") as uploads_fd:
+                with _upload_directory(uploads_fd, item.group, "agent upload group") as group_fd:
+                    with _upload_directory(group_fd, item.name, "agent upload name") as object_fd:
+                        os.unlink(item.digest, dir_fd=object_fd)
+                        os.fsync(object_fd)
         except AdmissionError as exc:
             raise AdmissionError(
                 exc.exit_code,
@@ -962,9 +958,8 @@ class AgentVerbService:
                 f"{item.group}/{item.name}/{item.digest}: {exc}",
             ) from exc
         finally:
-            for fd in (name_fd, group_fd, state_fd):
-                if fd >= 0:
-                    os.close(fd)
+            if state_fd >= 0:
+                os.close(state_fd)
         self._collection_hook(item)
 
     def _collection_hook(self, item: _UploadObjectRef) -> None:
