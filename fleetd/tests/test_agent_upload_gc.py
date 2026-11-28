@@ -359,7 +359,68 @@ def test_submit_crash_window_job_shapes_do_not_wedge_collection(tmp_path, crash_
     assert Path(result["path"]).read_bytes() == b"new"
 
 
-@pytest.mark.parametrize("shape", ["temp_symlink", "temp_public", "linked_temp_mismatch"])
+def test_executed_terminal_job_entries_do_not_block_collection_or_drop_references(tmp_path, monkeypatch):
+    service, identity, _checkout = _service(tmp_path)
+    _enable_collection(service)
+    _upload_policy(service, store_bytes=100, floors={"checkout": 0})
+    bundle = _put(service, identity, "in.bundle", b"bundle")
+    seed = _put(service, identity, "assay-seed-1.tgz", b"archive")
+    sidecar = _put(service, identity, "assay-seed-1.tgz.sha256", b"checksum")
+    candidate = _put(service, identity, "candidates", b"candidate")
+    garbage = _put(service, identity, "candidates", b"garbage")
+
+    request = _submit()
+    request["stores"]["seed"] = {
+        "path": "assay-store", "sha256": seed["sha256"], "bytes": seed["bytes"],
+    }
+    request["extra_argv"] = [
+        "--only-candidates", str(service.paths.candidate_root(identity.group) / candidate["sha256"]),
+    ]
+    job_dir = service.paths.jobs_dir / request["job_id"]
+    job_dir.mkdir()
+    (job_dir / "submit.lock").write_bytes(b"")
+    (job_dir / "submit.lock").chmod(0o600)
+    request_path = job_dir / "request.json"
+    request_path.write_text(json.dumps({
+        "schema": "fleet-host-job-request/1", "group": identity.group,
+        "digest": "e" * 64, "request": request,
+    }), encoding="utf-8")
+    request_path.chmod(0o600)
+    (job_dir / "request-replay-temp").write_bytes(b"unlinked replay temporary")
+    (job_dir / "request-replay-temp").chmod(0o600)
+    for entry in (
+        "state.json", "state.lock", "start.lock", "job.log", "lane.log", "checkout.json",
+        "result.json", "result-pending.json", "terminal-pending.json", "artifacts.tgz",
+        "artifacts.tgz.sha256", "assay-store.tgz", "assay-store.tgz.sha256",
+        ".artifacts.tgz.part", ".assay-store.tgz.part", ".assay-store.tgz.sha256.part",
+    ):
+        (job_dir / entry).write_bytes(b"executor output")
+    (job_dir / "checkout").mkdir()
+    (job_dir / "checkout" / "in.bundle").write_bytes(b"checked out")
+
+    live_dir = service.paths.jobs_dir / "live-job"
+    live_dir.mkdir()
+    (live_dir / "request.json").write_text(json.dumps({
+        "schema": "fleet-host-job-request/1", "group": identity.group,
+        "digest": "f" * 64, "request": _submit() | {"job_id": "live-job"},
+    }), encoding="utf-8")
+    monkeypatch.setattr(service.admission.book, "read_record", lambda job_id: {
+        "schema": "fleet-admission-terminal/1" if job_id == request["job_id"] else "fleet-admission/1",
+        "job_id": job_id, "group": identity.group,
+    })
+    _upload_policy(service, store_bytes=35, floors={"checkout": 0})
+
+    fresh = _put(service, identity, "candidates", b"fresh")
+
+    assert not Path(garbage["path"]).exists()
+    assert Path(seed["path"]).read_bytes() == b"archive"
+    assert Path(sidecar["path"]).read_bytes() == b"checksum"
+    assert Path(candidate["path"]).read_bytes() == b"candidate"
+    assert Path(bundle["path"]).read_bytes() == b"bundle"
+    assert Path(fresh["path"]).read_bytes() == b"fresh"
+
+
+@pytest.mark.parametrize("shape", ["temp_symlink", "temp_public"])
 def test_malformed_submit_temporary_shapes_refuse_collection(tmp_path, shape):
     service, identity, _checkout = _service(tmp_path)
     _enable_collection(service)
@@ -374,14 +435,7 @@ def test_malformed_submit_temporary_shapes_refuse_collection(tmp_path, shape):
     else:
         temp.write_bytes(b"partial")
         temp.chmod(0o644 if shape == "temp_public" else 0o600)
-    if shape == "linked_temp_mismatch":
-        (job_dir / "request.json").write_text(json.dumps({
-            "schema": "fleet-host-job-request/1", "group": identity.group,
-            "digest": "e" * 64, "request": _submit(),
-        }), encoding="utf-8")
-        (job_dir / "request.json").chmod(0o600)
-
-    with pytest.raises(AdmissionError, match="submit write entry|not linked to request.json"):
+    with pytest.raises(AdmissionError, match="submit write entry"):
         service._referenced_upload_objects_locked()
     assert Path(old["path"]).read_bytes() == b"preserve"
 

@@ -758,24 +758,6 @@ class AgentVerbService:
                                     f"cannot collect upload objects: job record directory {name!r} has no request.json but has an admission record",
                                 )
                             continue
-                        allowed = {"request.json", "submit.lock"} | {
-                            entry for entry in entries if entry.startswith("request-") and len(entry) > len("request-")
-                        }
-                        if not entries <= allowed:
-                            raise AdmissionError(
-                                ExitCode.RUNNER_FAILURE,
-                                f"cannot collect upload objects: job record directory {name!r} has unexpected entries",
-                            )
-                        if "submit.lock" in entries:
-                            self._validate_submit_write_entry(job_fd, "submit.lock", name)
-                        request_info = os.stat("request.json", dir_fd=job_fd, follow_symlinks=False)
-                        for entry in entries - {"request.json", "submit.lock"}:
-                            temp_info = self._validate_submit_write_entry(job_fd, entry, name)
-                            if (temp_info.st_dev, temp_info.st_ino) != (request_info.st_dev, request_info.st_ino):
-                                raise AdmissionError(
-                                    ExitCode.RUNNER_FAILURE,
-                                    f"cannot collect upload objects: request temporary {entry!r} for {name!r} is not linked to request.json",
-                                )
                         group, digests = self._job_record_references(job_fd, name)
                         try:
                             book_record = self.admission.book.read_record(name)
