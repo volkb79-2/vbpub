@@ -3841,6 +3841,24 @@ def test_executor_start_refuses_disabled_policy_before_state_or_scope_changes(tm
     assert scope.calls == []
 
 
+def test_executor_start_refuses_enabled_policy_without_runner_user_before_state_write(tmp_path):
+    from dataclasses import replace
+
+    executor, policy, state_dir = _executor(tmp_path)
+    executor.policy = replace(policy, runner_user=None)
+    request = _submit()
+    request["sha"] = SHA
+    job_dir = _durable_job(state_dir, request)
+    handle = _Handle()
+
+    with pytest.raises(AdmissionError, match="runner_user is required"):
+        executor.start(request, handle)
+
+    assert handle.live and not handle.handed_off
+    assert not (job_dir / "state.json").exists()
+    assert executor.scope_launcher.calls == []
+
+
 def _ready_worker(tmp_path, runner=None, *, request=None, docker=None, waiter=lambda _seconds: None):
     policy, _checkout = _policy(tmp_path)
     request = dict(_submit() if request is None else request)
