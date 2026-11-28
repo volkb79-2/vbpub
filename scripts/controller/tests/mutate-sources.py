@@ -2036,8 +2036,8 @@ pi_ctl_mutant(
 )
 pi_ctl_mutant(
     "monitor-notice-captured-as-goal",
-    '\t\tif (event?.messageType === "custom" && event.message?.customType === "pi-ctl-monitor") return;',
-    '\t\t// mutant: monitor controller notice consumes the original-goal slot',
+    '\t\tif (event?.messageType === "custom" && ["pi-ctl-monitor", "pi-ctl-job"].includes(event.message?.customType)) return;',
+    '\t\t// mutant: monitor/job controller notice consumes the original-goal slot',
 )
 pi_ctl_mutant(
     "prime-repeats-on-resume",
