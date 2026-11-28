@@ -67,6 +67,11 @@ check_stdin_body() {
   local file=$STATE/inbox/hostobs/$id-from-main.msg
   [[ -f $file ]] || fail 'the stdin body did not produce an envelope'
   [[ $(tail -n +6 -- "$file") == $'line one\nline two' ]] || fail 'the stdin body was not preserved verbatim'
+  local leftover
+  for leftover in "$STATE"/inbox/hostobs/.*; do
+    [[ -e $leftover ]] || continue
+    fail "a temporary file survived after stdin send: $leftover"
+  done
 }
 
 check_sender_override() {
