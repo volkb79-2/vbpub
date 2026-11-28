@@ -1242,6 +1242,21 @@ fi
 # namespace-local $$ value. CONTROLLER_SELF_STAT is the test seam for that fact.
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/../lib.sh"
+token_home=$ROOT/token-home
+mkdir -p "$token_home"
+printf 'CONTROLLER_RUN_TOKEN=config-token\n' > "$token_home/controller.local.env"
+HOME=$ROOT/home CONTROLLER_HOME=$token_home CONTROLLER_RUN_TOKEN=caller-token
+export HOME CONTROLLER_HOME CONTROLLER_RUN_TOKEN
+controller_init || fail 'controller init failed with a configured launch token'
+[[ $CONTROLLER_RUN_TOKEN == caller-token ]] || fail 'controller init replaced the caller launch token'
+case $(declare -p CONTROLLER_RUN_TOKEN) in
+  'declare -x CONTROLLER_RUN_TOKEN='*) ;;
+  *) fail 'controller init removed the launch token export attribute' ;;
+esac
+unset CONTROLLER_RUN_TOKEN
+controller_init || fail 'controller init failed with no caller launch token'
+[[ ! ${CONTROLLER_RUN_TOKEN+x} ]] || fail 'controller init introduced a configured launch token'
+
 printf '424242 (fake (pi) shell) S' > "$ROOT/self-stat"
 for ((owner_field = 0; owner_field < 18; owner_field++)); do printf ' 0' >> "$ROOT/self-stat"; done
 printf ' 777\n' >> "$ROOT/self-stat"

@@ -82,6 +82,7 @@ together.
 | CTL-81 | A fresh pi controller session saves the previous session's monitor-restart notice as its original goal | Medium | FIXED 2026-11-28 (P-plat-CTL80) |
 | CTL-82 | An IDE selection chip in an empty Claude Code prompt row is read as typed input | Medium | OPEN 2026-11-28 (main smoke evidence) |
 | CTL-85 | `controller.local.env` and launcher-specific route/environment precedence | Known limit | BY DESIGN 2026-11-28 (main decision) |
+| CTL-86 | `start_job` prints `job-check.sh` with the requested Codex route, not the effective configured route | Medium | OPEN |
 
 ---
 
@@ -2133,3 +2134,16 @@ and sets `PI_RUN_MODE=review` and `PI_EXTRA_ARGS=''`, which win for that child.
 The launcher documentation records these distinctions.
 
 **Where:** `scripts/controller/lib.sh` (`controller_init`) and launcher docs.
+
+## CTL-86 — `start_job` prints a `job-check.sh` command with the requested Codex route
+
+**Status:** OPEN; severity: medium.
+
+`start_job` builds its printed `job-check.sh` command from the requested route
+(`params.route`, defaulting to `luna`). `codex-impl.sh` then sources
+`controller.local.env` through `controller_init`, where a configured
+`CODEX_ROUTE` can replace that route. The printed command can therefore select
+the wrong route-specific completion expectation for the launched run.
+
+**Where:** `scripts/controller/pi-ctl/core.mjs` (`start_job` response) and
+`scripts/controller/codex-impl.sh` (`controller_init` route precedence).

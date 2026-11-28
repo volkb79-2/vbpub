@@ -13,6 +13,8 @@ controller_init() {
   : "${HOME:?HOME must be set}"
   CONTROLLER_HOME=${CONTROLLER_HOME:-"$HOME/controller"}
   local requested_runs_dir=${CONTROLLER_RUNS_DIR-}
+  local requested_run_token=${CONTROLLER_RUN_TOKEN-} requested_run_token_set=0
+  [[ -v CONTROLLER_RUN_TOKEN ]] && requested_run_token_set=1
   if [[ -f $CONTROLLER_HOME/controller.local.env ]]; then
     set -a
     # shellcheck disable=SC1090,SC1091
@@ -20,6 +22,12 @@ controller_init() {
     set +a
   fi
   [[ -z $requested_runs_dir ]] || CONTROLLER_RUNS_DIR=$requested_runs_dir
+  if (( requested_run_token_set == 1 )); then
+    CONTROLLER_RUN_TOKEN=$requested_run_token
+    export CONTROLLER_RUN_TOKEN
+  else
+    unset CONTROLLER_RUN_TOKEN
+  fi
   CONTROLLER_HOME=${CONTROLLER_HOME:-"$HOME/controller"}
   # The configured spellings (before symlinks are resolved) are kept for ctl-doctor.sh: the resolved paths below no
   # longer show that a directory lives behind a symlink.
