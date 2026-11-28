@@ -16310,6 +16310,16 @@ Second half (deliberate, hence documented rather than taken here): `tools/releas
 
 **Close when.** A registered-lane test covers a non-PASS control with a null reason code (for example a leaked process tree after `_judge_unit` returns PASS), and the note states the same rule.
 
+## B614 — The canary deadline-read witness compares an unresolved caller path
+
+**Status: OPEN (filed 2026-11-28 from the delta review of the B612 test witness at `a0e848141`); severity: medium (test portability, no source defect).**
+
+**Symptom.** `test_canary_deadline_diagnostic_reads_once_per_target_only_with_progress` (`tests/core/test_canary_multi_target.py`) compares the calling frame's raw `co_filename` with `Path(canary.__file__).resolve()`. In a checkout imported through a symlinked path the two can differ although the same file is meant. The progress half then fails with no defect in the code; the no-progress half matches nothing, so only the positive assertion keeps the test from passing vacuously. Established by reading, not reproduced.
+
+**Wanted.** Resolve the recorded caller filename (`Path(filename).resolve()`) before both comparisons.
+
+**Close when.** Both comparisons use resolved paths and the test passes in a registered lane.
+
 ## B595 — native R2 tail retries can start with any positive lane time when the candidate budget is disabled
 
 **Status: OPEN (filed 2026-11-27 from vbpub-core 2026-11-26 follow-up 3); severity: low (campaign time use).**
