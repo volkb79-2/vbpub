@@ -45,7 +45,7 @@ _SEED_CHECKSUM_NAME_RE = re.compile(r"assay-seed-[0-9]+\.tgz\.sha256\Z")
 _UPLOAD_OBJECT_NAMES = frozenset({"in.bundle", "candidates", "dev.tracked.tar", "dev.untracked.tar"})
 _MAX_UPLOAD_RECORDS = 65536
 _MAX_UPLOAD_RECORD_BYTES = 64 * 1024
-_MAX_SEED_CHECKSUM_BYTES = 512_SEMVER_RE = re.compile(
+_SEMVER_RE = re.compile(
     r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"
     r"(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?\Z"
 )
