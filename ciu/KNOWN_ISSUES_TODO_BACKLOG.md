@@ -7078,14 +7078,17 @@ Prepared/committed state ordering and pending removal state make both crash
 halves recoverable by exact hashes, or refuse ambiguity without deleting a
 foreign entry. A shared root-protected lock serializes both enrollment modes
 and removal, and restricted replacement verifies file identity and contents
-before atomic commit. No symlink planted by the target user is followed.
+before atomic commit. CIU follows no symlink planted at `.ssh` or
+`authorized_keys`; the parent directories of a nonstandard home path are
+trusted (SPEC).
 
 The one-blob/one-form rule compares decoded key bytes in both enrollment
 orders. Ordinary enrollment retains its previous output, messages, exit
 codes and append behavior, including past unparseable lines; its only added
-key refusal is a matching blob in a recorded CIU-restricted entry. Add/remove
-restores original file bytes, including no-final-newline files. `get.py` is
-kept equal to the installer source render.
+key refusal is a matching blob on a line with the visible restricted marker or
+fixed command shape, recorded or not. Add/remove restores original file bytes,
+including no-final-newline files. `get.py` is kept equal to the installer
+source render.
 
 The host agent's request grammar is tested in
 `fleetd/tests/test_agent_protocol.py::test_validate_request_covers_request_shape_argv_candidate_and_dev_errors`
@@ -7586,3 +7589,23 @@ separate ownership or coordination design.
 the final-check-to-replace race and its possible lost update, name the
 root-owned `/run/lock` host requirement, and avoid promising that no concurrent
 change can be lost.
+
+## CIU-238 — retry after a crashed first restricted add skips the unrecorded-line refusal
+
+**Status:** OPEN (filed 2026-11-28). Related: CIU-218. Severity: Medium.
+
+**Observed.** A first restricted add saves `prepared` state and crashes before
+replacing `authorized_keys`. An outside writer then adds an unrelated
+unrecorded CIU marker or fixed restricted-command line. On retry,
+`installer/enroll.py` clears the state (no old record, no new lines) and returns
+before either unrecorded-line refusal; the install path then checks only
+same-blob collisions and appends a managed line beside the unrecorded one. No
+foreign line is deleted, but the refusal SPEC promises is skipped. Found by
+source trace in the CIU-218 closure review; no test reproduces it yet.
+
+**Wanted.** Run the unrecorded-marker and unrecorded-shape scans before clearing
+this prepared state, allowing hashes recorded for other users and names.
+
+**Close when.** A deterministic first-add crash-before-replace test with an
+unrelated orphan marker line, and one with an orphan shape line, show a refusal
+that names the line and leaves the file unchanged.

@@ -32,7 +32,9 @@ the technical detail below it.
   forced-command execution and group resolution, not an agent operation. Root-owned state records exact written
   lines for safe rotation/removal; the installer serializes updates and
   preserves unrelated bytes. Without the flag, ordinary enrollment keeps its
-  prior behavior. Step 1 prints a target-side command that removes only a
+  prior behavior, except that it takes the shared lock and refuses a key that is
+  already on a line with the visible restricted marker or fixed command shape,
+  recorded or not. Step 1 prints a target-side command that removes only a
   state-recorded restricted entry.
 
 ### Adoption / Migration Notes

@@ -190,4 +190,5 @@ infer ownership from a marker or shape. The decoded blob check prevents one
 key from appearing in both forms in either enrollment order, including
 equivalent base64 spellings. Ordinary mode retains its prior diagnostics,
 output, exit codes and append behavior, including past unparseable lines; its
-only new key refusal is a blob present in a recorded restricted entry.
+only new key refusal is a blob present on a line with the visible restricted
+marker or fixed command shape, recorded or not.
