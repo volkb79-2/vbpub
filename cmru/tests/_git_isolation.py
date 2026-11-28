@@ -69,6 +69,7 @@ def isolate_git(monkeypatch, tmp_path: Path) -> Path:
         ("init.defaultBranch", "main"), ("maintenance.auto", "false"),
         ("maintenance.autoDetach", "false"), ("gc.auto", "0"),
         ("gc.autoDetach", "false"),
+        ("receive.autogc", "false"),
     )
     monkeypatch.setenv("GIT_CONFIG_COUNT", str(len(config_values)))
     for index, (key, value) in enumerate(config_values):
