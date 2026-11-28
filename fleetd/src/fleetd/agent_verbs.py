@@ -807,20 +807,25 @@ class AgentVerbService:
         """Refuse a request whose named content-addressed inputs were collected."""
 
         stores = request.get("stores")
-        seed = stores.get("seed") if isinstance(stores, Mapping) else None
+        if not isinstance(stores, Mapping) or set(stores) != {"collect", "seed"}:
+            raise AdmissionError(ExitCode.RUNNER_FAILURE, "submit request has an unknown stores shape")
+        seed = stores.get("seed")
         dev = request.get("dev")
         argv = request.get("extra_argv")
+        if dev is not None and not isinstance(dev, Mapping):
+            raise AdmissionError(ExitCode.RUNNER_FAILURE, "submit request has an unknown dev shape")
+        if not isinstance(argv, list):
+            raise AdmissionError(ExitCode.RUNNER_FAILURE, "submit request has an unknown extra_argv shape")
         required: list[tuple[str, str]] = []
         if isinstance(dev, Mapping):
             required.extend(
                 (f"dev.{key}.tar", _record_descriptor_digest(dev.get(key), f"dev.{key}", "submit"))
                 for key in ("tracked", "untracked")
             )
-        if isinstance(argv, list):
-            for index, item in enumerate(argv):
-                if item == "--only-candidates":
-                    value = argv[index + 1] if index + 1 < len(argv) else None
-                    required.append(("candidates", self._candidate_reference(value, group, "submit")))
+        for index, item in enumerate(argv):
+            if item == "--only-candidates":
+                value = argv[index + 1] if index + 1 < len(argv) else None
+                required.append(("candidates", self._candidate_reference(value, group, "submit")))
 
         objects = self._upload_store_objects()
         for name, digest in required:
@@ -1005,9 +1010,14 @@ class AgentVerbService:
     def _unlink_upload_object(self, item: _UploadObjectRef) -> None:
         """Remove one committed object through its parent descriptor, never a symlink."""
 
-        state_fd = -1
         try:
             state_fd = self._state_directory_fd()
+        except AdmissionError as exc:
+            raise AdmissionError(
+                exc.exit_code,
+                f"put refused after a partial collection: {exc.reason}",
+            ) from exc
+        try:
             with _upload_directory(state_fd, "uploads", "agent upload store") as uploads_fd:
                 with _upload_directory(uploads_fd, item.group, "agent upload group") as group_fd:
                     with _upload_directory(group_fd, item.name, "agent upload name") as object_fd:
@@ -1025,8 +1035,7 @@ class AgentVerbService:
                 f"{item.group}/{item.name}/{item.digest}: {exc}",
             ) from exc
         finally:
-            if state_fd >= 0:
-                os.close(state_fd)
+            os.close(state_fd)
         self._collection_hook(item)
 
     def _collection_hook(self, item: _UploadObjectRef) -> None:

@@ -86,6 +86,17 @@ def test_absent_jobs_and_uploads_are_empty_on_fresh_state(tmp_path):
     assert service._stored_upload_bytes() == 0
 
 
+def test_upload_store_path_that_is_a_regular_file_refuses_accounting(tmp_path):
+    service, _identity, _checkout = _service(tmp_path)
+    service.paths.uploads_dir.rmdir()
+    service.paths.uploads_dir.write_text("preserve", encoding="utf-8")
+
+    with pytest.raises(AdmissionError, match="agent upload directory is not a real directory"):
+        service._stored_upload_bytes()
+
+    assert service.paths.uploads_dir.read_text(encoding="utf-8") == "preserve"
+
+
 def test_unknown_incoming_entry_stops_collection(tmp_path):
     service, _identity, _checkout = _service(tmp_path)
     _enable_collection(service)
@@ -111,6 +122,22 @@ def test_submit_refuses_a_candidate_collected_before_submit(tmp_path):
         service.handle(request, identity)
 
 
+def test_submit_accepts_existing_candidate_and_names_relative_candidate_refusal(tmp_path):
+    service, identity, _checkout = _service(
+        tmp_path, extra_argv='[["--only-candidates", "<host-candidates>"]]'
+    )
+    result = _put(service, identity, "candidates", b"candidate")
+    request = _submit()
+    request["extra_argv"] = ["--only-candidates", result["path"]]
+    service._require_submit_uploads(request, identity.group)
+    request["extra_argv"][1] = "a" * 64
+
+    with pytest.raises(AdmissionError, match="outside the authenticated group"):
+        service._request_upload_digests(request, identity.group, "job")
+
+    assert Path(result["path"]).read_bytes() == b"candidate"
+
+
 def test_submit_and_have_enter_store_lock(tmp_path, monkeypatch):
     service, identity, checkout = _service(tmp_path)
     (checkout / ".git").write_text("gitdir: ../.git/worktrees/test\n", encoding="utf-8")
@@ -130,7 +157,9 @@ def test_submit_and_have_enter_store_lock(tmp_path, monkeypatch):
     entered.clear()
     service.executor = object()
     service.admission.submit = lambda *_args: {"job_id": "job", "state": "queued"}
-    service.handle(_submit(), identity)
+    request = _submit()
+    request["extra_argv"] = ["--verbose"]
+    service.handle(request, identity)
     assert entered
 
 
@@ -339,6 +368,48 @@ def test_upload_directory_helpers_refuse_open_read_and_entry_limit_errors(tmp_pa
     assert Path(old["path"]).read_bytes() == b"preserved"
 
 
+def test_upload_object_stat_failure_refuses_collection_without_deleting(tmp_path, monkeypatch):
+    service, identity, _checkout = _service(tmp_path)
+    old = _put(service, identity, "candidates", b"preserved")
+    name_fd = os.open(Path(old["path"]).parent, os.O_RDONLY | os.O_DIRECTORY)
+    opened = []
+    real_fstat = os.fstat
+
+    def open_object(parent_fd, name, *, directory=False):
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=parent_fd)
+        opened.append(fd)
+        return fd
+
+    def fail_object_stat(fd):
+        if fd in opened:
+            raise OSError("object stat denied")
+        return real_fstat(fd)
+
+    monkeypatch.setattr(agent_verbs, "open_beneath", open_object)
+    monkeypatch.setattr(agent_verbs.os, "fstat", fail_object_stat)
+    try:
+        with pytest.raises(AdmissionError, match="object stat denied"):
+            service._upload_name_objects(identity.group, "candidates", name_fd)
+    finally:
+        os.close(name_fd)
+
+    assert Path(old["path"]).read_bytes() == b"preserved"
+
+
+def test_collection_stops_after_enough_bytes_without_deleting_later_objects(tmp_path):
+    service, identity, _checkout = _service(tmp_path)
+    oldest = _put(service, identity, "candidates", b"old")
+    later = _put(service, identity, "in.bundle", b"later")
+    os.utime(oldest["path"], (1, 1))
+    os.utime(later["path"], (2, 2))
+
+    with service._upload_store_lock():
+        assert service._collect_upload_objects_locked(3, 0) == 3
+
+    assert not Path(oldest["path"]).exists()
+    assert Path(later["path"]).read_bytes() == b"later"
+
+
 def test_state_directory_open_failure_refuses_collection_without_changes(tmp_path, monkeypatch):
     service, identity, _checkout = _service(tmp_path)
     old = _put(service, identity, "candidates", b"preserved")
@@ -354,6 +425,120 @@ def test_state_directory_open_failure_refuses_collection_without_changes(tmp_pat
         service._state_directory_fd()
 
     assert Path(old["path"]).read_bytes() == b"preserved"
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "reason"),
+    [
+        ("stores", None, "unknown stores shape"),
+        ("dev", "bad", "unknown dev shape"),
+        ("extra_argv", "bad", "unknown extra_argv shape"),
+    ],
+)
+def test_submit_upload_inventory_rejects_unknown_shapes_without_changes(tmp_path, field, value, reason):
+    service, identity, _checkout = _service(tmp_path)
+    old = _put(service, identity, "candidates", b"preserved")
+    request = _submit()
+    request[field] = value
+
+    with pytest.raises(AdmissionError, match=reason):
+        service._require_submit_uploads(request, identity.group)
+
+    assert Path(old["path"]).read_bytes() == b"preserved"
+
+
+def test_submit_with_non_array_argv_refuses_before_creating_state(tmp_path):
+    service, identity, _checkout = _service(tmp_path)
+    request = _submit()
+    request["extra_argv"] = "not-an-array"
+
+    with pytest.raises(AdmissionError, match="extra_argv must be an argv array"):
+        service.handle(request, identity)
+
+    assert list(service.paths.jobs_dir.iterdir()) == []
+    assert list(service.paths.incoming_dir.iterdir()) == []
+
+
+def test_collection_noop_and_record_failure_leave_objects_untouched(tmp_path):
+    service, identity, _checkout = _service(tmp_path)
+    old = _put(service, identity, "candidates", b"preserved")
+    assert service._collect_upload_objects_locked(0, 0) == 0
+    job_dir = service.paths.jobs_dir / "job"
+    job_dir.mkdir()
+    (job_dir / "request.json").write_text("{", encoding="utf-8")
+
+    with pytest.raises(AdmissionError, match="nothing was collected.*unreadable"):
+        service._collect_upload_objects_locked(1, 0)
+
+    assert Path(old["path"]).read_bytes() == b"preserved"
+
+
+@pytest.mark.parametrize("failure", ["admission", "directory", "oserror"])
+def test_unlink_failure_refuses_and_preserves_object(tmp_path, monkeypatch, failure):
+    service, identity, _checkout = _service(tmp_path)
+    old = _put(service, identity, "candidates", b"preserved")
+    item = service._upload_store_objects()[0]
+    if failure == "admission":
+        monkeypatch.setattr(
+            service, "_state_directory_fd",
+            lambda: (_ for _ in ()).throw(AdmissionError(2, "state denied")),
+        )
+        reason = "after a partial collection.*state denied"
+    elif failure == "directory":
+        monkeypatch.setattr(
+            agent_verbs, "open_beneath",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(FileNotFoundError("directory vanished")),
+        )
+        reason = "after a partial collection.*unreadable"
+    else:
+        monkeypatch.setattr(
+            agent_verbs.os, "unlink",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("unlink denied")),
+        )
+        reason = "cannot delete store object.*unlink denied"
+
+    with pytest.raises(AdmissionError, match=reason):
+        service._unlink_upload_object(item)
+
+    assert Path(old["path"]).read_bytes() == b"preserved"
+
+
+def test_existing_replay_commits_through_existing_object_path(tmp_path):
+    service, identity, _checkout = _service(tmp_path)
+    _upload_policy(service, store_bytes=100, floors={"checkout": 0})
+    old = _put(service, identity, "candidates", b"same")
+
+    replay = _put(service, identity, "candidates", b"same")
+
+    assert replay["path"] == old["path"]
+    assert Path(old["path"]).read_bytes() == b"same"
+
+
+@pytest.mark.parametrize("collision", ["symlink", "content"])
+def test_put_refuses_commit_path_collision_without_publishing_replay(tmp_path, monkeypatch, collision):
+    service, identity, _checkout = _service(tmp_path)
+    content = b"body"
+    digest = hashlib.sha256(content).hexdigest()
+    destination = service.paths.uploads_dir / identity.group / "candidates" / digest
+    outside = tmp_path / "outside"
+    outside.write_bytes(b"outside")
+    real_stream = service._stream_upload
+
+    def inject_collision(stream, expected, requested_digest, target):
+        real_stream(stream, expected, requested_digest, target)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        if collision == "symlink":
+            destination.symlink_to(outside)
+        else:
+            destination.write_bytes(b"wrong")
+
+    monkeypatch.setattr(service, "_stream_upload", inject_collision)
+    reason = "destination is a symlink" if collision == "symlink" else "does not match its content address"
+    with pytest.raises(AdmissionError, match=reason):
+        _put(service, identity, "candidates", content)
+
+    assert destination.is_symlink() if collision == "symlink" else destination.read_bytes() == b"wrong"
+    assert list(service.paths.incoming_dir.iterdir()) == []
 
 
 @pytest.mark.parametrize(
