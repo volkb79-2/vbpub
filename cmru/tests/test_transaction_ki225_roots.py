@@ -178,6 +178,64 @@ def test_release_retention_does_not_recreate_root_removed_between_parent_creatio
     assert not project_root.exists()
 
 
+def test_release_evidence_creates_nested_levels_below_its_new_root(monkeypatch, tmp_path):
+    root = _repo(tmp_path)
+    project_root = root / "demo"
+    project_root.mkdir()
+    child_project = root / "candidate" / "demo"
+    source = child_project / "reports" / "summary.txt"
+    source.parent.mkdir(parents=True)
+    source.write_text("evidence", encoding="utf-8")
+    workspace = _workspace(root)
+    monkeypatch.setattr(transaction, "_git", lambda *_args, **_kwargs: BASE)
+    project = SimpleNamespace(project_root=project_root, evidence_paths=("reports/summary.txt",))
+
+    retained = transaction.retain_success_outputs(
+        root, workspace, {"demo": project}, {"demo": "demo-v1"},
+        retain_logs=False, retain_artifacts=False, retain_evidence=True,
+    )
+
+    evidence_root = project_root / "evidence" / "cmru-release" / "demo-v1"
+    assert retained == [evidence_root]
+    assert (evidence_root / "reports" / "summary.txt").read_text(encoding="utf-8") == "evidence"
+    assert (evidence_root / "evidence.json").is_file()
+
+
+def test_release_evidence_does_not_recreate_its_root_removed_before_nested_creation(
+    monkeypatch, tmp_path,
+):
+    root = _repo(tmp_path)
+    project_root = root / "demo"
+    project_root.mkdir()
+    child_project = root / "candidate" / "demo"
+    source = child_project / "reports" / "summary.txt"
+    source.parent.mkdir(parents=True)
+    source.write_text("evidence", encoding="utf-8")
+    workspace = _workspace(root)
+    monkeypatch.setattr(transaction, "_git", lambda *_args, **_kwargs: BASE)
+    project = SimpleNamespace(project_root=project_root, evidence_paths=("reports/summary.txt",))
+    evidence_root = project_root / "evidence" / "cmru-release" / "demo-v1"
+    original = transaction._mkdir_below
+    calls = 0
+
+    def remove_created_evidence_root(*args, **kwargs):
+        nonlocal calls
+        result = original(*args, **kwargs)
+        calls += 1
+        if calls == 2:
+            shutil.rmtree(evidence_root)
+        return result
+
+    monkeypatch.setattr(transaction, "_mkdir_below", remove_created_evidence_root)
+    with pytest.raises(transaction.TransactionDirectoryRootError, match="evidence path"):
+        transaction.retain_success_outputs(
+            root, workspace, {"demo": project}, {"demo": "demo-v1"},
+            retain_logs=False, retain_artifacts=False, retain_evidence=True,
+        )
+
+    assert not evidence_root.exists()
+
+
 def test_release_result_writer_refuses_a_missing_common_directory(monkeypatch, tmp_path):
     root = _repo(tmp_path)
     missing_common = tmp_path / "missing-common"
@@ -280,6 +338,23 @@ def test_directory_helper_creates_missing_levels_and_accepts_existing_intermedia
     transaction._mkdir_below(root, nested, "accept existing nested test directory")
     assert nested.is_dir()
 
+    target = root / "link-target"
+    target.mkdir()
+    link = root / "link"
+    link.symlink_to(target, target_is_directory=True)
+    transaction._mkdir_below(root, link / "through-link", "create through directory link")
+    assert (link / "through-link").is_dir()
+
+
+def test_directory_helper_preserves_exclusive_leaf_creation(tmp_path):
+    root = tmp_path / "root"
+    root.mkdir()
+    existing = root / "existing"
+    existing.mkdir()
+
+    with pytest.raises(FileExistsError):
+        transaction._mkdir_below(root, existing, "create exclusive leaf", exist_ok=False)
+
 
 def test_directory_helper_passes_through_non_root_oserror(monkeypatch, tmp_path):
     root = tmp_path / "root"
@@ -293,6 +368,23 @@ def test_directory_helper_passes_through_non_root_oserror(monkeypatch, tmp_path)
     with pytest.raises(PermissionError) as caught:
         transaction._mkdir_below(root, root / "child", "create child")
     assert caught.value is original
+
+
+def test_directory_helper_passes_through_missing_level_error_when_root_still_exists(
+    monkeypatch, tmp_path,
+):
+    root = tmp_path / "root"
+    root.mkdir()
+    original = FileNotFoundError("child vanished")
+
+    def fail_mkdir(self, *args, **kwargs):
+        raise original
+
+    monkeypatch.setattr(Path, "mkdir", fail_mkdir)
+    with pytest.raises(FileNotFoundError) as caught:
+        transaction._mkdir_below(root, root / "child", "create child")
+    assert caught.value is original
+    assert root.is_dir()
 
 
 @pytest.mark.parametrize("root_replacement", ["missing", "file"])
