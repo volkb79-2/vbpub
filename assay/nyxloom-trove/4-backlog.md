@@ -241,6 +241,7 @@ items:
   - {id: B592, title: "release-gate.sh can signal a reaped heartbeat pid during heartbeat shutdown", type: bugfix, component: gate, context_estimate: small}
   - {id: B593, title: "R3 canary control failures omit the first failing test and bounded output tail", type: bugfix, component: canary, context_estimate: small}
   - {id: B612, title: "P5: R3 canary liveness or explicit unwatched disclosure", type: feature, component: canary, context_estimate: small}
+  - {id: B613, title: "P5 note: a reclassified non-PASS canary control can have no reason code, so the diagnostic record needs the termination classification", type: bugfix, component: canary, context_estimate: small}
   - {id: B594, title: "per-attempt canary expiry is reported as a lane-wide deadline expiry", type: bugfix, component: canary, context_estimate: small}
   - {id: B595, title: "native R2 tail retries can start with any positive lane time when the candidate budget is disabled", type: bugfix, component: mutation, context_estimate: small}
   - {id: B596, title: "release gate should simulate the cmru CHANGES fold as a pre-flight", type: bugfix, component: gate, context_estimate: medium}
@@ -16298,6 +16299,16 @@ Second half (deliberate, hence documented rather than taken here): `tools/releas
 **Wanted.** Implement the selected P5 option, including honest per-half watch/budget disclosure and the B593 control reason, first failing test and bounded output tail.
 
 **Close when.** The chosen behavior and evidence shape pass their registered lanes, the release docs state which canary halves are watched and which bound ends them, and B593's control diagnostic is preserved without misattributing transformed-run failure.
+
+## B613 — P5 note: a reclassified non-PASS canary control can have no reason code
+
+**Status: OPEN (filed 2026-11-28, sol check `assay-p5note-r2`); severity: medium.** Part of the B612 implementation package.
+
+**Symptom.** `docs/DESIGN-CANARY-LIVENESS.md` option (b) item 3 takes the control diagnostic's reason from `control_reason_code`. The control is judged and then reclassified (`src/assay/canary.py:793-811`, `:189-195`): a judged PASS with a leaked process tree classifies as LEAKED (`src/assay/termination.py:86-89`), the control becomes INCONCLUSIVE and `control_reason_code` stays `None`. A record built as the note says would omit the cause.
+
+**Wanted.** After `_attribute_control`, emit `control_reason_code` when present and include the classified `control_termination` for every non-PASS control. Do not invent a `ReasonCode`.
+
+**Close when.** A registered-lane test covers a non-PASS control with a null reason code (for example a leaked process tree after `_judge_unit` returns PASS), and the note states the same rule.
 
 ## B595 — native R2 tail retries can start with any positive lane time when the candidate budget is disabled
 
