@@ -177,12 +177,14 @@ What would help more, or be cleaner (non-normative):
   regardless of resource observation; a failed run is `killed` only with clear
   observation or a trusted failed-call witness, else `unobserved` (`crashed`).
   A resource-limit event outranks both. A record's `forced_bucket` (only
-  `crashed`) overrides a judgeable termination. On a lane declaring
-  `judge.mutation.kill_signal_artifact`, a `killed` run without a kill signal
-  is `crashed`. `src/assay/termination.py:49`, `src/assay/termination.py:64`,
+  `crashed`) overrides a judgeable termination. The field
+  `judge.mutation.kill_signal_artifact` is accepted only on SQL lanes. On a
+  SQL lane that declares it, a `killed` run without a kill signal is
+  `crashed`. `src/assay/config.py:3558`,
+  `src/assay/termination.py:49`, `src/assay/termination.py:64`,
   `src/assay/termination.py:88`, `src/assay/termination.py:97`,
   `src/assay/termination.py:109`, `src/assay/mutation_store.py:4580`,
-  `src/assay/mutation_store.py:1784`, `src/assay/mutation_store.py:4629`
+  `src/assay/mutation_store.py:1784`, `src/assay/mutation_store.py:4980`
 - **RIG-365** After the sweep, unless a campaign-deadline mask fired, each
   candidate executed in this invocation with bucket `crashed`,
   `budget_exceeded` or `hung` is re-run once, serially, in plan order, while
@@ -441,17 +443,17 @@ with `ERROR/BAD_LANE_CONFIG` on any other lane. `src/assay/cli.py:2394`,
   `src/assay/liveness.py:1303`,
   `src/assay/liveness.py:1311`, `src/assay/liveness.py:816`
 - **LIV-070** A candidate that keeps completing plugin events can exceed
-  `budget_per_candidate` while the liveness watch is armed; that budget is
-  advisory. The CPU-without-progress and per-test CPU bounds can still end it
-  as `hung`. If the watch is not armed, the per-candidate budget binds as
-  `budget_exceeded`; `none` leaves the lane deadline as the bound.
-  `src/assay/liveness.py:670`, `src/assay/liveness.py:2167`,
+  `budget_per_candidate` while the liveness watch is armed; the CPU-without-
+  progress and per-test CPU bounds can end it as `hung`. If the watch is not
+  armed, the per-candidate budget binds as `budget_exceeded`; `none` leaves
+  the lane deadline as the bound. `src/assay/liveness.py:2774`,
+  `src/assay/liveness.py:2842`, `src/assay/liveness.py:2912`,
   `src/assay/runner.py:1842`
 - **LIV-075** The resource trace is compacted at its sample cap without
   disabling hang decisions. An `unknown` resource interval resets the trace
   and the idle clock; a later complete interval starts a new trace.
   `src/assay/liveness.py:1808`, `src/assay/liveness.py:1852`,
-  `src/assay/liveness.py:1998`
+  `src/assay/liveness.py:2611`, `src/assay/liveness.py:2620`
 - **LIV-080** A stored `hung` record is reusable with either validated
   pressure-adjusted idle evidence (`idle-hang` or `session-finish-hang`) or
   validated CPU-bound evidence (`cpu-without-progress` or
@@ -598,9 +600,13 @@ summary fields carry raw and normalized time; schema impact.
 - **TIM-190** A candidate process tree that does not empty within its
   cleanup deadline is `ERROR/EXEC_FAILED`. `src/assay/process_tree.py:632`,
   `src/assay/runner.py:1895`
-- **TIM-200** The liveness trace cap (LIV-075) is a sample count at 1 s polls,
-  so about 1024 s of eligible time without progress disables `hung`.
-  `src/assay/liveness.py:676`, `src/assay/liveness.py:2020`
+- **TIM-200** The liveness trace cap (LIV-075) is 1024 poll samples at a
+  nominal 1 s interval, including pressure-stalled samples. It therefore
+  spans about 1024 s of wall time after progress or a trace restart, not
+  eligible time. The samples compact at the cap, so it does not disable
+  `hung`. `src/assay/liveness.py:742`, `src/assay/liveness.py:1811`,
+  `src/assay/liveness.py:1888`, `src/assay/liveness.py:2126`,
+  `src/assay/liveness.py:2620`, `src/assay/liveness.py:2625`
 
 ## 8. CLI and exit codes (CLI)
 
