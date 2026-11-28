@@ -1862,6 +1862,7 @@ export function createController(pi, injected = {}, overrides = {}) {
 		}, config.pollMs);
 	});
 	pi.on("before_agent_start", (event, ctx) => {
+		if (event?.messageType === "custom" && event.message?.customType === "pi-ctl-monitor") return;
 		captureOriginalGoal(event, ctx);
 		if (!primeContextPending || hasSavedInitialContext(ctx)) return;
 		primeContextPending = false;

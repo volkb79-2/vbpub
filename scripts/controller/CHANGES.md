@@ -8,6 +8,7 @@ no separate version number, so entries are grouped by the work that landed.
 
 ### Controller recovery fixes (P-plat-CTL80)
 - `compact-resume.sh` sends `/compact ` before guidance, chunks long UTF-8 text at no more than 400 characters, and sends the resume prompt only after it captures Claude's compacting spinner. Missing confirmation logs the observed footer and exits 8 without sending more. The compact-resume fixture pins command/chunk order, semicolon and multibyte preservation, stale-text rejection, busy-without-spinner refusal and empty guidance.
+- A `pi-ctl-monitor` notice no longer consumes the new session's original-goal/PRIME slot; the next real prompt receives PRIME once and is saved as the goal. Fake-pi test and mutation cover the monitor-restart case.
 
 ### Pi sub-controller smoke findings (P-plat-PICTL-FIX)
 - Delivery dedupes at pi's follow-up queue: once `pi.sendMessage()` accepts a

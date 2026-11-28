@@ -79,7 +79,7 @@ together.
 | CTL-69 | Pi automatic compaction summaries grow without bound and omit older in-flight status | Medium | OPEN 2026-11-27 |
 | CTL-79 | `pi-ctl-send.sh` has a check-then-use window after its symlink scan | Known limit | BY DESIGN 2026-11-28 (main ruling) |
 | CTL-80 | `compact-resume.sh` can deliver `/compact` as pasted text and then send the resume prompt although no compaction ran | High | FIXED 2026-11-28 (P-plat-CTL80) |
-| CTL-81 | A fresh pi controller session saves the previous session's monitor-restart notice as its original goal | Medium | OPEN 2026-11-28 |
+| CTL-81 | A fresh pi controller session saves the previous session's monitor-restart notice as its original goal | Medium | FIXED 2026-11-28 (P-plat-CTL80) |
 
 ---
 
@@ -2048,8 +2048,7 @@ pane check is still required before relying on the new typing behavior.
 
 ## CTL-81 — a fresh pi session takes a stale monitor notice as its goal
 
-**Status:** OPEN (observed 2026-11-28 in the P-plat-PICTL-FIX live re-smoke;
-Medium). Monitor state is stored per role. A `--fresh` start after an earlier
+**Status:** FIXED 2026-11-28 (P-plat-CTL80). The monitor notice is skipped by the PRIME/goal hook; the next real prompt becomes the saved goal and consumes PRIME once. Monitor state is stored per role. A `--fresh` start after an earlier
 session of the same role injects that session's `monitor-restart` notice as the
 first message. It starts a model turn without any prompt, and the PRIME/goal
 step saves the notice as `pi-ctl-original-goal`. A role with no earlier pi state
@@ -2058,6 +2057,5 @@ is not affected. Related: CTL-74.
 **Where:** `scripts/controller/pi-ctl/core.mjs` monitor restart notice and
 original-goal capture.
 
-**Close when:** a controller notice is never saved as the original goal, and a
-fresh session either drops the old session's monitor notice or shows it without
-making it the first prompt, with a test for each.
+The fake-pi test pins the monitor notice, next real prompt and one-shot PRIME
+behavior. The live-pi side remains for the controller's smoke check.
