@@ -11921,6 +11921,33 @@ def test_lane_summary_skips_long_and_partial_unanchored_lines(tmp_path):
                 os.close(fd)
 
 
+def test_lane_log_drain_caps_bytes_and_marks_overflow_for_normal_stop(tmp_path):
+    from dataclasses import replace
+
+    worker = _worker(tmp_path, _VersionRunner({}))
+    worker.policy = replace(worker.policy, lane_log_max_bytes=1048576)
+    log_path = tmp_path / "lane.log"
+    log_fd = os.open(log_path, os.O_CREAT | os.O_WRONLY, 0o600)
+    read_fd, write_fd = os.pipe()
+    payload = b"x" * (1048576 + 1)
+    os.write(write_fd, payload)
+    os.close(write_fd)
+
+    class Process:
+        stdout = os.fdopen(read_fd, "rb", buffering=0)
+
+    worker._drain_lane_log(Process(), log_fd)
+    stop_calls = []
+    worker._request_worker_stop = lambda process: stop_calls.append(process)
+    process = Process()
+    worker._check_lane_log_limit(process)
+    assert log_path.stat().st_size == 1048576
+    assert worker._lane_log_bytes == 1048576
+    assert worker.lane_error == "lane-log-limit-exceeded"
+    assert worker._lane_log_overflow.is_set()
+    assert stop_calls == [process]
+
+
 def test_verdict_binding_records_inspection_errors_and_rejects_invalid_lane(tmp_path):
     worker, _runner, _job_dir, _checkout = _ready_worker(tmp_path)
     worker.request.update(repo="vbpub", lane="r0-r1", sha=SHA)

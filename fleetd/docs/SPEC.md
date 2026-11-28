@@ -330,14 +330,25 @@ indefinitely. Once `request.json` is present and valid, collector classification
 uses that durable request and the book record; other job-directory entries
 belong to the executor and worker and do not block collection. Bundles for a
 group remain protected until every job request in that group has a valid
-terminal admission record. An earlier upload collected
-before submit causes a missing seed/dev/candidate object refusal by name, and
-the client can upload it again. A missing bundle is not detected by submit; if
-checkout needs it, the job fails with `CHECKOUT_FAILURE`. `have` remains the
-repo-checkout ref listing and does not report upload presence. The lock does
-not cover body streaming; a replay collected while its body is streaming is
-published again at commit or the `put` refuses. FD-076 tracks this upload-then-
-collection window.
+terminal admission record. With collection enabled, every `in.bundle` put
+(including a repeated put) atomically records, under the upload-store lock and
+in private state outside `uploads/`, the group job ids whose `request.json` is
+already published. Collection requires both the existing all-jobs-terminal
+rule and a valid record showing at least one terminal group job published after
+that put. A missing, unreadable, malformed, or non-private record keeps the
+bundle and does not refuse collection. Collection removes the record. A bundle
+without a later submit, or without a usable record, stays until manual removal
+and counts against the store cap; over-cap refusal reports the bytes held by
+unsubmitted bundles. The remaining window is that a different same-group job
+submitted between a put and its own submit can make that bundle collectable
+once every group job is terminal. Seed, dev, and candidate objects retain the
+existing behavior: submit refuses a missing object by name and the client
+re-uploads it. A missing bundle is not detected by submit; if checkout needs
+it, the job fails with `CHECKOUT_FAILURE`. `have` remains the repo-checkout ref
+listing and does not report upload presence. The lock does not cover body
+streaming; a replay collected while its body is streaming is published again at
+commit or the `put` refuses. Seed/dev/candidate collection before submit is by
+design (FD-076).
 
 `agent.toml.max_connections` is a required positive integer with no default. It
 bounds ordinary local connections; an excess connection is refused with exit
@@ -355,8 +366,8 @@ legacy-job and Docker inspection providers only when the optional boolean
 `executor_enabled` key in `agent.toml` is exactly `true`. If the key is absent,
 the value is `false`; a present non-boolean refuses policy loading. When false,
 no executor is wired and submit, status and cancel retain the C3a refusal before
-writing a request or charging admission. Keep it false until FD-067, FD-068 and
-FD-075 are closed and Run-Gate revision 78 is released and deployed. Host-mode
+writing a request or charging admission. Keep it false until FD-067 and FD-068
+are closed and Run-Gate revision 78 is released and deployed. Host-mode
 submissions additionally require FD-069 to close; exec-mode submissions require
 the live persistent-runner probe in FD-070. This package does not install or
 enable host services. `runner_user` is required only while the executor is
@@ -405,12 +416,22 @@ that it names a loaded systemd slice; a missing or unresolved tier refuses the
 job. Root Docker calls and the Run-Gate lane use the same fixed local Docker
 endpoint and closed environment.
 
+The optional closed-schema `agent.toml.lane_log_max_bytes` is an integer from
+1048576 through 4294967296 and defaults to 268435456. The worker drains the
+lane's combined stdout and stderr stream, counts bytes together, and writes no
+more than this ceiling to `lane.log`. On the first byte beyond the ceiling it
+discards further output while requesting the existing worker stop path. Once
+the lane's stop is proven, terminal finalization binds ERROR with reason
+`lane-log-limit-exceeded`; a stop that cannot be proven retains the existing
+stopping and charge behavior. Existing cancellation precedence remains in
+force. `_last_lane_summary` reads no more than the configured ceiling. The
+ceiling does not impose a lane runtime limit. A lane can still create arbitrary
+checkout files; FD-077 tracks that separate storage exposure.
+
 The listed repository- and lane-controlled inputs have explicit size and count
 ceilings. Exceeding one stops the lane through the normal stop path; after stop
-proofs the worker records a terminal ERROR. The total `lane.log` byte count and
-the summary scan are not yet bounded (FD-075); close that gap before setting
-`executor_enabled = true`. None of these input ceilings imposes a lane time
-limit.
+proofs the worker records a terminal ERROR. None of these input ceilings
+imposes a lane time limit.
 
 | Constant | Limit | Purpose |
 |---|---:|---|

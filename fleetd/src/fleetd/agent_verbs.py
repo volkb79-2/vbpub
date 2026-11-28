@@ -221,13 +221,14 @@ class AgentPaths:
     jobs_dir: Path
     uploads_dir: Path
     incoming_dir: Path
+    upload_submissions_dir: Path
 
     @classmethod
     def initialize(cls, state_dir: Path) -> AgentPaths:
         root = Path(state_dir)
         if root.is_symlink():
             raise AdmissionError(ExitCode.REFUSAL, "agent state directory must not be a symlink")
-        for path in (root, root / "jobs", root / "uploads", root / ".incoming"):
+        for path in (root, root / "jobs", root / "uploads", root / ".incoming", root / ".upload-submissions"):
             try:
                 path.mkdir(mode=0o700, parents=True, exist_ok=True)
             except OSError as exc:
@@ -239,7 +240,7 @@ class AgentPaths:
                     raise AdmissionError(ExitCode.REFUSAL, f"agent state path {path} is accessible by other users")
             except OSError as exc:
                 raise AdmissionError(ExitCode.RUNNER_FAILURE, f"cannot inspect agent state path {path}: {exc}") from exc
-        return cls(root, root / "jobs", root / "uploads", root / ".incoming")
+        return cls(root, root / "jobs", root / "uploads", root / ".incoming", root / ".upload-submissions")
 
     def candidate_paths(self, group: str) -> frozenset[str]:
         if self.uploads_dir.is_symlink() or not self.uploads_dir.is_dir():
@@ -714,6 +715,122 @@ class AgentVerbService:
             raise AdmissionError(ExitCode.RUNNER_FAILURE, f"cannot inspect the agent state directory: {exc}") from exc
         return fd
 
+    def _published_group_jobs_locked(self, group: str) -> list[str]:
+        """Job ids whose durable requests for ``group`` are published now."""
+
+        state_fd = self._state_directory_fd()
+        try:
+            jobs_fd = _open_optional_upload_directory(state_fd, "jobs", "agent job records")
+            if jobs_fd is None:
+                return []
+            try:
+                result: list[str] = []
+                for job_id in _upload_directory_entries(jobs_fd, "agent job records"):
+                    with _upload_directory(jobs_fd, job_id, "agent job record directory") as job_fd:
+                        entries = set(_upload_directory_entries(job_fd, f"job record {job_id!r}"))
+                        if "request.json" not in entries:
+                            continue
+                        record_group, _digests = self._job_record_references(job_fd, job_id)
+                        if record_group == group:
+                            result.append(job_id)
+                return sorted(result)
+            finally:
+                os.close(jobs_fd)
+        finally:
+            os.close(state_fd)
+
+    def _write_bundle_submission_record_locked(self, group: str, digest: str) -> None:
+        """Atomically remember which group jobs predate this bundle put."""
+
+        directory = self.paths.upload_submissions_dir
+        if directory.is_symlink() or not directory.is_dir() or stat.S_IMODE(directory.stat().st_mode) & 0o077:
+            raise AdmissionError(ExitCode.REFUSAL, "bundle submission record directory is not private")
+        document = json.dumps({
+            "schema": "fleet-upload-submission/1", "group": group,
+            "digest": digest, "job_ids": self._published_group_jobs_locked(group),
+        }, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        fd, temporary = tempfile.mkstemp(prefix=".record-", dir=directory)
+        try:
+            os.fchmod(fd, 0o600)
+            view = memoryview(document)
+            while view:
+                count = os.write(fd, view)
+                if count <= 0:
+                    raise OSError("short upload submission record write")
+                view = view[count:]
+            os.fsync(fd)
+            os.close(fd)
+            fd = -1
+            os.replace(temporary, directory / f"{group}--{digest}.json")
+            self._fsync_directory(directory)
+        except OSError as exc:
+            raise AdmissionError(ExitCode.RUNNER_FAILURE, f"cannot write bundle submission record: {exc}") from exc
+        finally:
+            if fd >= 0:
+                os.close(fd)
+            try:
+                os.unlink(temporary)
+            except FileNotFoundError:
+                pass
+
+    def _terminal_upload_jobs_locked(self) -> dict[str, set[str]]:
+        """Return published group jobs with valid terminal book records."""
+
+        terminal: dict[str, set[str]] = {}
+        state_fd = self._state_directory_fd()
+        try:
+            jobs_fd = _open_optional_upload_directory(state_fd, "jobs", "agent job records")
+            if jobs_fd is None:
+                return terminal
+            try:
+                for job_id in _upload_directory_entries(jobs_fd, "agent job records"):
+                    with _upload_directory(jobs_fd, job_id, "agent job record directory") as job_fd:
+                        if "request.json" not in set(_upload_directory_entries(job_fd, f"job record {job_id!r}")):
+                            continue
+                        group, _digests = self._job_record_references(job_fd, job_id)
+                        try:
+                            book = self.admission.book.read_record(job_id)
+                        except AdmissionError as exc:
+                            raise AdmissionError(ExitCode.RUNNER_FAILURE, f"cannot inspect terminal upload job {job_id!r}: {exc.reason}") from exc
+                        if book is not None and book.get("schema") == "fleet-admission-terminal/1" and book.get("group") == group:
+                            terminal.setdefault(group, set()).add(job_id)
+            finally:
+                os.close(jobs_fd)
+        finally:
+            os.close(state_fd)
+        return terminal
+
+    def _bundle_submission_job_ids(self, group: str, digest: str) -> set[str] | None:
+        """Read a private bundle put record; untrusted state means keep it."""
+
+        path = self.paths.upload_submissions_dir / f"{group}--{digest}.json"
+        fd = -1
+        try:
+            directory_info = self.paths.upload_submissions_dir.lstat()
+            if (not stat.S_ISDIR(directory_info.st_mode)
+                    or stat.S_IMODE(directory_info.st_mode) & 0o077):
+                return None
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode) or stat.S_IMODE(info.st_mode) & 0o077 or info.st_size > 65536:
+                return None
+            raw = os.read(fd, 65537)
+            if len(raw) > 65536:
+                return None
+            value = json.loads(raw.decode("utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            return None
+        finally:
+            if fd >= 0:
+                os.close(fd)
+        if (not isinstance(value, dict) or set(value) != {"schema", "group", "digest", "job_ids"}
+                or value.get("schema") != "fleet-upload-submission/1" or value.get("group") != group
+                or value.get("digest") != digest or not isinstance(value.get("job_ids"), list)
+                or any(not isinstance(item, str) for item in value["job_ids"])
+                or len(set(value["job_ids"])) != len(value["job_ids"])):
+            return None
+        return set(value["job_ids"])
+
     def _referenced_upload_objects_locked(self) -> dict[str, frozenset[str]]:
         """Digests named by durable host records, keyed by authenticated group.
 
@@ -1041,6 +1158,7 @@ class AgentVerbService:
         try:
             references = self._referenced_upload_objects_locked()
             objects = self._upload_store_objects()
+            terminal_jobs = self._terminal_upload_jobs_locked()
         except AdmissionError as exc:
             raise AdmissionError(
                 exc.exit_code,
@@ -1051,6 +1169,10 @@ class AgentVerbService:
         candidates = [
             item for item in ordered
             if not _is_referenced_upload_object(item, references, seed_sidecars)
+            and (
+                item.name != "in.bundle"
+                or self._bundle_is_submitted(item, terminal_jobs)
+            )
         ]
         if sum(item.size for item in candidates) < needed:
             return 0
@@ -1061,6 +1183,12 @@ class AgentVerbService:
             self._unlink_upload_object(item)
             reclaimed += item.size
         return reclaimed
+
+    def _bundle_is_submitted(self, item: _UploadObjectRef, terminal_jobs: Mapping[str, set[str]]) -> bool:
+        uploaded_jobs = self._bundle_submission_job_ids(item.group, item.digest)
+        if uploaded_jobs is None:
+            return False
+        return any(job_id not in uploaded_jobs for job_id in terminal_jobs.get(item.group, set()))
 
     def _unlink_upload_object(self, item: _UploadObjectRef) -> None:
         """Remove one committed object through its parent descriptor, never a symlink."""
@@ -1078,6 +1206,12 @@ class AgentVerbService:
                     with _upload_directory(group_fd, item.name, "agent upload name") as object_fd:
                         os.unlink(item.digest, dir_fd=object_fd)
                         os.fsync(object_fd)
+            if item.name == "in.bundle":
+                try:
+                    os.unlink(self.paths.upload_submissions_dir / f"{item.group}--{item.digest}.json")
+                except FileNotFoundError:
+                    pass
+                self._fsync_directory(self.paths.upload_submissions_dir)
         except AdmissionError as exc:
             raise AdmissionError(
                 exc.exit_code,
@@ -1139,9 +1273,17 @@ class AgentVerbService:
                         f"put would breach configured disk floor {floor_bytes} after collection",
                     )
             if stored + in_flight + expected > store_limit:
+                held = ""
+                if self.policy.upload_collection_enabled:
+                    terminal_jobs = self._terminal_upload_jobs_locked()
+                    unsubmitted = sum(
+                        item.size for item in self._upload_store_objects()
+                        if item.name == "in.bundle" and not self._bundle_is_submitted(item, terminal_jobs)
+                    )
+                    held = f"; {unsubmitted} bytes held as unsubmitted bundles"
                 raise AdmissionError(
                     ExitCode.REFUSAL,
-                    f"put would exceed policy.max_upload_store_bytes {store_limit}",
+                    f"put would exceed policy.max_upload_store_bytes {store_limit}{held}",
                 )
             temporary_fd = -1
             owner_fd = -1
@@ -1489,6 +1631,8 @@ class AgentVerbService:
             with self._upload_store_lock():
                 if destination.is_symlink():
                     raise AdmissionError(ExitCode.REFUSAL, "put destination is a symlink")
+                if self.policy.upload_collection_enabled and name == "in.bundle":
+                    self._write_bundle_submission_record_locked(identity.group, digest)
                 if destination.exists():
                     existing = self._hash_file(destination)
                     if existing != (expected, digest):

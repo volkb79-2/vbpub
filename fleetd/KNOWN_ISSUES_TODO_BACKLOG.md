@@ -76,7 +76,7 @@
 | FD-071 | Preserve store collection failure detail in the host result | P2 | FIXED IN THIS BRANCH (C3b-1) | 2026-11-27 |
 | FD-072 | Bind Run-Gate repo/project labels to the request | P2 | FIXED IN THIS BRANCH (C3b-1) | 2026-11-27 |
 | FD-075 | Bound total lane log bytes and summary scan before executor enablement | P1 | CLOSED | 2026-11-28 |
-| FD-076 | A client upload can be collected before its delayed submit | P2 | OPEN | 2026-11-28 |
+| FD-076 | A client upload can be collected before its delayed submit | P2 | CLOSED; REMAINING WINDOW DOCUMENTED | 2026-11-28 |
 | FD-077 | Lane-controlled checkout files have no aggregate storage ceiling | P2 | OPEN | 2026-11-28 |
 
 ## FD-001 Lite campaign lifecycle
@@ -1208,19 +1208,27 @@ Source: P-fd-05 C3a round 2 controller ruling (2026-11-27).
 
 ## FD-076 A client upload can be collected before its delayed submit
 
-**State:** OPEN. **Priority:** P2. **Filed:** 2026-11-28.
+**State:** CLOSED; REMAINING WINDOW DOCUMENTED. **Priority:** P2. **Filed:** 2026-11-28.
 
-An unreferenced seed, dev or candidate object may be collected after a
-successful `put` and before the client submits a job naming it. `submit`
-refuses with the missing object name and the client must upload it again. A
-bundle may also be collected before submit; submit does not detect the missing
-bundle, and a job whose checkout needs it fails with `CHECKOUT_FAILURE`.
-`have` remains the repo-checkout ref listing and does not report upload
-presence. Keep this window visible to controllers and consumers. A replay
-being streamed while collection removes its prior copy must be republished at
+With collection enabled, each `in.bundle` put (including a repeated put)
+atomically records under the upload-store lock, in a private state directory
+outside `uploads/`, the same-group job ids whose `request.json` is published at
+that moment. Collection requires both the existing all-jobs-terminal rule and
+a valid record with at least one terminal same-group job absent from that list.
+Missing, malformed, unreadable, or non-private records keep the bundle and do
+not refuse collection; removing the bundle also removes its record. A bundle
+with no later submit, or without a usable record, stays until manual removal
+and counts against the cap; over-cap refusal reports its held bytes. The
+remaining window is that another same-group job submitted between a put and
+its own submit can make the bundle collectable once every group job is
+terminal. Seed, dev and candidate objects retain today's behavior: they may be
+collected before submit, submit refuses by name, and the client re-uploads.
+That behavior is by design. A missing bundle still is not detected by submit
+and checkout can fail with `CHECKOUT_FAILURE`. `have` remains the repo-checkout
+ref listing. A replay collected while its body streams is republished at
 commit or refused.
 
-Source: P-fd-05 C3b-2 controller ruling (2026-11-28).
+Source: P-fd-05 controller rulings FD-076 (2026-11-28).
 
 ## FD-063 Incrementally count large Assay progress files
 

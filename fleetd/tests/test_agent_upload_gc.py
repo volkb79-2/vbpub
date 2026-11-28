@@ -143,6 +143,49 @@ def test_bundle_is_retained_until_job_has_terminal_book_record(tmp_path, monkeyp
     assert not Path(bundle["path"]).exists()
 
 
+def test_bundle_put_records_published_jobs_and_later_same_group_terminal_job_collects(tmp_path, monkeypatch):
+    service, identity, _checkout = _service(tmp_path)
+    _enable_collection(service)
+    prior = service.paths.jobs_dir / "prior-job"
+    prior.mkdir()
+    (prior / "request.json").write_text(json.dumps({
+        "schema": "fleet-host-job-request/1", "group": identity.group,
+        "digest": "f" * 64, "request": _submit(),
+    }), encoding="utf-8")
+    bundle = _put(service, identity, "in.bundle", b"bundle")
+    digest = hashlib.sha256(b"bundle").hexdigest()
+    record_path = service.paths.upload_submissions_dir / f"{identity.group}--{digest}.json"
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    assert record["job_ids"] == ["prior-job"]
+
+    later = service.paths.jobs_dir / "later-job"
+    later.mkdir()
+    (later / "request.json").write_text(json.dumps({
+        "schema": "fleet-host-job-request/1", "group": identity.group,
+        "digest": "e" * 64, "request": _submit(),
+    }), encoding="utf-8")
+    monkeypatch.setattr(service.admission.book, "read_record", lambda job_id: {
+        "schema": "fleet-admission-terminal/1", "job_id": job_id, "group": identity.group,
+    })
+    with service._upload_store_lock():
+        assert service._collect_upload_objects_locked(len(b"bundle"), len(b"bundle")) == len(b"bundle")
+    assert not Path(bundle["path"]).exists()
+    assert not record_path.exists()
+
+
+def test_bundle_with_missing_or_malformed_submission_record_is_kept(tmp_path):
+    service, identity, _checkout = _service(tmp_path)
+    _enable_collection(service)
+    bundle = _put(service, identity, "in.bundle", b"bundle")
+    digest = hashlib.sha256(b"bundle").hexdigest()
+    record_path = service.paths.upload_submissions_dir / f"{identity.group}--{digest}.json"
+    record_path.write_text("not json", encoding="utf-8")
+    record_path.chmod(0o600)
+    with service._upload_store_lock():
+        assert service._collect_upload_objects_locked(len(b"bundle"), len(b"bundle")) == 0
+    assert Path(bundle["path"]).exists()
+
+
 @pytest.mark.parametrize("book_record", [
     None,
     {"schema": "fleet-admission-terminal/1", "job_id": "orphan-job", "group": "other"},

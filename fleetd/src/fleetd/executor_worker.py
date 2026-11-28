@@ -895,6 +895,7 @@ class HostJobWorker:
         self.interruption_settled = False
         self.memory_lock_fd = -1
         self._lane_log_overflow = threading.Event()
+        self._lane_log_stop = threading.Event()
         self._lane_log_bytes = 0
         self._lane_log_thread: threading.Thread | None = None
 
@@ -903,8 +904,14 @@ class HostJobWorker:
         if stream is None:
             return
         try:
+            os.set_blocking(stream.fileno(), False)
             while True:
-                chunk = os.read(stream.fileno(), 65536)
+                try:
+                    chunk = os.read(stream.fileno(), 65536)
+                except BlockingIOError:
+                    if self._lane_log_stop.wait(0.01):
+                        return
+                    continue
                 if not chunk:
                     return
                 ceiling = self.policy.lane_log_max_bytes
@@ -1987,6 +1994,7 @@ class HostJobWorker:
                 if getattr(process, "stdout", None) is not None:
                     self._lane_log_bytes = 0
                     self._lane_log_overflow.clear()
+                    self._lane_log_stop.clear()
                     self._lane_log_thread = threading.Thread(
                         target=self._drain_lane_log, args=(process, os.dup(log_fd)), daemon=True,
                     )
@@ -2072,6 +2080,10 @@ class HostJobWorker:
                     self._request_worker_stop(process)
                 except AdmissionError:
                     pass
+        self._lane_log_stop.set()
+        if self._lane_log_thread is not None:
+            self._lane_log_thread.join()
+        self._check_lane_log_limit(process)
         stream = getattr(process, "stdout", None)
         if stream is not None:
             try:
