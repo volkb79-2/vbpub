@@ -4,6 +4,9 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
+### Testing
+- test(assay): preflight two consecutive CMRU changelog folds against docs tests (B596)
+
 <!-- cmru: release history -->
 
 ## [12.4.1] - 2026-11-28
