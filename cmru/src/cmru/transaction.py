@@ -213,6 +213,46 @@ def _common_git_dir(repo_root: Path) -> Path:
     return _shared_worktree().discover_git_root(repo_root)[1]
 
 
+class TransactionDirectoryRootError(RuntimeError):
+    """A transaction directory could not be created beneath its required root."""
+
+
+def _require_real_directory_root(
+    root: Path, operation: str, *, original: OSError | None = None,
+) -> None:
+    """Require an existing, non-symlink directory for one filesystem operation."""
+    try:
+        root_info = root.lstat()
+    except FileNotFoundError as exc:
+        error = TransactionDirectoryRootError(
+            f"cannot {operation}: directory root is missing: {root}"
+        )
+        raise error from (original if original is not None else exc)
+    if not stat.S_ISDIR(root_info.st_mode):
+        error = TransactionDirectoryRootError(
+            f"cannot {operation}: directory root is not a real directory: {root}"
+        )
+        if original is not None:
+            raise error from original
+        raise error
+
+
+def _mkdir_below(
+    root: Path, directory: Path, operation: str, *, exist_ok: bool = True,
+) -> None:
+    """Create missing directory levels below an existing, real root only."""
+    _require_real_directory_root(root, operation)
+    relative = directory.relative_to(root)
+    current = root
+    for index, part in enumerate(relative.parts):
+        current /= part
+        try:
+            current.mkdir(exist_ok=exist_ok if index == len(relative.parts) - 1 else True)
+        except FileNotFoundError as exc:
+            _require_real_directory_root(root, operation, original=exc)
+            raise
+
+
 def _shared_workspace_record(shared: Any, common: Path, path: Path) -> Any | None:
     """Find the shared lifecycle record for one literal Git worktree path."""
     return shared.find_workspace(common, path)
@@ -383,8 +423,9 @@ class _SyncLocalMainResult(NamedTuple):
 @contextmanager
 def release_lock(repo_root: Path) -> Iterator[None]:
     """Serialize local release transactions without relying on a mutable checkout."""
-    lock_path = _common_git_dir(repo_root) / "cmru-release.lock"
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    common_dir = _common_git_dir(repo_root)
+    _mkdir_below(common_dir, common_dir, "create release lock")
+    lock_path = common_dir / "cmru-release.lock"
     with lock_path.open("a+", encoding="utf-8") as handle:
         try:
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -627,7 +668,7 @@ def create_workspace(
         base = fetch_origin_main(source_root, git_auth=git_auth)
     shared = _shared_worktree()
     parent = source_root / ".worktrees"
-    parent.mkdir(exist_ok=True)
+    _mkdir_below(source_root, parent, "create transaction worktree directory")
     # The visible allocation identity is derived before the final branch/path
     # is named. This avoids the impossible self-reference of hashing a path
     # whose basename contains the hash itself; the durable shared record stores
@@ -872,8 +913,9 @@ def _scope_dir(repo_root: Path) -> Path:
 
 def _ensure_scope_dir(repo_root: Path) -> Path:
     """Create the transaction metadata directory beneath Git's existing common dir."""
-    scope_dir = _scope_dir(repo_root)
-    scope_dir.mkdir(exist_ok=True)
+    common_dir = _common_git_dir(repo_root)
+    scope_dir = common_dir / "cmru-release-scopes"
+    _mkdir_below(common_dir, scope_dir, "create release scope directory")
     return scope_dir
 
 
@@ -1340,7 +1382,7 @@ def write_release_tag_attempts(
     # attempts-file write fails, the candidate remains fail-closed: its older
     # proof cannot accidentally authorize the newly generated local tag.
     clear_release_tag_absence(repo_root, workspace, incoming)
-    path.parent.mkdir(parents=True, exist_ok=True)
+    _mkdir_below(path.parent.parent, path.parent, "create release tag attempt directory")
     temporary = path.with_name(f".{path.name}.{secrets.token_hex(12)}")
     try:
         descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -1417,7 +1459,7 @@ def write_confirmed_absent_release_tag_attempts(
             )
         incoming[ref] = oid
     existing.update(incoming)
-    path.parent.mkdir(parents=True, exist_ok=True)
+    _mkdir_below(path.parent.parent, path.parent, "create absent release tag record directory")
     temporary = path.with_name(f".{path.name}.{secrets.token_hex(12)}")
     try:
         descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -1816,7 +1858,8 @@ def write_release_result(
     if not isinstance(current, dict):
         raise RuntimeError(f"invalid release result record {path}")
     current[project] = immutable_id
-    path.parent.mkdir(parents=True, exist_ok=True)
+    common_dir = path.parent.parent
+    _mkdir_below(common_dir, path.parent, "create release result directory")
     path.write_text(json.dumps(current, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
@@ -2255,6 +2298,7 @@ def retain_successful_build_outputs(
     """
     output_id, source_commit, source_date = build_output_id(workspace)
     retained: list[Path] = []
+    retention_root = workspace.repo_root.resolve()
     source_changes = _git(
         workspace.path, "status", "--porcelain=v1", "--untracked-files=all",
     ).splitlines()
@@ -2291,18 +2335,23 @@ def retain_successful_build_outputs(
                 f"cmru cleanup {name} --delete-build-output {output_id} --yes"
             )
 
+        _mkdir_below(
+            retention_root, main_project_root, "create retained build project directory",
+        )
         stage = Path(tempfile.mkdtemp(prefix=".cmru-build-retain-", dir=main_project_root))
         staged_logs = stage / "logs"
         staged_artifacts = stage / "artifacts"
         moved_logs = False
         try:
+            _require_real_directory_root(retention_root, "copy retained build logs")
             shutil.copytree(source_logs, staged_logs, symlinks=True)
-            staged_artifacts.mkdir()
+            _mkdir_below(stage, staged_artifacts, "create staged build artifacts directory")
             copied_artifacts: list[dict[str, object]] = []
             for raw_dir, source in source_artifacts:
                 target = staged_artifacts / Path(raw_dir).name
                 if target.exists():
                     raise RuntimeError(f"{name}: artifact directory name collision: {target.name}")
+                _require_real_directory_root(retention_root, "copy retained build artifacts")
                 shutil.copytree(source, target, symlinks=True)
                 files = _safe_digest_tree(target)
                 if not files:
@@ -2330,8 +2379,8 @@ def retain_successful_build_outputs(
             # must not turn an immutable output record into an overwrite.
             if target_logs.exists() or target_artifacts.exists():
                 raise RuntimeError(f"{name}: build output destination appeared during retention: {output_id}")
-            target_logs.parent.mkdir(parents=True, exist_ok=True)
-            target_artifacts.parent.mkdir(parents=True, exist_ok=True)
+            _mkdir_below(retention_root, target_logs.parent, "create retained build logs directory")
+            _mkdir_below(retention_root, target_artifacts.parent, "create retained build artifacts directory")
             staged_logs.replace(target_logs)
             moved_logs = True
             try:
@@ -2907,6 +2956,7 @@ def retain_success_outputs(
     and has its own integrity manifest; it is never treated as a publishable artifact.
     """
     retained: list[Path] = []
+    retention_root = workspace.repo_root.resolve()
     for name, immutable_id in results.items():
         project = projects.get(name)
         if project is None:
@@ -2988,6 +3038,12 @@ def retain_success_outputs(
                     raise RuntimeError(f"{name}: evidence destination already exists: {target}")
                 evidence_sources.append((relative.as_posix(), source, target, kind))
 
+        will_write = (retain_logs and source_logs.exists()) or attempt_artifacts or attempt_evidence
+        if will_write:
+            _mkdir_below(
+                retention_root, project_root, "create retained release project directory",
+            )
+
         log_parent = target_logs.parent
         log_parent_existed = log_parent.exists()
         artifact_parent = target_root.parent
@@ -3001,26 +3057,35 @@ def retain_success_outputs(
         try:
             # All destination creation is deliberately before the first move.
             if retain_logs and source_logs.exists():
-                log_parent.mkdir(parents=True, exist_ok=True)
+                _mkdir_below(retention_root, log_parent, "create retained release logs directory")
             if attempt_artifacts:
-                artifact_parent.mkdir(parents=True, exist_ok=True)
-                target_root.mkdir()
+                _mkdir_below(
+                    retention_root, target_root, "create retained release artifact record",
+                    exist_ok=False,
+                )
                 created_target_root = True
             if attempt_evidence:
-                evidence_root.parent.mkdir(parents=True, exist_ok=True)
-                evidence_root.mkdir()
+                _mkdir_below(
+                    retention_root, evidence_root, "create retained release evidence record",
+                    exist_ok=False,
+                )
                 created_evidence_root = True
                 for _raw_path, _source, target, _kind in evidence_sources:
-                    target.parent.mkdir(parents=True, exist_ok=True)
+                    _mkdir_below(
+                        evidence_root, target.parent,
+                        "create retained release evidence path",
+                    )
                     _assert_no_symlink_components(project_root, target, name)
 
             if retain_logs and source_logs.exists():
+                _require_real_directory_root(retention_root, "move retained release logs")
                 shutil.move(str(source_logs), str(target_logs))
                 moved_sources.append((source_logs, target_logs))
                 moved_logs = True
             moved: list[dict[str, object]] = []
             if attempt_artifacts:
                 for target_name, source, target in artifact_sources:
+                    _require_real_directory_root(retention_root, "move retained release artifacts")
                     shutil.move(str(source), str(target))
                     moved_sources.append((source, target))
                     moved.append({"directory": target_name, "files": _digest_tree(target)})
@@ -3036,6 +3101,7 @@ def retain_success_outputs(
                 )
             if attempt_evidence:
                 for _raw_path, source, target, _kind in evidence_sources:
+                    _require_real_directory_root(retention_root, "move retained release evidence")
                     shutil.move(str(source), str(target))
                     moved_sources.append((source, target))
                 evidence_manifest = {
@@ -3067,8 +3133,9 @@ def retain_success_outputs(
             rollback_errors: list[Exception] = []
             for source, target in reversed(moved_sources):
                 try:
+                    _require_real_directory_root(retention_root, "roll back retained release output")
                     shutil.move(str(target), str(source))
-                except OSError as rollback_exc:  # shutil.Error is an OSError
+                except (OSError, TransactionDirectoryRootError) as rollback_exc:
                     rollback_errors.append(rollback_exc)
             if created_target_root and target_root.exists():
                 try:

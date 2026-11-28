@@ -294,6 +294,7 @@ def test_result_record_keeps_projects_and_canonical_json(tmp_path, scope, monkey
     # common dir) always exists; the writer must not need more than that.
     workspace = _workspace(tmp_path)
     nested = tmp_path / "git-common" / "cmru-release-scopes"
+    nested.parent.mkdir()
     monkeypatch.setattr(transaction, "_scope_dir", lambda _root: nested)
     monkeypatch.setattr(transaction, "_ensure_scope_dir", lambda _root: nested)
     transaction.write_release_result(tmp_path, workspace, "zeta", "tag-zeta")

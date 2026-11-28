@@ -32,6 +32,17 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
      the `fix(cmru): ...` commit subject. -->
 
 <!-- cmru: pending release notes begin -->
+- fix(cmru): transaction directory creation verifies its existing common or caller
+  checkout root and creates descendants one level at a time. Retention creates a
+  missing project directory below the resolved caller checkout and preserves an
+  in-checkout project symlink. The four KI-225 windows now reject a checkout
+  removed before each write/copy/move; e2fcfc263ad8 remains open. Per the
+  2026-11-28 controller rulings, the release-lock test replaces its assertion that
+  the lock was created under missing parents with missing-root refusal and
+  existing-root behavior, and the result-record fixture adds its missing common
+  root mkdir. The release-retention fixture is unchanged. A checkout removed
+  during a running copy/move remains a known limit: its sources are normally under
+  that checkout's `.worktrees/` and disappear with it.
 - tests(cmru): batch 3 adds cleanup, release-output retention and rollback witnesses
   over the next 30 transaction mutation survivors: 5 killed (one of them already by an
   earlier test), 1 recorded as equivalent (KI-226), 24 open (KI-225, KI-226, KI-227).

@@ -197,13 +197,20 @@ def test_an_unusable_progress_object_is_reported_with_gits_own_stderr(tmp_path):
 
 
 def test_the_release_lock_creates_the_scope_directory_it_needs(monkeypatch, tmp_path):
-    """The lock lives under the common Git dir and must create missing parents."""
+    """The lock requires an existing common directory and is written directly there."""
     root = _repo(tmp_path)
-    nested = root / "deep" / "nested"
-    monkeypatch.setattr(transaction, "_common_git_dir", lambda _root: nested)
+    missing_common = root / "deep" / "nested"
+    monkeypatch.setattr(transaction, "_common_git_dir", lambda _root: missing_common)
 
+    with pytest.raises(transaction.TransactionDirectoryRootError):
+        with transaction.release_lock(root):
+            pass
+    assert not missing_common.exists()
+
+    common = root / ".git"
+    monkeypatch.setattr(transaction, "_common_git_dir", lambda _root: common)
     with transaction.release_lock(root):
-        assert (nested / "cmru-release.lock").is_file()
+        assert (common / "cmru-release.lock").is_file()
 
 
 # --- fetch_origin_main -------------------------------------------------------

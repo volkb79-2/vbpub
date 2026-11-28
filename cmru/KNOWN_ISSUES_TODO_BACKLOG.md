@@ -237,31 +237,38 @@ probe covered all 30 against those files and `tests/test_transaction_r2_survivor
 
 ### KI-225 — transaction directory creation can resurrect removed roots
 
-**Status:** OPEN. Source windows and effects:
+**Status:** OPEN only for `e2fcfc263ad8`; the four directory-recreation windows and all audited directory-creation sites are fixed in `core-cmru-ki225`. One private helper validates an existing real root with `lstat` and creates missing descendants one level at a time. Retention's root is the resolved caller checkout (`workspace.repo_root`); a missing project directory below it is created as needed, and an in-checkout project symlink is resolved to its target. The 2026-11-28 retention ruling leaves the result-record test's added common-root mkdir in place and replaces the old release-lock assertion that the lock was created under missing parents with missing-root refusal and existing-common-directory behavior. `_release_retention_fixture` is restored to origin/main; its outputs succeed with the now-created project directory. No other existing test changed.
 
-- `d25580fc963e`: after `clear_release_tag_absence()` returns and before the attempt sidecar's
-  `path.parent.mkdir(parents=True, exist_ok=True)`, removing the Git common directory allows
-  that mkdir to recreate the common directory and scope directory; the attempt sidecar can then
-  be written. The recovery witness was withdrawn; no test blesses this recreation.
-- `70c7796b6763`: after the absence-record read and before the absence sidecar's
-  `path.parent.mkdir(parents=True, exist_ok=True)`, removal of the Git common directory allows
-  the mkdir to recreate the common directory and scope directory before writing the absence
-  sidecar.
-- `c2e3338fe004`: after output staging and before the first retention mkdir for
-  `target_logs.parent`, removing the project root allows recursive mkdir calls to recreate the
-  project root plus `logs` and `artifacts`; the later stale staging operation fails.
-- `01735170cf8a`: removal must occur between the `target_logs.parent.mkdir(...)` and
-  `target_artifacts.parent.mkdir(...)` calls. The first `logs` directory is removed with the
-  root; the second recursive mkdir can recreate the project root and `artifacts`, while the
-  stale staging operation fails. It does not recreate `logs` after that removal.
+Source windows and effects:
+
+- `d25580fc963e` — **fixed**: after `clear_release_tag_absence()` returns and before the attempt
+  sidecar directory creation, removing the Git common directory raises
+  `TransactionDirectoryRootError`; the common directory remains absent.
+- `70c7796b6763` — **fixed**: removing the Git common directory after the absence-record read raises
+  `TransactionDirectoryRootError`; the common directory remains absent.
+- `c2e3338fe004` — **fixed**: build-retention copy calls check the resolved caller checkout
+  immediately before copying. The witness removes that root just before the logs copy, with the
+  source outside it; the named error leaves the root absent.
+- `01735170cf8a` — **fixed**: removal of the caller checkout between retained log-parent and
+  artifact-parent creation raises `TransactionDirectoryRootError`; the checkout remains absent.
 - `e2fcfc263ad8`: during release-output rollback with a newly created evidence parent, the
   loop that removes empty evidence parents changes from `current != project_root and
   current.exists()` to `or`. It can continue when `current` is the project root and attempt
   to remove that root if empty. This harmful root-removal behavior is not asserted; the
   candidate remains open here.
 
-These original behaviors need a product decision and safe implementation before a test can
-assert them as desirable. No test blesses directory recreation; no product source was changed.
+`e2fcfc263ad8` remains open and untested. The release-lock, release-result, build-retention,
+release-retention, sidecar, worktree-parent and fd-relative staging directory creation sites
+are covered by the same root contract. All retention paths create directories beneath the
+resolved caller checkout, including a missing project directory. An in-checkout project symlink
+continues to retain to its resolved target.
+
+**Known limit (controller ruling 2026-11-28):** a caller checkout root removed during an already
+running `shutil.copytree` or `shutil.move` may be recreated by that library call. Each call now
+checks the root immediately beforehand. In real CMRU layouts the sources are under the same
+checkout's `.worktrees/`, so removing the checkout removes the source too; a call that starts
+after removal fails the root check and creates nothing. The adversarial tests place sources
+outside the removed root so the pre-call guard is what stops them.
 
 
 ### KI-226 — batch 3 transaction R2 equivalence proof
