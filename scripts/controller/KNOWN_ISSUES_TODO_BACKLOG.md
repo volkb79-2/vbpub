@@ -78,8 +78,9 @@ together.
 | CTL-68 | P-plat-35 review follow-ups: progress lines stop while the mutation queue drains; a missing runner mutant file counts as killed | Nice-to-have | OPEN |
 | CTL-69 | Pi automatic compaction summaries grow without bound and omit older in-flight status | Medium | OPEN 2026-11-27 |
 | CTL-79 | `pi-ctl-send.sh` has a check-then-use window after its symlink scan | Known limit | BY DESIGN 2026-11-28 (main ruling) |
-| CTL-80 | `compact-resume.sh` can deliver `/compact` as pasted text and then send the resume prompt although no compaction ran | High | OPEN 2026-11-28 |
-| CTL-81 | A fresh pi controller session saves the previous session's monitor-restart notice as its original goal | Medium | OPEN 2026-11-28 |
+| CTL-80 | `compact-resume.sh` can deliver `/compact` as pasted text and then send the resume prompt although no compaction ran | High | FIXED 2026-11-28 (P-plat-CTL80 r3) |
+| CTL-81 | A fresh pi controller session saves the previous session's monitor-restart notice as its original goal | Medium | FIXED 2026-11-28 (P-plat-CTL80) |
+| CTL-82 | An IDE selection chip in an empty Claude Code prompt row is read as typed input | Medium | OPEN 2026-11-28 (main smoke evidence) |
 
 ---
 
@@ -2022,7 +2023,9 @@ does not start a turn.
 
 ## CTL-80 — compact-resume can paste `/compact` and resume without a compaction
 
-**Status:** OPEN (filed 2026-11-28, reported by main; High). At about 11:28Z on
+**Status:** FIXED 2026-11-28 (P-plat-CTL80 r3). The command prefix and guidance are sent separately; all long literal text is chunked at Unicode-safe boundaries, and the resume prompt is withheld unless a changed receipt from the session's `SessionStart(compact)` hook is observed. When known, the receipt's session id must match the explicit expected id or the caller's id when `TMUX_PANE` matches the target; without a known id, any changed pane receipt is accepted, so a different session sharing that pane can confirm. Spawned sessions do not write receipts. A missing or mismatched receipt with an idle pane exits 8; a pane that remains busy is bounded by `DONE_TRIES` and exits 4. Live pane behavior remains for the controller's smoke check.
+
+Filed 2026-11-28, reported by main; High. At about 11:28Z on
 pane `%13` both the `/compact <guidance>` line and the resume prompt arrived in
 Claude Code as pasted content. `/compact` did not run as a command, and the
 script sent the resume prompt as if the compaction had finished. The same script
@@ -2036,19 +2039,20 @@ compact log was found there. Likely cause, not verified: the single long
 some length.
 
 **Where:** `scripts/controller/resume-lib.sh` `send_text`;
-`scripts/controller/compact-resume.sh`, which only logs `WARN compaction never
-showed busy` and continues to the resume prompt.
+`scripts/controller/compact-resume.sh`, which now requires a changed per-pane
+receipt written by `ctx-hooks.py` on `SessionStart(compact)` before it can send
+the resume prompt.
 
-**Close when:** a long guidance text runs as a `/compact` command (measured on a
-live pane), or is refused before anything is typed; and the resume prompt is
-sent only after the compaction is confirmed (for example by the compacting
-marker, the transcript or a context drop), with a distinct exit code otherwise.
-Until then keep guidance and resume prompts well under 700 characters.
+The tests pin the separate command prefix, bounded chunks (including multibyte
+text and a semicolon at a potential boundary), no-prompt exit 8 without a changed
+receipt, and empty-guidance submission. The live pane check is still required
+before relying on the new typing behavior. The pane's session must run the
+checkout's compact SessionStart hook; otherwise the compact may finish without a
+receipt and the helper will safely exit 8.
 
 ## CTL-81 — a fresh pi session takes a stale monitor notice as its goal
 
-**Status:** OPEN (observed 2026-11-28 in the P-plat-PICTL-FIX live re-smoke;
-Medium). Monitor state is stored per role. A `--fresh` start after an earlier
+**Status:** FIXED 2026-11-28 (P-plat-CTL80). The monitor notice is skipped by the PRIME/goal hook; the next real prompt becomes the saved goal and consumes PRIME once. Monitor state is stored per role. A `--fresh` start after an earlier
 session of the same role injects that session's `monitor-restart` notice as the
 first message. It starts a model turn without any prompt, and the PRIME/goal
 step saves the notice as `pi-ctl-original-goal`. A role with no earlier pi state
@@ -2057,6 +2061,26 @@ is not affected. Related: CTL-74.
 **Where:** `scripts/controller/pi-ctl/core.mjs` monitor restart notice and
 original-goal capture.
 
-**Close when:** a controller notice is never saved as the original goal, and a
-fresh session either drops the old session's monitor notice or shows it without
-making it the first prompt, with a test for each.
+The fake-pi test pins the monitor notice, next real prompt and one-shot PRIME
+behavior. The live-pi side remains for the controller's smoke check.
+
+## CTL-82 — an IDE selection chip is mistaken for typed input
+
+**Status:** OPEN 2026-11-28; pre-existing on main. Severity: Medium.
+
+An IDE-connected Claude Code pane with an editor selection displays a coloured
+(not dim) `[⧉ N lines selected]` chip in an otherwise empty input row.
+`pane_state_of` reads the chip as typed text, so the resume helpers wait until
+they exit 5 instead of typing over the selection.
+
+**Evidence:** `/workspaces/vbpub/.controller-state/platform/smoke/evidence-20261128-ctl80/frame-ide-chip.ansi`
+(Claude Code 2.1.332).
+
+## CTL-83 — no test for an invalid expected compact session id
+
+**Status:** OPEN 2026-11-28. Severity: Low.
+
+`compact-resume.sh` exits 2, sending nothing, when the expected session id
+(`COMPACT_RESUME_SESSION_ID`, or the self-launch `CLAUDE_CODE_SESSION_ID`)
+contains characters outside `[A-Za-z0-9-]`. `tests/test-compact-resume.sh`
+has no case for that refusal.

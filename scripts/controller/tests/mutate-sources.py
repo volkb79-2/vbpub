@@ -17,6 +17,7 @@ shutil.copy2(repo / "scripts/controller/ctl-hygiene.sh", controller / "ctl-hygie
 shutil.copy2(repo / "scripts/controller/opendesign-accounts.py", controller / "opendesign-accounts.py")
 shutil.copy2(repo / "scripts/controller/pi-live.py", controller / "pi-live.py")
 shutil.copy2(repo / "scripts/controller/job-status.sh", controller / "job-status.sh")
+shutil.copy2(repo / "scripts/controller/resume-lib.sh", controller / "resume-lib.sh")
 
 # A mutant wrapper must be judged on the change it carries, not on a missing
 # sibling file: the continuation prompt and the run-mode rule files are read from
@@ -28,7 +29,6 @@ for _sibling in (
     "pi-review-argv",
 ):
     shutil.copy2(repo / "scripts/controller" / _sibling, controller / _sibling)
-
 
 def account_helper_mutant(name: str, before: str, after: str) -> Path:
     source = repo / "scripts/controller/opendesign-accounts.py"
@@ -56,6 +56,17 @@ def mutant(source: str, name: str, before: str, after: str, destination: Path = 
     target.write_text(original.replace(before, after, 1), encoding="utf-8")
     target.chmod(0o755)
     return target
+
+
+mutant("scripts/controller/compact-resume.sh", "compact-resume-no-changed-receipt",
+       '  [[ -n $receipt && $receipt != "$receipt_before" ]] || return 1',
+       '  [[ -n $receipt ]] || return 1')
+mutant("scripts/controller/compact-resume.sh", "compact-resume-no-session-id-check",
+       '    [[ $session_id == "$expected_session_id" ]] || return 1',
+       '    [[ -n $session_id ]] || return 1')
+mutant("scripts/controller/hooks/ctx-hooks.py", "compact-receipt-any-source",
+       '        if source == "compact":\n            write_compact_receipt(args, hook, log_path)',
+       '        if True:\n            write_compact_receipt(args, hook, log_path)')
 
 
 def pi_ctl_mutant(name: str, before: str, after: str) -> Path:
@@ -2022,6 +2033,11 @@ pi_ctl_mutant(
     "original-goal-not-persisted",
     '\t\tpi.appendEntry?.("pi-ctl-original-goal", { text });',
     "\t\t// mutant: original goal is not persisted",
+)
+pi_ctl_mutant(
+    "monitor-notice-captured-as-goal",
+    '\t\tif (event?.messageType === "custom" && event.message?.customType === "pi-ctl-monitor") return;',
+    '\t\t// mutant: monitor controller notice consumes the original-goal slot',
 )
 pi_ctl_mutant(
     "prime-repeats-on-resume",

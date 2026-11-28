@@ -27,6 +27,7 @@ not_contains() {
 
 export HOME=$ROOT/home
 mkdir -p "$HOME/.claude"
+export CONTROLLER_HOME=$ROOT/controller-home
 STATE=$ROOT/state
 TRANSCRIPT=$ROOT/session.jsonl
 BIN=$ROOT/bin
@@ -102,6 +103,50 @@ run() { # run <outfile> <mode> <json> [extra args...]
 }
 
 MAIN_JSON='{"session_id":"sess-1","transcript_path":"'"$TRANSCRIPT"'","cwd":"'"$ROOT"'","hook_event_name":"SessionStart","source":"compact"}'
+
+# Compact receipts are scoped to a real tmux pane and top-level compact events.
+export TMUX_PANE=%41
+run "$ROOT/receipt-1.out" session-start "$MAIN_JSON" --state-dir "$STATE" --extract "$BIN/fake-extract"
+RECEIPT=$CONTROLLER_HOME/compact-receipts/%41.json
+[[ -f $RECEIPT ]] || fail 'compact SessionStart did not write its receipt'
+python3 - "$RECEIPT" <<'PY' || fail 'compact receipt fields are missing'
+import json, sys
+receipt = json.load(open(sys.argv[1], encoding="utf-8"))
+assert receipt["session_id"] == "sess-1", receipt
+assert receipt["timestamp"].endswith("+00:00"), receipt
+assert receipt["write_id"], receipt
+PY
+cp "$RECEIPT" "$ROOT/receipt-first.json"
+run "$ROOT/receipt-2.out" session-start "$MAIN_JSON" --state-dir "$STATE" --extract "$BIN/fake-extract"
+! cmp -s "$ROOT/receipt-first.json" "$RECEIPT" || fail 'second compact receipt did not change'
+cp "$RECEIPT" "$ROOT/receipt-first.json"
+for source in resume startup; do
+  run "$ROOT/receipt-$source.out" session-start \
+    '{"session_id":"sess-1","cwd":"'"$ROOT"'","source":"'"$source"'"}' \
+    --state-dir "$STATE" --extract "$BIN/fake-extract"
+  cmp -s "$ROOT/receipt-first.json" "$RECEIPT" || fail "$source unexpectedly wrote a compact receipt"
+done
+for pane in invalid '' ; do
+  if [[ -n $pane ]]; then export TMUX_PANE=$pane; else unset TMUX_PANE; fi
+  run "$ROOT/receipt-bad-pane.out" session-start "$MAIN_JSON" --state-dir "$STATE" --extract "$BIN/fake-extract"
+  cmp -s "$ROOT/receipt-first.json" "$RECEIPT" || fail 'bad or missing TMUX_PANE wrote a receipt'
+done
+export TMUX_PANE=%41
+run "$ROOT/receipt-subagent.out" session-start \
+  '{"session_id":"sess-1","cwd":"'"$ROOT"'","source":"compact","agent_id":"child-1"}' \
+  --state-dir "$STATE" --extract "$BIN/fake-extract"
+cmp -s "$ROOT/receipt-first.json" "$RECEIPT" || fail 'subagent compaction wrote a receipt'
+CTX_HOOK_ROLE=agent run "$ROOT/receipt-agent-role.out" session-start "$MAIN_JSON" \
+  --state-dir "$STATE" --extract "$BIN/fake-extract"
+cmp -s "$ROOT/receipt-first.json" "$RECEIPT" || fail 'agent role compaction wrote a receipt'
+CTX_SESSION_KIND=spawned run "$ROOT/receipt-spawned-kind.out" session-start "$MAIN_JSON" \
+  --state-dir "$STATE" --extract "$BIN/fake-extract"
+cmp -s "$ROOT/receipt-first.json" "$RECEIPT" || fail 'spawned session kind wrote a receipt'
+printf 'blocked\n' > "$ROOT/controller-home-file"
+before_output=$ROOT/receipt-unwritable.out
+CONTROLLER_HOME=$ROOT/controller-home-file hook session-start "$MAIN_JSON" --state-dir "$STATE" --extract "$BIN/fake-extract" \
+  > "$before_output" 2>&1 || fail 'unwritable compact receipt changed hook exit status'
+cmp -s "$ROOT/receipt-1.out" "$before_output" || fail 'unwritable compact receipt changed hook output'
 
 # 1. pre-compact success: readback-<sid>-N.md written, marker stored, summariser note.
 run "$ROOT/pc1.out" pre-compact '{"session_id":"sess-1","transcript_path":"'"$TRANSCRIPT"'","cwd":"'"$ROOT"'","trigger":"auto"}' \

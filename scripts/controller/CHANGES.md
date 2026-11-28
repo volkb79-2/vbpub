@@ -6,6 +6,11 @@ no separate version number, so entries are grouped by the work that landed.
 
 ## [Unreleased]
 
+### Controller recovery fixes (P-plat-CTL80)
+- `compact-resume.sh` sends `/compact ` before guidance, chunks long UTF-8 text at no more than 400 characters, and sends the resume prompt only after the session's `SessionStart(compact)` hook writes a changed receipt for the canonical pane. When known, the receipt must carry the expected session id (explicit `COMPACT_RESUME_SESSION_ID`, or `CLAUDE_CODE_SESSION_ID` when launched from the target pane); if no id is known, any changed receipt for that pane is accepted, so a different session sharing it can confirm. The hook atomically writes the session id, UTC timestamp and per-write id under `$CONTROLLER_HOME/compact-receipts/` (default `$HOME/controller/compact-receipts/`) and skips spawned sessions; a missing or mismatched receipt after the 120-second window and an idle pane exits 8, while an ongoing busy pane is bounded by `DONE_TRIES` and exits 4. Receipt tests cover instant and delayed writes, stale, foreign-pane and foreign-session receipts, self-launch id derivation, idle/pasted input without a receipt, screen spinner text, and the busy timeout. The pane session must run this checkout's hook; otherwise compaction may finish without a receipt and the helper exits 8.
+- The context-hook tests pin receipt scope (compact only, main session only), atomic replacement with a distinct write id, rejection of invalid pane ids, spawned-session suppression and non-fatal write failure. Mutation checks cover accepting an unchanged receipt, dropping the expected-session comparison, and writing receipts for non-compact SessionStart sources.
+- A `pi-ctl-monitor` notice no longer consumes the new session's original-goal/PRIME slot; the next real prompt receives PRIME once and is saved as the goal. Fake-pi test and mutation cover the monitor-restart case.
+
 ### Pi sub-controller smoke findings (P-plat-PICTL-FIX)
 - Delivery dedupes at pi's follow-up queue: once `pi.sendMessage()` accepts a
   peer message or wake-up id, the claim is never injected again into that

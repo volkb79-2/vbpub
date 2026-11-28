@@ -66,6 +66,16 @@ expect_killed mutation-runner-override-error-killed \
   env CONTROLLER_MUTATION_RUNNER_SCRIPT="$ROOT/mutants/scripts/controller/mutation-runner-override-error-killed.sh" \
     bash "$SCRIPT_DIR/test-mutation-runner.sh"
 
+expect_killed compact-resume-no-changed-receipt \
+  env COMPACT_RESUME_SCRIPT="$ROOT/mutants/scripts/controller/compact-resume-no-changed-receipt" \
+    bash "$SCRIPT_DIR/test-compact-resume.sh"
+expect_killed compact-resume-no-session-id-check \
+  env COMPACT_RESUME_SCRIPT="$ROOT/mutants/scripts/controller/compact-resume-no-session-id-check" \
+    bash "$SCRIPT_DIR/test-compact-resume.sh"
+expect_killed compact-receipt-any-source \
+  env CTX_HOOKS_SCRIPT="$ROOT/mutants/scripts/controller/compact-receipt-any-source" \
+    bash "$SCRIPT_DIR/test-ctx-hooks.sh"
+
 for pi_review_mutant in \
   pi-review-account-inverted pi-review-head-only pi-review-index-only \
   pi-review-exclude-only pi-review-untracked-content-only pi-review-diff-only \
@@ -648,7 +658,7 @@ done
 # https://github.com/v8/v8/blob/main/src/sandbox/sandbox.h
 # https://github.com/nodejs/node/blob/main/deps/v8/include/v8-internal.h
 for pi_ctl_mutant in claim-before-inject name-validation agent-end-only wrapper-required root-symlink-components inherited-flock-required \
-                     queued-claim-reinjected queued-wakeup-reinjected async-rejection-report-too-late queued-reset-skipped claimed-notice-suppressed prime-context-omitted original-goal-not-persisted prime-repeats-on-resume original-goal-cache-not-reset reload-treated-as-fresh monitor-keeps-route-keys; do
+                     queued-claim-reinjected queued-wakeup-reinjected async-rejection-report-too-late queued-reset-skipped claimed-notice-suppressed prime-context-omitted original-goal-not-persisted monitor-notice-captured-as-goal prime-repeats-on-resume original-goal-cache-not-reset reload-treated-as-fresh monitor-keeps-route-keys; do
   expect_assertion_killed_with_address_space_limit "pi-ctl-$pi_ctl_mutant" 2147483648 \
     env NODE_OPTIONS=--max-old-space-size=256 \
       PI_CTL_CORE_MODULE="$ROOT/mutants/scripts/controller/pi-ctl-$pi_ctl_mutant/core.mjs" \

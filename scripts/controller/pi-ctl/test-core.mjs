@@ -965,6 +965,30 @@ test("session-start PRIME context captures the first prompt once and survives re
 	}
 });
 
+test("monitor restart notices do not consume PRIME or become the original goal", async (t) => {
+	const f = fixture();
+	t.after(f.cleanup);
+	const ctx = f.fakeContext;
+	await f.events.get("session_start")({ type: "session_start", reason: "new" }, ctx);
+	assert.equal(f.events.get("before_agent_start")({
+		systemPrompt: "base prompt", messageType: "custom",
+		message: { customType: "pi-ctl-monitor", content: "Monitors died in the previous session." },
+	}, ctx), undefined);
+	assert.equal(f.sessionEntries.some((entry) => entry.customType === "pi-ctl-original-goal"), false,
+		"a controller notice is not persisted as the goal");
+	const result = f.events.get("before_agent_start")({
+		systemPrompt: "base prompt", messageType: "user", prompt: "continue the real task",
+	}, ctx);
+	assert.equal(result.message.customType, "pi-ctl-prime-goal");
+	assert.match(result.message.content, /continue the real task/);
+	assert.equal(f.sessionEntries.find((entry) => entry.customType === "pi-ctl-original-goal").data.text, "continue the real task");
+	assert.equal(f.events.get("before_agent_start")({
+		systemPrompt: "base prompt", messageType: "user", prompt: "later prompt",
+	}, ctx), undefined, "PRIME is not returned again after the real prompt");
+	assert.equal(f.sessionEntries.filter((entry) => entry.customType === "pi-ctl-prime-goal").length, 0,
+		"the PRIME context is returned once and persisted by pi, not duplicated locally");
+});
+
 test("automatic compaction returns a supported persisted summary with role and goal readback", (t) => {
 	const f = fixture({ PI_CTL_COMPACT_AT: "1000" });
 	t.after(f.cleanup);
