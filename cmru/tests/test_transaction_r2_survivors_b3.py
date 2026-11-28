@@ -33,7 +33,6 @@ def _release_retention_fixture(tmp_path: Path):
     _init_repo(repo_root)
     _init_repo(candidate)
     project_root = repo_root / "demo"
-    project_root.mkdir()
     source_root = candidate / "demo"
     (source_root / "logs").mkdir(parents=True)
     (source_root / "logs" / "build.log").write_text("build\n", encoding="utf-8")

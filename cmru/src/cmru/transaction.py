@@ -217,20 +217,31 @@ class TransactionDirectoryRootError(RuntimeError):
     """A transaction directory could not be created beneath its required root."""
 
 
+def _require_real_directory_root(
+    root: Path, operation: str, *, original: OSError | None = None,
+) -> None:
+    """Require an existing, non-symlink directory for one filesystem operation."""
+    try:
+        root_info = root.lstat()
+    except FileNotFoundError as exc:
+        error = TransactionDirectoryRootError(
+            f"cannot {operation}: directory root is missing: {root}"
+        )
+        raise error from (original if original is not None else exc)
+    if not stat.S_ISDIR(root_info.st_mode):
+        error = TransactionDirectoryRootError(
+            f"cannot {operation}: directory root is not a real directory: {root}"
+        )
+        if original is not None:
+            raise error from original
+        raise error
+
+
 def _mkdir_below(
     root: Path, directory: Path, operation: str, *, exist_ok: bool = True,
 ) -> None:
     """Create missing directory levels below an existing, real root only."""
-    try:
-        root_info = root.lstat()
-    except FileNotFoundError as exc:
-        raise TransactionDirectoryRootError(
-            f"cannot {operation}: directory root is missing: {root}"
-        ) from exc
-    if not stat.S_ISDIR(root_info.st_mode):
-        raise TransactionDirectoryRootError(
-            f"cannot {operation}: directory root is not a real directory: {root}"
-        )
+    _require_real_directory_root(root, operation)
     relative = directory.relative_to(root)
     current = root
     for index, part in enumerate(relative.parts):
@@ -238,16 +249,7 @@ def _mkdir_below(
         try:
             current.mkdir(exist_ok=exist_ok if index == len(relative.parts) - 1 else True)
         except FileNotFoundError as exc:
-            try:
-                current_root_info = root.lstat()
-            except FileNotFoundError:
-                raise TransactionDirectoryRootError(
-                    f"cannot {operation}: directory root disappeared: {root}"
-                ) from exc
-            if not stat.S_ISDIR(current_root_info.st_mode):
-                raise TransactionDirectoryRootError(
-                    f"cannot {operation}: directory root is no longer a real directory: {root}"
-                ) from exc
+            _require_real_directory_root(root, operation, original=exc)
             raise
 
 
@@ -2296,6 +2298,7 @@ def retain_successful_build_outputs(
     """
     output_id, source_commit, source_date = build_output_id(workspace)
     retained: list[Path] = []
+    retention_root = workspace.repo_root.resolve()
     source_changes = _git(
         workspace.path, "status", "--porcelain=v1", "--untracked-files=all",
     ).splitlines()
@@ -2310,11 +2313,6 @@ def retain_successful_build_outputs(
                 f"{name}: cmru build requires project.release.artifact_dirs so it can retain "
                 "the successful local output"
             )
-        declared_project_root = Path(getattr(project, "project_root"))
-        _mkdir_below(
-            declared_project_root, declared_project_root,
-            "validate retained build project root",
-        )
         main_project_root, child_project_root = _project_roots_for_retention(
             repo_root, workspace, project, name,
         )
@@ -2337,11 +2335,15 @@ def retain_successful_build_outputs(
                 f"cmru cleanup {name} --delete-build-output {output_id} --yes"
             )
 
+        _mkdir_below(
+            retention_root, main_project_root, "create retained build project directory",
+        )
         stage = Path(tempfile.mkdtemp(prefix=".cmru-build-retain-", dir=main_project_root))
         staged_logs = stage / "logs"
         staged_artifacts = stage / "artifacts"
         moved_logs = False
         try:
+            _require_real_directory_root(retention_root, "copy retained build logs")
             shutil.copytree(source_logs, staged_logs, symlinks=True)
             _mkdir_below(stage, staged_artifacts, "create staged build artifacts directory")
             copied_artifacts: list[dict[str, object]] = []
@@ -2349,6 +2351,7 @@ def retain_successful_build_outputs(
                 target = staged_artifacts / Path(raw_dir).name
                 if target.exists():
                     raise RuntimeError(f"{name}: artifact directory name collision: {target.name}")
+                _require_real_directory_root(retention_root, "copy retained build artifacts")
                 shutil.copytree(source, target, symlinks=True)
                 files = _safe_digest_tree(target)
                 if not files:
@@ -2376,8 +2379,8 @@ def retain_successful_build_outputs(
             # must not turn an immutable output record into an overwrite.
             if target_logs.exists() or target_artifacts.exists():
                 raise RuntimeError(f"{name}: build output destination appeared during retention: {output_id}")
-            _mkdir_below(main_project_root, target_logs.parent, "create retained build logs directory")
-            _mkdir_below(main_project_root, target_artifacts.parent, "create retained build artifacts directory")
+            _mkdir_below(retention_root, target_logs.parent, "create retained build logs directory")
+            _mkdir_below(retention_root, target_artifacts.parent, "create retained build artifacts directory")
             staged_logs.replace(target_logs)
             moved_logs = True
             try:
@@ -2953,6 +2956,7 @@ def retain_success_outputs(
     and has its own integrity manifest; it is never treated as a publishable artifact.
     """
     retained: list[Path] = []
+    retention_root = workspace.repo_root.resolve()
     for name, immutable_id in results.items():
         project = projects.get(name)
         if project is None:
@@ -2960,8 +2964,7 @@ def retain_success_outputs(
         project_root = getattr(project, "project_root", None)
         if project_root is None:
             raise RuntimeError(f"{name}: cannot retain outputs without project_root")
-        declared_project_root = Path(project_root)
-        project_root = declared_project_root.resolve()
+        project_root = Path(project_root).resolve()
         relative = project_root.relative_to(workspace.repo_root.resolve())
         child_root = workspace.path / relative
         source_logs = child_root / "logs"
@@ -3035,12 +3038,10 @@ def retain_success_outputs(
                     raise RuntimeError(f"{name}: evidence destination already exists: {target}")
                 evidence_sources.append((relative.as_posix(), source, target, kind))
 
-        # Resolving hides a symlinked root, so check the declared path -- but only
-        # when this project has something to write below it.
-        if (retain_logs and source_logs.exists()) or attempt_artifacts or attempt_evidence:
+        will_write = (retain_logs and source_logs.exists()) or attempt_artifacts or attempt_evidence
+        if will_write:
             _mkdir_below(
-                declared_project_root, declared_project_root,
-                "validate retained release project root",
+                retention_root, project_root, "create retained release project directory",
             )
 
         log_parent = target_logs.parent
@@ -3056,16 +3057,16 @@ def retain_success_outputs(
         try:
             # All destination creation is deliberately before the first move.
             if retain_logs and source_logs.exists():
-                _mkdir_below(project_root, log_parent, "create retained release logs directory")
+                _mkdir_below(retention_root, log_parent, "create retained release logs directory")
             if attempt_artifacts:
                 _mkdir_below(
-                    project_root, target_root, "create retained release artifact record",
+                    retention_root, target_root, "create retained release artifact record",
                     exist_ok=False,
                 )
                 created_target_root = True
             if attempt_evidence:
                 _mkdir_below(
-                    project_root, evidence_root, "create retained release evidence record",
+                    retention_root, evidence_root, "create retained release evidence record",
                     exist_ok=False,
                 )
                 created_evidence_root = True
@@ -3077,12 +3078,14 @@ def retain_success_outputs(
                     _assert_no_symlink_components(project_root, target, name)
 
             if retain_logs and source_logs.exists():
+                _require_real_directory_root(retention_root, "move retained release logs")
                 shutil.move(str(source_logs), str(target_logs))
                 moved_sources.append((source_logs, target_logs))
                 moved_logs = True
             moved: list[dict[str, object]] = []
             if attempt_artifacts:
                 for target_name, source, target in artifact_sources:
+                    _require_real_directory_root(retention_root, "move retained release artifacts")
                     shutil.move(str(source), str(target))
                     moved_sources.append((source, target))
                     moved.append({"directory": target_name, "files": _digest_tree(target)})
@@ -3098,6 +3101,7 @@ def retain_success_outputs(
                 )
             if attempt_evidence:
                 for _raw_path, source, target, _kind in evidence_sources:
+                    _require_real_directory_root(retention_root, "move retained release evidence")
                     shutil.move(str(source), str(target))
                     moved_sources.append((source, target))
                 evidence_manifest = {
@@ -3129,8 +3133,9 @@ def retain_success_outputs(
             rollback_errors: list[Exception] = []
             for source, target in reversed(moved_sources):
                 try:
+                    _require_real_directory_root(retention_root, "roll back retained release output")
                     shutil.move(str(target), str(source))
-                except OSError as rollback_exc:  # shutil.Error is an OSError
+                except (OSError, TransactionDirectoryRootError) as rollback_exc:
                     rollback_errors.append(rollback_exc)
             if created_target_root and target_root.exists():
                 try:

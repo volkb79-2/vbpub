@@ -25,8 +25,19 @@ def _repo(tmp_path: Path) -> Path:
     return root
 
 
-def _workspace(root: Path) -> transaction.ReleaseWorkspace:
-    return transaction.ReleaseWorkspace(root, root / "candidate", "cmru/release/token", BASE)
+def _workspace(root: Path, path: Path | None = None) -> transaction.ReleaseWorkspace:
+    return transaction.ReleaseWorkspace(
+        root, path or root / "candidate", "cmru/release/token", BASE,
+    )
+
+
+def _build_sources(candidate: Path, name: str = "demo") -> Path:
+    project = candidate / name
+    (project / "logs").mkdir(parents=True)
+    (project / "logs" / "build.log").write_text("log", encoding="utf-8")
+    (project / "dist").mkdir()
+    (project / "dist" / "demo.whl").write_text("wheel", encoding="utf-8")
+    return project
 
 
 def test_tag_attempt_writer_does_not_recreate_removed_common_directory(monkeypatch, tmp_path):
@@ -64,93 +75,138 @@ def test_absent_tag_writer_does_not_recreate_removed_common_directory(monkeypatc
     assert not common.exists()
 
 
-def test_build_retention_does_not_recreate_removed_project_root(monkeypatch, tmp_path):
-    root = _repo(tmp_path)
-    project_root = root / "demo"
-    project_root.mkdir()
-    child_project = root / "candidate" / "demo"
-    (child_project / "logs").mkdir(parents=True)
-    (child_project / "logs" / "build.log").write_text("log", encoding="utf-8")
-    (child_project / "dist").mkdir()
-    (child_project / "dist" / "demo.whl").write_text("wheel", encoding="utf-8")
-    workspace = _workspace(root)
+def test_build_retention_refuses_missing_repo_root_without_recreating_it(monkeypatch, tmp_path):
+    caller_repo = _repo(tmp_path)
+    missing_repo = tmp_path / "removed-repo"
+    candidate = tmp_path / "candidate"
+    _build_sources(candidate)
+    workspace = _workspace(missing_repo, candidate)
     monkeypatch.setattr(
         transaction, "build_output_id",
         lambda _workspace: ("20261128T000000Z_" + BASE, BASE, "date"),
     )
     monkeypatch.setattr(transaction, "_git", lambda *_args, **_kwargs: "")
-    original_digest = transaction._safe_digest_tree
+    project = SimpleNamespace(project_root=missing_repo / "demo", artifact_dirs=("dist",))
 
-    def remove_project_after_staging(path):
-        result = original_digest(path)
-        if path.name == "dist":
-            shutil.rmtree(project_root)
+    with pytest.raises(transaction.TransactionDirectoryRootError, match="build project directory"):
+        transaction.retain_successful_build_outputs(
+            caller_repo, workspace, {"demo": project}, ["demo"], source_mode="origin-main",
+        )
+
+    assert not missing_repo.exists()
+
+
+def test_build_retention_creates_missing_project_directory_below_repo_root(monkeypatch, tmp_path):
+    root = _repo(tmp_path)
+    candidate = tmp_path / "candidate"
+    _build_sources(candidate)
+    workspace = _workspace(root, candidate)
+    monkeypatch.setattr(
+        transaction, "build_output_id",
+        lambda _workspace: ("20261128T000000Z_" + BASE, BASE, "date"),
+    )
+    monkeypatch.setattr(transaction, "_git", lambda *_args, **_kwargs: "")
+    project_root = root / "demo"
+    project = SimpleNamespace(project_root=project_root, artifact_dirs=("dist",))
+
+    retained = transaction.retain_successful_build_outputs(
+        root, workspace, {"demo": project}, ["demo"], source_mode="origin-main",
+    )
+
+    assert project_root.is_dir()
+    assert len(retained) == 2
+    assert (project_root / "artifacts" / retained[1].name / "dist" / "demo.whl").is_file()
+    assert (project_root / "logs" / retained[0].name / "build.log").is_file()
+
+
+@pytest.mark.parametrize("target_exists", [True, False])
+def test_build_retention_keeps_in_repo_project_symlink(monkeypatch, tmp_path, target_exists):
+    root = _repo(tmp_path)
+    candidate = tmp_path / "candidate"
+    _build_sources(candidate, "real-demo")
+    project_root = root / "demo"
+    target = root / "real-demo"
+    if target_exists:
+        target.mkdir()
+    project_root.symlink_to(target, target_is_directory=True)
+    workspace = _workspace(root, candidate)
+    monkeypatch.setattr(
+        transaction, "build_output_id",
+        lambda _workspace: ("20261128T000000Z_" + BASE, BASE, "date"),
+    )
+    monkeypatch.setattr(transaction, "_git", lambda *_args, **_kwargs: "")
+    project = SimpleNamespace(project_root=project_root, artifact_dirs=("dist",))
+
+    retained = transaction.retain_successful_build_outputs(
+        root, workspace, {"demo": project}, ["demo"], source_mode="origin-main",
+    )
+
+    assert project_root.is_symlink()
+    assert target.is_dir()
+    assert len(retained) == 2
+    assert (target / "artifacts" / retained[1].name / "dist" / "demo.whl").is_file()
+
+
+def test_build_retention_checks_repo_root_before_logs_copytree(monkeypatch, tmp_path):
+    root = _repo(tmp_path)
+    candidate = tmp_path / "candidate"
+    source_project = _build_sources(candidate)
+    workspace = _workspace(root, candidate)
+    monkeypatch.setattr(
+        transaction, "build_output_id",
+        lambda _workspace: ("20261128T000000Z_" + BASE, BASE, "date"),
+    )
+    monkeypatch.setattr(transaction, "_git", lambda *_args, **_kwargs: "")
+    original_mkdtemp = transaction.tempfile.mkdtemp
+
+    def remove_repo_after_stage(*args, **kwargs):
+        stage = original_mkdtemp(*args, **kwargs)
+        shutil.rmtree(root)
+        return stage
+
+    monkeypatch.setattr(transaction.tempfile, "mkdtemp", remove_repo_after_stage)
+    project = SimpleNamespace(project_root=root / "demo", artifact_dirs=("dist",))
+
+    with pytest.raises(transaction.TransactionDirectoryRootError, match="copy retained build logs"):
+        transaction.retain_successful_build_outputs(
+            root, workspace, {"demo": project}, ["demo"], source_mode="origin-main",
+        )
+
+    assert not root.exists()
+    assert (source_project / "logs" / "build.log").is_file()
+
+
+def test_build_retention_checks_repo_root_before_artifact_copytree(monkeypatch, tmp_path):
+    root = _repo(tmp_path)
+    candidate = tmp_path / "candidate"
+    source_project = _build_sources(candidate)
+    workspace = _workspace(root, candidate)
+    monkeypatch.setattr(
+        transaction, "build_output_id",
+        lambda _workspace: ("20261128T000000Z_" + BASE, BASE, "date"),
+    )
+    monkeypatch.setattr(transaction, "_git", lambda *_args, **_kwargs: "")
+    original_mkdir_below = transaction._mkdir_below
+    calls = 0
+
+    def remove_repo_after_staged_artifact_root(*args, **kwargs):
+        nonlocal calls
+        result = original_mkdir_below(*args, **kwargs)
+        calls += 1
+        if calls == 2:
+            shutil.rmtree(root)
         return result
 
-    monkeypatch.setattr(transaction, "_safe_digest_tree", remove_project_after_staging)
-    project = SimpleNamespace(project_root=project_root, artifact_dirs=("dist",))
-    # The temporary build staging tree is inside project_root, so deleting the
-    # root also removes staged_logs. Its integrity read fails before retention
-    # reaches the destination mkdir; rollback leaves the removed root absent.
-    with pytest.raises(RuntimeError, match="build output path is missing or unsafe"):
+    monkeypatch.setattr(transaction, "_mkdir_below", remove_repo_after_staged_artifact_root)
+    project = SimpleNamespace(project_root=root / "demo", artifact_dirs=("dist",))
+
+    with pytest.raises(transaction.TransactionDirectoryRootError, match="copy retained build artifacts"):
         transaction.retain_successful_build_outputs(
             root, workspace, {"demo": project}, ["demo"], source_mode="origin-main",
         )
 
-    assert not project_root.exists()
-
-
-@pytest.mark.parametrize("root_kind", ["symlink", "file"])
-def test_build_retention_refuses_non_directory_project_root(monkeypatch, tmp_path, root_kind):
-    root = _repo(tmp_path)
-    project_root = root / "demo"
-    if root_kind == "symlink":
-        target = tmp_path / "real-project"
-        target.mkdir()
-        project_root.symlink_to(target, target_is_directory=True)
-    else:
-        project_root.write_text("file", encoding="utf-8")
-    workspace = _workspace(root)
-    monkeypatch.setattr(
-        transaction, "build_output_id",
-        lambda _workspace: ("20261128T000000Z_" + BASE, BASE, "date"),
-    )
-    monkeypatch.setattr(transaction, "_git", lambda *_args, **_kwargs: "")
-    project = SimpleNamespace(project_root=project_root, artifact_dirs=("dist",))
-
-    with pytest.raises(transaction.TransactionDirectoryRootError, match="build project root"):
-        transaction.retain_successful_build_outputs(
-            root, workspace, {"demo": project}, ["demo"], source_mode="origin-main",
-        )
-
-
-@pytest.mark.parametrize("root_kind", ["symlink", "file"])
-def test_release_retention_refuses_non_directory_project_root(tmp_path, root_kind):
-    root = _repo(tmp_path)
-    project_root = root / "demo"
-    # The link target stays inside the repository: an outside one is refused by
-    # the path containment check before any directory root is considered.
-    relative = Path("demo")
-    if root_kind == "symlink":
-        target = root / "real-project"
-        target.mkdir()
-        project_root.symlink_to(target, target_is_directory=True)
-        relative = Path("real-project")
-    else:
-        project_root.write_text("file", encoding="utf-8")
-    child_logs = root / "candidate" / relative / "logs"
-    child_logs.mkdir(parents=True)
-    (child_logs / "release.log").write_text("log", encoding="utf-8")
-    workspace = _workspace(root)
-    project = SimpleNamespace(project_root=project_root)
-
-    with pytest.raises(transaction.TransactionDirectoryRootError, match="release project root"):
-        transaction.retain_success_outputs(
-            root, workspace, {"demo": project}, {"demo": "demo-v1"},
-            retain_logs=True, retain_artifacts=True,
-        )
-
-    assert (child_logs / "release.log").read_text(encoding="utf-8") == "log"
+    assert not root.exists()
+    assert (source_project / "dist" / "demo.whl").is_file()
 
 
 def test_release_retention_skips_a_missing_root_when_there_is_nothing_to_retain(tmp_path):
@@ -167,38 +223,210 @@ def test_release_retention_skips_a_missing_root_when_there_is_nothing_to_retain(
     assert not project_root.exists()
 
 
-def test_release_retention_does_not_recreate_root_removed_between_parent_creations(
+def test_release_retention_refuses_missing_repo_root_without_recreating_it(tmp_path):
+    caller_repo = _repo(tmp_path)
+    missing_repo = tmp_path / "removed-repo"
+    candidate = tmp_path / "candidate"
+    child_logs = candidate / "demo" / "logs"
+    child_logs.mkdir(parents=True)
+    (child_logs / "release.log").write_text("log", encoding="utf-8")
+    workspace = _workspace(missing_repo, candidate)
+    project = SimpleNamespace(project_root=missing_repo / "demo")
+
+    with pytest.raises(transaction.TransactionDirectoryRootError, match="release project directory"):
+        transaction.retain_success_outputs(
+            caller_repo, workspace, {"demo": project}, {"demo": "demo-v1"},
+            retain_logs=True, retain_artifacts=False,
+        )
+
+    assert not missing_repo.exists()
+    assert (child_logs / "release.log").is_file()
+
+
+def test_release_retention_creates_missing_project_directory_below_repo_root(tmp_path):
+    root = _repo(tmp_path)
+    candidate = tmp_path / "candidate"
+    child_logs = candidate / "demo" / "logs"
+    child_logs.mkdir(parents=True)
+    (child_logs / "release.log").write_text("log", encoding="utf-8")
+    workspace = _workspace(root, candidate)
+    project_root = root / "demo"
+    project = SimpleNamespace(project_root=project_root)
+
+    retained = transaction.retain_success_outputs(
+        root, workspace, {"demo": project}, {"demo": "demo-v1"},
+        retain_logs=True, retain_artifacts=False,
+    )
+
+    target = project_root / "logs" / "cmru-release" / "demo-v1" / "release.log"
+    assert project_root.is_dir()
+    assert retained == [target.parent]
+    assert target.read_text(encoding="utf-8") == "log"
+
+
+@pytest.mark.parametrize("target_exists", [True, False])
+def test_release_retention_keeps_in_repo_project_symlink(tmp_path, target_exists):
+    root = _repo(tmp_path)
+    candidate = tmp_path / "candidate"
+    child_logs = candidate / "real-demo" / "logs"
+    child_logs.mkdir(parents=True)
+    (child_logs / "release.log").write_text("log", encoding="utf-8")
+    project_root = root / "demo"
+    target = root / "real-demo"
+    if target_exists:
+        target.mkdir()
+    project_root.symlink_to(target, target_is_directory=True)
+    workspace = _workspace(root, candidate)
+    project = SimpleNamespace(project_root=project_root)
+
+    retained = transaction.retain_success_outputs(
+        root, workspace, {"demo": project}, {"demo": "demo-v1"},
+        retain_logs=True, retain_artifacts=False,
+    )
+
+    assert project_root.is_symlink()
+    assert target.is_dir()
+    assert retained[0] == target / "logs" / "cmru-release" / "demo-v1"
+    assert (retained[0] / "release.log").read_text(encoding="utf-8") == "log"
+
+
+def test_release_retention_checks_repo_root_before_logs_move(monkeypatch, tmp_path):
+    root = _repo(tmp_path)
+    candidate = tmp_path / "candidate"
+    child_logs = candidate / "demo" / "logs"
+    child_logs.mkdir(parents=True)
+    (child_logs / "release.log").write_text("log", encoding="utf-8")
+    workspace = _workspace(root, candidate)
+    project = SimpleNamespace(project_root=root / "demo")
+    original_check = transaction._require_real_directory_root
+
+    def remove_repo_before_logs_move(check_root, operation, **kwargs):
+        if operation == "move retained release logs":
+            shutil.rmtree(root)
+        return original_check(check_root, operation, **kwargs)
+
+    monkeypatch.setattr(transaction, "_require_real_directory_root", remove_repo_before_logs_move)
+    with pytest.raises(transaction.TransactionDirectoryRootError, match="move retained release logs"):
+        transaction.retain_success_outputs(
+            root, workspace, {"demo": project}, {"demo": "demo-v1"},
+            retain_logs=True, retain_artifacts=False,
+        )
+
+    assert not root.exists()
+    assert (child_logs / "release.log").is_file()
+
+
+def test_release_retention_01735170_does_not_recreate_root_between_parent_creation(
     monkeypatch, tmp_path,
 ):
     root = _repo(tmp_path)
-    project_root = root / "demo"
-    project_root.mkdir()
-    child_project = root / "candidate" / "demo"
-    (child_project / "logs").mkdir(parents=True)
-    (child_project / "logs" / "release.log").write_text("log", encoding="utf-8")
-    (child_project / "dist").mkdir()
-    (child_project / "dist" / "demo.whl").write_text("wheel", encoding="utf-8")
-    workspace = _workspace(root)
-    project = SimpleNamespace(project_root=project_root, artifact_dirs=("dist",))
+    candidate = tmp_path / "candidate"
+    child_project = _build_sources(candidate)
+    (child_project / "logs" / "release.log").write_text("release", encoding="utf-8")
+    workspace = _workspace(root, candidate)
+    project = SimpleNamespace(project_root=root / "demo", artifact_dirs=("dist",))
     original = transaction._mkdir_below
     calls = 0
 
-    def remove_after_log_parent(*args, **kwargs):
+    def remove_repo_after_log_parent(*args, **kwargs):
         nonlocal calls
         result = original(*args, **kwargs)
         calls += 1
         if calls == 2:
-            shutil.rmtree(project_root)
+            shutil.rmtree(root)
         return result
 
-    monkeypatch.setattr(transaction, "_mkdir_below", remove_after_log_parent)
-    with pytest.raises(transaction.TransactionDirectoryRootError, match="release artifact"):
+    monkeypatch.setattr(transaction, "_mkdir_below", remove_repo_after_log_parent)
+    with pytest.raises(transaction.TransactionDirectoryRootError, match="artifact record"):
         transaction.retain_success_outputs(
             root, workspace, {"demo": project}, {"demo": "demo-v1"},
             retain_logs=True, retain_artifacts=True, retain_evidence=False,
         )
 
-    assert not project_root.exists()
+    assert not root.exists()
+    assert (child_project / "logs" / "release.log").is_file()
+    assert (child_project / "dist" / "demo.whl").is_file()
+
+
+def test_release_retention_checks_repo_root_before_artifact_move(monkeypatch, tmp_path):
+    root = _repo(tmp_path)
+    candidate = tmp_path / "candidate"
+    source_project = _build_sources(candidate)
+    workspace = _workspace(root, candidate)
+    project = SimpleNamespace(project_root=root / "demo", artifact_dirs=("dist",))
+    original_check = transaction._require_real_directory_root
+
+    def remove_repo_before_artifact_move(check_root, operation, **kwargs):
+        if operation == "move retained release artifacts":
+            shutil.rmtree(root)
+        return original_check(check_root, operation, **kwargs)
+
+    monkeypatch.setattr(transaction, "_require_real_directory_root", remove_repo_before_artifact_move)
+    with pytest.raises(transaction.TransactionDirectoryRootError, match="move retained release artifacts"):
+        transaction.retain_success_outputs(
+            root, workspace, {"demo": project}, {"demo": "demo-v1"},
+            retain_logs=False, retain_artifacts=True, retain_evidence=False,
+        )
+
+    assert not root.exists()
+    assert (source_project / "dist" / "demo.whl").is_file()
+
+
+def test_release_retention_checks_repo_root_before_evidence_move(monkeypatch, tmp_path):
+    root = _repo(tmp_path)
+    candidate = tmp_path / "candidate"
+    source = candidate / "demo" / "reports" / "summary.txt"
+    source.parent.mkdir(parents=True)
+    source.write_text("evidence", encoding="utf-8")
+    workspace = _workspace(root, candidate)
+    project = SimpleNamespace(project_root=root / "demo", evidence_paths=("reports/summary.txt",))
+    original_check = transaction._require_real_directory_root
+
+    def remove_repo_before_evidence_move(check_root, operation, **kwargs):
+        if operation == "move retained release evidence":
+            shutil.rmtree(root)
+        return original_check(check_root, operation, **kwargs)
+
+    monkeypatch.setattr(transaction, "_require_real_directory_root", remove_repo_before_evidence_move)
+    with pytest.raises(transaction.TransactionDirectoryRootError, match="move retained release evidence"):
+        transaction.retain_success_outputs(
+            root, workspace, {"demo": project}, {"demo": "demo-v1"},
+            retain_logs=False, retain_artifacts=False, retain_evidence=True,
+        )
+
+    assert not root.exists()
+    assert source.is_file()
+
+
+def test_release_retention_checks_repo_root_before_rollback_move(monkeypatch, tmp_path):
+    root = _repo(tmp_path)
+    candidate = tmp_path / "candidate"
+    _build_sources(candidate)
+    (candidate / "demo" / "logs" / "release.log").write_text("release", encoding="utf-8")
+    workspace = _workspace(root, candidate)
+    project = SimpleNamespace(project_root=root / "demo", artifact_dirs=("dist",))
+    original_move = transaction.shutil.move
+    move_count = 0
+
+    def fail_artifact_move_after_removing_root(source, target, *args, **kwargs):
+        nonlocal move_count
+        move_count += 1
+        if move_count == 1:
+            return original_move(source, target, *args, **kwargs)
+        if move_count == 2:
+            shutil.rmtree(root)
+            raise OSError("start rollback after caller root removal")
+        return original_move(source, target, *args, **kwargs)
+
+    monkeypatch.setattr(transaction.shutil, "move", fail_artifact_move_after_removing_root)
+    with pytest.raises(RuntimeError, match="retention rollback failed") as caught:
+        transaction.retain_success_outputs(
+            root, workspace, {"demo": project}, {"demo": "demo-v1"},
+            retain_logs=True, retain_artifacts=True, retain_evidence=False,
+        )
+
+    assert isinstance(caught.value.__cause__, transaction.TransactionDirectoryRootError)
+    assert not root.exists()
 
 
 def test_release_evidence_creates_nested_levels_below_its_new_root(monkeypatch, tmp_path):
