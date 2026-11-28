@@ -12210,6 +12210,60 @@ def test_close_lane_stdout_leaves_a_reused_descriptor_number_alone():
         os.close(read_fd)
 
 
+def test_lane_log_drain_reports_a_log_descriptor_that_will_not_close(tmp_path, monkeypatch):
+    worker = _worker(tmp_path, _VersionRunner({}))
+    log_fd = os.open(tmp_path / "log-close.log", os.O_CREAT | os.O_WRONLY, 0o600)
+    real_close = os.close
+
+    def fail_log_close(fd):
+        if fd == log_fd:
+            raise OSError("duplicate log close failed")
+        real_close(fd)
+
+    monkeypatch.setattr(executor_worker_module.os, "close", fail_log_close)
+    try:
+        worker._drain_lane_log(None, log_fd)
+        assert worker._lane_log_setup_failed.is_set()
+        assert worker._lane_log_setup_error == "lane-log-setup-failed: duplicate log close failed"
+    finally:
+        real_close(log_fd)
+        os.close(worker.repo_root_fd)
+
+
+def test_lane_log_drain_keeps_the_first_error_when_the_pipe_close_fails_too(tmp_path):
+    worker = _worker(tmp_path, _VersionRunner({}))
+    log_fd = os.open(tmp_path / "two-errors.log", os.O_CREAT | os.O_WRONLY, 0o600)
+
+    class UnusablePipe:
+        closed = True
+
+        def fileno(self):
+            raise OSError("pipe fileno failed")
+
+        def close(self):
+            raise OSError("pipe close failed")
+
+    try:
+        worker._drain_lane_log(UnusablePipe(), log_fd)
+        assert worker._lane_log_setup_error == "lane-log-setup-failed: pipe fileno failed"
+        with pytest.raises(OSError):
+            os.fstat(log_fd)
+    finally:
+        os.close(worker.repo_root_fd)
+
+
+def test_close_lane_stdout_returns_the_close_error_when_the_number_is_gone():
+    class GonePipe:
+        def fileno(self):
+            return -1
+
+        def close(self):
+            raise OSError("pipe close failed")
+
+    error = executor_worker_module.HostJobWorker._close_lane_stdout(GonePipe())
+    assert str(error) == "pipe close failed"
+
+
 def test_record_lane_exit_persists_only_the_first_observed_status(tmp_path):
     worker = _worker(tmp_path, _VersionRunner({}))
     saves = []
@@ -12314,7 +12368,7 @@ def test_run_lane_joins_pipe_drainer_and_keeps_normal_exit_output(tmp_path, clos
 
 @pytest.mark.parametrize("failure", [
     "dup", "thread-start", "dup-stop-refused", "thread-start-close-error",
-    "drain-fileno-refused", "drain-fcntl-refused", "dup-after-exit",
+    "drain-fileno-refused", "drain-fcntl-refused", "dup-after-exit", "stdout-lookup",
 ])
 def test_run_lane_log_setup_failure_stops_live_child_and_records_exit(tmp_path, monkeypatch, failure):
     worker = _worker(tmp_path, _VersionRunner({}))
@@ -12368,6 +12422,8 @@ def test_run_lane_log_setup_failure_stops_live_child_and_records_exit(tmp_path, 
         @property
         def stdout(self):
             self.stdout_reads += 1
+            if failure == "stdout-lookup":
+                raise OSError("injected stdout lookup failure")
             return lane_output
 
         def poll(self):
@@ -12495,7 +12551,8 @@ def test_run_lane_log_setup_failure_stops_live_child_and_records_exit(tmp_path, 
         assert state["lane_may_be_live"] is False
         if failure not in {"dup-stop-refused", "drain-fileno-refused", "drain-fcntl-refused", "dup-after-exit"}:
             assert state["stop_signal"] == "sent"
-        assert lane_output.closed
+        # With no stream object there is nothing the worker could close.
+        assert lane_output.closed is (failure != "stdout-lookup")
         assert worker.runner_process is None
         assert (worker._lane_log_thread is not None) is (failure in {"drain-fileno-refused", "drain-fcntl-refused"})
         if failure in {"drain-fileno-refused", "drain-fcntl-refused"}:
