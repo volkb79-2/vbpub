@@ -2075,3 +2075,12 @@ they exit 5 instead of typing over the selection.
 
 **Evidence:** `/workspaces/vbpub/.controller-state/platform/smoke/evidence-20261128-ctl80/frame-ide-chip.ansi`
 (Claude Code 2.1.332).
+
+## CTL-83 — no test for an invalid expected compact session id
+
+**Status:** OPEN 2026-11-28. Severity: Low.
+
+`compact-resume.sh` exits 2, sending nothing, when the expected session id
+(`COMPACT_RESUME_SESSION_ID`, or the self-launch `CLAUDE_CODE_SESSION_ID`)
+contains characters outside `[A-Za-z0-9-]`. `tests/test-compact-resume.sh`
+has no case for that refusal.
