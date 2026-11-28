@@ -16,6 +16,7 @@ import threading
 import time
 import tomllib
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Literal, get_type_hints
 
 import pytest
@@ -1395,8 +1396,19 @@ def test_process_tree_lists_a_real_process_and_its_descendants(tmp_path, reap_or
         procio.reap_process_group(process, 5.0)
 
 
+def _fake_helper_clock(monkeypatch):
+    """Replace this module's ``time`` so that only ``sleep`` advances the helper's deadline."""
+    now = [0.0]
+
+    def sleep(seconds):
+        now[0] += seconds
+
+    monkeypatch.setattr(sys.modules[__name__], "time", SimpleNamespace(monotonic=lambda: now[0], sleep=sleep))
+
+
 def test_wait_tree_line_waits_until_expected_last_entry(monkeypatch):
-    before = [procio.ProcessEntry(20, 10, "R", 10, "bash -c sleep 600")]
+    _fake_helper_clock(monkeypatch)
+    before =[procio.ProcessEntry(20, 10, "R", 10, "bash -c sleep 600")]
     after = [procio.ProcessEntry(20, 10, "S", 10, "sleep 600")]
     reads = iter((before, before, after))
     calls = 0
@@ -1413,18 +1425,18 @@ def test_wait_tree_line_waits_until_expected_last_entry(monkeypatch):
 
 
 def test_wait_tree_line_returns_last_tree_on_expiry(monkeypatch):
-    before = [procio.ProcessEntry(20, 10, "R", 10, "bash -c sleep 600")]
+    _fake_helper_clock(monkeypatch)
     reads = []
 
     def process_tree(root_pid):
-        reads.append(before)
-        return before
+        reads.append([procio.ProcessEntry(20, 10, "R", 10, "bash -c sleep 600")])
+        return reads[-1]
 
     monkeypatch.setattr(procio, "process_tree", process_tree)
-    monkeypatch.setattr(__import__(__name__), "JOIN_LIMIT", 0.11)
+    monkeypatch.setattr(sys.modules[__name__], "JOIN_LIMIT", 0.11)
     tree = _wait_tree_line(10, "20 10 S sleep 600")
-    assert tree is before
     assert len(reads) > 1
+    assert tree is reads[-1]
 
 
 def _fake_proc(root: Path, pid: int, comm: str, state: str, ppid: int, pgid: int, cmdline: bytes):
