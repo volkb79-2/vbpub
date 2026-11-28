@@ -3966,6 +3966,27 @@ def test_uncertain_lane_spawn_without_worker_handle_persists_stopping_and_keeps_
                 os.close(fd)
 
 
+def test_worker_finalizes_durably_recorded_lane_status_without_waiting(tmp_path):
+    worker, _runner, job_dir, _checkout = _ready_worker(tmp_path)
+    recorded_status = int(ExitCode.IDENTITY_OR_TRANSPORT)
+    worker._save_state(lane_process_status=recorded_status, lane_may_be_live=False)
+    finalized = []
+    worker._finalize_lane = lambda status: finalized.append(status) or status
+    worker.waiter = lambda _seconds: pytest.fail("durable lane status must not wait for another writer")
+    worker._complete_admission = lambda *_args: pytest.fail("stub finalization must not release the charge")
+
+    assert worker._resume_lane_after_worker_error("worker recovered after lane exit") == recorded_status
+
+    state = worker._state()
+    assert state["lane_process_status"] == recorded_status
+    assert finalized == [recorded_status]
+    assert worker.terminal_completed is False
+    assert not (job_dir / "result.json").exists()
+    for fd in (worker.project_fd, worker.checkout_fd, worker.repo_root_fd):
+        if fd >= 0:
+            os.close(fd)
+
+
 @pytest.mark.parametrize(
     ("stderr", "reason", "permanent"),
     [
@@ -5457,32 +5478,60 @@ def test_worker_keeps_charge_if_lane_start_outcome_is_uncertain(tmp_path):
     finalized = []
     waits = []
 
-    def interrupt_retry(seconds):
+    def bounded_wait(seconds):
         waits.append(seconds)
-        if len(waits) == 1:
-            raise StopRetry("test interrupted a pending worker retry")
-        worker._save_state(
-            lane_process_status=int(executor_module.ExitCode.IDENTITY_OR_TRANSPORT),
-            lane_may_be_live=False,
-        )
+        raise StopRetry("uncertain start must not wait for an unwritable process status")
 
     def start_attempt(_binary, _mode, _facts, _memory_lock_fd):
         worker._save_state(state="lane-starting", lane_may_be_live=True, lane_start_attempted=True)
-        raise OSError("start outcome not confirmed")
+        raise RuntimeError("start outcome interrupted")
 
     worker._run_lane = start_attempt
     worker._finish_unstarted = lambda *_args: finalized.append("unstarted")
     worker._finalize_lane = lambda status: finalized.append(status) or status
-    worker.waiter = interrupt_retry
-    with pytest.raises(StopRetry, match="test interrupted a pending worker retry"):
-        worker.run()
+    worker._complete_admission = lambda *_args: pytest.fail("uncertain lane start must retain the admission charge")
+
+    def contain_wrong_retry(interrupted):
+        raise interrupted
+
+    # Prevent a regression from turning this test into an endless retry loop:
+    # the correct path never waits, while an incorrect wait is re-raised.
+    worker.waiter = bounded_wait
+    worker._settle_worker_interruption = contain_wrong_retry
+    result = worker.run()
     state = worker._state()
-    assert waits == [1, 1]
-    assert state["state"] == "stopping" and state["lane_may_be_live"] is False
-    assert state["lane_process_status"] == int(executor_module.ExitCode.IDENTITY_OR_TRANSPORT)
-    assert "start outcome not confirmed" in state["reason"]
-    assert finalized == [int(executor_module.ExitCode.IDENTITY_OR_TRANSPORT)]
+    assert result == int(executor_module.ExitCode.QUEUED_WITHDRAWN)
+    assert waits == []
+    assert state["state"] == "stopping" and state["lane_may_be_live"] is True
+    assert state["reason"] == "lane-start-outcome-uncertain-no-worker-handle"
+    assert state.get("lane_process_status") is None
+    assert finalized == []
+    assert worker.terminal_completed is False
     assert not (job_dir / "result.json").exists()
+
+
+def test_worker_error_path_settles_before_reraising_baseexception(tmp_path):
+    class StopCleanup(BaseException):
+        pass
+
+    worker, _runner, _job_dir, _checkout = _ready_worker(tmp_path)
+    finish_calls = []
+    settled = []
+
+    def interrupt_terminal_write(exit_code, reason):
+        finish_calls.append((exit_code, reason))
+        raise StopCleanup("terminal completion interrupted")
+
+    worker._finish_unstarted = interrupt_terminal_write
+    worker._settle_worker_interruption = lambda interrupted: settled.append(interrupted)
+    worker._complete_admission = lambda *_args: pytest.fail("interrupted completion cannot release the charge")
+
+    with pytest.raises(StopCleanup, match="terminal completion interrupted") as error:
+        worker._handle_run_error(int(ExitCode.RUNNER_FAILURE), "pre-lane failure")
+
+    assert len(finish_calls) == 1
+    assert settled == [error.value]
+    assert worker.terminal_completed is False
 
 
 def test_worker_retries_transient_finalization_failure_after_lane_exit(tmp_path):
