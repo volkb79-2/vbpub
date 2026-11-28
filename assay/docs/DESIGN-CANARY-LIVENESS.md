@@ -1,0 +1,39 @@
+# P5: R3 canary liveness
+
+**Recommendation: (b), keep `budget_per_attempt` binding and disclose that R3 is unwatched. Fold B593 into progress records, not the v21 verdict.** This is the smallest safe package: no new watch semantics and no reopening the closed verdict cut.
+
+## Current behavior
+
+- Each target runs a known-good control, then a transformed run, both through `_execute_snapshot_unit` (`src/assay/canary.py:773-811`, `:873-932`). The control result/reason is classified before the transform (`:793-811`); the transformed result determines the canary outcome (`:932`).
+- `budget_per_attempt` tightens the shared lane deadline for that attempt (`src/assay/canary.py:737`). It bounds snapshot work and both command halves. Exhaustion terminates the R3 claim as `BUDGET_EXCEEDED/LANE_TIMEOUT`; later targets are `budget_exhausted` (`src/assay/canary.py:720-740`; `src/assay/runner.py:6742-6765`; `src/assay/config.py:2787-2794`). It is required for an `unbounded` lane with R3 (`src/assay/config.py:2693-2699,2787-2794`).
+- No P4 watcher is armed for either half. Runner liveness injection is gated by the native R2 declaration and constructs the candidate plugin/monitor on that path (`src/assay/runner.py:5079-5124,5136-5142`); the canary calls do not pass an injected plugin (`src/assay/canary.py:773-789,873-889`). P4's pytest plugin, CPU-without-completed-event bound, per-test CPU bound and no-progress wall stop exist in `src/assay/liveness.py:546-553,871-919,2747-2909`, but apply to native R2 candidates (SPEC LIV-040/110/120/145, `assay/docs/SPEC.md:421-427,486-554`).
+- The attempt verdict has `control_outcome`, transformed outcome and transformed reason fields, but no control reason, first failing test or output tail (`src/assay/verdict.py:1639-1651`; schema `$defs.canary_attempt`, `src/assay/schemas/verdict.schema.json:1125-1303`). B593 records the dropped control evidence. B064 records that canary halves emit no `command_started`/`command_finished` progress events (`assay/nyxloom-trove/4-backlog.md:7433-7475,16247-16255`); the R3 orchestration is at `src/assay/runner.py:6659-6810` and does not emit them.
+- Config accepts a duration for `budget_per_attempt` (`src/assay/config.py:761-816,4287-4305`). `TIM-150` says the bound is per attempt, but today's tightened deadline is also used by both halves and remaining attempt work (`assay/docs/SPEC.md:632-634`). The design doc already says R3 stays capped pending P5 (`docs/design/no-time-budgets/DESIGN.md:495-498`).
+
+## Option (a): watch canary halves
+
+**Change points and size.** Add a canary liveness policy/eligibility check in config; inject P4's pytest plugin and monitor at both `canary.py` command sites; keep control and transformed observations separate; add progress events and a verdict disclosure of `armed`, reason, and which budget role applies. About 180-260 lines across `config.py`, `canary.py`, `runner.py`, `verdict.py`, schema, docs and tests. Do not copy the monitor; factor a shared isolated-command runner if the existing API cannot safely be reused.
+
+**Tests and risk.** Add focused canary tests to the registered `tooling-tests` lane, then run `self-qualification-provisional` (R3 fixture and package integration) and `tester-unified` before release. Exercise both halves, busy CPU without plugin progress, one slow test, idle wall stop, control failure, multi-target expiry, and a non-pytest command. Main risks are cross-half state leakage, changing attempt terminal/aggregation rules, and false liveness on a legitimate slow test.
+
+**Schema, scope and limits.** A verdict `liveness` object on each attempt (armed/reason, CPU and per-test bounds, stop kind) and any new stop value are not on the closed v21 delta list. The current canary-attempt object has `additionalProperties: false` (`verdict.schema.json:1125-1303`); each requires a v21 list amendment, and §1/§8 explicitly says the list is closed and was amended once (`VERDICT-V21-DELTA.md:3,158-160`). Progress records alone could carry this without a verdict schema edit, but the verdict would not say which halves were watched or let an independent reader verify why `budget_per_attempt` was advisory. Non-pytest and non-Python canaries remain unwatched and retain binding budgets. Until those paths have a sound watch, removing `budget_per_attempt` remains blocked; so does package A8's “remove remaining wall deciders.”
+
+## Option (b): explicit unwatched disclosure — recommended
+
+**Change points and size.** Emit a `canary_attempt` progress event with control/transform phase starts and finishes, elapsed time, and `watched: false`; document that `budget_per_attempt` remains binding and report its effective value in the run disclosure. Add B593 control diagnostics to the control-finished record only when control is non-PASS: reason code, first failing test, and bounded output tail. Keep pass records free of failure details. About 50-90 lines across `canary.py`, `runner.py`, progress tests, docs and B593. No liveness monitor or verdict projection change.
+
+**Tests and risk.** Register tests in `tooling-tests`; cover event order, budget exhaustion, single and multi-target runs, each control failure detail and bounded tail, and no details for a passing control. Then run `self-qualification-provisional` and `tester-unified`. Risk: users without a progress file still see only the coarse verdict; make the disclosure explicit in the normal run summary too.
+
+**Schema, scope and limits.** The proposed `canary_attempt` progress records are not verdict fields, so neither P5 nor B593 adds a field/value to the v21 list or current closed verdict schema. Putting `control_reason_code`, `control_first_failing_test`, or `control_output_tail` into the verdict would make each a new v21 item requiring a list amendment. Progress-only B593 loses self-contained, archived control diagnostics when no progress stream was requested or retained; that is the deliberate cost of preserving the one-amendment rule. Non-pytest and non-Python canaries are also explicitly unwatched, and remain bounded by `budget_per_attempt`. This option does not unblock removal of `budget_per_attempt` or A8's removal of remaining wall deciders.
+
+## P-13 overlap and landing order
+
+P-13/B564 is not implemented as the quoted one-primitive package in the current backlog: B564 remains OPEN and specifies `run_isolated(tests, tree)`, per-run node-baseline cache, one-file collection, three callers, budgets/fallbacks and hint ranking (`assay/nyxloom-trove/4-backlog.md:15943-15947`). Its intended callers and `mutation.py` isolation/provenance path do not overlap P5's R3 command orchestration. Option (b) shares only the generic progress writer and test helpers; it should land before or independently of P-13. Option (a) should follow P-13's extraction if that extraction provides the reusable isolated-run boundary; otherwise it risks creating a second runner abstraction. Do not fold P5 into P-13.
+
+## Recommended implementation package
+
+1. `canary.py` and `runner.py`: emit per-half phase and completion events, including B593 details on non-PASS control; retain the existing per-attempt deadline.
+2. Progress serialization/tests and `docs/SPEC.md`: document the explicit unwatched status and bounded diagnostic shape. Keep verdict model/schema unchanged.
+3. Update B593 and add B612 to this note. Run `tooling-tests`, `self-qualification-provisional`, then `tester-unified`; bind the independent review and release evidence to the exact commit.
+
+**Questions for the main controller:** Should B593 live only in progress? Default: yes, because the v21 list is closed; accept the stated archive loss. Should P5 disclose only `watched: false`, or also the configured deadline? Default: both, so a reader knows the bound. Should option (a) stay available for a later package? Default: yes, after a shared isolated-run boundary is settled; it is not this package.

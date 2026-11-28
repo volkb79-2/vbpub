@@ -240,6 +240,7 @@ items:
   - {id: B591, title: "P-assay-14b final-review follow-ups: a test read race, a wrong CONSUMERS reason, a wrong CHANGES claim about 12.3.0, trap loose ends", type: bugfix, component: gate, context_estimate: small}
   - {id: B592, title: "release-gate.sh can signal a reaped heartbeat pid during heartbeat shutdown", type: bugfix, component: gate, context_estimate: small}
   - {id: B593, title: "R3 canary control failures omit the first failing test and bounded output tail", type: bugfix, component: canary, context_estimate: small}
+  - {id: B612, title: "P5: R3 canary liveness or explicit unwatched disclosure", type: feature, component: canary, context_estimate: small}
   - {id: B594, title: "per-attempt canary expiry is reported as a lane-wide deadline expiry", type: bugfix, component: canary, context_estimate: small}
   - {id: B595, title: "native R2 tail retries can start with any positive lane time when the candidate budget is disabled", type: bugfix, component: mutation, context_estimate: small}
   - {id: B596, title: "release gate should simulate the cmru CHANGES fold as a pre-flight", type: bugfix, component: gate, context_estimate: medium}
@@ -16248,6 +16249,8 @@ Second half (deliberate, hence documented rather than taken here): `tools/releas
 
 **Status: OPEN (filed 2026-11-27 from vbpub-core 2026-11-26 follow-up 1); severity: medium (diagnostic evidence).**
 
+**P5 design note.** `docs/DESIGN-CANARY-LIVENESS.md` compares verdict fields with progress-only diagnostics; recommendation: keep B593 diagnostics in canary progress records while v21 remains closed.
+
 **Symptom.** When the known-good control does not pass, the canary result retains its coarse outcome but not its reason code, the failing test identity or a bounded output tail. `CanaryAttempt` records `control_outcome` but no control reason code and no command output (`src/assay/verdict.py:1639,1651`; `expected_reason_code`/`observed_reason_code` describe the transformed half, and `control_reason_code`, computed at `src/assay/canary.py:793`, is used only for the contention classification); the isolated control call obtains a `control_unit` and then passes only `control_outcome` into the attempt (`src/assay/canary.py:773,811,932`). Established by reading; not reproduced with a live gate in this filing. The related absence of `command_started`/`command_finished` progress events for canary halves is already tracked by B064 (`src/assay/runner.py:3946-3950`) and is not duplicated here.
 
 **Wanted.** For a non-PASS control, preserve its reason code, the first failing test and a bounded tail of its output in the canary diagnostic evidence. Keep this evidence tied to the control half so it is distinguishable from a transformed-run failure.
@@ -16287,6 +16290,14 @@ Second half (deliberate, hence documented rather than taken here): `tools/releas
 **Wanted.** A control for the campaign-nearer case that fails on a wrong implementation, for example one that always keeps the input scope paired with an input-nearer assertion in the same test.
 
 **Close when.** Each of the two scope tests fails against at least one wrong implementation of the carry (base behaviour, or an unconditional copy of the input scope), and both run in a registered lane.
+
+## B612 — P5: R3 canary liveness or explicit unwatched disclosure
+
+**Status: OPEN (filed 2026-11-28); severity: medium.** Design note: `docs/DESIGN-CANARY-LIVENESS.md`. The recommendation is to retain `budget_per_attempt`, disclose that canary halves are unwatched, and carry B593's control diagnostics in progress records while the v21 verdict delta remains closed.
+
+**Wanted.** Implement the selected P5 option, including honest per-half watch/budget disclosure and the B593 control reason, first failing test and bounded output tail.
+
+**Close when.** The chosen behavior and evidence shape pass their registered lanes, the release docs state which canary halves are watched and which bound ends them, and B593's control diagnostic is preserved without misattributing transformed-run failure.
 
 ## B595 — native R2 tail retries can start with any positive lane time when the candidate budget is disabled
 
