@@ -957,7 +957,10 @@ a `/reload` keeps the live agent, so it re-delivers nothing. Only a synchronous 
 produce the durable report to main. Wake-ups follow the same rule.
 
 `send_message` writes atomically to `inbox/<to>/`; use `to=main` to reach the Claude main
-controller. Main uses the tested bridge, which replays claims after restart, prints a fixed
+controller. A shell outside pi uses `scripts/controller/pi-ctl-send.sh <role> <text|->`, which
+writes the same envelope atomically, prints the message id, and refuses an invalid name, an
+empty or oversized body, and a state root that is relative, inside the checkout or behind a
+symlink (sender `main` by default, `PI_CTL_SEND_FROM`/`--from` to change it). Main uses the tested bridge, which replays claims after restart, prints a fixed
 peer-message/not-operator-approval header and retains each claim until the explicit id ack:
 
 ```bash
