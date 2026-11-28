@@ -773,7 +773,7 @@ def run_isolated_canary(
             event.update(details)
         try:
             progress_stream.emit(event)
-        except Exception:
+        except OSError:
             # Diagnostic output is not allowed to affect the canary result.
             return
 
