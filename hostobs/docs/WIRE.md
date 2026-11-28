@@ -440,11 +440,11 @@ P5b-2d serves `current`, `subscribe` and `unsubscribe` at observe and operator. 
 | status | ✓ | ✓ | | ✓ (relayed) | JSON | M2 |
 | current | ✓ | ✓ | | | BLK | M2 |
 | subscribe / unsubscribe | ✓ | ✓ | | | BLK / JSON | M2 |
-| snapshot_at | ✓ | ✓ | | | BLK | M2 |
-| series_batch | ✓ | ✓ | | | BLK | M2 |
+| snapshot_at | reserved for M2 | reserved for M2 | | | BLK | M2 |
+| series_batch | reserved for M4 | reserved for M4 | | | BLK | M2 |
 | events | ✓ | ✓ | | M6, relayed by `act`; `unknown-verb` until then | JSON | M3 |
 | spans | | | | M6, relayed by `act`; `unknown-verb` until then | JSON | M6 |
-| procs | ✓ (no cmdline) | ✓ (+cmdline) | | | JSON | M2 |
+| procs | reserved for M5 (no cmdline) | reserved for M5 (+cmdline) | | | JSON | M2 |
 | annotate | | | ✓ | M6, relayed by `act`; `unknown-verb` until then | JSON | M3 |
 | export | | ✓ | | | BLK | M6 reserved |
 | resource-limits, window-open, window-close | | | ✓ | | JSON | M5 reserved |
