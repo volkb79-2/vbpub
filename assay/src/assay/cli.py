@@ -3636,7 +3636,7 @@ def _run_reserved(
             runner.write_verdict(verdict, destination)
         _emit_verdict_written(verdict)
         if args.verdict_json != "-":
-            _print_run_summary(verdict, out)
+            _print_run_summary(verdict, out, lane=lane)
             flex = getattr(args, "flex_options", None)
             if flex is not None and flex.carry_forward_sources:
                 store = (
@@ -4153,11 +4153,27 @@ def _run_reserved(
     return _finish(verdict)
 
 
-def _print_run_summary(verdict: Verdict, out: TextIO) -> None:
+def _print_run_summary(
+    verdict: Verdict, out: TextIO, *, lane: Lane | None = None
+) -> None:
     label = verdict.outcome.value
     if verdict.reason_code is not None:
         label = f"{label}/{verdict.reason_code.value}"
     print(f"{verdict.lane}: {label} (exit {verdict.exit_code})", file=out)
+    if (
+        lane is not None
+        and "R3" in lane.rigor
+        and lane.judge is not None
+        and lane.judge.canary is not None
+    ):
+        configured_budget = lane.judge.canary.budget_per_attempt
+        lane_budget = lane.budget
+        print(
+            "  R3 canary halves: unwatched; "
+            f"budget_per_attempt={configured_budget} and lane budget={lane_budget} "
+            "remain binding",
+            file=out,
+        )
     # (B146) A post-command refusal can replace the direct R0 claim with
     # NO_MEASUREMENT while retaining the exact command-failure diagnostic in
     # its detail. That recorded detail is enough to report the observed test

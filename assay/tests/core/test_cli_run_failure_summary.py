@@ -264,6 +264,66 @@ def test_a_passing_run_prints_no_failure_line(git_repo: GitRepo):
     assert "R0:" not in out
 
 
+def test_r3_summary_discloses_unwatched_halves_and_binding_budgets():
+    from types import SimpleNamespace
+
+    from assay.cli import _print_run_summary
+    from assay.errors import Outcome
+
+    verdict = SimpleNamespace(
+        lane="package",
+        outcome=Outcome.PASS,
+        reason_code=None,
+        exit_code=0,
+        commit="c" * 40,
+        argv_effective=("true",),
+        argv_modified=False,
+        claims=(),
+        result_stdout_tail=None,
+        result_stderr_tail=None,
+    )
+    r3_lane = SimpleNamespace(
+        rigor=("R0", "R3"),
+        budget="90s",
+        judge=SimpleNamespace(
+            canary=SimpleNamespace(budget_per_attempt="12s")
+        ),
+    )
+    out = io.StringIO()
+
+    _print_run_summary(verdict, out, lane=r3_lane)
+
+    assert "R3 canary halves: unwatched" in out.getvalue()
+    assert "budget_per_attempt=12s" in out.getvalue()
+    assert "lane budget=90s remain binding" in out.getvalue()
+
+
+def test_non_r3_summary_has_no_canary_disclosure():
+    from types import SimpleNamespace
+
+    from assay.cli import _print_run_summary
+    from assay.errors import Outcome
+
+    verdict = SimpleNamespace(
+        lane="package",
+        outcome=Outcome.PASS,
+        reason_code=None,
+        exit_code=0,
+        commit="c" * 40,
+        argv_effective=("true",),
+        argv_modified=False,
+        claims=(),
+        result_stdout_tail=None,
+        result_stderr_tail=None,
+    )
+    lane = SimpleNamespace(rigor=("R0",), budget="90s", judge=None)
+    out = io.StringIO()
+
+    _print_run_summary(verdict, out, lane=lane)
+
+    assert "R3 canary" not in out.getvalue()
+
+
 # --- the reader, one case per supported R0 producer ----------------------------
 
 PYTEST_OUTPUT = (
