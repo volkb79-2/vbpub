@@ -316,17 +316,43 @@ check_live_isolation() {
   fi
 
   local owner_file=$ROOT/outer-owner.lock owner_pid owner_ticks outer_ticks
-  local owner_command
-  owner_command=". '$SCRIPT_DIR/../lib.sh'; CONTROLLER_RUN_LOCK_PATH='$owner_file'; controller_run_record_owner"
-  TMUX_TMPDIR="$ROOT/tmux-owner" "$SOURCE" -c "$owner_command" > "$ROOT/owner-record.out" 2> "$errors" \
-    || fail 'could not write a run owner record from the real pi PID namespace'
+  local owner_command owner_child owner_fd poll
+  local release=$ROOT/owner-release
+  mkfifo "$release" || fail 'could not create the owner-record release FIFO'
+  exec {owner_fd}<>"$release" || fail 'could not open the owner-record release FIFO read-write'
+  owner_command=". '$SCRIPT_DIR/../lib.sh'; CONTROLLER_RUN_LOCK_PATH='$owner_file'; controller_run_record_owner; IFS= read -r -t 60 release_line < '$release'"
+  TMUX_TMPDIR="$ROOT/tmux-owner" "$SOURCE" -c "$owner_command" > "$ROOT/owner-record.out" 2> "$errors" &
+  owner_child=$!
+  for ((poll = 0; poll < 600; poll++)); do
+    [[ -s $owner_file ]] && break
+    sleep 0.1
+  done
+  if [[ ! -s $owner_file ]]; then
+    printf 'release\n' >&"$owner_fd"
+    wait "$owner_child" || :
+    fail 'the live PID namespace owner record did not appear within the bounded wait'
+  fi
   owner_pid=$(sed -n 's/.*pid=\([0-9]*\).*/\1/p' "$owner_file")
   owner_ticks=$(sed -n 's/.*pid_start_ticks=\([0-9]*\).*/\1/p' "$owner_file")
-  [[ $owner_pid =~ ^[0-9]+$ && $owner_pid -gt 2 && -r /proc/$owner_pid/stat ]] \
-    || fail 'owner record written inside pi PID namespace did not hold an outer procfs pid'
+  if [[ ! $owner_pid =~ ^[0-9]+$ || $owner_pid -le 2 || ! -r /proc/$owner_pid/stat ]]; then
+    printf 'release\n' >&"$owner_fd"
+    wait "$owner_child" || :
+    fail 'owner record written inside pi PID namespace did not hold an outer procfs pid'
+  fi
   outer_ticks=$(sed 's/^[^)]*) //' "/proc/$owner_pid/stat" | awk '{print $20}')
-  [[ $owner_ticks == "$outer_ticks" ]] \
-    || fail 'owner record start ticks did not match the outer procfs entry'
+  if [[ $owner_ticks != "$outer_ticks" ]]; then
+    printf 'release\n' >&"$owner_fd"
+    wait "$owner_child" || :
+    fail 'owner record start ticks did not match the outer procfs entry'
+  fi
+  printf 'release\n' >&"$owner_fd"
+  if wait "$owner_child"; then
+    :
+  else
+    rc=$?
+    fail "owner-record wrapper exited with status $rc after release"
+  fi
+  exec {owner_fd}>&-
 
   mkfifo "$release" || fail 'could not create the live-test child release FIFO'
   /bin/bash -c 'IFS= read -r release_line < "$1"' pidns-child "$release" &
