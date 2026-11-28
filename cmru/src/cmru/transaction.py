@@ -2960,9 +2960,8 @@ def retain_success_outputs(
         project_root = getattr(project, "project_root", None)
         if project_root is None:
             raise RuntimeError(f"{name}: cannot retain outputs without project_root")
-        project_root = Path(project_root)
-        _mkdir_below(project_root, project_root, "validate retained release project root")
-        project_root = project_root.resolve()
+        declared_project_root = Path(project_root)
+        project_root = declared_project_root.resolve()
         relative = project_root.relative_to(workspace.repo_root.resolve())
         child_root = workspace.path / relative
         source_logs = child_root / "logs"
@@ -3035,6 +3034,14 @@ def retain_success_outputs(
                 if target.exists() or target.is_symlink():
                     raise RuntimeError(f"{name}: evidence destination already exists: {target}")
                 evidence_sources.append((relative.as_posix(), source, target, kind))
+
+        # Resolving hides a symlinked root, so check the declared path -- but only
+        # when this project has something to write below it.
+        if (retain_logs and source_logs.exists()) or attempt_artifacts or attempt_evidence:
+            _mkdir_below(
+                declared_project_root, declared_project_root,
+                "validate retained release project root",
+            )
 
         log_parent = target_logs.parent
         log_parent_existed = log_parent.exists()

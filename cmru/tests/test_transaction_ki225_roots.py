@@ -128,12 +128,19 @@ def test_build_retention_refuses_non_directory_project_root(monkeypatch, tmp_pat
 def test_release_retention_refuses_non_directory_project_root(tmp_path, root_kind):
     root = _repo(tmp_path)
     project_root = root / "demo"
+    # The link target stays inside the repository: an outside one is refused by
+    # the path containment check before any directory root is considered.
+    relative = Path("demo")
     if root_kind == "symlink":
-        target = tmp_path / "real-project"
+        target = root / "real-project"
         target.mkdir()
         project_root.symlink_to(target, target_is_directory=True)
+        relative = Path("real-project")
     else:
         project_root.write_text("file", encoding="utf-8")
+    child_logs = root / "candidate" / relative / "logs"
+    child_logs.mkdir(parents=True)
+    (child_logs / "release.log").write_text("log", encoding="utf-8")
     workspace = _workspace(root)
     project = SimpleNamespace(project_root=project_root)
 
@@ -142,6 +149,22 @@ def test_release_retention_refuses_non_directory_project_root(tmp_path, root_kin
             root, workspace, {"demo": project}, {"demo": "demo-v1"},
             retain_logs=True, retain_artifacts=True,
         )
+
+    assert (child_logs / "release.log").read_text(encoding="utf-8") == "log"
+
+
+def test_release_retention_skips_a_missing_root_when_there_is_nothing_to_retain(tmp_path):
+    root = _repo(tmp_path)
+    project_root = root / "demo"
+    project = SimpleNamespace(project_root=project_root)
+
+    retained = transaction.retain_success_outputs(
+        root, _workspace(root), {"demo": project}, {"demo": "demo-v1"},
+        retain_logs=True, retain_artifacts=True,
+    )
+
+    assert retained == []
+    assert not project_root.exists()
 
 
 def test_release_retention_does_not_recreate_root_removed_between_parent_creations(
