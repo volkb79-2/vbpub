@@ -6,6 +6,7 @@ All tests are unit-only: no real network, no real SSH, no real Vault.
 
 from __future__ import annotations
 
+import io
 import os
 import stat
 import sys
@@ -449,6 +450,816 @@ class TestSshExecSubprocess:
         assert "-t" not in captured_cmd
         # Must include BatchMode=yes for non-interactive
         assert any("BatchMode=yes" in a for a in captured_cmd)
+
+    def test_empty_stdin_probe_opens_pinned_shell_without_command_or_pty(self, monkeypatch):
+        monkeypatch.delenv("CIU_SSH_TRANSPORT", raising=False)
+        captured = {}
+
+        class FakeProcess:
+            def __init__(self, stdout_bytes, stderr_bytes):
+                self.stdin = io.BytesIO()
+                self.stdout = self._pipe_stream(stdout_bytes)
+                self.stderr = self._pipe_stream(stderr_bytes)
+
+            @staticmethod
+            def _pipe_stream(data):
+                read_fd, write_fd = os.pipe()
+                if data:
+                    os.write(write_fd, data)
+                os.close(write_fd)
+                return os.fdopen(read_fd, "rb", buffering=0)
+
+            def poll(self):
+                return 3
+
+            def wait(self, timeout=None):
+                return 3
+
+            def kill(self):
+                pytest.fail("the finite fixture output must not signal a process")
+
+        def fake_popen(argv, **kwargs):
+            captured["argv"] = argv
+            captured["kwargs"] = kwargs
+            process = FakeProcess(b"fixture-frame", b"")
+            captured["process"] = process
+            return process
+
+        monkeypatch.setattr(tssh_mod.subprocess, "Popen", fake_popen)
+        status, stdout, stderr = tssh_mod._ssh_probe_subprocess(
+            "host.example.invalid", "deploy", "2222", "/fake/key", "/fake/known",
+            timeout=120, max_output=64,
+        )
+
+        argv = captured["argv"]
+        assert argv[-1] == "deploy@host.example.invalid"
+        assert "-t" not in argv and "-tt" not in argv
+        assert "StrictHostKeyChecking=yes" in argv
+        assert "UserKnownHostsFile=/fake/known" in argv
+        assert captured["kwargs"] == {
+            "stdin": tssh_mod.subprocess.PIPE,
+            "stdout": tssh_mod.subprocess.PIPE,
+            "stderr": tssh_mod.subprocess.PIPE,
+        }
+        assert captured["process"].stdin.closed
+        assert (status, stdout, stderr) == (3, b"fixture-frame", b"")
+
+    @pytest.mark.parametrize("output_stream", ["stdout", "stderr"])
+    def test_subprocess_empty_stdin_probe_refuses_output_over_the_limit(
+        self, monkeypatch, output_stream,
+    ):
+        class FakeProcess:
+            def __init__(self):
+                self.stdin = io.BytesIO()
+                self.stdout = self._pipe_stream(b"12345" if output_stream == "stdout" else b"")
+                self.stderr = self._pipe_stream(b"12345" if output_stream == "stderr" else b"")
+                self.killed = 0
+
+            @staticmethod
+            def _pipe_stream(data):
+                read_fd, write_fd = os.pipe()
+                if data:
+                    os.write(write_fd, data)
+                os.close(write_fd)
+                return os.fdopen(read_fd, "rb", buffering=0)
+
+            def poll(self):
+                return 3
+
+            def wait(self, timeout=None):
+                return 3
+
+            def kill(self):
+                self.killed += 1
+
+        process = FakeProcess()
+        monkeypatch.setattr(
+            tssh_mod.subprocess, "Popen", lambda *_args, **_kwargs: process,
+        )
+
+        with pytest.raises(ValueError, match="output exceeded 4 bytes"):
+            tssh_mod._ssh_probe_subprocess(
+                "host.example.invalid", "deploy", "22", "/fake/key", None,
+                timeout=120, max_output=4,
+            )
+        assert process.killed == 1
+        assert process.stdout.closed and process.stderr.closed
+
+    def test_subprocess_empty_stdin_probe_timeout_uses_fake_clock_and_child(
+        self, monkeypatch,
+    ):
+        class FakeProcess:
+            def __init__(self):
+                self.stdin = io.BytesIO()
+                self.stdout = io.BytesIO()
+                self.stderr = io.BytesIO()
+                self.killed = 0
+                self.waited = 0
+
+            def poll(self):
+                return None
+
+            def wait(self, timeout=None):
+                self.waited += 1
+                return 3
+
+            def kill(self):
+                self.killed += 1
+
+        class EmptySelector:
+            def __init__(self):
+                self.entries = {}
+
+            def register(self, stream, _events, data):
+                self.entries[stream] = data
+
+            def get_map(self):
+                return self.entries
+
+            def select(self, _timeout):
+                return []
+
+            def close(self):
+                pass
+
+        process = FakeProcess()
+        selector = EmptySelector()
+        monkeypatch.setattr(
+            tssh_mod.subprocess, "Popen", lambda *_args, **_kwargs: process,
+        )
+        monkeypatch.setattr(
+            tssh_mod.selectors, "DefaultSelector", lambda: selector,
+        )
+        ticks = iter((0.0, 0.0, 120.0))
+        monkeypatch.setattr(tssh_mod, "time", SimpleNamespace(monotonic=lambda: next(ticks)))
+
+        with pytest.raises(TimeoutError, match="SSH probe exceeded 120s"):
+            tssh_mod._ssh_probe_subprocess(
+                "host.example.invalid", "deploy", "22", "/fake/key", None,
+                timeout=120, max_output=64,
+            )
+
+        assert process.killed == 2  # timeout and defensive finally cleanup
+        assert process.waited == 2
+        assert process.stdout.closed and process.stderr.closed
+
+    def test_subprocess_empty_stdin_probe_wraps_wait_timeout_deterministically(
+        self, monkeypatch,
+    ):
+        class FakeProcess:
+            def __init__(self):
+                self.stdin = None
+                self.stdout = None
+                self.stderr = None
+                self.killed = 0
+                self.waited = 0
+
+            def poll(self):
+                return 3 if self.waited > 1 else None
+
+            def wait(self, timeout=None):
+                self.waited += 1
+                if self.waited == 1:
+                    raise tssh_mod.subprocess.TimeoutExpired("ssh-fixture", timeout)
+                return 3
+
+            def kill(self):
+                self.killed += 1
+
+        process = FakeProcess()
+        monkeypatch.setattr(
+            tssh_mod.subprocess, "Popen", lambda *_args, **_kwargs: process,
+        )
+        ticks = iter((0.0, 0.0))
+        monkeypatch.setattr(tssh_mod, "time", SimpleNamespace(monotonic=lambda: next(ticks)))
+
+        with pytest.raises(TimeoutError, match="SSH probe exceeded 120s"):
+            tssh_mod._ssh_probe_subprocess(
+                "host.example.invalid", "deploy", "22", "/fake/key", None,
+                timeout=120, max_output=64,
+            )
+        assert process.killed == 1
+        assert process.waited == 2
+
+    def test_subprocess_empty_stdin_probe_accepts_absent_streams(self, monkeypatch):
+        class NoStreamProcess:
+            stdin = None
+            stdout = None
+            stderr = None
+
+            def poll(self):
+                return 3
+
+            def wait(self, timeout=None):
+                assert timeout == 120
+                return 3
+
+        monkeypatch.setattr(
+            tssh_mod.subprocess, "Popen",
+            lambda *_args, **_kwargs: NoStreamProcess(),
+        )
+        ticks = iter((0.0, 0.0))
+        monkeypatch.setattr(tssh_mod, "time", SimpleNamespace(monotonic=lambda: next(ticks)))
+
+        assert tssh_mod._ssh_probe_subprocess(
+            "host.example.invalid", "deploy", "22", "/fake/key", None,
+                timeout=120, max_output=64,
+        ) == (3, b"", b"")
+
+    def test_subprocess_empty_stdin_probe_refuses_when_drain_deadline_is_spent(
+        self, monkeypatch,
+    ):
+        class NoStreamProcess:
+            stdin = None
+            stdout = None
+            stderr = None
+
+            def __init__(self):
+                self.killed = 0
+                self.waited = 0
+
+            def poll(self):
+                return None
+
+            def wait(self, timeout=None):
+                self.waited += 1
+                return 3
+
+            def kill(self):
+                self.killed += 1
+
+        process = NoStreamProcess()
+        monkeypatch.setattr(
+            tssh_mod.subprocess, "Popen", lambda *_args, **_kwargs: process,
+        )
+        ticks = iter((0.0, 120.0))
+        monkeypatch.setattr(tssh_mod, "time", SimpleNamespace(monotonic=lambda: next(ticks)))
+
+        with pytest.raises(TimeoutError, match="SSH probe exceeded 120s"):
+            tssh_mod._ssh_probe_subprocess(
+                "host.example.invalid", "deploy", "22", "/fake/key", None,
+                timeout=120, max_output=64,
+            )
+        assert process.killed == 2
+        assert process.waited == 2
+
+    def test_empty_stdin_probe_wrapper_requires_pinned_identity_and_passes_bounds(
+        self, monkeypatch, tmp_path,
+    ):
+        captured = {}
+        monkeypatch.delenv("CIU_SSH_TRANSPORT", raising=False)
+        monkeypatch.setattr(tssh_mod, "resolve_key", lambda *_args: "/fake/key")
+        monkeypatch.setattr(tssh_mod, "_known_hosts_file", lambda _cfg: "/fake/known")
+
+        def fake_probe(host, user, port, key, known_hosts, **kwargs):
+            captured.update({
+                "host": host, "user": user, "port": port, "key": key,
+                "known_hosts": known_hosts, **kwargs,
+            })
+            return 3, b"frame", b""
+
+        monkeypatch.setattr(tssh_mod, "_ssh_probe_subprocess", fake_probe)
+        host_cfg = {
+            "ssh_host": "host.example.invalid", "ssh_user": "deploy", "ssh_port": 2222,
+            "known_host": "ssh-ed25519 AAAA fixture", "ssh_key": "/fake/key",
+        }
+        result = tssh_mod.ssh_probe_empty_stdin(
+            host_cfg, config={}, repo_root=tmp_path,
+        )
+
+        assert result == (3, b"frame", b"")
+        assert captured == {
+            "host": "host.example.invalid", "user": "deploy", "port": "2222",
+            "key": "/fake/key", "known_hosts": "/fake/known", "timeout": 20,
+            "max_output": 64 * 1024 + 4,
+        }
+        with pytest.raises(ValueError, match="accepts only empty input"):
+            tssh_mod.ssh_probe_empty_stdin(
+                host_cfg, config={}, repo_root=tmp_path, input_data=b"request",
+            )
+
+    @pytest.mark.parametrize(("host_cfg", "input_data", "timeout", "max_output", "needle"), [
+        ({"ssh_user": "deploy", "known_host": "fixture"}, b"", 20, 64, "ssh_host"),
+        ({"ssh_host": "host.example.invalid"}, b"", 20, 64, "known_host"),
+        ({"ssh_host": "host.example.invalid", "known_host": "fixture"},
+         b"request", 20, 64, "empty input"),
+        ({"ssh_host": "host.example.invalid", "known_host": "fixture"},
+         b"", 0, 64, "must be positive"),
+        ({"ssh_host": "host.example.invalid", "known_host": "fixture"},
+         b"", 20, 0, "must be positive"),
+    ])
+    def test_empty_stdin_probe_rejects_invalid_request_before_key_resolution(
+        self, monkeypatch, tmp_path, host_cfg, input_data, timeout, max_output, needle,
+    ):
+        monkeypatch.setattr(
+            tssh_mod, "resolve_key",
+            lambda *_args: pytest.fail("invalid probe input must fail before key lookup"),
+        )
+
+        with pytest.raises(ValueError, match=needle):
+            tssh_mod.ssh_probe_empty_stdin(
+                host_cfg, config={}, repo_root=tmp_path, input_data=input_data,
+                timeout=timeout, max_output=max_output,
+            )
+
+    def test_empty_stdin_probe_falls_back_when_paramiko_is_unavailable(
+        self, monkeypatch, tmp_path,
+    ):
+        monkeypatch.setenv("CIU_SSH_TRANSPORT", "paramiko")
+        monkeypatch.setitem(sys.modules, "paramiko", None)
+        monkeypatch.setattr(tssh_mod, "resolve_key", lambda *_args: "/fixture/key")
+        monkeypatch.setattr(tssh_mod, "_known_hosts_file", lambda _cfg: "/fixture/known")
+        called = {}
+
+        def subprocess_probe(*args, **kwargs):
+            called["args"] = args
+            called["kwargs"] = kwargs
+            return 3, b"frame", b""
+
+        monkeypatch.setattr(tssh_mod, "_ssh_probe_subprocess", subprocess_probe)
+        result = tssh_mod.ssh_probe_empty_stdin({
+            "ssh_host": "host.example.invalid", "ssh_key": "/fixture/key",
+            "known_host": "ssh-ed25519 fixture",
+        }, config={}, repo_root=tmp_path)
+
+        assert result == (3, b"frame", b"")
+        assert called["args"] == (
+            "host.example.invalid", "root", "22", "/fixture/key", "/fixture/known",
+        )
+
+    def test_empty_stdin_probe_removes_vault_and_known_hosts_tempfiles(
+        self, monkeypatch, tmp_path,
+    ):
+        key_path = tmp_path / "vault-key"
+        known_path = tmp_path / "known-hosts"
+        key_path.write_text("fixture private key", encoding="utf-8")
+        known_path.write_text("fixture pinned host", encoding="utf-8")
+        monkeypatch.delenv("CIU_SSH_TRANSPORT", raising=False)
+        monkeypatch.setattr(tssh_mod, "resolve_key", lambda *_args: str(key_path))
+        monkeypatch.setattr(tssh_mod, "_known_hosts_file", lambda _cfg: str(known_path))
+        monkeypatch.setattr(
+            tssh_mod, "_ssh_probe_subprocess", lambda *a, **k: (3, b"frame", b""),
+        )
+
+        result = tssh_mod.ssh_probe_empty_stdin({
+            "ssh_host": "host.example.invalid", "ssh_key": "ASK_VAULT:fixture",
+            "known_host": "ssh-ed25519 fixture",
+        }, config={}, repo_root=tmp_path)
+
+        assert result == (3, b"frame", b"")
+        assert not key_path.exists()
+        assert not known_path.exists()
+
+    def test_empty_stdin_probe_swallows_tempfile_cleanup_errors(self, monkeypatch,
+                                                                tmp_path):
+        key_path = tmp_path / "vault-key"
+        known_path = tmp_path / "known-hosts"
+        key_path.write_text("fixture private key", encoding="utf-8")
+        known_path.write_text("fixture pinned host", encoding="utf-8")
+        real_unlink = os.unlink
+        monkeypatch.delenv("CIU_SSH_TRANSPORT", raising=False)
+        monkeypatch.setattr(tssh_mod, "resolve_key", lambda *_args: str(key_path))
+        monkeypatch.setattr(tssh_mod, "_known_hosts_file", lambda _cfg: str(known_path))
+        monkeypatch.setattr(
+            tssh_mod, "_ssh_probe_subprocess", lambda *a, **k: (3, b"frame", b""),
+        )
+
+        def refuse_fixture_cleanup(path):
+            if path in {str(key_path), str(known_path)}:
+                raise OSError("fixture cleanup refusal")
+            return real_unlink(path)
+
+        with monkeypatch.context() as cleanup_patch:
+            cleanup_patch.setattr(tssh_mod.os, "unlink", refuse_fixture_cleanup)
+            result = tssh_mod.ssh_probe_empty_stdin({
+                "ssh_host": "host.example.invalid", "ssh_key": "ASK_VAULT:fixture",
+                "known_host": "ssh-ed25519 fixture",
+            }, config={}, repo_root=tmp_path)
+
+        assert result == (3, b"frame", b"")
+        assert key_path.is_file() and known_path.is_file()
+        real_unlink(key_path)
+        real_unlink(known_path)
+
+    def test_paramiko_empty_stdin_probe_uses_shell_without_pty(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("CIU_SSH_TRANSPORT", "paramiko")
+        monkeypatch.setattr(tssh_mod, "resolve_key", lambda *_args: "/fake/key")
+        monkeypatch.setattr(tssh_mod, "_known_hosts_file", lambda _cfg: "/fake/known")
+        captured = {}
+
+        class FakeChannel:
+            def __init__(self):
+                self.chunks = [b"fixture-frame"]
+                self.write_shutdown = False
+
+            def invoke_shell(self):
+                captured["invoke_shell"] = True
+
+            def shutdown_write(self):
+                self.write_shutdown = True
+
+            def recv_ready(self):
+                return bool(self.chunks)
+
+            def recv(self, _size):
+                return self.chunks.pop(0)
+
+            def recv_stderr_ready(self):
+                return False
+
+            def exit_status_ready(self):
+                return not self.chunks
+
+            def recv_exit_status(self):
+                return 3
+
+            def get_pty(self):
+                pytest.fail("restricted probe must not request a PTY")
+
+            def close(self):
+                captured["channel_closed"] = True
+
+        channel = FakeChannel()
+
+        class FakeTransport:
+            def open_session(self, *, timeout):
+                captured["open_session_timeout"] = timeout
+                return channel
+
+        class FakeClient:
+            def set_missing_host_key_policy(self, policy):
+                captured["host_key_policy"] = policy
+
+            def load_host_keys(self, path):
+                captured["known_hosts"] = path
+
+            def connect(self, **kwargs):
+                captured["connect"] = kwargs
+
+            def get_transport(self):
+                return FakeTransport()
+
+            def close(self):
+                captured["closed"] = True
+
+        client = FakeClient()
+        fake_paramiko = SimpleNamespace(SSHClient=lambda: client, RejectPolicy=lambda: "reject")
+        monkeypatch.setitem(sys.modules, "paramiko", fake_paramiko)
+        host_cfg = {
+            "ssh_host": "host.example.invalid", "ssh_user": "deploy", "ssh_port": 22,
+            "known_host": "ssh-ed25519 AAAA fixture", "ssh_key": "/fake/key",
+        }
+
+        result = tssh_mod.ssh_probe_empty_stdin(
+            host_cfg, config={}, repo_root=tmp_path,
+        )
+
+        assert result == (3, b"fixture-frame", b"")
+        assert channel.write_shutdown
+        assert captured["invoke_shell"]
+        assert captured["open_session_timeout"] == 20
+        assert captured["known_hosts"] == "/fake/known"
+        assert captured["host_key_policy"] == "reject"
+        assert captured["channel_closed"]
+        assert captured["connect"] == {
+            "hostname": "host.example.invalid", "port": 22, "username": "deploy",
+            "key_filename": "/fake/key", "timeout": 20, "banner_timeout": 20,
+            "auth_timeout": 20,
+        }
+        assert captured["closed"]
+
+    @pytest.mark.parametrize(("stream", "max_output"), [
+        ("stdout", 4), ("stderr", 4), ("stdout", 64), ("stderr", 64),
+    ])
+    def test_paramiko_empty_stdin_probe_bounds_data_drained_after_exit_status(
+        self, monkeypatch, stream, max_output,
+    ):
+        captured = {}
+
+        class LateDataChannel:
+            def __init__(self):
+                self.data = []
+                self.errors = []
+                self.final_data_queued = False
+
+            def invoke_shell(self):
+                pass
+
+            def shutdown_write(self):
+                pass
+
+            def recv_ready(self):
+                return bool(self.data)
+
+            def recv_stderr_ready(self):
+                return bool(self.errors)
+
+            def exit_status_ready(self):
+                if not self.final_data_queued:
+                    output = self.data if stream == "stdout" else self.errors
+                    output.append(b"12345")
+                    self.final_data_queued = True
+                return True
+
+            def recv(self, _size):
+                return self.data.pop(0)
+
+            def recv_stderr(self, _size):
+                return self.errors.pop(0)
+
+            def recv_exit_status(self):
+                return 3
+
+            def close(self):
+                captured["channel_closed"] = True
+
+        channel = LateDataChannel()
+
+        class FakeTransport:
+            def open_session(self, *, timeout):
+                return channel
+
+        class FakeClient:
+            def set_missing_host_key_policy(self, _policy):
+                pass
+
+            def load_host_keys(self, _path):
+                pass
+
+            def connect(self, **_kwargs):
+                pass
+
+            def get_transport(self):
+                return FakeTransport()
+
+            def close(self):
+                captured["client_closed"] = True
+
+        monkeypatch.setitem(
+            sys.modules, "paramiko",
+            SimpleNamespace(SSHClient=FakeClient, RejectPolicy=lambda: "reject"),
+        )
+
+        if max_output == 4:
+            with pytest.raises(ValueError, match="output exceeded 4 bytes"):
+                tssh_mod._ssh_probe_paramiko(
+                    "host.example.invalid", "deploy", 22, "/fake/key", "/fake/known",
+                    timeout=120, max_output=max_output,
+                )
+        else:
+            expected = (3, b"12345", b"") if stream == "stdout" else (
+                3, b"", b"12345",
+            )
+            assert tssh_mod._ssh_probe_paramiko(
+                "host.example.invalid", "deploy", 22, "/fake/key", "/fake/known",
+                timeout=120, max_output=max_output,
+            ) == expected
+
+    @pytest.mark.parametrize("stream", ["stdout", "stderr"])
+    def test_paramiko_empty_stdin_probe_reads_each_output_stream_without_pty(
+        self, monkeypatch, stream,
+    ):
+        class OutputChannel:
+            def __init__(self):
+                self.chunks = [b"fixture-output"] if stream == "stdout" else []
+                self.errors = [b"fixture-error"] if stream == "stderr" else []
+                self.closed = False
+
+            def invoke_shell(self):
+                pass
+
+            def shutdown_write(self):
+                pass
+
+            def recv_ready(self):
+                return bool(self.chunks)
+
+            def recv_stderr_ready(self):
+                return bool(self.errors)
+
+            def recv(self, _size):
+                return self.chunks.pop(0)
+
+            def recv_stderr(self, _size):
+                return self.errors.pop(0)
+
+            def exit_status_ready(self):
+                return not self.chunks and not self.errors
+
+            def recv_exit_status(self):
+                return 3
+
+            def close(self):
+                self.closed = True
+
+        channel = OutputChannel()
+
+        class FakeTransport:
+            def open_session(self, *, timeout):
+                return channel
+
+        class FakeClient:
+            def set_missing_host_key_policy(self, _policy):
+                pass
+
+            def load_host_keys(self, _path):
+                pytest.fail("None known-hosts path must skip loading a file")
+
+            def connect(self, **_kwargs):
+                pass
+
+            def get_transport(self):
+                return FakeTransport()
+
+            def close(self):
+                self.closed = True
+
+        client = FakeClient()
+        monkeypatch.setitem(sys.modules, "paramiko", SimpleNamespace(
+            SSHClient=lambda: client, RejectPolicy=lambda: "reject",
+        ))
+
+        result = tssh_mod._ssh_probe_paramiko(
+            "host.example.invalid", "deploy", 22, "/fake/key", None,
+            timeout=120, max_output=64,
+        )
+
+        expected = (3, b"fixture-output", b"") if stream == "stdout" else (
+            3, b"", b"fixture-error",
+        )
+        assert result == expected
+        assert channel.closed and client.closed
+
+    def test_paramiko_empty_stdin_probe_refuses_oversized_live_output(self, monkeypatch):
+        class OversizedChannel:
+            def __init__(self):
+                self.closed = False
+
+            def invoke_shell(self):
+                pass
+
+            def shutdown_write(self):
+                pass
+
+            def recv_ready(self):
+                return True
+
+            def recv(self, _size):
+                return b"12345"
+
+            def recv_stderr_ready(self):
+                return False
+
+            def exit_status_ready(self):
+                return False
+
+            def close(self):
+                self.closed = True
+
+        channel = OversizedChannel()
+
+        class FakeTransport:
+            def open_session(self, *, timeout):
+                return channel
+
+        class FakeClient:
+            def set_missing_host_key_policy(self, _policy):
+                pass
+
+            def connect(self, **_kwargs):
+                pass
+
+            def get_transport(self):
+                return FakeTransport()
+
+            def close(self):
+                self.closed = True
+
+        client = FakeClient()
+        monkeypatch.setitem(sys.modules, "paramiko", SimpleNamespace(
+            SSHClient=lambda: client, RejectPolicy=lambda: "reject",
+        ))
+
+        with pytest.raises(ValueError, match="output exceeded 4 bytes"):
+            tssh_mod._ssh_probe_paramiko(
+                "host.example.invalid", "deploy", 22, "/fake/key", None,
+                timeout=120, max_output=4,
+            )
+        assert channel.closed and client.closed
+
+    def test_paramiko_empty_stdin_probe_times_out_without_waiting_in_real_time(
+        self, monkeypatch,
+    ):
+        class WaitingChannel:
+            def __init__(self):
+                self.closed = False
+
+            def invoke_shell(self):
+                pass
+
+            def shutdown_write(self):
+                pass
+
+            def recv_ready(self):
+                return False
+
+            def recv_stderr_ready(self):
+                return False
+
+            def exit_status_ready(self):
+                return False
+
+            def close(self):
+                self.closed = True
+
+        channel = WaitingChannel()
+
+        class FakeTransport:
+            def open_session(self, *, timeout):
+                return channel
+
+        class FakeClient:
+            def set_missing_host_key_policy(self, _policy):
+                pass
+
+            def connect(self, **_kwargs):
+                pass
+
+            def get_transport(self):
+                return FakeTransport()
+
+            def close(self):
+                self.closed = True
+
+        client = FakeClient()
+        monkeypatch.setitem(sys.modules, "paramiko", SimpleNamespace(
+            SSHClient=lambda: client, RejectPolicy=lambda: "reject",
+        ))
+        ticks = iter((0.0, 0.0, 120.0))
+        monkeypatch.setattr(tssh_mod, "time", SimpleNamespace(monotonic=lambda: next(ticks)))
+        monkeypatch.setitem(sys.modules, "select", SimpleNamespace(
+            select=lambda *_args: ([], [], []),
+        ))
+
+        with pytest.raises(TimeoutError, match="SSH probe exceeded 120s"):
+            tssh_mod._ssh_probe_paramiko(
+                "host.example.invalid", "deploy", 22, "/fake/key", None,
+                timeout=120, max_output=64,
+            )
+        assert channel.closed and client.closed
+
+    def test_paramiko_empty_stdin_probe_wraps_connect_failure_and_closes_client(
+        self, monkeypatch,
+    ):
+        class FakeClient:
+            def set_missing_host_key_policy(self, _policy):
+                pass
+
+            def connect(self, **_kwargs):
+                raise RuntimeError("fixture handshake failure")
+
+            def close(self):
+                self.closed = True
+
+        client = FakeClient()
+        monkeypatch.setitem(sys.modules, "paramiko", SimpleNamespace(
+            SSHClient=lambda: client, RejectPolicy=lambda: "reject",
+        ))
+
+        with pytest.raises(OSError, match="SSH probe failed: fixture handshake failure"):
+            tssh_mod._ssh_probe_paramiko(
+                "host.example.invalid", "deploy", 22, "/fake/key", None,
+                timeout=120, max_output=64,
+            )
+        assert client.closed
+
+    def test_paramiko_empty_stdin_probe_refuses_missing_transport_and_closes_client(
+        self, monkeypatch,
+    ):
+        class FakeClient:
+            def set_missing_host_key_policy(self, _policy):
+                pass
+
+            def connect(self, **_kwargs):
+                pass
+
+            def get_transport(self):
+                return None
+
+            def close(self):
+                self.closed = True
+
+        client = FakeClient()
+        monkeypatch.setitem(sys.modules, "paramiko", SimpleNamespace(
+            SSHClient=lambda: client, RejectPolicy=lambda: "reject",
+        ))
+
+        with pytest.raises(OSError, match="SSH transport did not start"):
+            tssh_mod._ssh_probe_paramiko(
+                "host.example.invalid", "deploy", 22, "/fake/key", None,
+                timeout=120, max_output=64,
+            )
+        assert client.closed
 
     def test_subprocess_call_interactive_adds_dash_t(self, tmp_path, monkeypatch):
         monkeypatch.delenv("CIU_SSH_INSECURE_TOFU", raising=False)

@@ -2363,7 +2363,7 @@ The manifest records registered syntax. The review catalog owns expected behavio
 | route:entrypoint:ciu/governance/ksm | invocation | governance ksm | command route; parser handles remaining tokens |  | Build the KSM shim into .ciu/ksm/ (S15.17, CIU-17). [mutating] | Build the KSM shim into .ciu/ksm/ (S15.17, CIU-17). | MODIFICATION | mutating | false | {} | [{"behavior": ["mutating"], "confirmation": true, "description": "Resource-governance helpers (S15): KSM shim, IOPS baseline.", "group": "MAINTENANCE", "id": null, "name": "governance", "summary": "Resource-governance helpers (S15): KSM shim, IOPS baseline. [mutating]", "synopsis": null}] | <entrypoint>: allow_abbrev=no, prefix_chars='-', fromfile_prefix_chars=None, negative_number_matcher={'pattern': '-\\.?\\d', 'flags': 32}, has_negative_number_optionals=no, negative_number_matcher_custom=no; governance: allow_abbrev=no, prefix_chars='-', fromfile_prefix_chars=None, negative_number_matcher={'pattern': '-\\.?\\d', 'flags': 32}, has_negative_number_optionals=no, negative_number_matcher_custom=no; governance ksm: allow_abbrev=no, prefix_chars='-', fromfile_prefix_chars=None, negative_number_matcher={'pattern': '-\\.?\\d', 'flags': 32}, has_negative_number_optionals=no, negative_number_matcher_custom=no | false | ["option:route:entrypoint:ciu/governance/ksm/--ksm.action", "option:route:entrypoint:ciu/governance/ksm/--log-prefix-time-short.action", "option:route:entrypoint:ciu/governance/ksm/--no-ksm.action"] | complete |
 | route:entrypoint:ciu/graph | invocation | graph | command route; parser handles remaining tokens |  | Render the requires/provides dependency graph to stdout (never deploys). | Render the requires/provides dependency graph to stdout (never deploys). | EXPLORATION |  | false | {} | [] | <entrypoint>: allow_abbrev=no, prefix_chars='-', fromfile_prefix_chars=None, negative_number_matcher={'pattern': '-\\.?\\d', 'flags': 32}, has_negative_number_optionals=no, negative_number_matcher_custom=no; graph: allow_abbrev=no, prefix_chars='-', fromfile_prefix_chars=None, negative_number_matcher={'pattern': '-\\.?\\d', 'flags': 32}, has_negative_number_optionals=no, negative_number_matcher_custom=no | false | ["option:route:entrypoint:ciu/graph/--ksm.action", "option:route:entrypoint:ciu/graph/--log-prefix-time-short.action", "option:route:entrypoint:ciu/graph/--no-ksm.action"] | complete |
 | route:entrypoint:ciu/host | delegate-group | host | delegated group; child CLI parses remaining tokens | delegated: route:entrypoint:ciu/host/enroll | Remote host inventory (.ciu.hosts.toml). [mutating] | Remote host inventory (.ciu.hosts.toml). | AUTHENTICATION / SETUP | mutating | true | {} | [] | <entrypoint>: allow_abbrev=no, prefix_chars='-', fromfile_prefix_chars=None, negative_number_matcher={'pattern': '-\\.?\\d', 'flags': 32}, has_negative_number_optionals=no, negative_number_matcher_custom=no | false | [] | complete |
-| route:entrypoint:ciu/host/enroll | invocation | host enroll | command route; parser handles remaining tokens |  | Enroll a bare remote host into .ciu.hosts.toml (S14.7 / CIU-93). Two steps, one verb: without --ssh-host it generates an ed25519 key pair and PRINTS the public key plus the one command the target's admin runs (nothing is written to the inventory); with --ssh-host/--fingerprint it verifies the host key, proves the login with `ciu version` on the target, and only then writes [deploy.hosts.<name>]. Opt-in --forced-command installs fleetd-agent's fixed forced-command entry; CIU_SSH_INSECURE_TOFU is never set by this verb. [mutating] | Enroll a bare remote host into .ciu.hosts.toml (S14.7 / CIU-93). Two steps, one verb: without --ssh-host it generates an ed25519 key pair and PRINTS the public key plus the one command the target's admin runs (nothing is written to the inventory); with --ssh-host/--fingerprint it verifies the host key, proves the login with `ciu version` on the target, and only then writes [deploy.hosts.<name>]. Opt-in --forced-command installs fleetd-agent's fixed forced-command entry; CIU_SSH_INSECURE_TOFU is never set by this verb. | MODIFICATION | mutating | false | {} | [{"behavior": ["mutating"], "confirmation": true, "description": "Remote host inventory (.ciu.hosts.toml).", "group": "AUTHENTICATION / SETUP", "id": null, "name": "host", "summary": "Remote host inventory (.ciu.hosts.toml). [mutating]", "synopsis": null}] | <entrypoint>: allow_abbrev=no, prefix_chars='-', fromfile_prefix_chars=None, negative_number_matcher={'pattern': '-\\.?\\d', 'flags': 32}, has_negative_number_optionals=no, negative_number_matcher_custom=no; host: allow_abbrev=no, prefix_chars='-', fromfile_prefix_chars=None, negative_number_matcher={'pattern': '-\\.?\\d', 'flags': 32}, has_negative_number_optionals=no, negative_number_matcher_custom=no; host enroll: allow_abbrev=no, prefix_chars='-', fromfile_prefix_chars=None, negative_number_matcher={'pattern': '-\\.?\\d', 'flags': 32}, has_negative_number_optionals=no, negative_number_matcher_custom=no | false | ["option:route:entrypoint:ciu/host/enroll/--ksm.action", "option:route:entrypoint:ciu/host/enroll/--log-prefix-time-short.action", "option:route:entrypoint:ciu/host/enroll/--no-ksm.action"] | complete |
+| route:entrypoint:ciu/host/enroll | invocation | host enroll | command route; parser handles remaining tokens |  | Enroll a bare remote host into .ciu.hosts.toml (S14.7 / CIU-93). Two steps, one verb: without --ssh-host it generates an ed25519 key pair and PRINTS the public key plus the one command the target's admin runs (nothing is written to the inventory); with --ssh-host/--fingerprint it verifies the pinned host identity, then proves login with `ciu version` in ordinary mode or an empty-stdin fleetd forced-command error-frame probe in restricted mode, and only then writes [deploy.hosts.<name>]. Opt-in --forced-command installs fleetd-agent's fixed forced-command entry; CIU_SSH_INSECURE_TOFU is never set by this verb. [mutating] | Enroll a bare remote host into .ciu.hosts.toml (S14.7 / CIU-93). Two steps, one verb: without --ssh-host it generates an ed25519 key pair and PRINTS the public key plus the one command the target's admin runs (nothing is written to the inventory); with --ssh-host/--fingerprint it verifies the pinned host identity, then proves login with `ciu version` in ordinary mode or an empty-stdin fleetd forced-command error-frame probe in restricted mode, and only then writes [deploy.hosts.<name>]. Opt-in --forced-command installs fleetd-agent's fixed forced-command entry; CIU_SSH_INSECURE_TOFU is never set by this verb. | MODIFICATION | mutating | false | {} | [{"behavior": ["mutating"], "confirmation": true, "description": "Remote host inventory (.ciu.hosts.toml).", "group": "AUTHENTICATION / SETUP", "id": null, "name": "host", "summary": "Remote host inventory (.ciu.hosts.toml). [mutating]", "synopsis": null}] | <entrypoint>: allow_abbrev=no, prefix_chars='-', fromfile_prefix_chars=None, negative_number_matcher={'pattern': '-\\.?\\d', 'flags': 32}, has_negative_number_optionals=no; host: allow_abbrev=no, prefix_chars='-', fromfile_prefix_chars=None, negative_number_matcher={'pattern': '-\\.?\\d', 'flags': 32}, has_negative_number_optionals=no, negative_number_matcher_custom=no; host enroll: allow_abbrev=no, prefix_chars='-', fromfile_prefix_chars=None, negative_number_matcher={'pattern': '-\\.?\\d', 'flags': 32}, has_negative_number_optionals=no, negative_number_matcher_custom=no | false | ["option:route:entrypoint:ciu/host/enroll/--ksm.action", "option:route:entrypoint:ciu/host/enroll/--log-prefix-time-short.action", "option:route:entrypoint:ciu/host/enroll/--no-ksm.action"] | complete |
 | route:entrypoint:ciu/init | invocation | init | command route; parser handles remaining tokens |  | Guided repo scaffolding: writes a validated ciu.global.defaults.toml.j2, gitignore entries and optional stack skeletons (never overwrites). With no option it asks interactively. [mutating; interactive] | Guided repo scaffolding: writes a validated ciu.global.defaults.toml.j2, gitignore entries and optional stack skeletons (never overwrites). With no option it asks interactively. | AUTHENTICATION / SETUP | mutating, interactive | false | {} | [] | <entrypoint>: allow_abbrev=no, prefix_chars='-', fromfile_prefix_chars=None, negative_number_matcher={'pattern': '-\\.?\\d', 'flags': 32}, has_negative_number_optionals=no, negative_number_matcher_custom=no; init: allow_abbrev=no, prefix_chars='-', fromfile_prefix_chars=None, negative_number_matcher={'pattern': '-\\.?\\d', 'flags': 32}, has_negative_number_optionals=no, negative_number_matcher_custom=no | false | ["option:route:entrypoint:ciu/init/--ksm.action", "option:route:entrypoint:ciu/init/--log-prefix-time-short.action", "option:route:entrypoint:ciu/init/--no-ksm.action"] | complete |
 | route:entrypoint:ciu/migrate | invocation | migrate | command route; parser handles remaining tokens |  | Report artifacts in THIS checkout left behind by an older CIU (S13.7). CIU performs hard cutovers; this is the one place that knows its own version history, so a stale artifact produces a named finding with a remediation. A diagnostic: exit non-zero on ANY finding, regardless of WARN/ERROR. `ciu check`'s `migration` stage walks the same rules. | Report artifacts in THIS checkout left behind by an older CIU (S13.7). CIU performs hard cutovers; this is the one place that knows its own version history, so a stale artifact produces a named finding with a remediation. A diagnostic: exit non-zero on ANY finding, regardless of WARN/ERROR. `ciu check`'s `migration` stage walks the same rules. | EXPLORATION |  | false | {} | [] | <entrypoint>: allow_abbrev=no, prefix_chars='-', fromfile_prefix_chars=None, negative_number_matcher={'pattern': '-\\.?\\d', 'flags': 32}, has_negative_number_optionals=no, negative_number_matcher_custom=no; migrate: allow_abbrev=no, prefix_chars='-', fromfile_prefix_chars=None, negative_number_matcher={'pattern': '-\\.?\\d', 'flags': 32}, has_negative_number_optionals=no, negative_number_matcher_custom=no | false | ["option:route:entrypoint:ciu/migrate/--ksm.action", "option:route:entrypoint:ciu/migrate/--log-prefix-time-short.action", "option:route:entrypoint:ciu/migrate/--no-ksm.action"] | complete |
 | route:entrypoint:ciu/provenance | invocation | provenance | command route; parser handles remaining tokens |  | Verify the RUNNING containers were built from the commit under test, before a live lane produces evidence (S17.2). | Verify the RUNNING containers were built from the commit under test, before a live lane produces evidence (S17.2). | EXPLORATION |  | false | {} | [] | <entrypoint>: allow_abbrev=no, prefix_chars='-', fromfile_prefix_chars=None, negative_number_matcher={'pattern': '-\\.?\\d', 'flags': 32}, has_negative_number_optionals=no, negative_number_matcher_custom=no; provenance: allow_abbrev=no, prefix_chars='-', fromfile_prefix_chars=None, negative_number_matcher={'pattern': '-\\.?\\d', 'flags': 32}, has_negative_number_optionals=no, negative_number_matcher_custom=no | false | ["option:route:entrypoint:ciu/provenance/--ksm.action", "option:route:entrypoint:ciu/provenance/--log-prefix-time-short.action", "option:route:entrypoint:ciu/provenance/--no-ksm.action"] | complete |
@@ -4542,6 +4542,10 @@ no callback, no listener; the private key never leaves the control host.
   and, in opt-in restricted mode, appends `--forced-command --agent-path PATH
   --fleetd-group GROUP [--agent-policy PATH]`. The restricted mode requires
   explicit `--agent-path` and `--fleetd-group` and conflicts with `--from`.
+  For a restricted key, step 1 records the selected mode, agent path, group and
+  optional policy path beside the pending key. Step 2 reads that record. With
+  no restricted-mode flag, step 1 creates no mode record and ordinary step 2
+  retains its existing behavior.
   An existing `<name>` is refused with a tagged `[S14.7]` error unless
   `--replace` (rotation: a new key; `ssh_key`/`known_host` overwritten in
   step 2); `--abort` removes a step-1 key pair that will not complete.
@@ -4589,10 +4593,27 @@ no callback, no listener; the private key never leaves the control host.
   key's SHA256 fingerprint equals `--fingerprint` (the one the admin read on
   the console — TOFU with a second channel, S14.4a's trust model automated;
   without the flag a TTY is asked to confirm the scanned fingerprints and a
-  non-TTY run is refused); connects as U with the generated key and the
-  scanned host key pinned for that connection only and runs `ciu version`
-  (a refused login or a missing `ciu` is a tagged error naming which); and
-  only then writes `[deploy.hosts.<name>] ssh_host, ssh_user, ssh_port (when
+  non-TTY run is refused); connects as U with the generated key and keeps the
+  selected scanned host key pinned for every remote step. It reads the pending
+  mode recorded in step 1. Ordinary enrollment runs `ciu version` and requires
+  SSH exit 0, preserving the existing proof. Restricted enrollment opens an
+  SSH shell request with no remote command, no PTY and empty stdin closed at
+  EOF; no request bytes are sent. fleetd's `serve_connection` sees the
+  truncated frame and returns one framed identity-or-transport error after
+  the forced command starts and resolves `--group`. Success requires exactly
+  empty stderr and exactly one stdout frame (4-byte big-endian length followed
+  by JSON, at most 64 KiB) with `schema = "fleet-host-agent/1"`, a string `agent_version`, a
+  non-empty `error.reason`, and integer `error.exit_code = 3`, plus matching
+  SSH exit 3. An unknown group returns a different refusal and does not pass.
+  Any other outcome — refusal code, stderr output, `ciu version` or other shell
+  text, missing/truncated frame, extra bytes, oversized output, no output, timeout,
+  malformed schema, or a status mismatch — refuses before writing an
+  inventory row and tells the operator to check the pinned host,
+  authorized-keys command, agent path and group. The output/wait bounds are
+  65,540 combined bytes and 20 seconds. This proves pinned login,
+  forced-command execution and group resolution; it does not prove that any
+  fleetd operation works. Only after the mode-specific proof succeeds does
+  step 2 write `[deploy.hosts.<name>] ssh_host, ssh_user, ssh_port (when
   ≠ 22), ssh_key = "<repo>/.ciu/secrets/hosts/<name>/ssh_key", known_host =
   "<algo> <base64>"` (the S14.4c `[ADDR]:N` form for a non-default port) into
   `.ciu.hosts.toml` with a round-trip writer that preserves the operator's
@@ -4616,34 +4637,66 @@ an explicit `--fleetd-group` matching fleetd's admission identifier grammar
 uses the same path grammar; when omitted, fleetd's own policy default applies.
 Paths accept only ASCII letters, digits, `.`, `_`, `+`, `-`, and `/`, with no
 empty, `.` or `..` component; quotes, backslashes, whitespace, controls and
-shell metacharacters are refused. The target installer writes exactly
+shell metacharacters are refused. The supplied public key must be one bare,
+supported key type on one line. Authorized-key options, malformed or
+noncanonical base64, a declared/embedded key-type mismatch, and any additional
+line are refused. The target installer writes exactly
 `restrict,command="<agent-path> forced-command --group <group> [--policy
 <policy-path>]" <type> <base64> <comment> <CIU marker>`. It adds no option that
-can restore pty, forwarding or user-rc access. CIU installs this fixed argv; it
-does not build a wrapper, accept a remote command string, or parse
-`SSH_ORIGINAL_COMMAND`. fleetd owns the request/operation grammar after the
-forced command starts.
+can re-enable pty, forwarding or user-rc access. The installed command is only
+`<absolute agent path> forced-command --group <group>` with `--policy PATH`
+appended when explicitly supplied. CIU builds no wrapper, accepts no remote
+command input and parses no `SSH_ORIGINAL_COMMAND`; fleetd's host agent owns
+the operation-request grammar. The real parser symbol is
+`fleetd/src/fleetd/agent_entry.py::_parser`. CIU's path/group input grammar is
+covered by `ciu/tests/tests/test_ciu_host_enroll.py::TestStep1::test_forced_command_rejects_unsafe_paths_before_key_generation`,
+`test_forced_command_rejects_groups_outside_fleetd_grammar` and
+`ciu/tests/tests/test_getpy_enroll.py::TestFleetdForcedCommand::test_refuses_unsafe_agent_paths`
+and `test_refuses_groups_outside_fleetd_grammar`.
 
-The restricted writer is separate from the general enrollment writer. It
-refuses the same key blob in a second authorized-key form and names the
-conflicting line. It preserves every unrelated byte (including CRLF, a missing
-final newline and unparseable entries), rotates only entries carrying CIU's
-restricted marker and validated fixed-command structure, is idempotent, and
-uses a no-follow temporary file plus atomic replacement with the deploy user's
-ownership and `0700`/`0600` modes. `remove-restricted --name NAME --user USER`
-removes only those structurally validated marked entries. Step 1 prints the
-target-side removal command; it does not remove any general-purpose key. Step 2
-retains the existing pinned host-key check and proof login.
+Restricted entries are owned by root state at `/var/lib/ciu/enroll-state`, not
+by a comment marker or line shape. Its root-owned, mode-`0700` directory
+contains mode-`0600` files keyed by target uid and `--name`; each state record
+stores the exact written line hash, decoded public-key blob hash, and whether
+CIU inserted a separator LF. Rotation and `remove-restricted --name NAME
+--user USER` act only on a line matching that exact record exactly once. Any
+unrecorded CIU marker or restricted forced-command shape is refused with its
+line number; CIU never infers ownership from free text or structure. If a
+state file is lost, restore it from a trusted root-owned backup. Without a
+backup, back up `authorized_keys`, inspect and recover the entry manually, then
+retry; CIU will not delete an entry from its marker or shape alone.
 
-The fixed-command interface is defined by
-`fleetd/src/fleetd/agent_entry.py::build_parser` (`forced-command --group
-GROUP`, with optional `--policy PATH`). fleetd tests the closed request grammar
-in `fleetd/tests/test_agent_protocol.py::test_validate_request_covers_request_shape_argv_candidate_and_dev_errors`
+One root-protected lock at `/run/lock/ciu-enroll-authorized-keys.lock` is held
+around read, conflict check, idempotency check, write and state update in both
+enrollment modes and removal. Before an atomic replacement, CIU verifies that
+`authorized_keys` is still the same file and has the same bytes as the version
+read. A restricted add or rotation persists a `prepared` state record, atomically
+replaces `authorized_keys`, then persists `committed`; recovery checks the exact
+line hashes to determine whether the write happened and refuses ambiguous
+states without deleting another line. Removal records `pending-remove` before
+replacing the file. All state and key-file operations avoid following symlinks;
+authorized_keys replacement is atomic and uses the existing ownership and
+`0700`/`0600` mode rules. Unrelated bytes, including CRLF, unparseable lines and
+missing final newlines, are preserved; removal restores the original bytes
+when CIU had inserted a separator. Re-running is idempotent.
+
+The installer refuses a decoded key blob in both restricted and unrestricted
+forms, including equivalent base64 spellings. Ordinary enrollment keeps its
+prior output, diagnostics, exit codes and append behavior (including past
+unparseable lines); its only new key refusal is a blob recorded in a CIU-
+restricted entry. Step 1 prints the matching step-2 proof description and a
+target-side removal command; removal does not touch general-purpose keys.
+
+The forced-command operation grammar is enforced by fleetd, not CIU. The
+request grammar is covered by
+`fleetd/tests/test_agent_protocol.py::test_validate_request_covers_request_shape_argv_candidate_and_dev_errors`
 and `fleetd/tests/test_agent_verbs.py::test_agent_dispatch_returns_admission_documents_for_submit_status_and_cancel`;
-the stdin/stdout forced-command transport and group binding are covered by
+the framed stdio transport and group resolution/refusal are covered by
 `fleetd/tests/test_agent_server.py::test_forced_command_uses_framed_stdin_stdout_and_transport_group`
-and `test_forced_command_refuses_unknown_transport_group_on_wire`. CIU does not
-duplicate these operation-grammar tests.
+and `test_forced_command_refuses_unknown_transport_group_on_wire`. CIU's probe
+and its refusal/no-inventory behavior are covered by
+`ciu/tests/tests/test_ciu_host_enroll.py::TestStep2::test_forced_step2_sends_empty_input_no_command_and_requires_matching_error_frame`
+and `test_forced_step2_refuses_nonmatching_agent_probe_without_inventory_row`.
 
 ## S15 — Stack-wide resource governance (cgroups)
 

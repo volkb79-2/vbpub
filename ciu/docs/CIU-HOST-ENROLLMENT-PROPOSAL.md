@@ -135,22 +135,59 @@ The third-party round-4 review (`CIU-V8-THIRD-PARTY-REVIEW-ROUND4-2026-09-03.md`
 
 CIU-218 adds an opt-in `--forced-command` mode to the v7 `ciu host enroll`
 contract. Step 1 requires explicit `--agent-path` and `--fleetd-group` values;
-`--agent-policy` may name an explicit policy file. These values are validated
-against the fleetd group grammar and a strict absolute normalized path
-allow-list. The normal enrollment path is unchanged when the flag is absent.
+`--agent-policy` may name an explicit policy file. Paths use a strict absolute,
+normalized allow-list, and groups use fleetd's accepted grammar. Quotes,
+backslashes, whitespace, controls and shell metacharacters are refused. The
+supplied public key must be one bare supported type on one line, with strict
+canonical base64 and a matching embedded key type. The normal enrollment path
+keeps its prior behavior when the flag is absent.
 
-The target writes only
+Step 1 records forced-command mode, path, group and optional policy beside the
+pending key, and prints the matching step-2 proof description. The target
+writes exactly
 `restrict,command="<agent-path> forced-command --group <group> [--policy
-<policy-path>]" <public key> <CIU marker>`. It does not add pty, forwarding or
-user-rc options. CIU installs that fixed argv and does not parse
-`SSH_ORIGINAL_COMMAND` or build a wrapper. fleetd owns and tests the request
-grammar in `fleetd/tests/test_agent_protocol.py::test_validate_request_covers_request_shape_argv_candidate_and_dev_errors`
+<policy-path>]" <type> <base64> <comment> <CIU marker>`. `restrict` is
+mandatory, with no option that re-enables pty, forwarding or user-rc. CIU
+installs only this fixed argv; it builds no wrapper, accepts no remote command
+and does not parse `SSH_ORIGINAL_COMMAND`. The operation-request grammar
+belongs to fleetd's host agent and is tested in
+`fleetd/tests/test_agent_protocol.py::test_validate_request_covers_request_shape_argv_candidate_and_dev_errors`
 and `fleetd/tests/test_agent_verbs.py::test_agent_dispatch_returns_admission_documents_for_submit_status_and_cancel`;
-the forced-command transport and group binding are tested in
-`fleetd/tests/test_agent_server.py::test_forced_command_uses_framed_stdin_stdout_and_transport_group`.
+the framed transport, group resolution and unknown-group refusal are tested in
+`fleetd/tests/test_agent_server.py::test_forced_command_uses_framed_stdin_stdout_and_transport_group`
+and `test_forced_command_refuses_unknown_transport_group_on_wire`.
 
-CIU's restricted writer preserves unrelated `authorized_keys` bytes, rejects
-the same key blob in a second form, rotates only marked entries with the
-validated fixed-command structure, and supports idempotent target-side
-`remove-restricted`. Step 2 keeps CIU-93's pinned host-key check and proof
-login.
+Step 2 keeps CIU-93's pinned host-key check on every remote step. Ordinary
+mode still runs `ciu version`. Restricted mode requests an SSH shell with no
+remote command or PTY and closes empty stdin without sending request bytes.
+It requires empty stderr and exactly one length-prefixed stdout
+`fleet-host-agent/1` JSON frame with a string `agent_version`, non-empty
+`error.reason`, `error.exit_code = 3`, and matching SSH exit status 3. EOF makes
+`serve_connection` return the
+identity-or-transport error after the forced command starts and resolves the
+group. Unknown-group refusal, stderr or shell output, malformed/missing/extra/
+oversized bytes, timeout or status mismatch refuses before the inventory row is written.
+The wait is bounded to 20 seconds and combined output to 65,540 bytes. This
+proves pinned login, forced-command execution and group resolution, not that an
+agent operation works.
+
+Root-owned state at `/var/lib/ciu/enroll-state` records each exact line hash,
+decoded key-blob hash and inserted separator for a target uid/name. Rotation
+and removal require the exact recorded line exactly once. Unrecorded markers
+or forced-command shapes are refused with their line number; marker text alone
+never establishes ownership. State is prepared before authorized_keys is
+replaced, then committed; interrupted adds recover by exact hashes or refuse
+ambiguity without deleting a foreign entry. Removal records its pending state
+before replacement. A shared root-protected lock serializes both enrollment
+modes and removal, and replacement rechecks file identity and contents. Writes
+are no-follow and atomic; unrelated bytes, including line endings and files
+without a final newline, are preserved exactly. Add/remove restores an
+original missing final newline.
+
+If the state file is lost, restore a trusted root-owned backup. Without a
+backup, back up and manually inspect/recover `authorized_keys`; CIU refuses to
+infer ownership from a marker or shape. The decoded blob check prevents one
+key from appearing in both forms in either enrollment order, including
+equivalent base64 spellings. Ordinary mode retains its prior diagnostics,
+output, exit codes and append behavior, including past unparseable lines; its
+only new key refusal is a blob present in a recorded restricted entry.

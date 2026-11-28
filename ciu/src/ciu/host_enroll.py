@@ -26,9 +26,11 @@ every other transport verb already uses.
 from __future__ import annotations
 
 import os
+import json
 import re
 import shlex
 import stat
+import struct
 import subprocess
 import sys
 import tempfile
@@ -52,6 +54,11 @@ KEYSCAN_TYPES = "ed25519,ecdsa,rsa"
 
 #: Private key file name inside `<repo>/.ciu/secrets/hosts/<name>/` (S14.3a).
 KEY_ENTRY = "ssh_key"
+PENDING_MODE_SUFFIX = ".mode.json"
+AGENT_SCHEMA = "fleet-host-agent/1"
+AGENT_MAX_FRAME_BYTES = 64 * 1024
+AGENT_MAX_OUTPUT_BYTES = AGENT_MAX_FRAME_BYTES + 4
+AGENT_PROBE_TIMEOUT_SECONDS = 20
 
 _FLEETD_PATH_RE = re.compile(r"/[A-Za-z0-9._+/-]+\Z")
 _FLEETD_GROUP_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
@@ -71,6 +78,88 @@ def key_paths(repo_root: Path, name: str) -> tuple[Path, Path]:
     """
     private = host_secret_store(repo_root, name, KEY_ENTRY)
     return private, private.with_name(private.name + ".pub")
+
+
+def _pending_mode_path(repo_root: Path, name: str) -> Path:
+    private, _public = key_paths(repo_root, name)
+    return private.with_name(private.name + PENDING_MODE_SUFFIX)
+
+
+def _write_pending_mode(repo_root: Path, name: str, mode: dict) -> None:
+    """Persist the opt-in probe contract alongside its pending local key."""
+    path = _pending_mode_path(repo_root, name)
+    payload = json.dumps(mode, sort_keys=True, separators=(",", ":")) + "\n"
+    temp = path.with_name(path.name + f".{os.getpid()}.tmp")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(temp, flags, 0o600)
+    except FileExistsError as exc:
+        raise EnrollError(
+            f"[S14.7] pending enrollment mode for '{name}' is busy at {path}; "
+            "remove the stale temporary file only after checking the pending key."
+        ) from exc
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temp, 0o600)
+        os.replace(temp, path)
+    except BaseException:
+        try:
+            temp.unlink()
+        except FileNotFoundError:
+            pass
+        raise
+
+
+def _read_pending_mode(repo_root: Path, name: str) -> dict | None:
+    path = _pending_mode_path(repo_root, name)
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
+    except (OSError, UnicodeError) as exc:
+        raise EnrollError(
+            f"[S14.7] cannot read pending enrollment mode for '{name}' at {path}: {exc}."
+        ) from exc
+    try:
+        mode = json.loads(raw)
+    except (json.JSONDecodeError, TypeError) as exc:
+        raise EnrollError(
+            f"[S14.7] pending enrollment mode for '{name}' at {path} is malformed; "
+            "refusing to guess whether this key is restricted."
+        ) from exc
+    if not isinstance(mode, dict) or set(mode) != {
+        "mode", "agent_path", "group", "policy_path",
+    } or mode.get("mode") != "forced-command":
+        raise EnrollError(
+            f"[S14.7] pending enrollment mode for '{name}' at {path} is invalid; "
+            "refusing to guess whether this key is restricted."
+        )
+    try:
+        _validated_fleetd_command(
+            True, mode["agent_path"], mode["group"], mode["policy_path"], None,
+        )
+    except EnrollError as exc:
+        raise EnrollError(
+            f"[S14.7] pending enrollment mode for '{name}' at {path} is invalid: {exc}"
+        ) from exc
+    return mode
+
+
+def _clear_pending_mode(repo_root: Path, name: str) -> None:
+    """Drop stale opt-in probe metadata after a new ordinary key is generated."""
+    path = _pending_mode_path(repo_root, name)
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        raise EnrollError(
+            f"[S14.7] cannot clear prior pending enrollment mode for '{name}' "
+            f"at {path}: {exc}."
+        ) from exc
 
 
 def installer_url(version: str) -> str:
@@ -292,6 +381,15 @@ def enroll_step1(
     private, public = generate_key_pair(
         repo_root, name, f"ciu@{controller_name}:{project}"
     )
+    if forced_command:
+        _write_pending_mode(repo_root, name, {
+            "mode": "forced-command",
+            "agent_path": agent_path,
+            "group": fleetd_group,
+            "policy_path": agent_policy,
+        })
+    else:
+        _clear_pending_mode(repo_root, name)
     public_key = public.read_text(encoding="utf-8").strip()
 
     completion = ["ciu", "host", "enroll", name, "--ssh-host", "<address>",
@@ -336,6 +434,15 @@ def enroll_step1(
     out("")
     out("Step 2 — then, back here, with the fingerprint the admin read on the console:")
     out("")
+    if forced_command:
+        out(
+            "Restricted step 2 sends empty stdin with no remote command and accepts "
+            "exactly one stdout frame and empty stderr: a fleet-host-agent/1 frame "
+            "with error.exit_code 3 and non-empty error.reason, plus matching ssh "
+            "exit 3. This proves login, the forced command, and group resolution; "
+            "it does not prove any fleetd operation works."
+        )
+        out("")
     out(f"  {shlex.join(completion)}")
     out("")
     out(f"Nothing is polling: run step 2 whenever the admin is done. "
@@ -353,7 +460,8 @@ def enroll_abort(repo_root: Path, name: str, *, out=print) -> int:
         )
     private, public = key_paths(repo_root, name)
     removed = []
-    for path in (private, public):
+    mode_path = _pending_mode_path(repo_root, name)
+    for path in (private, public, mode_path):
         if path.exists():
             path.unlink()
             removed.append(str(path))
@@ -509,6 +617,91 @@ def prove_login(
     )
 
 
+def _unique_json_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON field {key!r}")
+        result[key] = value
+    return result
+
+
+def prove_forced_command(
+    host_cfg: dict, *, config: dict, repo_root: Path, name: str,
+    restricted_probe_fn=None,
+) -> None:
+    """Prove only pinned login, forced-command startup, and fleetd group lookup."""
+    if not host_cfg.get("known_host"):
+        raise EnrollError(
+            f"[S14.7] {name}: the restricted probe requires the newly pinned host key. "
+            "Nothing written."
+        )
+    if restricted_probe_fn is None:
+        from .transport_ssh import ssh_probe_empty_stdin
+
+        restricted_probe_fn = ssh_probe_empty_stdin
+    try:
+        status, stdout, stderr = restricted_probe_fn(
+            host_cfg, config=config, repo_root=repo_root, input_data=b"",
+            timeout=AGENT_PROBE_TIMEOUT_SECONDS,
+            max_output=AGENT_MAX_OUTPUT_BYTES,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise EnrollError(
+            f"[S14.7] {name}: fleetd forced-command probe timed out after "
+            f"{AGENT_PROBE_TIMEOUT_SECONDS}s. Check the pinned host, installed "
+            "authorized_keys command, agent path, and fleetd group. Nothing written."
+        ) from exc
+    except (OSError, TimeoutError, ValueError) as exc:
+        raise EnrollError(
+            f"[S14.7] {name}: fleetd forced-command probe failed: {exc}. Check the "
+            "pinned host and restricted authorized_keys entry. Nothing written."
+        ) from exc
+    if (
+        not isinstance(stdout, bytes)
+        or not isinstance(stderr, bytes)
+        or len(stdout) + len(stderr) > AGENT_MAX_OUTPUT_BYTES
+    ):
+        raise EnrollError(
+            f"[S14.7] {name}: fleetd forced-command probe output exceeded the "
+            "frame limit. Check the installed command and group. Nothing written."
+        )
+    try:
+        if stderr:
+            raise ValueError("unexpected stderr output alongside the agent frame")
+        if len(stdout) < 4:
+            raise ValueError("missing frame length")
+        frame_length = struct.unpack(">I", stdout[:4])[0]
+        if frame_length == 0 or frame_length > AGENT_MAX_FRAME_BYTES:
+            raise ValueError("frame length outside fleetd limit")
+        if len(stdout) != frame_length + 4:
+            raise ValueError("truncated frame or extra output")
+        document = json.loads(
+            stdout[4:].decode("utf-8"), object_pairs_hook=_unique_json_object,
+        )
+        error = document.get("error") if isinstance(document, dict) else None
+        if (
+            not isinstance(document, dict)
+            or document.get("schema") != AGENT_SCHEMA
+            or not isinstance(document.get("agent_version"), str)
+            or not isinstance(error, dict)
+            or type(error.get("exit_code")) is not int
+            or error.get("exit_code") != 3
+            or not isinstance(error.get("reason"), str)
+            or not error.get("reason")
+        ):
+            raise ValueError("frame is not the expected identity-or-transport error")
+        if status != 3:
+            raise ValueError("SSH exit status does not match the framed error")
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError, struct.error) as exc:
+        raise EnrollError(
+            f"[S14.7] {name}: fleetd forced-command probe did not return exactly "
+            "one identity-or-transport error frame (fleet-host-agent/1, ssh exit 3). "
+            "Check the pinned host, authorized_keys command, agent path, and group; "
+            "nothing was written to the inventory."
+        ) from exc
+
+
 def enroll_step2(
     repo_root: Path,
     name: str,
@@ -522,6 +715,7 @@ def enroll_step2(
     out=print,
     input_fn=input,
     exec_fn=None,
+    restricted_probe_fn=None,
 ) -> int:
     """Step 2 (S14.7c): confirm, prove, then write the row — in that order."""
     private, _public = key_paths(repo_root, name)
@@ -536,6 +730,7 @@ def enroll_step2(
             f"[S14.7] host '{name}' already has a row in {hosts_path}. Re-run with "
             f"--replace to overwrite its ssh_key and known_host."
         )
+    pending_mode = _read_pending_mode(repo_root, name)
 
     scanned = [(algo, blob, fingerprint_of(algo, blob))
                for algo, blob in keyscan(ssh_host, port)]
@@ -552,8 +747,14 @@ def enroll_step2(
     # activate, admin and secrets stay the operator's (ENROLL_ROW_KEYS is the
     # single statement of that set, and hosts.py's writer enforces it on edit).
 
-    prove_login(dict(row), config=config, repo_root=repo_root, name=name,
-                exec_fn=exec_fn)
+    if pending_mode is None:
+        prove_login(dict(row), config=config, repo_root=repo_root, name=name,
+                    exec_fn=exec_fn)
+    else:
+        prove_forced_command(
+            dict(row), config=config, repo_root=repo_root, name=name,
+            restricted_probe_fn=restricted_probe_fn,
+        )
 
     rendered = write_host_row(hosts_path, name, row, replace=replace)
     out(f"[S14.7c] host '{name}' enrolled — written to {hosts_path}:")

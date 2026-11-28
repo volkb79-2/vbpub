@@ -132,6 +132,33 @@ def test_declared_rules_refuse_before_the_implementation_runs(argv, needle):
     assert needle in err
 
 
+@pytest.mark.parametrize("forced_inputs", [
+    ["--forced-command"],
+    ["--agent-path", "/usr/bin/fleetd-agent"],
+    ["--fleetd-group", "campaigns"],
+    ["--agent-policy", "/etc/fleetd/agent.toml"],
+])
+def test_host_enroll_step2_refuses_forced_inputs_before_calling_enrollment(
+    monkeypatch, tmp_path, capsys, forced_inputs,
+):
+    from ciu import host_enroll
+
+    monkeypatch.setattr(cli, "_resolve_repo_root_deploy", lambda _root: tmp_path)
+    monkeypatch.setattr(cli, "_load_remote_config", lambda _root: {})
+    monkeypatch.setattr(
+        host_enroll, "enroll_step2",
+        lambda *args, **kwargs: pytest.fail("step 2 must reject forced-mode inputs"),
+    )
+
+    status = cli._host([
+        "enroll", "fixture-host", "--ssh-host", "host.example.invalid",
+        *forced_inputs,
+    ])
+
+    assert status == 2
+    assert "forced-command inputs apply only to step 1" in capsys.readouterr().err
+
+
 def test_every_delegated_registry_shares_the_one_exception_policy():
     cli_ = cli_registry.build_cli()
     assert cli_.unexpected_exceptions == cli_registry.UNEXPECTED_EXCEPTIONS_POLICY == "report"

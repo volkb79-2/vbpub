@@ -24,9 +24,15 @@ the technical detail below it.
 ### Added
 - CIU-218 adds opt-in `ciu host enroll --forced-command` for a fleetd-only SSH
   key. The caller must provide an absolute normalized agent path and a
-  fleetd-valid group; the target installs `restrict,command="..."`. CIU leaves
-  the existing general-purpose flow unchanged when the flag is absent, and
-  prints a target-side command to remove only CIU-managed restricted entries.
+  fleetd-valid group; the target installs only `restrict,command="..."` for
+  fleetd's fixed argv. Restricted step 2 checks the pinned identity with empty
+  stdin and accepts one fleetd framed identity-or-transport error on stdout,
+  empty stderr and the matching SSH status; this proves login, forced-command
+  execution and group resolution, not an agent operation. Root-owned state records exact written
+  lines for safe rotation/removal; the installer serializes updates and
+  preserves unrelated bytes. Without the flag, ordinary enrollment keeps its
+  prior behavior. Step 1 prints a target-side command that removes only a
+  state-recorded restricted entry.
 
 ### Adoption / Migration Notes
 - No action is needed for existing enrollments. Consumers that need a

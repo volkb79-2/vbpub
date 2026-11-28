@@ -24,9 +24,11 @@ sshd and therefore a container; it skips where docker is unavailable.
 from __future__ import annotations
 
 import os
+import json
 import re
 import shutil
 import stat
+import struct
 import subprocess
 import sys
 import tomllib
@@ -139,6 +141,25 @@ def real_host_key(tmp_path):
 
 def _capture(out_lines):
     return "\n".join(out_lines)
+
+
+def _agent_error_frame(*, exit_code=3, schema="fleet-host-agent/1"):
+    document = {
+        "schema": schema,
+        "agent_version": "fixture",
+        "error": {"exit_code": exit_code, "reason": "truncated frame"},
+    }
+    body = json.dumps(document, separators=(",", ":")).encode()
+    return struct.pack(">I", len(body)) + body
+
+
+def _duplicate_agent_error_frame():
+    body = (
+        b'{"schema":"fleet-host-agent/1","schema":"fleet-host-agent/1",'
+        b'"agent_version":"fixture","error":{"exit_code":3,'
+        b'"reason":"truncated frame"}}'
+    )
+    return struct.pack(">I", len(body)) + body
 
 
 def _collector():
@@ -280,6 +301,41 @@ class TestStep1:
         assert "python3 - remove-restricted --name rs1002 --user ciu" in out
         assert "forced-command --group" not in out
 
+    def test_forced_mode_persists_probe_inputs_and_prints_matching_step2(self, repo, config):
+        _code, out = _step1(
+            repo, config, forced_command=True,
+            agent_path="/usr/bin/fleetd-agent", fleetd_group="campaigns",
+            agent_policy="/etc/fleetd/agent.toml",
+        )
+        private, _public = host_enroll.key_paths(repo, "rs1002")
+        mode_record = private.with_name(private.name + ".mode.json")
+        assert json.loads(mode_record.read_text(encoding="utf-8")) == {
+            "mode": "forced-command",
+            "agent_path": "/usr/bin/fleetd-agent",
+            "group": "campaigns",
+            "policy_path": "/etc/fleetd/agent.toml",
+        }
+        assert "step 2 sends empty stdin" in out
+        assert "exactly one stdout frame and empty stderr" in out
+        assert "fleet-host-agent/1 frame with error.exit_code 3" in out
+        assert "fleet-host-agent/1" in out
+        assert "error.exit_code 3" in out
+        assert "non-empty error.reason" in out
+        assert "does not prove any fleetd operation works" in out
+
+    def test_ordinary_replace_clears_the_previous_restricted_mode_record(self, repo, config):
+        _step1(
+            repo, config, forced_command=True,
+            agent_path="/usr/bin/fleetd-agent", fleetd_group="campaigns",
+        )
+        private, _public = host_enroll.key_paths(repo, "rs1002")
+        mode_record = private.with_name(private.name + ".mode.json")
+        assert mode_record.is_file()
+
+        _step1(repo, config, replace=True)
+
+        assert not mode_record.exists()
+
     @pytest.mark.parametrize("agent_path", [
         "fleetd-agent", "/usr/bin/../bin/fleetd-agent", "/usr//bin/fleetd-agent",
         "/usr/bin/fleetd-agent/", "/usr/bin/fleetd agent", "/usr/bin/\"fleetd\"",
@@ -324,6 +380,72 @@ class TestStep1:
                 agent_path="/usr/bin/fleetd-agent", fleetd_group="campaigns",
             )
         assert not host_enroll.key_paths(repo, "rs1002")[0].exists()
+
+    def test_fleetd_inputs_are_refused_without_forced_command_opt_in(self, repo, config):
+        with pytest.raises(EnrollError, match="require --forced-command"):
+            _step1(
+                repo, config, agent_path="/usr/bin/fleetd-agent",
+                fleetd_group="campaigns",
+            )
+        assert not host_enroll.key_paths(repo, "rs1002")[0].exists()
+
+    def test_agent_path_helper_preserves_absence_for_optional_policy(self):
+        assert host_enroll._validated_agent_path(None, "--agent-policy") is None
+
+    def test_pending_mode_refuses_a_stale_exclusive_temp_file(self, repo):
+        private, _public = host_enroll.key_paths(repo, "rs1002")
+        private.parent.mkdir(parents=True)
+        temp = private.with_name(
+            private.name + f".mode.json.{os.getpid()}.tmp"
+        )
+        temp.write_bytes(b"stale fixture temp")
+
+        with pytest.raises(EnrollError, match="pending enrollment mode.*busy"):
+            host_enroll._write_pending_mode(repo, "rs1002", {
+                "mode": "forced-command", "agent_path": "/usr/bin/fleetd-agent",
+                "group": "campaigns", "policy_path": None,
+            })
+
+        assert temp.read_bytes() == b"stale fixture temp"
+
+    def test_pending_mode_write_failure_removes_its_partial_temp_file(
+        self, repo, monkeypatch,
+    ):
+        private, _public = host_enroll.key_paths(repo, "rs1002")
+        private.parent.mkdir(parents=True)
+        temp = private.with_name(
+            private.name + f".mode.json.{os.getpid()}.tmp"
+        )
+
+        def fail_after_removing_temp(_fd):
+            temp.unlink()
+            raise OSError("fixture fsync failure")
+
+        monkeypatch.setattr(host_enroll.os, "fsync", fail_after_removing_temp)
+        with pytest.raises(OSError, match="fixture fsync failure"):
+            host_enroll._write_pending_mode(repo, "rs1002", {
+                "mode": "forced-command", "agent_path": "/usr/bin/fleetd-agent",
+                "group": "campaigns", "policy_path": None,
+            })
+
+        assert not temp.exists()
+
+    def test_pending_mode_clear_reports_unlink_failure(self, repo, monkeypatch):
+        private, _public = host_enroll.key_paths(repo, "rs1002")
+        private.parent.mkdir(parents=True)
+        mode_path = private.with_name(private.name + ".mode.json")
+        mode_path.write_text("fixture", encoding="utf-8")
+        real_unlink = Path.unlink
+
+        def fail_mode_unlink(path, *args, **kwargs):
+            if path == mode_path:
+                raise PermissionError("fixture unlink failure")
+            return real_unlink(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "unlink", fail_mode_unlink)
+        with pytest.raises(EnrollError, match="cannot clear prior pending enrollment mode"):
+            host_enroll._clear_pending_mode(repo, "rs1002")
+        assert mode_path.read_text(encoding="utf-8") == "fixture"
 
     def test_installer_url_override_is_used_verbatim(self, repo, config):
         _code, out = _step1(
@@ -636,6 +758,272 @@ class TestStep2:
         assert doc["registry"]["ghcr"] == {"url": "ghcr.io"}
         assert "decoy" not in doc["deploy"]["hosts"]
         assert f"ciu ssh rs1002 -- ciu version" in _capture(lines)
+
+    def test_forced_step2_sends_empty_input_no_command_and_requires_matching_error_frame(
+        self, repo, config, monkeypatch, real_host_key,
+    ):
+        algo, blob, fingerprint = real_host_key
+        _step1(
+            repo, config, forced_command=True,
+            agent_path="/usr/bin/fleetd-agent", fleetd_group="campaigns",
+            agent_policy="/etc/fleetd/agent.toml",
+        )
+        _fake_keyscan(monkeypatch, algo, blob)
+        calls = []
+
+        def probe(host_cfg, *, config, repo_root, input_data, timeout, max_output):
+            calls.append((host_cfg, input_data, timeout, max_output))
+            return 3, _agent_error_frame(), b""
+
+        code = host_enroll.enroll_step2(
+            repo, "rs1002", config=config, ssh_host="rs1002.example",
+            fingerprint=fingerprint, out=lambda *_: None,
+            exec_fn=lambda *a, **k: pytest.fail("ordinary proof must not run"),
+            restricted_probe_fn=probe,
+        )
+        assert code == 0
+        assert len(calls) == 1
+        host_cfg, input_data, timeout, max_output = calls[0]
+        assert host_cfg["known_host"] == f"{algo} {blob}"
+        assert input_data == b""
+        assert timeout > 0
+        assert max_output == 65540
+        assert load_hosts(repo)["rs1002"]["known_host"] == f"{algo} {blob}"
+
+    @pytest.mark.parametrize("status,output", [
+        (2, b""),
+        (3, b"ciu version 7.11.0\n"),
+        (3, struct.pack(">I", 65537)),
+        (3, struct.pack(">I", 2) + b"{}extra"),
+        (3, b""),
+        (3, _agent_error_frame(schema="other/1")),
+        (3, _agent_error_frame(exit_code=2)),
+        (2, _agent_error_frame()),
+    ])
+    def test_forced_step2_refuses_nonmatching_agent_probe_without_inventory_row(
+        self, repo, config, monkeypatch, real_host_key, status, output,
+    ):
+        algo, blob, fingerprint = real_host_key
+        hosts_file = self._prepared(repo, config, HOSTILE_FIXTURE)
+        mode_path = host_enroll.key_paths(repo, "rs1002")[0].with_name(
+            "ssh_key.mode.json"
+        )
+        mode_path.write_text(json.dumps({
+            "mode": "forced-command", "agent_path": "/usr/bin/fleetd-agent",
+            "group": "campaigns", "policy_path": None,
+        }), encoding="utf-8")
+        before = hosts_file.read_bytes()
+        _fake_keyscan(monkeypatch, algo, blob)
+
+        with pytest.raises(EnrollError, match="fleetd.*probe|forced-command.*probe"):
+            host_enroll.enroll_step2(
+                repo, "rs1002", config=config, ssh_host="rs1002.example",
+                fingerprint=fingerprint, out=lambda *_: None,
+                restricted_probe_fn=lambda *a, **k: (status, output, b""),
+            )
+        assert hosts_file.read_bytes() == before
+        assert "rs1002" not in load_hosts(repo)
+
+    def test_forced_step2_refuses_stderr_alongside_the_expected_frame(
+        self, repo, config, monkeypatch, real_host_key,
+    ):
+        algo, blob, fingerprint = real_host_key
+        hosts_file = self._prepared(repo, config, HOSTILE_FIXTURE)
+        mode_path = host_enroll.key_paths(repo, "rs1002")[0].with_name(
+            "ssh_key.mode.json"
+        )
+        mode_path.write_text(json.dumps({
+            "mode": "forced-command", "agent_path": "/usr/bin/fleetd-agent",
+            "group": "campaigns", "policy_path": None,
+        }), encoding="utf-8")
+        before = hosts_file.read_bytes()
+        _fake_keyscan(monkeypatch, algo, blob)
+
+        with pytest.raises(EnrollError, match="fleetd.*probe|forced-command.*probe"):
+            host_enroll.enroll_step2(
+                repo, "rs1002", config=config, ssh_host="rs1002.example",
+                fingerprint=fingerprint, out=lambda *_: None,
+                restricted_probe_fn=lambda *a, **k: (
+                    3, _agent_error_frame(), b"unexpected stderr output",
+                ),
+            )
+        assert hosts_file.read_bytes() == before
+        assert "rs1002" not in load_hosts(repo)
+
+    @pytest.mark.parametrize("status,stdout,stderr", [
+        (3, b"x" * (host_enroll.AGENT_MAX_OUTPUT_BYTES + 1), b""),
+        (3, 42, b""),
+        (3, struct.pack(">I", 0), b""),
+        (3, struct.pack(">I", 2) + b"\xff\xff", b""),
+        (3, _duplicate_agent_error_frame(), b""),
+    ])
+    def test_forced_step2_refuses_extra_malformed_or_ambiguous_probe_output(
+        self, repo, config, monkeypatch, real_host_key, status, stdout, stderr,
+    ):
+        algo, blob, fingerprint = real_host_key
+        hosts_file = self._prepared(repo, config, HOSTILE_FIXTURE)
+        mode_path = host_enroll.key_paths(repo, "rs1002")[0].with_name(
+            "ssh_key.mode.json"
+        )
+        mode_path.write_text(json.dumps({
+            "mode": "forced-command", "agent_path": "/usr/bin/fleetd-agent",
+            "group": "campaigns", "policy_path": None,
+        }), encoding="utf-8")
+        before = hosts_file.read_bytes()
+        _fake_keyscan(monkeypatch, algo, blob)
+
+        with pytest.raises(EnrollError, match="fleetd.*probe|forced-command.*probe"):
+            host_enroll.enroll_step2(
+                repo, "rs1002", config=config, ssh_host="rs1002.example",
+                fingerprint=fingerprint, out=lambda *_: None,
+                restricted_probe_fn=lambda *a, **k: (status, stdout, stderr),
+            )
+        assert hosts_file.read_bytes() == before
+        assert "rs1002" not in load_hosts(repo)
+
+    def test_forced_step2_wraps_probe_transport_errors_without_inventory_row(
+        self, repo, config, monkeypatch, real_host_key,
+    ):
+        algo, blob, fingerprint = real_host_key
+        hosts_file = self._prepared(repo, config, HOSTILE_FIXTURE)
+        mode_path = host_enroll.key_paths(repo, "rs1002")[0].with_name(
+            "ssh_key.mode.json"
+        )
+        mode_path.write_text(json.dumps({
+            "mode": "forced-command", "agent_path": "/usr/bin/fleetd-agent",
+            "group": "campaigns", "policy_path": None,
+        }), encoding="utf-8")
+        before = hosts_file.read_bytes()
+        _fake_keyscan(monkeypatch, algo, blob)
+
+        def failed_probe(*_args, **_kwargs):
+            raise OSError("fixture transport refusal")
+
+        with pytest.raises(EnrollError, match="forced-command probe failed.*fixture transport"):
+            host_enroll.enroll_step2(
+                repo, "rs1002", config=config, ssh_host="rs1002.example",
+                fingerprint=fingerprint, out=lambda *_: None,
+                restricted_probe_fn=failed_probe,
+            )
+        assert hosts_file.read_bytes() == before
+        assert "rs1002" not in load_hosts(repo)
+
+    @pytest.mark.parametrize("raw_mode", [
+        "{not-json",
+        "[]",
+        '{"mode":"ordinary","agent_path":null,"group":null,"policy_path":null}',
+        '{"mode":"forced-command","agent_path":"/usr/bin/fleetd-agent",'
+        '"group":"bad group","policy_path":null}',
+    ])
+    def test_forced_step2_refuses_malformed_or_unsafe_pending_mode_without_row(
+        self, repo, config, monkeypatch, real_host_key, raw_mode,
+    ):
+        algo, blob, fingerprint = real_host_key
+        hosts_file = self._prepared(repo, config, HOSTILE_FIXTURE)
+        mode_path = host_enroll.key_paths(repo, "rs1002")[0].with_name(
+            "ssh_key.mode.json"
+        )
+        mode_path.write_text(raw_mode, encoding="utf-8")
+        before = hosts_file.read_bytes()
+        _fake_keyscan(monkeypatch, algo, blob)
+
+        with pytest.raises(EnrollError, match="pending enrollment mode"):
+            host_enroll.enroll_step2(
+                repo, "rs1002", config=config, ssh_host="rs1002.example",
+                fingerprint=fingerprint, out=lambda *_: None,
+                restricted_probe_fn=lambda *a, **k: pytest.fail(
+                    "invalid pending mode must fail before the probe"
+                ),
+            )
+        assert hosts_file.read_bytes() == before
+        assert "rs1002" not in load_hosts(repo)
+
+    def test_forced_step2_refuses_unreadable_pending_mode_without_row(
+        self, repo, config, monkeypatch, real_host_key,
+    ):
+        algo, blob, fingerprint = real_host_key
+        hosts_file = self._prepared(repo, config, HOSTILE_FIXTURE)
+        mode_path = host_enroll.key_paths(repo, "rs1002")[0].with_name(
+            "ssh_key.mode.json"
+        )
+        mode_path.mkdir()
+        before = hosts_file.read_bytes()
+        _fake_keyscan(monkeypatch, algo, blob)
+
+        with pytest.raises(EnrollError, match="cannot read pending enrollment mode"):
+            host_enroll.enroll_step2(
+                repo, "rs1002", config=config, ssh_host="rs1002.example",
+                fingerprint=fingerprint, out=lambda *_: None,
+                restricted_probe_fn=lambda *a, **k: pytest.fail(
+                    "unreadable pending mode must fail before the probe"
+                ),
+            )
+        assert hosts_file.read_bytes() == before
+        assert "rs1002" not in load_hosts(repo)
+
+    def test_forced_probe_requires_pinned_host_before_transport(self, repo):
+        with pytest.raises(EnrollError, match="requires the newly pinned host key"):
+            host_enroll.prove_forced_command(
+                {}, config={}, repo_root=repo, name="rs1002",
+                restricted_probe_fn=lambda *a, **k: pytest.fail(
+                    "probe must not run without a pinned host identity"
+                ),
+            )
+
+    def test_forced_step2_uses_the_default_empty_stdin_transport(self, repo, config,
+                                                                monkeypatch,
+                                                                real_host_key):
+        from ciu import transport_ssh
+
+        algo, blob, fingerprint = real_host_key
+        _step1(
+            repo, config, forced_command=True,
+            agent_path="/usr/bin/fleetd-agent", fleetd_group="campaigns",
+        )
+        _fake_keyscan(monkeypatch, algo, blob)
+        calls = []
+
+        def default_probe(host_cfg, *, config, repo_root, input_data, timeout,
+                          max_output):
+            calls.append((host_cfg, input_data, timeout, max_output))
+            return 3, _agent_error_frame(), b""
+
+        monkeypatch.setattr(transport_ssh, "ssh_probe_empty_stdin", default_probe)
+        code = host_enroll.enroll_step2(
+            repo, "rs1002", config=config, ssh_host="rs1002.example",
+            fingerprint=fingerprint, out=lambda *_: None,
+        )
+        assert code == 0
+        assert len(calls) == 1
+        assert calls[0][1:] == (b"", 20, 65540)
+        assert load_hosts(repo)["rs1002"]["known_host"] == f"{algo} {blob}"
+
+    def test_forced_step2_timeout_refuses_without_inventory_row(
+        self, repo, config, monkeypatch, real_host_key,
+    ):
+        algo, blob, fingerprint = real_host_key
+        hosts_file = self._prepared(repo, config, HOSTILE_FIXTURE)
+        mode_path = host_enroll.key_paths(repo, "rs1002")[0].with_name(
+            "ssh_key.mode.json"
+        )
+        mode_path.write_text(json.dumps({
+            "mode": "forced-command", "agent_path": "/usr/bin/fleetd-agent",
+            "group": "campaigns", "policy_path": None,
+        }), encoding="utf-8")
+        before = hosts_file.read_bytes()
+        _fake_keyscan(monkeypatch, algo, blob)
+
+        def timed_out(*args, **kwargs):
+            raise subprocess.TimeoutExpired("ssh", 20)
+
+        with pytest.raises(EnrollError, match="fleetd.*probe|forced-command.*probe"):
+            host_enroll.enroll_step2(
+                repo, "rs1002", config=config, ssh_host="rs1002.example",
+                fingerprint=fingerprint, out=lambda *_: None,
+                restricted_probe_fn=timed_out,
+            )
+        assert hosts_file.read_bytes() == before
+        assert "rs1002" not in load_hosts(repo)
 
     def test_non_default_port_is_written_and_pins_in_the_S14_4c_form(
         self, repo, config, monkeypatch, real_host_key
@@ -1126,6 +1514,16 @@ class TestRenderedInstaller:
     def test_committed_get_py_exists_and_is_executable(self):
         assert self.GET_PY.is_file()
         assert self.GET_PY.stat().st_mode & stat.S_IXUSR
+
+    def test_ciu218_spec_names_the_real_fleetd_parser_symbol(self):
+        spec = (CIU_ROOT / "docs" / "SPEC.md").read_text(encoding="utf-8")
+        agent_entry = (
+            CIU_ROOT.parent / "fleetd" / "src" / "fleetd" / "agent_entry.py"
+        ).read_text(encoding="utf-8")
+
+        assert "def _parser()" in agent_entry
+        assert "fleetd/src/fleetd/agent_entry.py::_parser" in spec
+        assert "fleetd/src/fleetd/agent_entry.py::build_parser" not in spec
 
     def test_enroll_help_lists_exactly_the_ki24_flag_set(self):
         result = subprocess.run(
