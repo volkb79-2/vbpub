@@ -6,8 +6,14 @@ set -uo pipefail
 # a check reads or writes. Relying on the caller ("run it with env -u") moved the
 # same defect into the operator's shell, where it read as a product bug.
 unset CONTROLLER_HOME CONTROLLER_RUNS_DIR CONTROLLER_LOGS_DIR CONTROLLER_REPO CONTROLLER_HOSTS_FILE
+# PI_CTL_CORE_MODULE is a mutation-test seam, never suite-wide configuration.
+unset PI_CTL_CORE_MODULE
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 REPO_ROOT=$(cd -- "$SCRIPT_DIR/../../.." && pwd -P)
+command -v flock >/dev/null 2>&1 || {
+  echo 'FAIL: tester-unified image must provide util-linux flock for pi controller session locks' >&2
+  exit 2
+}
 queue_test=$REPO_ROOT/scripts/netcup/runner/tests/test-queue.sh
 files=(
   "$SCRIPT_DIR/../ctl-status.sh"
@@ -16,6 +22,8 @@ files=(
   "$SCRIPT_DIR/../hx.sh"
   "$SCRIPT_DIR/../codex-impl.sh"
   "$SCRIPT_DIR/../pi-impl.sh"
+  "$SCRIPT_DIR/../pi-ctl-launch.sh"
+  "$SCRIPT_DIR/../pi-ctl-pane.sh"
   "$SCRIPT_DIR/../pi-pidns-bash-worker.sh"
   "$SCRIPT_DIR/../codex-review.sh"
   "$SCRIPT_DIR/../pi-review.sh"
@@ -48,6 +56,7 @@ files=(
   "$SCRIPT_DIR/test-job-check.sh"
   "$SCRIPT_DIR/test-wrappers.sh"
   "$SCRIPT_DIR/test-pi-impl.sh"
+  "$SCRIPT_DIR/test-pi-ctl.sh"
   "$SCRIPT_DIR/test-pi-pidns.sh"
   "$SCRIPT_DIR/test-pi-review.sh"
   "$SCRIPT_DIR/test-hardening-tools.sh"
@@ -72,6 +81,9 @@ for file in "${files[@]}"; do bash -n "$file" || exit $?; done
 for file in "$SCRIPT_DIR/../dev_profile.py" "$SCRIPT_DIR/../pi-pidns-bash" "$SCRIPT_DIR/test_dev.py" "$SCRIPT_DIR/mutate-sources.py"; do
   python3 -I -c 'import ast, sys; ast.parse(open(sys.argv[1]).read(), sys.argv[1])' "$file" || exit $?
 done
+for file in "$SCRIPT_DIR/../pi-ctl/core.mjs" "$SCRIPT_DIR/../pi-ctl/extension.mjs" "$SCRIPT_DIR/../pi-ctl/bridge.mjs" "$SCRIPT_DIR/../pi-ctl/test-core.mjs"; do
+  node --check "$file" || exit $?
+done
 if command -v shellcheck >/dev/null 2>&1; then
   shellcheck "${files[@]}" || exit $?
 else
@@ -84,6 +96,7 @@ bash "$SCRIPT_DIR/test-ctl-status.sh" || exit $?
 bash "$SCRIPT_DIR/test-job-check.sh" || exit $?
 bash "$SCRIPT_DIR/test-wrappers.sh" || exit $?
 bash "$SCRIPT_DIR/test-pi-impl.sh" || exit $?
+bash "$SCRIPT_DIR/test-pi-ctl.sh" || exit $?
 bash "$SCRIPT_DIR/test-pi-pidns.sh" || exit $?
 bash "$SCRIPT_DIR/test-pi-review.sh" || exit $?
 bash "$SCRIPT_DIR/test-hardening-tools.sh" || exit $?

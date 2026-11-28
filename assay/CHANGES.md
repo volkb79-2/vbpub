@@ -7,7 +7,31 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 ### Fixed
 - fix(assay): include reclaimable file cache and slab in B105 RAM admission
   (B599)
-- assay: stabilize B577 resume identity across plugin injection, aggregate non-path passthrough diagnostics, and bound untrusted component metadata. **Only `PATH` and `PYTHONPATH` receive per-name passthrough value digests.** Sidecars live at `.diagnostics/judge-components/<judge>.json` within each state store and are written after record and deadline work. On first resume, old records whose judge included run-local assay-injected `PYTHONPATH` entries re-execute once, including when `PYTHONPATH` was absent before injection and not passed through; a present non-passthrough consumer `PYTHONPATH` and plans with no assay insertion are unchanged by this identity rule. Records made under a stale post-resolution PYTHONPATH snapshot also miss once when the current value differs from the recorded insertions. Stores without usable component sidecars report diagnostics unavailable.
+- B610: add behavioral coverage for every B577 component-sidecar line and branch missing from the 12.4.1 self-qualification-provisional run (739c3793d).
+- B577: the `PYTHONPATH` entries Assay itself injects (run-local plugin
+  directories) are no longer part of the native-R2 judge identity, so they no
+  longer make a resume reject stored records. A consumer's own `PYTHONPATH`
+  change still changes the identity. A passthrough variable with non-UTF-8
+  bytes is accepted.
+- B577: when a resume rejects records for a judge mismatch, the `resume`
+  progress event and stderr name the differing components, never a value or a
+  value fingerprint. **Only `PATH` and `PYTHONPATH` receive per-name
+  passthrough value digests**; the other passthrough variables share one
+  digest. The digests are stored in
+  `.diagnostics/judge-components/<judge>.json` inside the state store. A store
+  without usable metadata reports the components as unavailable.
+
+### Upgrade notes
+- Records stored by an earlier Assay release are not resumed: the Assay version
+  is part of the judge identity, so they re-execute, as after every upgrade.
+- Independently of the version: on the first resume under the new identity rule,
+  old records whose judge included run-local assay-injected `PYTHONPATH`
+  entries re-execute once,
+  including when `PYTHONPATH` was absent before injection
+  and not passed through. A present non-passthrough consumer
+  `PYTHONPATH` and plans with no Assay insertion are unchanged by this rule.
+  Records made under a stale post-resolution `PYTHONPATH` snapshot also miss
+  once when the current value differs from the recorded insertions.
 
 <!-- cmru: release history -->
 
