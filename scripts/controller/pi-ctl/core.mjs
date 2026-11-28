@@ -26,7 +26,7 @@ export const CONFIG_DEFAULTS = Object.freeze({
 	monitorMaxQueuedLines: 1000,
 	monitorFlushMs: 1000,
 	deliveryMaxAttempts: 3,
-	deliveryBackoffMs: Object.freeze([1000, 5000, 30_000]),
+	deliveryRetryBackoffMs: 1000,
 	monitorReadyTimeoutMs: 10_000,
 	startupTimeoutSeconds: 30,
 	compactAt: 150_000,
@@ -339,6 +339,11 @@ export function createController(pi, injected = {}, overrides = {}) {
 	let pollTimer = null;
 	let stopped = false;
 	let initialized = false;
+	// Why this extension instance's session runtime started. Pi's "reload" keeps
+	// the live agent (and the agent-level follow-up queue that holds
+	// pi.sendMessage messages); startup, resume, new, and fork build a fresh
+	// agent, which is the only proof that a queued copy is gone.
+	let startReason = null;
 	let compactionAttempt = null;
 	let alertRetryTimer = null;
 	let pollingInbox = false;
@@ -520,14 +525,79 @@ export function createController(pi, injected = {}, overrides = {}) {
 	function readClaimState(claimPath) {
 		const state = readJsonFile(fs, claimStatePath(claimPath), {});
 		if (!state || typeof state !== "object" || Array.isArray(state)) throw new Error("invalid inbox claim state");
+		const attempts = Number.isSafeInteger(state.attempts) && state.attempts >= 0 ? state.attempts : 0;
 		return {
 			id: typeof state.id === "string" ? state.id : null,
-			attempts: Number.isSafeInteger(state.attempts) && state.attempts >= 0 ? state.attempts : 0,
+			attempts,
 			nextAt: Number.isSafeInteger(state.nextAt) && state.nextAt >= 0 ? state.nextAt : 0,
 			stalled: state.stalled === true,
 			reported: state.reported === true,
 			reportAt: Number.isSafeInteger(state.reportAt) && state.reportAt >= 0 ? state.reportAt : 0,
+			queued: queuedFromRecord(state, attempts),
 		};
+	}
+
+	// `queued` means: pi accepted this id and its persisted entry has not been seen
+	// yet. A state file written before this field existed carries attempts without
+	// that fact, so a non-stalled legacy record reads as queued -- the safe reading,
+	// because waiting is a delay whereas re-injecting is a visible duplicate.
+	function queuedFromRecord(state, attempts) {
+		if (typeof state?.queued === "boolean") return state.queued;
+		return attempts > 0 && state?.stalled !== true;
+	}
+
+	// Every session runtime that is not a reload builds a fresh agent (pi's
+	// teardownCurrent -> createRuntime on resume/new/fork, and a new process on
+	// startup), so the accepted-but-unpersisted copy is provably gone and each id
+	// is delivered once more. A reload keeps the live agent and that queue.
+	function freshSessionRuntime() {
+		return startReason !== null && startReason !== "reload";
+	}
+
+	// "wait" while pi holds an accepted copy that was not persisted yet: the claim
+	// is left exactly as it is -- no attempt counted and nothing reported, because
+	// a duplicate would cost the model a turn. Only resetQueuedForFreshSession()
+	// makes it deliverable again, and only a fresh session runtime does that.
+	function acceptedCopyPending(record) {
+		return record?.queued === true;
+	}
+
+	// Clear the queued flag on every durable record so the fresh agent gets one
+	// delivery of each id again. A record whose id pi already persisted is
+	// removed by the normal confirmation path, not here. `attempts` and `nextAt`
+	// reset too: a copy the previous runtime accepted and then lost is not a
+	// failed delivery of this one, and the fresh agent must not inherit its spent
+	// budget or its retry delay. `attempts` counts refusals only.
+	function resetQueuedForFreshSession() {
+		let changed = false;
+		for (const file of regularMessageFiles(dirs.processing)) {
+			const claimPath = path.join(dirs.processing, file);
+			let state;
+			try {
+				state = readJsonFile(fs, claimStatePath(claimPath), null);
+			} catch {
+				continue;
+			}
+			if (!state || typeof state !== "object" || Array.isArray(state)) continue;
+			const attempts = Number.isSafeInteger(state.attempts) && state.attempts >= 0 ? state.attempts : 0;
+			// Same reading as readClaimState(), so a record written before the `queued`
+			// field existed is reset on a fresh runtime too instead of waiting forever.
+			if (!queuedFromRecord(state, attempts)) continue;
+			try {
+				writeClaimState(claimPath, { ...state, queued: false, attempts: 0, nextAt: 0 });
+				changed = true;
+			} catch {
+				// A claim whose state cannot be reset keeps waiting for confirmation.
+			}
+		}
+		const pending = readWakeups();
+		if (pending.some((entry) => entry.queued === true)) {
+			// nextAt = 0 with status "claimed" makes the fresh agent re-deliver at once
+			// instead of waiting out the previous runtime's due time again.
+			writeWakeups(pending.map((entry) => entry.queued === true ? { ...entry, queued: false, attempts: 0, nextAt: 0 } : entry));
+			changed = true;
+		}
+		if (changed) log("delivery_queue_reset", { reason: startReason });
 	}
 
 	function writeClaimState(claimPath, state) {
@@ -673,6 +743,12 @@ export function createController(pi, injected = {}, overrides = {}) {
 			reportClaimStalled(envelope, state, claimPath);
 			return false;
 		}
+		if (acceptedCopyPending(state)) {
+			// pi holds this id in the live agent's follow-up queue. Re-injecting would
+			// duplicate a message the model may already have seen; the claim stays on
+			// disk and a fresh session runtime delivers it once more.
+			return false;
+		}
 		if (state.nextAt > time) return false;
 		if (state.attempts >= CONFIG_DEFAULTS.deliveryMaxAttempts) {
 			state.stalled = true;
@@ -692,15 +768,23 @@ export function createController(pi, injected = {}, overrides = {}) {
 		const cappedBody = body.subarray(0, config.maxMessageBytes).toString("utf8");
 		const truncated = read.truncated || body.length > config.maxMessageBytes;
 		const content = `${PEER_MESSAGE_HEADER(envelope.from, envelope.id)}${cappedBody}${truncated ? `\n[Message truncated at ${config.maxMessageBytes} bytes.]` : ""}`;
-		state.attempts++;
-		state.nextAt = time + CONFIG_DEFAULTS.deliveryBackoffMs[Math.min(state.attempts - 1, CONFIG_DEFAULTS.deliveryBackoffMs.length - 1)];
+		// Recorded BEFORE the call: pi.sendMessage() returns void, so a crash or a
+		// lost queue entry between the call and this write must read as "queued",
+		// never as "not delivered" -- a pending claim is delayed, a duplicate is not.
+		state.queued = true;
+		state.nextAt = time + CONFIG_DEFAULTS.deliveryRetryBackoffMs;
 		writeClaimState(claimPath, state);
 		try {
-			// pi.sendMessage() returns void. The claim remains until message_end has
-			// been followed by a persisted custom_message entry with this same id.
 			inject("pi-ctl-inbox", envelope.id, content);
 		} catch {
+			// Only a refusal is a failed attempt: pi did not accept this message, so
+			// the claim keeps its id and the bounded report can describe a real failure.
+			state.queued = false;
+			state.attempts++;
+			state.nextAt = time + CONFIG_DEFAULTS.deliveryRetryBackoffMs;
+			writeClaimState(claimPath, state);
 			log("inbox_inject_error", { from: envelope.from });
+			return false;
 		}
 		log("inbox_delivery_attempt", { from: envelope.from, messageId: envelope.id, attempts: state.attempts, truncated });
 		return false;
@@ -758,14 +842,18 @@ export function createController(pi, injected = {}, overrides = {}) {
 			typeof entry.prompt !== "string" || !Number.isSafeInteger(entry.dueAt))) {
 			throw new Error("invalid wake-up state");
 		}
-		return value.map((entry) => ({
-			...entry,
-			attempts: Number.isSafeInteger(entry.attempts) && entry.attempts >= 0 ? entry.attempts : 0,
-			nextAt: Number.isSafeInteger(entry.nextAt) && entry.nextAt >= 0 ? entry.nextAt : entry.dueAt,
-			stalled: entry.stalled === true,
-			reported: entry.reported === true,
-			reportAt: Number.isSafeInteger(entry.reportAt) && entry.reportAt >= 0 ? entry.reportAt : 0,
-		}));
+		return value.map((entry) => {
+			const attempts = Number.isSafeInteger(entry.attempts) && entry.attempts >= 0 ? entry.attempts : 0;
+			return {
+				...entry,
+				attempts,
+				nextAt: Number.isSafeInteger(entry.nextAt) && entry.nextAt >= 0 ? entry.nextAt : entry.dueAt,
+				stalled: entry.stalled === true,
+				queued: queuedFromRecord(entry, attempts),
+				reported: entry.reported === true,
+				reportAt: Number.isSafeInteger(entry.reportAt) && entry.reportAt >= 0 ? entry.reportAt : 0,
+			};
+		});
 	}
 
 	function writeWakeups(entries) {
@@ -803,6 +891,11 @@ export function createController(pi, injected = {}, overrides = {}) {
 			reportWakeupStalled(entry);
 			return false;
 		}
+		if (entry.queued === true) {
+			// pi accepted this wake-up and has not persisted it yet. A second
+			// injection would duplicate it; a fresh session runtime re-delivers it.
+			return false;
+		}
 		if (entry.attempts >= CONFIG_DEFAULTS.deliveryMaxAttempts) {
 			entry.stalled = true;
 			entry.reportAt = now();
@@ -812,21 +905,31 @@ export function createController(pi, injected = {}, overrides = {}) {
 			reportWakeupStalled(entry);
 			return false;
 		}
-		entry.attempts++;
-		entry.nextAt = now() + CONFIG_DEFAULTS.deliveryBackoffMs[Math.min(entry.attempts - 1, CONFIG_DEFAULTS.deliveryBackoffMs.length - 1)];
+		// nextAt covers only a REFUSED send; an accepted copy is blocked by `queued`.
+		entry.queued = true;
 		entry.status = "claimed";
 		entries[index] = entry;
 		writeWakeups(entries);
 		try {
 			inject("pi-ctl-wakeup", entry.id, `[Wake-up ${entry.id}] ${entry.prompt}`);
 		} catch {
+			// Only a refusal is a failed attempt; an accepted copy is blocked by `queued`.
+			entry.queued = false;
+			entry.attempts++;
+			entry.nextAt = now() + CONFIG_DEFAULTS.deliveryRetryBackoffMs;
+			entries[index] = entry;
+			writeWakeups(entries);
 			log("wakeup_inject_error", { id: entry.id });
+			// Only a refusal needs its own timer: no agent event will happen, and the
+			// record must come back by itself. An accepted copy needs none -- its
+			// confirmation arrives with the run that consumes it.
+			const handle = timers.setTimeout(() => {
+				void fireWakeup(entry.id).catch(() => log("wakeup_error", { id: entry.id }));
+			}, entry.nextAt - now());
+			wakeupTimers.set(entry.id, handle);
+			return false;
 		}
 		log("wakeup_delivery_attempt", { id: entry.id, attempts: entry.attempts });
-		const handle = timers.setTimeout(() => {
-			void fireWakeup(entry.id).catch(() => log("wakeup_error", { id: entry.id }));
-		}, entry.nextAt - now());
-		wakeupTimers.set(entry.id, handle);
 		return false;
 	}
 
@@ -1593,16 +1696,23 @@ export function createController(pi, injected = {}, overrides = {}) {
 	};
 	pi.registerTool(stopMonitorTool);
 
-	pi.on("session_start", async (_event, ctx) => {
+	pi.on("session_start", async (event, ctx) => {
 		stopped = false;
 		currentContext = ctx;
-		log("start", { name, pid });
+		startReason = typeof event?.reason === "string" ? event.reason : null;
+		log("start", { name, pid, reason: startReason });
 		if (!initialized) {
 			await recoverMonitors();
 			if (stopped) return;
 			initialized = true;
 		}
 		if (stopped) return;
+		// A fresh session runtime is exactly the proof that pi dropped the accepted
+		// copy: it is the only observable fact that the old agent-level queue is
+		// gone. Pi's "reload" keeps that queue, so it re-delivers nothing.
+		if (freshSessionRuntime()) {
+			try { resetQueuedForFreshSession(); } catch { log("delivery_queue_reset_error", { reason: startReason }); }
+		}
 		if (readCompactionState().alertPending) attemptCompactionAlert();
 		await pollInbox(ctx);
 		if (stopped) return;

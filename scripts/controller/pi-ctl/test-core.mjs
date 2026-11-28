@@ -23,8 +23,9 @@ function fixture(envExtra = {}) {
 	const sessionEntries = [];
 	const events = new Map();
 	const tools = new Map();
-	let sendsBeforeThrow = 0;
-	let asyncFailures = 0;
+	let sendsBeforeRefusal = 0;
+	let busy = false;
+	let queued = [];
 	let onSend = null;
 	let failInboxOpen = false;
 	let id = 0;
@@ -32,6 +33,21 @@ function fixture(envExtra = {}) {
 		sessionManager: { getEntries: () => sessionEntries },
 		getContextUsage: () => undefined,
 	};
+	// Model pi's AGENT-level follow-up queue: sendMessage() accepts a message into
+	// the queue, pi persists it only when a turn consumes it, and an abort
+	// (Escape) drops the whole queue. `busy` is a running agent turn.
+	function consumeQueued() {
+		let delivered = 0;
+		while (queued.length > 0) {
+			const message = queued.shift();
+			const piMessage = { role: "custom", customType: message.customType, content: message.content, display: message.display, details: message.details };
+			events.get("message_end")?.({ type: "message_end", message: piMessage }, fakeContext);
+			sessionEntries.push({ type: "custom_message", customType: message.customType, content: message.content, display: message.display, details: message.details });
+			delivered++;
+		}
+		if (delivered > 0) events.get("agent_end")?.({ type: "agent_end", messages: [] }, fakeContext);
+		return delivered;
+	}
 	const injectedFs = new Proxy(fs, {
 		get(target, property) {
 			if (property === "openSync") return (filename, ...args) => {
@@ -56,22 +72,16 @@ function fixture(envExtra = {}) {
 			tools.set(tool.name, tool);
 		},
 		sendMessage(message, options) {
+			if (sendsBeforeRefusal > 0) {
+				sendsBeforeRefusal--;
+				throw new Error("simulated synchronous pi refusal");
+			}
 			onSend?.(message, options);
 			calls.push({ message, options });
-			if (sendsBeforeThrow > 0) {
-				sendsBeforeThrow--;
-				setImmediate(() => {
-					asyncFailures++;
-					Promise.reject(new Error("simulated asynchronous pi delivery failure")).catch(() => {});
-				});
-				return;
-			}
-			setImmediate(() => {
-				const piMessage = { role: "custom", customType: message.customType, content: message.content, display: message.display, details: message.details };
-				events.get("message_end")?.({ type: "message_end", message: piMessage }, fakeContext);
-				sessionEntries.push({ type: "custom_message", customType: message.customType, content: message.content, display: message.display, details: message.details });
-				events.get("agent_end")?.({ type: "agent_end", messages: [] }, fakeContext);
-			});
+			queued.push(message);
+			if (busy) return;
+			// Only the consuming run persists the message.
+			setImmediate(() => { if (!busy) consumeQueued(); });
 		},
 	};
 	let currentTime = 1_800_000_000_000;
@@ -127,9 +137,15 @@ function fixture(envExtra = {}) {
 		timers,
 		setTime(value) { currentTime = value; },
 		now() { return currentTime; },
-		throwOnSend(count = 1) { sendsBeforeThrow = count; },
+		refuseOnSend(count = 1) { sendsBeforeRefusal = count; },
+		setBusy(value) { busy = value; },
+		get queuedCount() { return queued.length; },
+		consumeQueued() { return consumeQueued(); },
+		// An abort (Escape) clears pi's queue. A queued copy that was never persisted
+		// is lost with it; only a fresh session runtime can deliver it again.
+		dropQueued() { queued = []; },
+		get fakeContext() { return fakeContext; },
 		failNextInboxWrite() { failInboxOpen = true; },
-		get asyncFailures() { return asyncFailures; },
 		setOnSend(fn) { onSend = fn; },
 		setSpawn(fn) { spawnImpl = fn; },
 		makeChild() {
@@ -151,6 +167,50 @@ function fixture(envExtra = {}) {
 		get intervalTasks() { return [...intervalTasks]; },
 		cleanup() { fs.rmSync(temp, { recursive: true, force: true }); },
 	};
+}
+
+// A restarted pi process (or a replaced session runtime): its own handlers, its
+// own session entries and its own accepted-message list, all backed by the same
+// durable state root as the fixture.
+function restartController(f, entries, makeIdPrefix = "restart") {
+	const handlers = new Map();
+	const messages = [];
+	const pending = [];
+	let counter = 0;
+	const context = {
+		// The restored session file already holds whatever pi persisted; this fake
+		// keeps an entry only when a consuming run is simulated.
+		sessionManager: { getEntries: () => entries },
+		getContextUsage: () => undefined,
+	};
+	function consume() {
+		while (pending.length > 0) {
+			const message = pending.shift();
+			const piMessage = { role: "custom", customType: message.customType, content: message.content, display: message.display, details: message.details };
+			handlers.get("message_end")?.({ type: "message_end", message: piMessage }, context);
+			entries.push({ type: "custom_message", customType: message.customType, details: message.details });
+		}
+	}
+	const pi = {
+		on(event, handler) { handlers.set(event, handler); },
+		registerTool() {},
+		sendMessage(message) {
+			messages.push({ message });
+			pending.push(message);
+		},
+	};
+	const controller = createController(pi, {
+		env: f.env,
+		cwd: f.repo,
+		wrapperPath: f.wrapper,
+		pid: 987654323,
+		now: () => f.now(),
+		makeId: () => `${makeIdPrefix}-${++counter}`,
+		timers: f.timers,
+		verifySessionLock: () => 12,
+	}, { root: f.root, name: "receiver", wrapperPath: f.wrapper });
+	ignored.push(controller);
+	return { handlers, messages, context, controller, consume, get pendingCount() { return pending.length; } };
 }
 
 test("requires a safe controller name and an absolute state root outside the repository", (t) => {
@@ -281,7 +341,7 @@ test("a failed outbox write rolls back its send-limit reservation", async (t) =>
 	assert.equal(fs.readdirSync(path.join(f.root, "inbox", "peer")).filter((file) => file.endsWith(".msg")).length, 1);
 });
 
-test("claims inbox messages before injecting and retains a claim when injection fails", async (t) => {
+test("a refused injection retains its claim and retries with the same id", async (t) => {
 	const f = fixture();
 	t.after(f.cleanup);
 	const sender = createController({ ...fakeApiNoop() }, {
@@ -294,29 +354,153 @@ test("claims inbox messages before injecting and retains a claim when injection 
 		verifySessionLock: () => 12,
 	}, { root: f.root, name: "peer" });
 	sender.writePeerMessage("receiver", "from peer");
-	f.throwOnSend();
+	// A synchronous refusal means pi did NOT accept the message, so the claim keeps
+	// its id and is retried; an accepted-async copy is the queued case below.
+	f.refuseOnSend();
 	await f.controller.pollInbox();
 	await f.flushPromises();
 	assert.equal(fs.readdirSync(path.join(f.root, "inbox", "receiver")).length, 0);
-	assert.equal(fs.readdirSync(path.join(f.root, "processing", "receiver")).filter((file) => file.endsWith(".msg")).length, 1);
-	assert.equal(f.asyncFailures, 1, "the real Pi API has void sendMessage and fails asynchronously without rejecting it");
-	assert.equal(f.calls[0].message.details.piCtlId, "sender-id");
+	assert.equal(fs.readdirSync(path.join(f.root, "processing", "receiver")).filter((file) => file.endsWith(".msg")).length, 1,
+		"a refused injection keeps the durable claim");
+	assert.equal(f.calls.length, 0);
 	f.setTime(1_800_000_001_001);
 	await f.controller.pollInbox();
 	await f.flushPromises();
-	assert.equal(f.calls.length, 2);
-	assert.equal(f.calls[1].message.details.piCtlId, "sender-id", "retry preserves the original delivery id");
-	assert.match(f.calls[1].message.content, /Peer message from peer, id=sender-id/);
-	assert.match(f.calls[1].message.content, /not operator approval/);
-	assert.match(f.calls[1].message.content, /from peer/);
+	assert.equal(f.calls.length, 1);
+	assert.equal(f.calls[0].message.details.piCtlId, "sender-id", "retry preserves the original delivery id");
+	assert.match(f.calls[0].message.content, /Peer message from peer, id=sender-id/);
+	assert.match(f.calls[0].message.content, /not operator approval/);
+	assert.match(f.calls[0].message.content, /from peer/);
 	assert.equal(fs.readdirSync(path.join(f.root, "processing", "receiver")).filter((file) => file.endsWith(".msg")).length, 0);
+});
+
+test("a queued peer message is delivered once however long the agent stays busy", async (t) => {
+	const f = fixture();
+	t.after(f.cleanup);
+	f.setBusy(true);
+	const sender = createController(fakeApiNoop(), {
+		env: { HOME: f.temp, PI_CTL_NAME: "peer", PI_CTL_ROOT: f.root },
+		cwd: f.repo,
+		pid: 987654322,
+		now: () => f.now(),
+		makeId: () => "busy-id",
+		timers: f.timers,
+		verifySessionLock: () => 12,
+	}, { root: f.root, name: "peer" });
+	sender.writePeerMessage("receiver", "queued while busy");
+	await f.controller.pollInbox();
+	await f.flushPromises();
+	assert.equal(f.calls.length, 1, "the message is injected once into the live queue");
+	assert.equal(f.queuedCount, 1, "pi accepted it; it is queued, not persisted");
+	for (const advance of [1000, 5000, 30_000, 3_600_000, 86_400_000]) {
+		f.setTime(f.now() + advance);
+		await f.controller.pollInbox();
+		await f.flushPromises();
+	}
+	assert.equal(f.calls.length, 1, "no second injection while pi holds the accepted copy");
+	const state = JSON.parse(fs.readFileSync(path.join(f.root, "processing", "receiver", fs.readdirSync(path.join(f.root, "processing", "receiver")).find((file) => file.endsWith(".state.json"))), "utf8"));
+	assert.equal(state.attempts, 0, "only a refusal counts as an attempt; pi accepted this one");
+	assert.equal(state.queued, true);
+	assert.equal(fs.existsSync(path.join(f.root, "inbox", "main")) ? fs.readdirSync(path.join(f.root, "inbox", "main")).filter((file) => file.endsWith(".msg")).length : 0, 0,
+		"a queued message never produces a stall report");
+	f.setBusy(false);
+	f.consumeQueued();
+	await f.flushPromises();
+	await f.controller.pollInbox();
+	assert.equal(f.calls.length, 1);
+	assert.equal(fs.readdirSync(path.join(f.root, "processing", "receiver")).filter((file) => file.endsWith(".msg")).length, 0,
+		"the persisted entry removes the claim");
+});
+
+test("a queued peer message is delivered once more only after a fresh session start", async (t) => {
+	const f = fixture();
+	t.after(f.cleanup);
+	f.setBusy(true);
+	const sender = createController(fakeApiNoop(), {
+		env: { HOME: f.temp, PI_CTL_NAME: "peer", PI_CTL_ROOT: f.root },
+		cwd: f.repo,
+		pid: 987654322,
+		now: () => f.now(),
+		makeId: () => "restart-peer-id",
+		timers: f.timers,
+		verifySessionLock: () => 12,
+	}, { root: f.root, name: "peer" });
+	sender.writePeerMessage("receiver", "queued in the previous runtime");
+	await f.controller.pollInbox();
+	await f.flushPromises();
+	assert.equal(f.calls.length, 1);
+	// A fresh pi process: new agent, no queue, and the entry was never persisted.
+	// The old runtime's queue died with it -- including a copy an abort cleared.
+	f.dropQueued();
+	const restarted = restartController(f, []);
+	await restarted.handlers.get("session_start")({ type: "session_start", reason: "resume" }, restarted.context);
+	await f.flushPromises();
+	assert.equal(restarted.messages.filter(({ message }) => message.details.piCtlId === "restart-peer-id").length, 1,
+		"the fresh agent receives the message exactly once");
+	// Once a run consumes it, pi persists the entry and the claim is finished: no
+	// later runtime may deliver it again.
+	restarted.consume();
+	await f.flushPromises();
+	const later = restartController(f, restarted.context.sessionManager.getEntries(), "later");
+	await later.handlers.get("session_start")({ type: "session_start", reason: "startup" }, later.context);
+	await f.flushPromises();
+	assert.equal(later.messages.length, 0, "a persisted message is never delivered again");
+	assert.equal(fs.readdirSync(path.join(f.root, "processing", "receiver")).filter((file) => file.endsWith(".msg")).length, 0,
+		"the persisted entry removes the claim for good");
+});
+
+test("a reload keeps the live queue, so a queued claim is not re-injected", async (t) => {
+	const f = fixture();
+	t.after(f.cleanup);
+	f.setBusy(true);
+	const sender = createController(fakeApiNoop(), {
+		env: { HOME: f.temp, PI_CTL_NAME: "peer", PI_CTL_ROOT: f.root },
+		cwd: f.repo,
+		pid: 987654322,
+		now: () => f.now(),
+		makeId: () => "reload-peer-id",
+		timers: f.timers,
+		verifySessionLock: () => 12,
+	}, { root: f.root, name: "peer" });
+	sender.writePeerMessage("receiver", "queued before a reload");
+	await f.controller.pollInbox();
+	await f.flushPromises();
+	assert.equal(f.calls.length, 1);
+	const reloaded = restartController(f, []);
+	await reloaded.handlers.get("session_start")({ type: "session_start", reason: "reload" }, reloaded.context);
+	await f.flushPromises();
+	assert.equal(reloaded.messages.length, 0, "a reload keeps the live agent's queue; a second injection there would duplicate");
+});
+
+test("a legacy claim record without the queued flag is treated as queued", async (t) => {
+	const f = fixture();
+	t.after(f.cleanup);
+	f.setBusy(true);
+	const messageId = "legacy-claim-7";
+	fs.writeFileSync(path.join(f.root, "inbox", "receiver", "legacy.msg"),
+		`from=peer\nid=${messageId}\nto=receiver\ncreated=2027-01-15T08:00:00.000Z\n\nlegacy body\n`, { mode: 0o600 });
+	await f.controller.pollInbox();
+	await f.flushPromises();
+	const claimFile = fs.readdirSync(path.join(f.root, "processing", "receiver")).find((file) => file.endsWith(".msg"));
+	assert.ok(claimFile, "the claim is moved into the durable processing queue");
+	assert.equal(f.calls.length, 1);
+	assert.equal(f.queuedCount, 1, "pi holds the accepted copy for the running turn");
+	// A record written by the previous implementation: attempts, no queued fact.
+	fs.writeFileSync(path.join(f.root, "processing", "receiver", `${claimFile}.state.json`),
+		`${JSON.stringify({ id: messageId, attempts: 2, nextAt: 0, stalled: false, reported: false })}\n`, { mode: 0o600 });
+	f.setTime(f.now() + 3_600_000);
+	await f.controller.pollInbox();
+	await f.flushPromises();
+	assert.equal(f.calls.length, 1, "an attempt count without the queued fact cannot prove the copy is gone");
+	assert.equal(fs.existsSync(path.join(f.root, "processing", "receiver", `${claimFile}.msg`)), true,
+		"the claim stays on disk for the fresh runtime or for pi's persisted entry");
 });
 
 test("bounded delivery reports accept the maximum-length peer message id", async (t) => {
 	const f = fixture();
 	t.after(f.cleanup);
 	const messageId = `m${"x".repeat(127)}`;
-	f.throwOnSend(3);
+	f.refuseOnSend(3);
 	fs.writeFileSync(path.join(f.root, "inbox", "receiver", "long-id.msg"),
 		`from=peer\nid=${messageId}\nto=receiver\ncreated=2027-01-15T08:00:00.000Z\n\ndelivery cannot be confirmed\n`, { mode: 0o600 });
 	for (const advance of [0, 1001, 5001, 30_001]) {
@@ -434,29 +618,58 @@ test("wake-ups persist across restart, fire overdue once, and can be listed or c
 	assert.equal(JSON.parse(fs.readFileSync(path.join(f.root, "wakeups", "receiver.json"), "utf8")).length, 0);
 });
 
-test("wake-up asynchronous failure retains the same id and retries with backoff", async (t) => {
+test("a refused wake-up injection retains the same id and retries with backoff", async (t) => {
 	const f = fixture();
 	t.after(f.cleanup);
 	const wakeup = f.controller.scheduleWakeup(10, "wake once");
 	f.setTime(wakeup.dueAt + 1);
-	f.throwOnSend();
+	f.refuseOnSend();
 	await f.controller.armWakeups();
 	await f.flushPromises();
 	let pending = JSON.parse(fs.readFileSync(path.join(f.root, "wakeups", "receiver.json"), "utf8"));
-	assert.equal(pending.length, 1, "failed send does not discard the wake-up");
+	assert.equal(pending.length, 1, "a refused send does not discard the wake-up");
 	assert.equal(pending[0].id, wakeup.id);
 	assert.equal(pending[0].attempts, 1);
-	assert.equal(f.asyncFailures, 1);
-	await f.controller.armWakeups();
-	assert.equal(f.calls.length, 1, "backoff prevents an immediate resend storm");
+	assert.equal(pending[0].queued, false, "a refusal means pi did not accept the message");
 	f.setTime(pending[0].nextAt + 1);
 	await f.controller.armWakeups();
 	await f.flushPromises();
-	assert.equal(f.calls.length, 2);
+	assert.equal(f.calls.length, 1);
 	assert.equal(f.calls[0].message.details.piCtlId, wakeup.id);
-	assert.equal(f.calls[1].message.details.piCtlId, wakeup.id);
+	await f.controller.armWakeups();
+	await f.flushPromises();
 	pending = JSON.parse(fs.readFileSync(path.join(f.root, "wakeups", "receiver.json"), "utf8"));
 	assert.equal(pending.length, 0, "confirmation of the same customType and id removes the wake-up");
+});
+
+test("a queued wake-up fires once and is not re-injected while the agent stays busy", async (t) => {
+	const f = fixture();
+	t.after(f.cleanup);
+	f.setBusy(true);
+	const wakeup = f.controller.scheduleWakeup(10, "wake once while busy");
+	f.setTime(wakeup.dueAt + 1);
+	await f.controller.armWakeups();
+	await f.flushPromises();
+	assert.equal(f.calls.length, 1);
+	assert.equal(f.queuedCount, 1, "pi accepted the wake-up; it waits in the follow-up queue");
+	let pending = JSON.parse(fs.readFileSync(path.join(f.root, "wakeups", "receiver.json"), "utf8"));
+	assert.equal(pending[0].queued, true);
+	for (const advance of [1000, 5000, 30_000, 3_600_000]) {
+		f.setTime(f.now() + advance);
+		await f.controller.armWakeups();
+		await f.flushPromises();
+	}
+	assert.equal(f.calls.length, 1, "a queued wake-up is never injected a second time");
+	pending = JSON.parse(fs.readFileSync(path.join(f.root, "wakeups", "receiver.json"), "utf8"));
+	assert.equal(pending.length, 1, "the record stays on disk until pi persists it");
+	assert.equal(pending[0].attempts, 0, "only a refusal counts as an attempt; pi accepted this one");
+	f.setBusy(false);
+	f.consumeQueued();
+	await f.flushPromises();
+	await f.controller.armWakeups();
+	await f.flushPromises();
+	assert.equal(JSON.parse(fs.readFileSync(path.join(f.root, "wakeups", "receiver.json"), "utf8")).length, 0,
+		"the persisted entry removes the wake-up");
 });
 
 test("monitor refuses at the start tool boundary until the PID namespace wrapper signals readiness", async (t) => {

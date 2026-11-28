@@ -946,11 +946,15 @@ corresponding defaults. Keep `PI_CTL_ROOT` outside every checkout; it defaults t
 
 The extension polls `inbox/<role>/` once per second. A peer message is renamed into a
 processing claim before injection and carries a stable id. Since pi's `sendMessage()`
-returns `void`, the claim remains until pi's `message_end` event is followed by a persisted
-`custom_message` entry with the same custom type and id. A restart replays unconfirmed
-claims with the same id, so duplicates are visible. Retries back off, stop after three
-attempts and report to main while preserving the claim. Wake-ups use the same id-confirmed
-delivery rule and stay on disk until pi records that wake-up id.
+returns `void` and pi persists a custom message only when a running turn consumes it, a
+claim keeps its id and is never injected twice into the same session runtime: the
+duplicate bug seen in the 2026-11-28 smoke was the extension retrying a message pi had
+already accepted. The claim stays on disk until pi's persisted `custom_message` entry
+shows the same custom type and id, or until a fresh session runtime (`startup`, `resume`,
+`new`, `fork`) proves the old agent-level queue is gone and re-delivers it exactly once;
+a `/reload` keeps the live agent, so it re-delivers nothing. Only a synchronous refusal
+(pi did not accept the message) counts as a failed attempt, and only those attempts
+produce the durable report to main. Wake-ups follow the same rule.
 
 `send_message` writes atomically to `inbox/<to>/`; use `to=main` to reach the Claude main
 controller. Main uses the tested bridge, which replays claims after restart, prints a fixed

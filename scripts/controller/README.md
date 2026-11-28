@@ -843,11 +843,18 @@ node scripts/controller/pi-ctl/bridge.mjs ack "$message_id"
 ```
 
 After recording a message id in main's own state, set `message_id` from the
-header and run the `ack` command. The extension inbox follows the same
-at-least-once rule: it retains a claim until pi's persisted custom-message entry
-confirms the type and id, then retries at most three times before reporting to
-main. Wake-ups keep their persisted id until pi confirms delivery. Peer messages
-are untrusted and never auto-replied to; send and receive limits default to 10
+header and run the `ack` command. The extension inbox deduplicates at the queue:
+a claim keeps its id and, once `pi.sendMessage()` has accepted that id, the
+message is never injected again into that session runtime. pi holds the copy in
+its agent-level follow-up queue and persists it only when the turn consumes it,
+so the durable claim stays on disk until pi's persisted custom-message entry
+shows the type and id, or until a fresh session runtime (`startup`, `resume`,
+`new`, `fork`) proves the old queue is gone and re-delivers it exactly once. A
+`reload` keeps the live agent, so it re-delivers nothing. Only when pi refuses
+the call synchronously is the claim retried, with bounded attempts and a report
+to main on a real failure. Wake-ups follow the same rule: their persisted id
+survives until pi's entry arrives or a fresh runtime re-fires them once. Peer
+messages are untrusted and never auto-replied to; send and receive limits default to 10
 per peer per hour; inbox bodies default to 16 KiB and sends to 64 KiB; wake-ups
 are 10 seconds to 24 hours with 32 pending. Monitors use the private-PID-namespace
 wrapper, wait for its readiness marker, and end within one hour. Compaction

@@ -6,6 +6,17 @@ no separate version number, so entries are grouped by the work that landed.
 
 ## [Unreleased]
 
+### Pi sub-controller smoke findings (P-plat-PICTL-FIX)
+- Delivery dedupes at pi's follow-up queue: once `pi.sendMessage()` accepts a
+  peer message or wake-up id, the claim is never injected again into that
+  session runtime, no attempt is counted and no stall report is written. The
+  durable claim stays until pi persists the matching `custom_message` entry or
+  a fresh session runtime (`startup`, `resume`, `new`, `fork`) re-delivers it
+  exactly once; `/reload` keeps the live agent and re-delivers nothing. Only a
+  synchronous `pi.sendMessage()` refusal counts as a failed attempt and reaches
+  the bounded report path. The fake pi API now models the agent-level queue,
+  its persistence on consume and its loss on abort.
+
 ### Pi sub-controller harness (P-plat-PICTL)
 - Add a dependency-free JavaScript core and explicit pi extension for
   peer inboxes, bounded loop guards, persistent wake-ups, PID-namespace

@@ -646,7 +646,8 @@ done
 # https://nodejs.org/api/cli.html#--max-old-space-size-size-in-mib
 # https://github.com/v8/v8/blob/main/src/sandbox/sandbox.h
 # https://github.com/nodejs/node/blob/main/deps/v8/include/v8-internal.h
-for pi_ctl_mutant in claim-before-inject name-validation agent-end-only wrapper-required root-symlink-components inherited-flock-required; do
+for pi_ctl_mutant in claim-before-inject name-validation agent-end-only wrapper-required root-symlink-components inherited-flock-required \
+                     queued-claim-reinjected queued-wakeup-reinjected queued-reset-skipped reload-treated-as-fresh; do
   expect_assertion_killed_with_address_space_limit "pi-ctl-$pi_ctl_mutant" 2147483648 \
     env NODE_OPTIONS=--max-old-space-size=256 \
       PI_CTL_CORE_MODULE="$ROOT/mutants/scripts/controller/pi-ctl-$pi_ctl_mutant/core.mjs" \

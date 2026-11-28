@@ -1950,3 +1950,24 @@ pi_ctl_mutant(
     "\t\t? injected.verifySessionLock(root, name)\n"
     "\t\t: 12;",
 )
+# F1 (P-plat-PICTL-FIX): a message pi already accepted must not be injected again.
+pi_ctl_mutant(
+    "queued-claim-reinjected",
+    "\t\tif (acceptedCopyPending(state)) {",
+    "\t\tif (false) {",
+)
+pi_ctl_mutant(
+    "queued-wakeup-reinjected",
+    "\t\tif (entry.queued === true) {\n\t\t\t// pi accepted this wake-up and has not persisted it yet. A second",
+    "\t\tif (false) {\n\t\t\t// pi accepted this wake-up and has not persisted it yet. A second",
+)
+pi_ctl_mutant(
+    "queued-reset-skipped",
+    "\t\t\ttry { resetQueuedForFreshSession(); } catch { log(\"delivery_queue_reset_error\", { reason: startReason }); }",
+    "\t\t\t// mutant: a fresh session runtime does not re-deliver accepted copies",
+)
+pi_ctl_mutant(
+    "reload-treated-as-fresh",
+    '\t\treturn startReason !== null && startReason !== "reload";',
+    "\t\treturn true;",
+)
