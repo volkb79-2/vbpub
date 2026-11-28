@@ -905,7 +905,10 @@ inbox claims have not been persisted by pi. The notice does not start a turn, an
 the claim is never re-injected into the same live runtime: an abort can drop
 pi's accepted follow-up copy before it is saved. Polling also detects a likely
 asynchronous send rejection after two idle/no-pending observations at least 30
-seconds apart; it reports once and retains the claim for a fresh runtime.
+seconds apart; that idle-poll path records its notice as sent once and retains
+the claim for a fresh runtime. Separately, each later `agent_end` with an
+unconfirmed claim logs the count and queues the same one-line notice; these
+notices can repeat and do not start a turn.
 Unobservable abort loss while a session remains busy is still tracked as CTL-71.
 
 At `session_start`, the extension arms a one-shot role context block. Before the

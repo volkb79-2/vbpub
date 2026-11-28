@@ -16,14 +16,15 @@ no separate version number, so entries are grouped by the work that landed.
   synchronous `pi.sendMessage()` refusal counts as a failed attempt and reaches
   the bounded report path. A queued id absent from persisted entries during two
   idle/no-pending observations at least 30 seconds apart is reported as an
-  asynchronous rejection; the claim remains for a fresh runtime, with one
-  persisted one-line notice and one bounded delivery report. The fake pi API now models the agent-level queue,
+  asynchronous rejection; the claim remains for a fresh runtime, with a
+  persisted idle-poll notice and one bounded delivery report. The fake pi API now models the agent-level queue,
   its persistence on consume and its loss on abort.
 - At each `agent_end` (F1b), unresolved inbox claims are recorded in the event
   log and get a one-line notice that does not start a turn. The notice cannot
   redeliver or recursively count itself. Abort can still drop pi's queued copy
   before persistence; the durable claim is replayed after restart, and this
-  live-runtime uncertainty is documented as CTL-71.
+  live-runtime uncertainty is documented as CTL-71. The notice may repeat at
+  each later `agent_end` while the claim remains unconfirmed.
 - A session-start marker arms the role's bounded PRIME excerpt and original
   goal for the first model turn (PRIME/goal): typed input, a peer message or a
   wake-up can be the original goal. The one-shot persistent context message is

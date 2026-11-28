@@ -77,6 +77,7 @@ together.
 | CTL-67 | P-plat-26d review follow-ups: guard test gaps, no live isolation coverage, a process-group kill in a test, a missing mutant file counting as killed | Nice-to-have | OPEN |
 | CTL-68 | P-plat-35 review follow-ups: progress lines stop while the mutation queue drains; a missing runner mutant file counts as killed | Nice-to-have | OPEN |
 | CTL-69 | Pi automatic compaction summaries grow without bound and omit older in-flight status | Medium | OPEN 2026-11-27 |
+| CTL-79 | `pi-ctl-send.sh` has a check-then-use window after its symlink scan | Known limit | BY DESIGN 2026-11-28 (main ruling) |
 
 ---
 
@@ -1907,6 +1908,12 @@ persisted pi entry: `N inbox message(s) claimed but not confirmed; restart or
 ask the sender to resend`. The notice does not start a turn, and the durable
 claim is not re-injected into the live queue. Restarting the session runtime
 replays the claim; otherwise the sender may resend after checking its id.
+The same notice can also be sent by the idle-observation path. A later
+`agent_end` sends it again while the claim remains unconfirmed; this is BY
+DESIGN per the rule, “At each agent_end, the harness logs it to the event log
+and injects a one-line notice.”
+
+optional: repeat the notice only when the claimed set changes.
 
 **Where:** `scripts/controller/pi-ctl/core.mjs` claim reconciliation and the
 fake-pi queue model in `scripts/controller/pi-ctl/test-core.mjs`.
@@ -1914,6 +1921,16 @@ fake-pi queue model in `scripts/controller/pi-ctl/test-core.mjs`.
 **Close when:** pi exposes a reliable way to prove the accepted copy was
 dropped without risking a duplicate in its live queue, with a gate test for
 abort loss and no notice-triggered turn loop.
+
+## CTL-79 — pi-ctl-send has a symlink scan check-then-use window
+
+**Status:** KNOWN LIMIT (accepted 2026-11-28 by main). `pi-ctl-send.sh` checks
+the state path for symlinks, then uses it later for `mkdir`, `mktemp` and
+`mv`. A same-uid writer could swap a path component between those operations.
+This is accepted because a same-uid writer can write directly into the inbox
+anyway.
+
+**Where:** `scripts/controller/pi-ctl-send.sh` symlink scan and inbox writes.
 
 ## CTL-72 — self-compaction waits for `agent_end`
 
