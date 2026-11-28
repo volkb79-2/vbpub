@@ -155,6 +155,22 @@ def test_disallowed_remote_transport_is_a_runtime_refusal_with_git_diagnostic(
     assert "no diagnostic output" not in str(error.value)
 
 
+def test_origin_branch_error_prefers_stdout_when_git_has_no_stderr(monkeypatch, tmp_path):
+    root = _repo(tmp_path)
+    monkeypatch.setattr(
+        transaction, "run_remote_git",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            returncode=1, stdout="partial remote response", stderr="",
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="cannot inspect origin branch") as error:
+        transaction._origin_branch_oid(root, "feature/demo")
+
+    assert str(error.value).endswith("partial remote response")
+    assert "no diagnostic output" not in str(error.value)
+
+
 def test_failed_origin_branch_fetch_keeps_the_runtime_error_contract(
     tmp_path, monkeypatch,
 ):
