@@ -2033,8 +2033,10 @@ class HostJobWorker:
             self._lane_log_stop.clear()
             self._lane_log_setup_failed.clear()
             duplicate_fd = -1
+            lane_stdout = None
             try:
-                if getattr(process, "stdout", None) is not None:
+                lane_stdout = getattr(process, "stdout", None)
+                if lane_stdout is not None:
                     duplicate_fd = os.dup(log_fd)
                     drain_thread = threading.Thread(
                         target=self._drain_lane_log, args=(process, duplicate_fd), daemon=True,
@@ -2051,10 +2053,9 @@ class HostJobWorker:
                     self._request_worker_stop(process)
                 except AdmissionError:
                     pass
-                stream = getattr(process, "stdout", None)
-                if stream is not None:
+                if lane_stdout is not None:
                     try:
-                        stream.close()
+                        lane_stdout.close()
                     except OSError:
                         pass
         finally:
@@ -2107,11 +2108,6 @@ class HostJobWorker:
                     self._request_worker_stop(process)
                 except AdmissionError:
                     pass
-            if self._lane_log_setup_failed.is_set():
-                try:
-                    self._request_worker_stop(process)
-                except AdmissionError:
-                    pass
             self.waiter(1)
             try:
                 status = process.poll()
@@ -2126,12 +2122,7 @@ class HostJobWorker:
                 cancel_after_wait = False
             if status is not None:
                 break
-            if cancel_after_wait:
-                try:
-                    self._request_worker_stop(process)
-                except AdmissionError:
-                    pass
-            if status is None and self._lane_log_setup_failed.is_set():
+            if cancel_after_wait or (status is None and self._lane_log_setup_failed.is_set()):
                 try:
                     self._request_worker_stop(process)
                 except AdmissionError:

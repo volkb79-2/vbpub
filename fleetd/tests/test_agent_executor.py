@@ -12223,7 +12223,9 @@ def test_run_lane_joins_pipe_drainer_and_keeps_normal_exit_output(tmp_path, clos
                 os.close(fd)
 
 
-@pytest.mark.parametrize("failure", ["dup", "thread-start"])
+@pytest.mark.parametrize("failure", [
+    "dup", "thread-start", "stdout-lookup", "dup-stop-refused", "thread-start-close-error",
+])
 def test_run_lane_log_setup_failure_stops_live_child_and_records_exit(tmp_path, monkeypatch, failure):
     worker = _worker(tmp_path, _VersionRunner({}))
     worker.runner_identity = RunnerIdentity("runner", 1001, 1002, (1002,))
@@ -12245,13 +12247,40 @@ def test_run_lane_log_setup_failure_stops_live_child_and_records_exit(tmp_path, 
     )[1]
     worker._read_events = lambda *, final=True: []
     read_fd, write_fd = os.pipe()
+    write_fd_open = [True]
+
+    class LaneOutput:
+        def __init__(self):
+            self.raw = os.fdopen(read_fd, "rb", buffering=0)
+
+        @property
+        def closed(self):
+            return self.raw.closed
+
+        def close(self):
+            self.raw.close()
+            if failure == "thread-start-close-error":
+                raise OSError("injected stdout close failure")
+
+    lane_output = LaneOutput()
 
     class Process:
         pid = 991
-        stdout = os.fdopen(read_fd, "rb", buffering=0)
         status = None
+        poll_calls = 0
+        stdout_reads = 0
+
+        @property
+        def stdout(self):
+            self.stdout_reads += 1
+            if failure == "stdout-lookup" and self.stdout_reads == 1:
+                raise RuntimeError("stdout lookup failed")
+            return lane_output
 
         def poll(self):
+            self.poll_calls += 1
+            if self.poll_calls > 12:
+                pytest.fail("fake process was polled beyond its finite stop sequence")
             return self.status
 
     process = Process()
@@ -12271,19 +12300,26 @@ def test_run_lane_log_setup_failure_stops_live_child_and_records_exit(tmp_path, 
         def terminate_group(self, pid):
             stopped.append(pid)
             process.status = 143
-            os.close(write_fd)
+            if write_fd_open[0]:
+                os.close(write_fd)
+                write_fd_open[0] = False
 
     worker.process_signals = Signals()
+    if failure == "dup-stop-refused":
+        def refuse_stop(_process):
+            raise AdmissionError(ExitCode.REFUSAL, "injected stop refusal")
+
+        worker._request_worker_stop = refuse_stop
     duplicate_fds = []
     real_dup = os.dup
-    if failure == "dup":
+    if failure in {"dup", "dup-stop-refused"}:
         def fail_log_dup(fd):
             if fd == runner.log_fd:
                 raise OSError("dup failed")
             return real_dup(fd)
 
         monkeypatch.setattr(executor_worker_module.os, "dup", fail_log_dup)
-    else:
+    elif failure.startswith("thread-start"):
         def record_dup(fd):
             duplicate = real_dup(fd)
             if fd == runner.log_fd:
@@ -12296,22 +12332,38 @@ def test_run_lane_log_setup_failure_stops_live_child_and_records_exit(tmp_path, 
             lambda _thread: (_ for _ in ()).throw(RuntimeError("thread start failed")),
         )
     try:
+        waiter_calls = []
+
+        def bounded_waiter(_seconds):
+            waiter_calls.append(None)
+            if len(waiter_calls) > 4:
+                pytest.fail("worker loop exceeded its finite fake wait sequence")
+            if failure == "dup-stop-refused" and len(waiter_calls) == 1:
+                process.status = 143
+                if write_fd_open[0]:
+                    os.close(write_fd)
+                    write_fd_open[0] = False
+
+        worker.waiter = bounded_waiter
         assert worker._run_lane("run-gate", "host", {"runner_name": None}, None) == 143
         state = worker._state()
         assert worker.lane_error.startswith("lane-log-setup-failed:")
-        assert stopped == [process.pid]
+        assert stopped == ([] if failure == "dup-stop-refused" else [process.pid])
         assert state["lane_process_status"] == 143
         assert state["lane_may_be_live"] is False
-        assert state["stop_signal"] == "sent"
-        assert process.stdout.closed
+        if failure != "dup-stop-refused":
+            assert state["stop_signal"] == "sent"
+        assert lane_output.closed
         assert worker.runner_process is None
         assert worker._lane_log_thread is None
         for descriptor in duplicate_fds:
             with pytest.raises(OSError):
                 os.fstat(descriptor)
     finally:
-        if not process.stdout.closed:
-            process.stdout.close()
+        if not lane_output.closed:
+            lane_output.raw.close()
+        if write_fd_open[0]:
+            os.close(write_fd)
         for fd in (worker.project_fd, worker.checkout_fd, worker.repo_root_fd):
             if fd >= 0:
                 os.close(fd)
