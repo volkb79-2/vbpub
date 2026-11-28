@@ -11,6 +11,7 @@ import pytest
 
 from fleetd.admission import AdmissionError
 from fleetd import agent_verbs
+from fleetd.contracts import validate_host_facts
 from test_agent_protocol import _submit
 from test_agent_verbs import _put, _service, _upload_policy
 
@@ -24,7 +25,7 @@ def test_collection_is_off_by_default_or_explicit_false(tmp_path, enabled):
     service, identity, _checkout = _service(tmp_path)
     if enabled is not None:
         service.policy = replace(service.policy, upload_collection_enabled=enabled)
-    _upload_policy(service, store_bytes=100, floors={"checkout": 0})
+    _upload_policy(service, store_bytes=100, floors={"checkout": 0, "docker": 0})
     old = _put(service, identity, "candidates", b"old")
     _upload_policy(service, store_bytes=5, floors={"checkout": 0})
 
@@ -139,6 +140,109 @@ def test_bundle_is_retained_until_job_has_terminal_book_record(tmp_path, monkeyp
     with service._upload_store_lock():
         assert service._collect_upload_objects_locked(len(b"bundle"), len(b"bundle")) == len(b"bundle")
     assert not Path(bundle["path"]).exists()
+
+
+def test_real_submit_protects_bundle_until_book_completion(tmp_path):
+    service, identity, checkout = _service(tmp_path)
+    _enable_collection(service)
+    bundle = _put(service, identity, "in.bundle", b"bundle")
+
+    class Executor:
+        handle = None
+
+        def start(self, _request, handle):
+            self.handle = handle
+            return {"job_id": "controller-run-1", "state": "running"}
+
+    executor = Executor()
+    service.executor = executor
+    service.admission.legacy_jobs_provider = lambda: ()
+    host_facts = service.facts_provider().to_dict()
+    host_facts["policy"]["priority_classes_by_principal"] = {
+        "v": {identity.principal: ["gate"]},
+    }
+    service.facts_provider = lambda: validate_host_facts(host_facts)
+    service.admission.facts_provider = service.facts_provider
+    request = _submit()
+    request["sha"] = "b" * 40
+    assert not (checkout.parent / ("b" * 40)).exists()
+    assert service.handle(request, identity).document["state"] == "running"
+    assert service.admission.book.read_record(request["job_id"])["schema"] == "fleet-admission/1"
+
+    _upload_policy(service, store_bytes=4)
+    next_digest = hashlib.sha256(b"next").hexdigest()
+    next_path = service.paths.uploads_dir / identity.group / "candidates" / next_digest
+    with pytest.raises(AdmissionError, match="max_upload_store_bytes"):
+        _put(service, identity, "candidates", b"next")
+    assert Path(bundle["path"]).read_bytes() == b"bundle"
+    assert not next_path.exists()
+
+    executor.handle.complete()
+    assert service.admission.book.read_record(request["job_id"])["schema"] == "fleet-admission-terminal/1"
+    result = _put(service, identity, "candidates", b"next")
+    assert not Path(bundle["path"]).exists()
+    assert Path(result["path"]).read_bytes() == b"next"
+
+
+def test_enabled_submit_refuses_admission_without_guard_parameter(tmp_path):
+    service, identity, _checkout = _service(tmp_path)
+    _enable_collection(service)
+    service.executor = object()
+    service.admission.submit = lambda _request, _identity, _executor: {"job_id": "unguarded"}
+
+    with pytest.raises(TypeError, match="prepare_request"):
+        service.handle(_submit(), identity)
+
+    assert not (service.paths.jobs_dir / "controller-run-1" / "request.json").exists()
+
+
+@pytest.mark.parametrize(
+    ("case", "reason"),
+    [
+        ("unexpected", "unexpected entries"),
+        ("book_record", "has an admission record"),
+        ("invalid_id", "valid admission identifier"),
+        ("symlink_lock", "not a private regular file"),
+        ("public_lock", "not a private regular file"),
+        ("stat_error", "submit lock.*unreadable"),
+        ("book_error", "cannot be classified"),
+    ],
+)
+def test_absent_request_job_directory_refuses_ambiguous_state(tmp_path, monkeypatch, case, reason):
+    service, identity, checkout = _service(tmp_path)
+    _enable_collection(service)
+    old = _put(service, identity, "candidates", b"preserve")
+    name = "bad?job" if case == "invalid_id" else "orphan-job"
+    job_dir = service.paths.jobs_dir / name
+    job_dir.mkdir()
+    lock_path = job_dir / "submit.lock"
+    if case == "symlink_lock":
+        lock_path.symlink_to(checkout, target_is_directory=True)
+    else:
+        lock_path.write_text("lock", encoding="utf-8")
+        lock_path.chmod(0o600 if case != "public_lock" else 0o644)
+    if case == "unexpected":
+        (job_dir / "stray").write_text("unknown", encoding="utf-8")
+    elif case == "book_record":
+        monkeypatch.setattr(service.admission.book, "read_record", lambda _job_id: {"schema": "lease"})
+    elif case == "book_error":
+        monkeypatch.setattr(
+            service.admission.book, "read_record",
+            lambda _job_id: (_ for _ in ()).throw(AdmissionError(2, "broken book")),
+        )
+    elif case == "stat_error":
+        real_stat = agent_verbs.os.stat
+
+        def failed_stat(path, *args, **kwargs):
+            if path == "submit.lock":
+                raise OSError("stat denied")
+            return real_stat(path, *args, **kwargs)
+
+        monkeypatch.setattr(agent_verbs.os, "stat", failed_stat)
+
+    with pytest.raises(AdmissionError, match=reason):
+        service._referenced_upload_objects_locked()
+    assert Path(old["path"]).read_bytes() == b"preserve"
 
 
 def test_refused_submit_leaves_collectable_empty_job_directory(tmp_path, monkeypatch):
