@@ -472,7 +472,7 @@ installer. Use it from a checkout (`PYTHONPATH=hostobs/python`; the units in `ho
 are installed by hand).
 
 **Available:** the observe and operator sockets; observer `hello` and `annotate`; the observe and
-operator verbs `hello`, `status`, `current`, `subscribe` and `unsubscribe`; fixed-width BLOCK
+operator verbs `hello`, `status`, `current`, `subscribe`, `unsubscribe` and `events`; fixed-width BLOCK
 frames with a quality byte per value; the Rust client (`hostobs/crates/client`) and the stdlib-only
 Python `hostobs_client`; the `cgroup_id` selector and the `limit.cpu.max.*` metrics (wire minor 2).
 `deploy/` installs the observer socket.
@@ -480,7 +480,7 @@ Python `hostobs_client`; the `cgroup_id` selector and the `limit.cpu.max.*` metr
 `hostobs-operator` is reserved for reads with command-line details (`procs`, not served yet);
 today it returns the same data as `hostobs-observe`.
 
-**Not available yet:** `events` and `spans` (they answer `unknown-verb` at every probe level);
+**Not available yet:** `spans` (it answers `unknown-verb` at every probe level);
 the control level and sessions; the install CLI. Version 0.1.0 follows after M3, once the release
 packages are in.
 
@@ -573,8 +573,16 @@ follow them.
 
    A probe restart empties the events ring, spans and idempotency cache. Readers dedupe events on
    `(name, boot_id, seq)` across that boundary. `annotate_rate_per_s` and `annotate_burst` are
-   required `[limits]` keys; installed configurations must add both. B5 serves no read verb:
-   reading through `events` remains B6's work and is the one variance from plan §3.4.
+   required `[limits]` keys; installed configurations must add both.
+
+   **Reading the event ring.** `events` is a process-local RAM window. Treat any request with
+   `from_real_ns < started_real_ns` as incomplete; `displaced` resets to zero at restart, so it
+   cannot identify events lost before that process started. A page set is complete only under the
+   WIRE §4.10 completeness rule; restart the read when a gap appears. Deduplicate across reads and
+   restarts by `(name, boot_id, seq)`. Size `events_ring_bytes` for the consumer's expected lane
+   length: at the roughly 9.5 KB worst item, a 4 MiB ring holds about 440 events, and one observer
+   member emitting at the 64-event burst plus 50/s rate can fill it in about 8 seconds. `attrs`
+   are not filterable in M3; readers match them client-side.
 3. **act never writes `io.cost`, `io.weight` or sysctl.** `hostobs-act` serves only the verbs
    of plan v4 §A.2, and iogovmon owns `io.cost.*`, `io.weight` and the sysctls (plan v4 §A.1,
    "Never does" column for `hostobs-act`).
