@@ -921,17 +921,19 @@ class AgentVerbService:
                 exc.exit_code,
                 f"put refused and nothing was collected: {exc.reason}",
             ) from exc
-        reclaimed = 0
-        remaining = needed
         seed_sidecars = _referenced_seed_sidecars(references, objects)
         ordered = sorted(objects, key=lambda item: (item.modified, item.group, item.name, item.digest))
-        for item in ordered:
-            if remaining <= 0:
+        candidates = [
+            item for item in ordered
+            if not _is_referenced_upload_object(item, references, seed_sidecars)
+        ]
+        if sum(item.size for item in candidates) < needed:
+            return 0
+        reclaimed = 0
+        for item in candidates:
+            if reclaimed >= needed:
                 break
-            if _is_referenced_upload_object(item, references, seed_sidecars):
-                continue
             self._unlink_upload_object(item)
-            remaining -= item.size
             reclaimed += item.size
         return reclaimed
 
@@ -974,6 +976,12 @@ class AgentVerbService:
             in_flight, remaining, _live = self._recover_upload_reservations_locked()
             stored = self._stored_upload_bytes()
             required = stored + in_flight + expected - store_limit
+            available = self._upload_free_bytes()
+            if available - remaining - expected < floor_bytes:
+                raise AdmissionError(
+                    ExitCode.REFUSAL,
+                    f"put would breach configured disk floor {floor_bytes}",
+                )
             if required > 0:
                 self._collect_upload_objects_locked(required, store_limit)
                 stored = self._stored_upload_bytes()
@@ -981,12 +989,6 @@ class AgentVerbService:
                 raise AdmissionError(
                     ExitCode.REFUSAL,
                     f"put would exceed policy.max_upload_store_bytes {store_limit}",
-                )
-            available = self._upload_free_bytes()
-            if available - remaining - expected < floor_bytes:
-                raise AdmissionError(
-                    ExitCode.REFUSAL,
-                    f"put would breach configured disk floor {floor_bytes}",
                 )
             temporary_fd = -1
             owner_fd = -1
