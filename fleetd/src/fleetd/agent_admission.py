@@ -403,9 +403,11 @@ class AgentAdmission:
             raise AdmissionError(ExitCode.RUNNER_FAILURE, "job admission returned a non-job handle")
         try:
             state = executor.start(request, result.handle)
-        except Exception as exc:
+        except BaseException as exc:
             with self._uncertain_start_lock:
                 self._uncertain_start_handles[model.job_id] = result.handle
+            if not isinstance(exc, Exception):
+                raise
             raise AdmissionError(
                 ExitCode.RUNNER_FAILURE,
                 f"executor start failed; durable request and admission charge are retained: {exc}",
@@ -435,11 +437,15 @@ class AgentAdmission:
 
     @staticmethod
     def _terminal_state(job_id: str, record: Mapping[str, object]) -> Mapping[str, object]:
-        return {
+        result: dict[str, object] = {
             "job_id": job_id,
             "state": record["state"],
             "completed_at": record["completed_at"],
         }
+        for key in ("verdict", "exit_code", "lane", "api", "collected_at", "result_sha256", "result_size"):
+            if key in record:
+                result[key] = record[key]
+        return result
 
     def cancel(
         self, job_id: str, reason: str, identity: AgentIdentity, executor: AgentExecutor | None,

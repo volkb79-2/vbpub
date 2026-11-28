@@ -5,14 +5,15 @@
 The package contains strict versioned contracts, an injectable read-only facts
 collector, a deterministic RAM-first planner, and a one-shot lite campaign
 controller. The campaign controller uses the existing identity-checked hx
-wrapper and runner jobs; the separate P-fd-05 C3a host-agent entry point serves
-the host protocol described below.
+wrapper and runner jobs; the P-fd-05 C3a host-agent entry point and C3b-1
+executor serve the host protocol described below.
 
 ## Host admission core (P-fd-05 C2)
 
-`fleetd.admission` is a standard-library-only host admission library. Package
-C3a wires its book to the host protocol, but does not create containers or ship
-a real executor. The current planner and runners do not call it yet.
+`fleetd.admission` is a standard-library-only host admission library. C3a wires
+its book to the host protocol; C3b-1 adds a scoped lane executor. The current
+planner and runners do not call it yet. C3b-2 still owns recovery, legacy-job
+and Docker inspector providers, and upload garbage collection.
 
 `HostCapacity` is the typed projection of the admission-relevant `host-facts/2`
 fields. Each input is a `Fact[T]`: a known value has no reason; an unavailable
@@ -156,14 +157,17 @@ The textual group-prefix check would be ambiguous if group `ops` and group
 with overlapping `-`-separated group prefixes (FD-053).
 
 `complete` writes a durable terminal record containing `job_id`, group, digest,
-and completed state, with no charge, before removing the admitted record. If a
+and completed state, with no charge, before removing the admitted record. C3b-1
+also persists `verdict`, `exit_code`, `lane`, `api`, `collected_at`,
+`result_sha256`, and `result_size` in that same atomic terminal record. If a
 crash occurs between those writes, the terminal record wins and the job is
 completed. Replaying the same id and digest returns that terminal state without
 a handle; another digest or group is refusal (2), and an unreadable terminal
-record returns 75 for that id. An admission decision reads a terminal record
-only while the same id still has an active record, so unrelated finished history
-cannot block admission. This package does not prune terminal records; package C's
-host agent owns their retention policy.
+record returns 75 for that id. An older C2 record remains readable; its
+executor detail fields are unknown. An admission decision reads a terminal
+record only while the same id still has an active record, so unrelated finished
+history cannot block admission. This package does not prune terminal records;
+package C's host agent owns their retention policy.
 
 Lease records use the same queue and capacity charges. They persist pending and
 bound state and bind once to an immutable container id. The caller supplies the
@@ -201,7 +205,7 @@ The closed exit-code table assigns 79 to prerequisite-missing; 73 is reserved
 by fleetd's runner. Code 75 is a missing required fact, a held admission, or a
 wait withdrawn before start; code 2 is a request or static-eligibility refusal.
 
-## Host agent protocol and admission providers (P-fd-05 C3b-2a)
+## Host agent protocol, admission providers and executor (P-fd-05 C3a, C3b-1, C3b-2a)
 
 `fleetd.agent_policy`, `fleetd.agent_protocol`, `fleetd.agent_verbs`,
 `fleetd.agent_admission`, `fleetd.agent_providers`, `fleetd.agent_server`,
@@ -211,8 +215,13 @@ entry point reads the closed host-owned `agent.toml` policy and serves a Unix
 socket path, an inherited listening descriptor, or one ssh forced-command
 request on stdin/stdout. It does not execute a shell command. C3b-2a wires the
 legacy-job and Docker inspection providers into the entry point; it does not
-include the separate in-flight executor work. This package does not install a
-systemd unit or socket group, which belong to C3c.
+include the in-flight executor work. C3b-1 adds the standard-library
+`executor.py` and `executor_worker.py` modules. A confirmed submit starts one
+transient systemd scope per job and hands its admission flock to that worker.
+When enabled, repository content steps run as the required non-root
+`agent.toml.runner_user`; the supervisor remains root. C3b-1 does not install a systemd unit or socket
+group (C3c), recover after executor/host loss, or implement upload garbage
+collection (C3b-2 follow-up).
 
 Local socket peers are authenticated from `SO_PEERCRED`'s UID and primary GID;
 the configured supplementary socket group only grants connect permission. The
@@ -316,13 +325,93 @@ the configured idle deadline after each successful write progress, not a total
 transfer limit. A held lease connection and a submit waiting for admission do
 not use that deadline.
 
-The executor is an injected `AgentExecutor` Protocol (`start`, `request_stop`,
-`read_state`), not a C3a implementation. With no executor, `submit` refuses
-with exit 2 and a named `executor unavailable` reason before writing
-`request.json` or entering the admission book. The admission and lease verbs
-still use the durable C2 book. A live lease connection holds its lease flock
-until disconnect; bind/reconnect verify the immutable container ID and
-host-inspected lease label. No run or lane wall-clock limit is added.
+`HostJobExecutor` implements the `AgentExecutor` Protocol (`start`,
+`request_stop`, `read_state`). `fleetd-agent` wires it alongside the C3b-2a
+legacy-job and Docker inspection providers only when the optional boolean
+`executor_enabled` key in `agent.toml` is exactly `true`. If the key is absent,
+the value is `false`; a present non-boolean refuses policy loading. When false,
+no executor is wired and submit, status and cancel retain the C3a refusal before
+writing a request or charging admission. Keep it false until FD-067, FD-068 and
+FD-075 are closed and Run-Gate revision 78 is released and deployed. Host-mode
+submissions additionally require FD-069 to close; exec-mode submissions require
+the live persistent-runner probe in FD-070. This package does not install or
+enable host services. `runner_user` is required only while the executor is
+enabled. If present while disabled, it is checked as a safe name but is not
+looked up. A lane's PASS is
+accepted only when the request sha, host-authored checkout line, one exact
+`lane-verdict` event, exact-lane anchored summary, Run-Gate process status, and
+inspected container identity/mount all agree. It writes `result.json` from
+those host-observed facts and collects the closed artifact set plus one
+`assay-store.tgz` and checksum. The admission and lease verbs still use the
+durable C2 book. A live lease connection holds its lease flock until disconnect;
+bind/reconnect verify the immutable container ID and host-inspected lease label.
+The checkout never imports `main` or `origin/main` from a host seed. It checks
+each deletion result, then verifies with Git revision resolution that neither
+name resolves through any ref form, including packed refs. If deletion or
+absence cannot be proven, the job ends as ERROR before a lane starts. An
+explicit request base is installed after validation. A lane requiring `main` or
+`origin/main` without that base is refused. A verified host seed that contains
+the request sha and required base is sufficient; retained uploads are consulted
+only when either commit is unavailable from that seed.
+The worker follows the event file during the lane, inspects each
+`lane-started` container while it is present, and durably saves that observation.
+A container already gone at observation is an ERROR. The final binding uses the
+saved observation; each Run-Gate container must carry matching job, repo,
+project, lane and commit labels and mount this job's checkout. A short-lane race
+where Run-Gate removes the container before observation remains FD-067 and must
+be closed before executor enablement. The strict persistent exec mount check
+also requires a live acceptance probe (FD-070).
+
+No run or lane wall-clock limit is added. `request_stop` records cancellation
+intent; the worker owns deregistration/thaw, TERM and waiting, and writes the
+child status immediately after it exits. Before collection or charge release,
+the scope must contain only the worker and a Docker query by the exact job label
+must show no running job container; teardown removes only exact full IDs with
+that label. The worker retries transient store, Docker, removal and completion
+failures without an overall deadline. Cancellation on a guard-absent host
+records that fact before TERM. When guard presence is true but the merged
+`deregister` callable is unavailable, cancellation remains `stopping` with the
+checkout and charge retained. Cancellation or an unproved end in persistent
+`exec` mode also remains `stopping` because the in-runner process cannot be
+proven stopped (FD-068). A store archive pack failure is recorded as
+`collection.status = "failed"` and can proceed to terminal completion; the pack
+is not retried and the lane verdict is not rewritten. The prerequisite Docker
+container uses the host worker's `CGROUP_PARENT_DEV_GATES` value after verifying
+that it names a loaded systemd slice; a missing or unresolved tier refuses the
+job. Root Docker calls and the Run-Gate lane use the same fixed local Docker
+endpoint and closed environment.
+
+The listed repository- and lane-controlled inputs have explicit size and count
+ceilings. Exceeding one stops the lane through the normal stop path; after stop
+proofs the worker records a terminal ERROR. The total `lane.log` byte count and
+the summary scan are not yet bounded (FD-075); close that gap before setting
+`executor_enabled = true`. None of these input ceilings imposes a lane time
+limit.
+
+| Constant | Limit | Purpose |
+|---|---:|---|
+| `MAX_STATE_RECORD_BYTES` | 1 MiB | Bounds serialized/read executor state; an oversized state record is a permanent defect rather than a retry loop. |
+| `MAX_EVENT_LINE_BYTES` | 4 KiB | Bounds one incrementally read Run-Gate event line. |
+| `MAX_EVENT_FILE_BYTES` | 512 KiB | Bounds total event bytes read from the host-owned file. |
+| `MAX_EVENT_COUNT` | 128 | Bounds parsed events retained for verdict binding. |
+| `MAX_EVENT_OBSERVATIONS_BYTES` | 256 KiB | Bounds persisted `lane-started` observations and leaves room for other state fields below the state-record ceiling. |
+| `MAX_DOCKER_OUTPUT_BYTES` | 4 MiB per output stream | Bounds output from each shared Docker command. |
+| `MAX_DOCKER_JOB_CONTAINER_IDS` | 4,096 IDs | Bounds exact-label container IDs retained and inspected for one job. |
+| `MAX_RUNNER_QUERY_OUTPUT_BYTES` | 4 MiB per output stream | Bounds captured output for runner queries; timed-out queries use the bounded collector and reap path. |
+| `MAX_DIRECTORY_ENTRIES` | 4,096 entries | Bounds each repository-controlled directory listing. |
+| `MAX_TREE_ENTRIES` | 16,384 entries | Bounds traversed checkout, store and archive trees. |
+| `MAX_TREE_DEPTH` | 128 levels | Bounds recursive tree traversal depth. |
+| `MAX_ARCHIVE_MEMBERS` | 16,384 members | Bounds tar members visited or written. |
+| `MAX_ARCHIVE_FILE_BYTES` | 512 MiB | Bounds the compressed archive file size. |
+| `MAX_ARCHIVE_UNCOMPRESSED_BYTES` | 512 MiB | Bounds aggregate uncompressed archive payload. |
+| `_ARTIFACT_MAX_BYTES` | 50 MiB per file | Omits and rejects artifact files at or above this size. |
+| `_STORE_MAX_BYTES` | 512 MiB aggregate | Bounds total uncompressed store content collected into `assay-store.tgz`. |
+| `MAX_STORE_PATHS` | 128 paths | Bounds the number of requested store roots inspected. |
+
+Run-Gate's event file is outside the checkout and not writable by the lane
+container. A host-mode lane runs as the same uid that owns it and can modify it;
+that transport limit is FD-069. Event ownership must be hardened before
+host-mode submissions are enabled.
 
 Submits for the same job ID serialize the `request.json` write, admission,
 failure cleanup, and executor start under `jobs/<job_id>/submit.lock`. The lock
@@ -330,10 +419,10 @@ is a private regular file opened without following symlinks. Status and cancel
 do not acquire it, so an admission waiter cannot block those verbs behind the
 submit transaction.
 
-Status of a durable `fleet-admission-terminal/1` record returns only its
-recorded `job_id`, `state: completed` and `completed_at`; it does not invent a
-verdict, exit code or other executor result. Cancel of a finished job refuses
-with exit 2. Executor-backed terminal details remain for C3b (FD-061).
+Status of a durable `fleet-admission-terminal/1` record returns its recorded
+`job_id`, state and completion time, plus C3b-1's seven executor result fields
+when present. C2 terminal records remain readable without those fields, which
+are unknown. Cancel of a finished job refuses with exit 2.
 
 ## Contracts
 

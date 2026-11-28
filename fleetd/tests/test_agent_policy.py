@@ -58,6 +58,8 @@ def test_agent_policy_loads_closed_identity_and_allowlist_config(tmp_path):
 
     assert policy.idle_connection_s == 20
     assert policy.query_timeout_s == 5
+    assert policy.executor_enabled is False
+    assert policy.runner_user is None
     assert policy.lease_reconcile_interval_s == 30
     assert policy.lease_bind_timeout_s == 10
     assert policy.max_connections == 4
@@ -68,6 +70,53 @@ def test_agent_policy_loads_closed_identity_and_allowlist_config(tmp_path):
     assert policy.env_values["CI"] == frozenset({"1", "true"})
     assert policy.resolve_peer(1000, 100) == policy.identities[0]
     assert policy.resolve_forced_group("worker") == policy.identities[1]
+
+
+def test_executor_enabled_is_optional_and_requires_an_actual_boolean(tmp_path):
+    path = tmp_path / "agent.toml"
+    root = tmp_path / "checkouts"
+    base = _policy_text(root)
+    path.write_text(
+        base.replace(
+            'query_timeout_s = 5',
+            'query_timeout_s = 5\nexecutor_enabled = true\nrunner_user = "vscode"',
+        ),
+        encoding="utf-8",
+    )
+    assert load_agent_policy(path).executor_enabled is True
+
+
+def test_executor_enabled_requires_runner_user(tmp_path):
+    path = tmp_path / "agent.toml"
+    path.write_text(
+        _policy_text(tmp_path / "checkouts").replace(
+            'query_timeout_s = 5', 'query_timeout_s = 5\nexecutor_enabled = true',
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ContractError, match="missing key.*runner_user"):
+        load_agent_policy(path)
+
+
+@pytest.mark.parametrize("value", ['"true"', "1", "[]"])
+def test_executor_enabled_refuses_non_boolean_values(tmp_path, value):
+    path = tmp_path / "agent.toml"
+    root = tmp_path / "checkouts"
+    policy = _policy_text(root).replace('query_timeout_s = 5', f'query_timeout_s = 5\nexecutor_enabled = {value}')
+    path.write_text(policy, encoding="utf-8")
+    with pytest.raises(ContractError, match="agent.toml.executor_enabled: expected boolean"):
+        load_agent_policy(path)
+
+
+@pytest.mark.parametrize("runner_user", ['1', '"unsafe/name"'])
+def test_disabled_policy_still_validates_a_present_runner_user(tmp_path, runner_user):
+    path = tmp_path / "agent.toml"
+    policy = _policy_text(tmp_path / "checkouts").replace(
+        'query_timeout_s = 5', f'query_timeout_s = 5\nrunner_user = {runner_user}',
+    )
+    path.write_text(policy, encoding="utf-8")
+    with pytest.raises(ContractError, match="agent.toml.runner_user"):
+        load_agent_policy(path)
 
 
 def test_unknown_transport_identity_is_exit_three(tmp_path):
