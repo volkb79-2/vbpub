@@ -16248,7 +16248,7 @@ Second half (deliberate, hence documented rather than taken here): `tools/releas
 
 ## B593 — R3 canary control failures omit the first failing test and bounded output tail
 
-**Status: OPEN (filed 2026-11-27 from vbpub-core 2026-11-26 follow-up 1); severity: medium (diagnostic evidence).**
+**Status: IMPLEMENTED in `3ec5436c0` (control diagnostics); registered gate evidence pending.**
 
 **P5 design note.** `docs/DESIGN-CANARY-LIVENESS.md` compares verdict fields with progress-only diagnostics; recommendation: keep B593 diagnostics in canary progress records while v21 remains closed.
 
@@ -16294,7 +16294,7 @@ Second half (deliberate, hence documented rather than taken here): `tools/releas
 
 ## B612 — P5: R3 canary liveness or explicit unwatched disclosure
 
-**Status: OPEN (filed 2026-11-28); severity: medium.** Design note: `docs/DESIGN-CANARY-LIVENESS.md`. The recommendation is to retain `budget_per_attempt`, disclose that canary halves are unwatched, and carry B593's control diagnostics in progress records while the v21 verdict delta remains closed.
+**Status: IMPLEMENTED in `69942c7c0`, `8ab930f08`, and `3ec5436c0`; registered gate evidence pending.** Design note: `docs/DESIGN-CANARY-LIVENESS.md`. The recommendation is to retain `budget_per_attempt`, disclose that canary halves are unwatched, and carry B593's control diagnostics in progress records while the v21 verdict delta remains closed. Remaining required edge-case tests are still pending.
 
 **Wanted.** Implement the selected P5 option, including honest per-half watch/budget disclosure and the B593 control reason, first failing test and bounded output tail.
 
@@ -16302,7 +16302,7 @@ Second half (deliberate, hence documented rather than taken here): `tools/releas
 
 ## B613 — P5 note: a reclassified non-PASS canary control can have no reason code
 
-**Status: OPEN (filed 2026-11-28, sol check `assay-p5note-r2`); severity: medium.** Part of the B612 implementation package.
+**Status: IMPLEMENTED in `3ec5436c0`; registered gate evidence pending.** Part of the B612 implementation package.
 
 **Symptom.** `docs/DESIGN-CANARY-LIVENESS.md` option (b) item 3 takes the control diagnostic's reason from `control_reason_code`. The control is judged and then reclassified (`src/assay/canary.py:793-811`, `:189-195`): a judged PASS with a leaked process tree classifies as LEAKED (`src/assay/termination.py:86-89`), the control becomes INCONCLUSIVE and `control_reason_code` stays `None`. A record built as the note says would omit the cause.
 

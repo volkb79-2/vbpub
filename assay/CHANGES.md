@@ -5,10 +5,12 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 ## [Unreleased]
 
 ### Fixed
+- fix(assay): disclose unwatched R3 canary halves and binding budgets (69942c7c0)
 - fix(assay): print a usable carried-survivor rejudge command with the lane and explicit state directory (9e90d160b)
 - fix(assay): identify per-attempt canary budget expiry when it is the nearer deadline (4ee6a6c0c)
 
 ### Testing
+- test(assay): accept canary progress after mutation end (8ab930f08; gate evidence pending)
 - test(assay): preflight two consecutive CMRU changelog folds against docs tests (B596)
 
 <!-- cmru: release history -->

@@ -5064,6 +5064,10 @@ phase that did not happen is never emitted: the direct R0-only path takes no
 snapshot, so it never says `snapshot_materialized`, and a lane with no R1
 never says `coverage_parsed`.
 
+Progress readers require the producer's event vocabulary. A reader older than
+the producer may reject the entire stream when it sees an unknown event; update
+the reader before consuming streams that contain newly added vocabulary.
+
 | `event` | when | notable fields |
 | --- | --- | --- |
 | `run` | first record of the run, at stream open | `lane`, `commit`, `rigor`, `budget_s`, `budget_per_candidate_s`, `candidate_total`, `started` |
@@ -5080,6 +5084,7 @@ never says `coverage_parsed`.
 | `baseline` | the sweep's baseline record | `candidate_total` |
 | `candidate` | one candidate completed | `candidate_id`, `candidate_index`, `path`, `operator`, `outcome_bucket` (including `hung`, B091/RW-33 — see below), `elapsed_seconds`, and `tests_completed` (B091 A4/B097 — owner-process `test` count; `None` when liveness never ran, `0` when it ran and saw no owner event). B561 adds optional `locus` and `window_key`, both absent for the exact-id fallback. `phase_seconds` (`materialize`/`command`/`integrity`/`teardown`) and `startup_seconds` (`to_session_start`/`to_first_test`) are Assay's own clock. Assay 12 (B206) removed the sampled `cpu_seconds`, `peak_rss_bytes`, `write_bytes`, `judge_rss_bytes` and the `resources` object: every resource number now comes from the cgprofile observer as `profile` (a `resource-profile/1` object: `status` `MEASURED`/`PARTIAL`/`NO_MEASUREMENT`, one `reason` when there is no measurement, `wall_seconds` from Assay's clock, `metrics`, `missing`, `observer`; see [the v17-to-v18 migration notes](#migration-notes-v17-to-v18)). `worker_count` is the workers of the invocation that ran the candidate (B203), and a `killed` candidate carries `first_failing_test` (B205; null when unknown). Profiles are diagnostic and never classify a candidate; they are also stored in the candidate state record and as one line in `profile-<lane>.jsonl` beside the progress file. A witness replay that did not kill counts only in `elapsed_seconds`. Liveness lanes also write a `<events>.resources.json` sidecar next to each candidate's events file (`format`, `spawned_at`) |
 | `end` | the mutation sweep ended, on every path out | `buckets` (per-bucket counts, now including `hung`), `reason`, `budget_exceeded_dispatched`, `budget_exceeded_unstarted` (B524 — see below; both additive, and both `0` on the three early-return `reason`s, where nothing was attempted) |
+| `canary_attempt` | a control or transformed R3 half started or finished; emitted after the mutation `end` when R2 and R3 run together | `target`, `target_index`, `phase` (`control` or `transform`), `state` (`started` or `finished`), `watched: false`, `effective_deadline_s`, and on finished records `duration_s`; non-PASS control completion may include `control_termination`, `control_reason_code`, `control_first_failing_test`, and bounded, redacted output tails. Passing control records have no failure details. This event never uses `candidate_index`. |
 | `verdict_written` | terminal, for every tier | `outcome`, `reason_code`, `exit_code`, `destination` |
 
 **Every record** additionally carries `emitted_at` (UTC ISO 8601) and
