@@ -227,7 +227,7 @@ run_pane() {
     "$CONTROLLER_DIR/pi-ctl-pane.sh" "$role" "$provider" deepseek-v4.1-flash-eco max \
       "$fresh_id" "$state_root" "$PRIME" "$BIN/pi" "$ROOT/sessions" \
       "$CONTROLLER_DIR/pi-pidns-extension.js" "$CONTROLLER_DIR/pi-ctl/extension.mjs" \
-      "$CONTROLLER_DIR/pi-pidns-bash" "vbpub-$role" > "$ROOT/pane.out" 2>&1
+      "$CONTROLLER_DIR/pi-pidns-bash" "vbpub-$role"
 }
 
 if env -i HOME="$HOME_DIR" PATH="$EMPTY_BIN" /bin/bash "$CONTROLLER_DIR/pi-ctl-pane.sh" \
@@ -238,7 +238,7 @@ if env -i HOME="$HOME_DIR" PATH="$EMPTY_BIN" /bin/bash "$CONTROLLER_DIR/pi-ctl-p
 fi
 grep -Fq 'flock is required' "$ROOT/no-flock-pane.out" || fail 'pane did not explain the flock requirement'
 
-run_pane opendesign_volker
+run_pane opendesign_volker > "$ROOT/pane.out" 2>&1
 [[ $(<"$PI_KEYS") == $'VOLKER=present\nGITHUB2=unset' ]] || fail 'volker launch did not export only the volker key'
 mapfile -d '' -t pi_args < "$PI_ARGV"
 contains_arg '--no-extensions' "${pi_args[@]}"
@@ -302,7 +302,7 @@ if run_pane opendesign_volker symlink-role "$nonregular_lock_root" > "$ROOT/nonr
 grep -Fq 'regular, non-symlink file' "$ROOT/nonregular-lock.out" || fail 'pane did not refuse a non-regular lock path clearly'
 [[ $(stat -c '%d:%i' "$lock_file") == "$lock_inode" ]] || fail 'the lock inode changed during refusal checks'
 
-run_pane opendesign_github2
+run_pane opendesign_github2 > "$ROOT/pane.out" 2>&1
 [[ $(<"$PI_KEYS") == $'VOLKER=unset\nGITHUB2=present' ]] || fail 'github2 launch did not export only the github2 key'
 if grep -aFq 'test-volker-secret-marker' "$PI_ARGV" "$ROOT/pane.out"; then fail 'volker key appeared in github2 pi argv or output'; fi
 if grep -aFq 'test-github2-secret-marker' "$PI_ARGV" "$ROOT/pane.out"; then fail 'github2 key appeared in pi argv or output'; fi

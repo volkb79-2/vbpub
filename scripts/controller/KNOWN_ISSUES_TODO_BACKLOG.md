@@ -1880,3 +1880,13 @@ From the static re-review of P-plat-35 (head `eaabf89ea`), two Low findings:
 **Where:** `scripts/controller/pi-ctl/core.mjs:1295-1331` at review head `46ecf967cf0e4b87c1283063d8cfc6321f2eb984`.
 
 **Acceptance test idea:** pass a long previous summary through multiple automatic compactions; each returned summary stays under the budget and retains the current in-flight identifiers even when their source messages predate the latest 32-message excerpt.
+
+## CTL-70 — remote-gate's ssh argv must always carry `IdentityAgent=none`
+
+**Status:** OPEN (filed 2026-11-28 on the main controller's order).
+
+Since about 2026-11-28T00:01Z the forwarded VS Code ssh agent made every ssh from the controller hang. The workaround is `-o IdentityAgent=none` in the local controller hosts file, which another hosts file or a new host entry would not carry. Hand-written ssh needs `env -u SSH_AUTH_SOCK`.
+
+**Proposed minimal fix:** add `-o IdentityAgent=none` where the ssh argv is built (`controller_host_argv`, `scripts/controller/lib.sh:417`, used by `remote-gate.sh:127`), whatever the hosts file says, and check the other ssh callers of that helper.
+
+**Acceptance test idea:** with a fake hosts file that has no `IdentityAgent` option, the recorded ssh argv still contains `-o IdentityAgent=none` exactly once.
