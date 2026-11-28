@@ -3097,11 +3097,7 @@ class HostJobWorker:
                     end = len(chunk) if newline < 0 else newline + 1
                     segment = chunk[offset:end]
                     if len(line) + len(segment) > 65536:
-                        starts_with_prefix = (
-                            line.startswith(prefix)
-                            if len(line) >= len(prefix)
-                            else prefix.startswith(line) and segment.startswith(prefix[len(line):])
-                        )
+                        starts_with_prefix = (line + segment)[:len(prefix)] == prefix
                         if starts_with_prefix:
                             raise AdmissionError(
                                 ExitCode.IDENTITY_OR_TRANSPORT, "anchored Run-Gate summary is too large",

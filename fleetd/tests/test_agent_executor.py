@@ -12158,6 +12158,51 @@ def test_lane_log_short_write_becomes_write_failure_and_discards(tmp_path, monke
     os.close(worker.repo_root_fd)
 
 
+def test_lane_log_drain_closes_pipe_and_log_fd_after_cleanup_errors(tmp_path, monkeypatch):
+    worker = _worker(tmp_path, _VersionRunner({}))
+    read_fd, write_fd = os.pipe()
+    log_fd = os.open(tmp_path / "cleanup-errors.log", os.O_CREAT | os.O_WRONLY, 0o600)
+    real_close = os.close
+
+    class BrokenClosePipe:
+        def fileno(self):
+            return read_fd
+
+        def close(self):
+            raise OSError("pipe close failed")
+
+    def fail_duplicate_close(fd):
+        if fd == log_fd:
+            raise OSError("duplicate log close failed")
+        real_close(fd)
+
+    real_close(write_fd)
+    monkeypatch.setattr(executor_worker_module.os, "close", fail_duplicate_close)
+    try:
+        worker._drain_lane_log(BrokenClosePipe(), log_fd)
+        assert worker._lane_log_setup_failed.is_set()
+        assert worker._lane_log_setup_error == "lane-log-setup-failed: pipe close failed"
+        with pytest.raises(OSError):
+            os.fstat(read_fd)
+    finally:
+        real_close(log_fd)
+        os.close(worker.repo_root_fd)
+
+
+def test_record_lane_exit_persists_only_the_first_observed_status(tmp_path):
+    worker = _worker(tmp_path, _VersionRunner({}))
+    saves = []
+    worker._retry_state_save = lambda **updates: saves.append(updates)
+    try:
+        worker._record_lane_exit(7)
+        worker._record_lane_exit(7)
+        assert worker._lane_exit_status == 7
+        assert len(saves) == 1
+        assert saves[0]["lane_process_status"] == 7
+    finally:
+        os.close(worker.repo_root_fd)
+
+
 @pytest.mark.parametrize("close_error", [False, True])
 def test_run_lane_joins_pipe_drainer_and_keeps_normal_exit_output(tmp_path, close_error):
     worker = _worker(tmp_path, _VersionRunner({}))
@@ -12475,6 +12520,48 @@ def test_lane_summary_long_line_continuation_does_not_read_past_ceiling(tmp_path
         with pytest.raises(AdmissionError, match="anchored Run-Gate summary is missing"):
             worker._last_lane_summary()
         assert bytes_read == 65540
+    finally:
+        for fd in (worker.project_fd, worker.checkout_fd, worker.repo_root_fd):
+            if fd >= 0:
+                os.close(fd)
+
+
+def test_lane_summary_skips_multichunk_unanchored_line_and_finds_following_summary(tmp_path):
+    worker, _runner, job_dir, _checkout = _ready_worker(tmp_path)
+    worker.request["lane"] = "r0-r1"
+    summary = b"run-gate: lane 'r0-r1' verdict PASS; exit_code 0\n"
+    (job_dir / "lane.log").write_bytes(b"x" * 200000 + b"\n" + summary)
+    try:
+        assert worker._last_lane_summary() == (
+            "run-gate: lane 'r0-r1' verdict PASS; exit_code 0", "PASS", 0,
+        )
+    finally:
+        for fd in (worker.project_fd, worker.checkout_fd, worker.repo_root_fd):
+            if fd >= 0:
+                os.close(fd)
+
+
+def test_lane_summary_rejects_oversized_anchored_line(tmp_path):
+    worker, _runner, job_dir, _checkout = _ready_worker(tmp_path)
+    worker.request["lane"] = "r0-r1"
+    prefix = b"run-gate: lane 'r0-r1' verdict "
+    (job_dir / "lane.log").write_bytes(prefix + b"x" * 70000 + b"\n")
+    try:
+        with pytest.raises(AdmissionError, match="anchored Run-Gate summary is too large"):
+            worker._last_lane_summary()
+    finally:
+        for fd in (worker.project_fd, worker.checkout_fd, worker.repo_root_fd):
+            if fd >= 0:
+                os.close(fd)
+
+
+def test_lane_summary_rejects_incomplete_anchored_line(tmp_path):
+    worker, _runner, job_dir, _checkout = _ready_worker(tmp_path)
+    worker.request["lane"] = "r0-r1"
+    (job_dir / "lane.log").write_bytes(b"run-gate: lane 'r0-r1' verdict PASS; exit_code 0")
+    try:
+        with pytest.raises(AdmissionError, match="anchored Run-Gate summary is incomplete"):
+            worker._last_lane_summary()
     finally:
         for fd in (worker.project_fd, worker.checkout_fd, worker.repo_root_fd):
             if fd >= 0:
