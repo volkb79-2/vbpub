@@ -142,6 +142,66 @@ def test_bundle_is_retained_until_job_has_terminal_book_record(tmp_path, monkeyp
     assert not Path(bundle["path"]).exists()
 
 
+@pytest.mark.parametrize("book_record", [
+    None,
+    {"schema": "fleet-admission-terminal/1", "job_id": "orphan-job", "group": "other"},
+])
+def test_bundle_without_matching_terminal_record_stays_protected(tmp_path, monkeypatch, book_record):
+    service, identity, _checkout = _service(tmp_path)
+    _enable_collection(service)
+    bundle = _put(service, identity, "in.bundle", b"bundle")
+    job_dir = service.paths.jobs_dir / "orphan-job"
+    job_dir.mkdir()
+    (job_dir / "request.json").write_text(json.dumps({
+        "schema": "fleet-host-job-request/1", "group": identity.group,
+        "digest": "e" * 64, "request": _submit(),
+    }), encoding="utf-8")
+    monkeypatch.setattr(service.admission.book, "read_record", lambda _job_id: book_record)
+
+    with service._upload_store_lock():
+        assert service._collect_upload_objects_locked(len(b"bundle"), len(b"bundle")) == 0
+
+    assert Path(bundle["path"]).read_bytes() == b"bundle"
+
+
+def test_unreadable_book_for_request_refuses_collection_without_deleting(tmp_path, monkeypatch):
+    service, identity, _checkout = _service(tmp_path)
+    old = _put(service, identity, "candidates", b"preserve")
+    job_dir = service.paths.jobs_dir / "book-job"
+    job_dir.mkdir()
+    (job_dir / "request.json").write_text(json.dumps({
+        "schema": "fleet-host-job-request/1", "group": identity.group,
+        "digest": "e" * 64, "request": _submit(),
+    }), encoding="utf-8")
+    monkeypatch.setattr(
+        service.admission.book, "read_record",
+        lambda _job_id: (_ for _ in ()).throw(AdmissionError(2, "book read denied")),
+    )
+
+    with pytest.raises(AdmissionError, match="admission record.*book read denied"):
+        service._referenced_upload_objects_locked()
+
+    assert Path(old["path"]).read_bytes() == b"preserve"
+
+
+def test_disk_floor_recheck_refuses_after_collection_without_publishing(tmp_path, monkeypatch):
+    service, identity, _checkout = _service(tmp_path)
+    _enable_collection(service)
+    _upload_policy(service, store_bytes=100, floors={"checkout": 0})
+    old = _put(service, identity, "candidates", b"old-data")
+    _upload_policy(service, store_bytes=3, floors={"checkout": 10})
+    free_space = iter((12, 12))
+    monkeypatch.setattr(service, "_upload_free_bytes", lambda: next(free_space))
+    new_digest = hashlib.sha256(b"new").hexdigest()
+    new_path = service.paths.uploads_dir / identity.group / "candidates" / new_digest
+
+    with pytest.raises(AdmissionError, match="disk floor.*after collection"):
+        service._reserve_upload(3, 3, 10, identity.group, "candidates", new_digest)
+
+    assert not Path(old["path"]).exists()
+    assert not new_path.exists()
+
+
 def test_real_submit_protects_bundle_until_book_completion(tmp_path):
     service, identity, checkout = _service(tmp_path)
     _enable_collection(service)
