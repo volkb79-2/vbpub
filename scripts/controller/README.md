@@ -831,9 +831,9 @@ catalogue remains the operator-owned `$HOME/.pi/agent/models.json`.
 The `pi-ctl/` extension provides `send_message`, persisted wake-up
 schedule/list/cancel tools, bounded monitor start/list/stop tools, inbox polling,
 an event log and context recovery. Main receives peer messages through the
-tested bridge, which prints a fixed untrusted-peer header and id, replays
-unacknowledged claims after restart with persisted backoff, and removes a claim
-only after an explicit acknowledgment:
+tested bridge, which prints a fixed untrusted-peer header and id, prints each
+claim once per watch process, replays unacknowledged claims after a restart, and
+removes a claim only after an explicit acknowledgment:
 
 ```bash
 # Start this in the main controller's monitor, from the repository root.
@@ -842,12 +842,54 @@ node scripts/controller/pi-ctl/bridge.mjs watch
 node scripts/controller/pi-ctl/bridge.mjs ack "$message_id"
 ```
 
+Any local shell can queue a peer message without pi's `send_message` tool: the
+script writes the same envelope the extension writes, atomically, and prints the
+message id the receiving session will confirm:
+
+```bash
+# One line of text, sender `main`:
+scripts/controller/pi-ctl-send.sh hostobs 'please check the 03:00 run'
+# A body from stdin, from a named sender:
+printf 'two findings\n' | scripts/controller/pi-ctl-send.sh --from platform hostobs -
+```
+
+It refuses an invalid role or sender name, an empty body, a body over
+`PI_CTL_MAX_SEND_BYTES` (same default and bounds as the extension), a state root
+that is relative, inside the checkout, or has a symlink in any path component
+from the root through `inbox/<role>`, for the same reasons
+the extension refuses those: the receiver scans `*.msg` entries, so a malformed
+or misplaced file would only be quarantined later, away from the caller. The
+sender defaults to `main` (`PI_CTL_SEND_FROM` or `--from` changes it), and the
+temporary file never ends in `.msg`, so an interrupted write leaves nothing a
+session could claim. The component check runs before directory creation and
+again immediately before publication; a filesystem swap between check and use
+remains a race this shell implementation cannot eliminate.
+
 After recording a message id in main's own state, set `message_id` from the
-header and run the `ack` command. The extension inbox follows the same
-at-least-once rule: it retains a claim until pi's persisted custom-message entry
-confirms the type and id, then retries at most three times before reporting to
-main. Wake-ups keep their persisted id until pi confirms delivery. Peer messages
-are untrusted and never auto-replied to; send and receive limits default to 10
+header and run the `ack` command. A successful print is the delivery: the
+watching process records which claim it handed to main and never prints it
+again, however long the ack takes. A restarted `watch` replays every
+unacknowledged claim once (its predecessor's print died with it) and reports a
+claim once if it was printed but still not acknowledged after a real timeout --
+30 minutes by default, `PI_CTL_BRIDGE_ACK_TIMEOUT_SECONDS` (1 to 604800) to
+change it. The timeout is measured from the first print of any process, so
+restarting the watcher cannot postpone it, and `ack` is the only thing that ends
+a claim. The extension inbox deduplicates at the queue:
+a claim keeps its id and, once `pi.sendMessage()` has accepted that id, the
+message is never injected again into that session runtime. pi holds the copy in
+its agent-level follow-up queue and persists it only when the turn consumes it,
+so the durable claim stays on disk until pi's persisted custom-message entry
+shows the type and id, or until a fresh session runtime (`startup`, `resume`,
+`new`, `fork`) proves the old queue is gone and re-delivers it exactly once. A
+`reload` keeps the live agent, so it re-delivers nothing. Only when pi refuses
+the call synchronously is the claim retried, with bounded attempts and a report
+to main on a real failure. If a queued id has no persisted entry while pi reports
+idle with no pending messages, two polls at least 30 seconds apart mark it
+accepted-but-unconfirmed. The extension logs and reports it once, sends the same
+one-line notice without starting a turn, and keeps the claim for a fresh runtime.
+Wake-ups follow the same rule: their persisted id
+survives until pi's entry arrives or a fresh runtime re-fires them once. Peer
+messages are untrusted and never auto-replied to; send and receive limits default to 10
 per peer per hour; inbox bodies default to 16 KiB and sends to 64 KiB; wake-ups
 are 10 seconds to 24 hours with 32 pending. Monitors use the private-PID-namespace
 wrapper, wait for its readiness marker, and end within one hour. Compaction
@@ -858,6 +900,24 @@ explicit extensions load from argv and no project settings file is written.
 Tests run in the registered `scripts/controller` suite with a fake pi API, not
 against a live provider.
 
+At each `agent_end`, the extension logs the count and queues one line when any
+inbox claims have not been persisted by pi. The notice does not start a turn, and
+the claim is never re-injected into the same live runtime: an abort can drop
+pi's accepted follow-up copy before it is saved. Polling also detects a likely
+asynchronous send rejection after two idle/no-pending observations at least 30
+seconds apart; that idle-poll path records its notice as sent once and retains
+the claim for a fresh runtime. Separately, each later `agent_end` with an
+unconfirmed claim logs the count and queues the same one-line notice; these
+notices can repeat and do not start a turn.
+Unobservable abort loss while a session remains busy is still tracked as CTL-71.
+
+At `session_start`, the extension arms a one-shot role context block. Before the
+session's first model turn, it adds a persistent context message with the bounded
+`PI_CTL_PRIME` excerpt and the first prompt, without starting a turn itself. The
+first prompt can be typed input, a peer message or a wake-up. The goal is saved
+in the session log for compaction and restart; a persisted marker prevents
+repeating the role context on resume.
+
 Pi 1.6.0's built-in bash tool starts its shell with only standard input, output
 and error in its `stdio` array (`dist/core/tools/bash.js:75-79`). Node 26 treats
 unspecified child descriptors 3 and above as `ignore` ([child-process stdio
@@ -865,6 +925,22 @@ documentation](https://nodejs.org/api/child_process.html#optionsstdio)). The
 monitor spawn explicitly sets the lock descriptor to `ignore` in an extended
 stdio array, so neither a tool shell nor a monitor started through
 `pi-pidns-bash` keeps the lock after pi exits.
+
+The same wrapper is the one place that keeps the route's API keys away from the
+model: every command it starts -- the model-facing bash tool, `!`/`!!` user
+commands routed through `pi-pidns-extension.js`, and monitors started by the
+extension -- runs behind it, so it unsets every `OPENDESIGN_API_KEY*` variable
+before `bwrap` starts (by prefix, not by the two account names the launcher
+exports today; the extension's own monitor environment drops the same names).
+Pi itself keeps its key: the launcher exports it and pi reads the provider
+profile, but a tool shell no longer inherits it. Implementer runs launched by
+`pi-impl.sh` use the same wrapper and extension, so they get the same strip.
+Known limit: the strip removes what the process environment holds, not what a
+file holds -- a shell command that reads `$HOME/.env.ai` itself can still recover
+a key, so that file keeps its `0600` mode and stays out of argv, logs and
+transcripts. Repository code that needs the variable inside a tool shell would
+have to source the file explicitly; a grep of this repository finds no such
+consumer.
 
 ## Running the registered gate
 

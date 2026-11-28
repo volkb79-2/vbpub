@@ -34,14 +34,14 @@ if ! CONTROLLER_TEST_PARALLEL_OD_STARTS=0 bash "$SCRIPT_DIR/test-wrappers.sh" > 
   exit 1
 fi
 echo 'PASS unmutated wrapper tests before wrapper mutation checks'
-for baseline in test-job-check.sh test-hardening-tools.sh test-gate-slots.sh test-pi-impl.sh test-pi-pidns.sh test-pi-review.sh test-pi-ctl.sh; do
+for baseline in test-job-check.sh test-hardening-tools.sh test-gate-slots.sh test-pi-impl.sh test-pi-pidns.sh test-pi-review.sh test-pi-ctl.sh test-pi-ctl-send.sh; do
   if ! bash "$SCRIPT_DIR/$baseline" > "$ROOT/${baseline%.sh}-unmutated.log" 2>&1; then
     cat "$ROOT/${baseline%.sh}-unmutated.log" >&2
     echo "FAIL: unmutated $baseline must pass before its mutants are judged" >&2
     exit 1
   fi
 done
-echo 'PASS unmutated job-check, hardening, gate-slot, pi-impl, pi-pidns, pi-review and pi-ctl tests before their mutation checks'
+echo 'PASS unmutated job-check, hardening, gate-slot, pi-impl, pi-pidns, pi-review, pi-ctl and pi-ctl-send tests before their mutation checks'
 export CONTROLLER_TEST_PARALLEL_OD_STARTS=0
 
 expect_killed mutation-runner-missing-result \
@@ -289,6 +289,7 @@ for pi_pidns_case in \
   pi-pidns-no-docker-api-tmpfs:argv pi-pidns-keeps-docker-host:argv \
   pi-pidns-keeps-tmux:argv pi-pidns-keeps-tmux-pane:argv \
   pi-pidns-docker-socket-uncovered:docker-socket \
+  pi-pidns-keeps-route-keys:key-strip pi-pidns-strips-one-key-name:key-strip \
   pi-pidns-fail-open:fail-closed pi-pidns-command-status-zero:command-status; do
   pi_pidns_mutant=${pi_pidns_case%%:*}
   pi_pidns_focus=${pi_pidns_case#*:}
@@ -640,16 +641,28 @@ done
 # 320 GiB of guards, and also covers the pointer-compression cage, code range,
 # external/trusted pointer tables and Wasm guard mappings. NODE_OPTIONS caps
 # each Node process's old space at 256 MiB; the lane's existing cgroup memory
-# ceiling remains the real-memory cap. Only these six checks get the larger cap.
+# ceiling remains the real-memory cap. Only the pi-ctl mutant checks below get the larger cap.
 # See Node's test isolation and CLI docs, and V8's sandbox layout:
 # https://nodejs.org/api/test.html#child-process-option-inheritance
 # https://nodejs.org/api/cli.html#--max-old-space-size-size-in-mib
 # https://github.com/v8/v8/blob/main/src/sandbox/sandbox.h
 # https://github.com/nodejs/node/blob/main/deps/v8/include/v8-internal.h
-for pi_ctl_mutant in claim-before-inject name-validation agent-end-only wrapper-required root-symlink-components inherited-flock-required; do
+for pi_ctl_mutant in claim-before-inject name-validation agent-end-only wrapper-required root-symlink-components inherited-flock-required \
+                     queued-claim-reinjected queued-wakeup-reinjected async-rejection-report-too-late queued-reset-skipped claimed-notice-suppressed prime-context-omitted original-goal-not-persisted prime-repeats-on-resume original-goal-cache-not-reset reload-treated-as-fresh monitor-keeps-route-keys; do
   expect_assertion_killed_with_address_space_limit "pi-ctl-$pi_ctl_mutant" 2147483648 \
     env NODE_OPTIONS=--max-old-space-size=256 \
       PI_CTL_CORE_MODULE="$ROOT/mutants/scripts/controller/pi-ctl-$pi_ctl_mutant/core.mjs" \
+      bash "$SCRIPT_DIR/test-pi-ctl.sh"
+done
+for pi_ctl_send_mutant in pi-ctl-send-symlink-ignored pi-ctl-send-not-atomic pi-ctl-send-size-ignored pi-ctl-send-root-check-dropped; do
+  expect_killed "pi-ctl-send-$pi_ctl_send_mutant" \
+    env PI_CTL_SEND_SCRIPT="$ROOT/mutants/scripts/controller/$pi_ctl_send_mutant.sh" \
+      bash "$SCRIPT_DIR/test-pi-ctl-send.sh"
+done
+for pi_ctl_bridge_mutant in bridge-prints-repeatedly bridge-ack-report-not-persisted bridge-ack-timeout-ignored; do
+  expect_assertion_killed_with_address_space_limit "pi-ctl-$pi_ctl_bridge_mutant" 2147483648 \
+    env NODE_OPTIONS=--max-old-space-size=256 \
+      PI_CTL_BRIDGE_MODULE="$ROOT/mutants/scripts/controller/pi-ctl-$pi_ctl_bridge_mutant/bridge.mjs" \
       bash "$SCRIPT_DIR/test-pi-ctl.sh"
 done
 mutation_runner_finish || exit $?

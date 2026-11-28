@@ -77,6 +77,9 @@ together.
 | CTL-67 | P-plat-26d review follow-ups: guard test gaps, no live isolation coverage, a process-group kill in a test, a missing mutant file counting as killed | Nice-to-have | OPEN |
 | CTL-68 | P-plat-35 review follow-ups: progress lines stop while the mutation queue drains; a missing runner mutant file counts as killed | Nice-to-have | OPEN |
 | CTL-69 | Pi automatic compaction summaries grow without bound and omit older in-flight status | Medium | OPEN 2026-11-27 |
+| CTL-79 | `pi-ctl-send.sh` has a check-then-use window after its symlink scan | Known limit | BY DESIGN 2026-11-28 (main ruling) |
+| CTL-80 | `compact-resume.sh` can deliver `/compact` as pasted text and then send the resume prompt although no compaction ran | High | OPEN 2026-11-28 |
+| CTL-81 | A fresh pi controller session saves the previous session's monitor-restart notice as its original goal | Medium | OPEN 2026-11-28 |
 
 ---
 
@@ -1890,3 +1893,170 @@ Since about 2026-11-28T00:01Z the forwarded VS Code ssh agent made every ssh fro
 **Proposed minimal fix:** add `-o IdentityAgent=none` where the ssh argv is built (`controller_host_argv`, `scripts/controller/lib.sh:417`, used by `remote-gate.sh:127`), whatever the hosts file says, and check the other ssh callers of that helper.
 
 **Acceptance test idea:** with a fake hosts file that has no `IdentityAgent` option, the recorded ssh argv still contains `-o IdentityAgent=none` exactly once.
+
+**Also in scope (added 2026-11-28 on the main controller's order): ssh inside `pi-pidns-bash`.** In the wrapper's user namespace root-owned files show as uid 65534, so ssh stops with `Bad owner or permissions on /etc/ssh/ssh_config.d/20-systemd-ssh-proxy.conf`. This broke `scripts/controller/dev ... test` in a pi implementer job. The local workaround is `-F <empty user-owned file>` in the controller hosts file's ssh argv.
+
+**Proposed fix:** `controller_host_argv` always adds `-F <empty user-owned file>` as well as `-o IdentityAgent=none`.
+
+**Acceptance test idea:** `test-pi-ctl` runs one ssh dry check through `pi-pidns-bash`.
+
+## CTL-71 — a claimed inbox message can be lost when pi aborts before persistence
+
+**Status:** OPEN (filed 2026-11-28 from P-plat-PICTL-FIX F1b). The controller
+cannot distinguish a still-queued custom message from one dropped by Escape or
+another abort while the same pi session runtime remains live. At each
+`agent_end`, it logs and queues a one-line notice when a processing claim has no
+persisted pi entry: `N inbox message(s) claimed but not confirmed; restart or
+ask the sender to resend`. The notice does not start a turn, and the durable
+claim is not re-injected into the live queue. Restarting the session runtime
+replays the claim; otherwise the sender may resend after checking its id.
+The same notice can also be sent by the idle-observation path. A later
+`agent_end` sends it again while the claim remains unconfirmed; this is BY
+DESIGN per the rule, “At each agent_end, the harness logs it to the event log
+and injects a one-line notice.”
+
+optional: repeat the notice only when the claimed set changes.
+
+**Where:** `scripts/controller/pi-ctl/core.mjs` claim reconciliation and the
+fake-pi queue model in `scripts/controller/pi-ctl/test-core.mjs`.
+
+**Close when:** pi exposes a reliable way to prove the accepted copy was
+dropped without risking a duplicate in its live queue, with a gate test for
+abort loss and no notice-triggered turn loop.
+
+## CTL-79 — pi-ctl-send has a symlink scan check-then-use window
+
+**Status:** KNOWN LIMIT (accepted 2026-11-28 by main). `pi-ctl-send.sh` checks
+the state path for symlinks, then uses it later for `mkdir`, `mktemp` and
+`mv`. A same-uid writer could swap a path component between those operations.
+This is accepted because a same-uid writer can write directly into the inbox
+anyway.
+
+**Where:** `scripts/controller/pi-ctl-send.sh` symlink scan and inbox writes.
+
+## CTL-72 — self-compaction waits for `agent_end`
+
+**Status:** OPEN (observed 2026-11-28; filed from P-plat-PICTL-FIX). The
+controller checks its token threshold only at `agent_end`. A model run that
+continues without ending its turn therefore delays self-compaction.
+
+**Where:** `scripts/controller/pi-ctl/core.mjs` self-compaction lifecycle hooks.
+
+**Close when:** the extension can request compaction at a supported safe point
+while a long-running turn remains active, with a fake-pi test proving it does
+not interfere with the active run.
+
+## CTL-73 — post-compaction resume readback supports only topic roles
+
+**Status:** OPEN (filed 2026-11-28 from P-plat-PICTL-FIX). The completion
+message directs every role to `scripts/controller/resume-read.sh <role>`, but
+that helper works only for the topic roles.
+
+**Where:** `scripts/controller/pi-ctl/core.mjs` compaction completion message
+and `scripts/controller/resume-read.sh` role handling.
+
+**Close when:** every supported controller role has a correct bounded readback
+path after compaction, with a test for each role class.
+
+## CTL-74 — shutdown leaves stopped monitors in their state files until restart
+
+**Status:** OPEN (observed 2026-11-28; filed from P-plat-PICTL-FIX). A monitor
+stopped during session shutdown remains listed in `monitors/<name>.json` until
+the next session start reconciles the monitor state.
+
+**Where:** `scripts/controller/pi-ctl/core.mjs` monitor shutdown and recovery.
+
+**Close when:** shutdown removes or marks every stopped monitor in durable state
+before the extension returns, with a fake-pi test that reads the state before
+any subsequent start.
+
+## CTL-75 — pi-ctl-send derives the repository from the caller's working directory
+
+**Status:** OPEN (filed 2026-11-28 from the P-plat-PICTL-FIX review; Medium).
+The outside-repository guard searches upward from `$PWD`. A caller launched from
+outside a checkout can point `PI_CTL_ROOT` into that checkout without the guard
+discovering the repository.
+
+**Where:** `scripts/controller/pi-ctl-send.sh` repository-root check.
+
+**Close when:** the repository boundary comes from a trusted source independent
+of the caller's working directory, and a test invokes the sender outside the
+checkout with its state root inside that checkout and verifies no write.
+
+## CTL-76 — pi-ctl-send stages stdin without a bound
+
+**Status:** OPEN (filed 2026-11-28 from the P-plat-PICTL-FIX review; Medium).
+The sender copies all stdin to a temporary file before measuring it against
+`PI_CTL_MAX_SEND_BYTES`; an oversized or endless stream can consume unbounded
+disk space or wait indefinitely before refusal.
+
+**Where:** `scripts/controller/pi-ctl-send.sh` stdin body staging.
+
+**Close when:** staging reads no more than the configured maximum plus one byte,
+refuses overflow promptly, and an oversized-input test proves the temporary
+file's size is bounded.
+
+## CTL-77 — pi-ctl-send ignores inbox chmod failure
+
+**Status:** OPEN (filed 2026-11-28 from the P-plat-PICTL-FIX review; Medium).
+The sender suppresses errors from setting the inbox directory to mode 0700 and
+can publish while an existing directory retains wider permissions.
+
+**Where:** `scripts/controller/pi-ctl-send.sh` inbox permission setup.
+
+**Close when:** a chmod failure refuses publication and the directory mode is
+verified as 0700 before the message is published.
+
+## CTL-78 — fake pi queues triggerTurn:false notices differently from pi 1.6.0
+
+**Status:** OPEN (filed 2026-11-28 from the P-plat-PICTL-FIX review; Medium).
+The fake puts F1b `triggerTurn:false` notices into its follow-up queue. Pi 1.6.0
+appends such a notice to the session immediately when idle and defers it to the
+end of the active run when streaming, without creating a follow-up turn.
+
+**Where:** `scripts/controller/pi-ctl/test-core.mjs` fake `sendMessage()` model.
+
+**Close when:** the fake models immediate idle persistence and the streaming
+pending-custom-message path, with an assertion that the notice is persisted and
+does not start a turn.
+
+## CTL-80 — compact-resume can paste `/compact` and resume without a compaction
+
+**Status:** OPEN (filed 2026-11-28, reported by main; High). At about 11:28Z on
+pane `%13` both the `/compact <guidance>` line and the resume prompt arrived in
+Claude Code as pasted content. `/compact` did not run as a command, and the
+script sent the resume prompt as if the compaction had finished. The same script
+worked at 03:59Z on that pane.
+
+**Observed:** the failed run (`main-compact35`) had a guidance file of 988
+characters and a prompt of 983; the working run (`main-compact34`) had 698 and
+709. Run files are in `~/controller/successor-runs/`; no `main-compact35`
+compact log was found there. Likely cause, not verified: the single long
+`tmux send-keys -l` in `resume-lib.sh` `send_text` is treated as a paste above
+some length.
+
+**Where:** `scripts/controller/resume-lib.sh` `send_text`;
+`scripts/controller/compact-resume.sh`, which only logs `WARN compaction never
+showed busy` and continues to the resume prompt.
+
+**Close when:** a long guidance text runs as a `/compact` command (measured on a
+live pane), or is refused before anything is typed; and the resume prompt is
+sent only after the compaction is confirmed (for example by the compacting
+marker, the transcript or a context drop), with a distinct exit code otherwise.
+Until then keep guidance and resume prompts well under 700 characters.
+
+## CTL-81 — a fresh pi session takes a stale monitor notice as its goal
+
+**Status:** OPEN (observed 2026-11-28 in the P-plat-PICTL-FIX live re-smoke;
+Medium). Monitor state is stored per role. A `--fresh` start after an earlier
+session of the same role injects that session's `monitor-restart` notice as the
+first message. It starts a model turn without any prompt, and the PRIME/goal
+step saves the notice as `pi-ctl-original-goal`. A role with no earlier pi state
+is not affected. Related: CTL-74.
+
+**Where:** `scripts/controller/pi-ctl/core.mjs` monitor restart notice and
+original-goal capture.
+
+**Close when:** a controller notice is never saved as the original goal, and a
+fresh session either drops the old session's monitor notice or shows it without
+making it the first prompt, with a test for each.
