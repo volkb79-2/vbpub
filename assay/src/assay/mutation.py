@@ -1243,6 +1243,8 @@ PROGRESS_EVENTS = frozenset(
         "command_running",  # the time-based heartbeat tick
         "command_finished",
         "coverage_parsed",
+        # --- R3 canary diagnostics (B612; outside the v21 verdict cut) ---
+        "canary_attempt",
         # --- mutation sweep (B031/A-320, pre-existing) --------------------
         "candidates",
         "shard",

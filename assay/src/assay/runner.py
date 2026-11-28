@@ -6752,6 +6752,7 @@ def _run_prepared_lane(
                     adapter=adapter,
                     process_runner=lane_process_runner,
                     clock=clock,
+                    progress_stream=progress_stream,
                 )
             except AssayError as exc:
                 detail = announce_refusal(exc, diagnostics=diagnostics)

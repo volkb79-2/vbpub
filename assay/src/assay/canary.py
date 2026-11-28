@@ -81,6 +81,7 @@ import secrets
 import shutil
 import subprocess
 import tempfile
+import time
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
@@ -104,6 +105,7 @@ from .runner import (
     SnapshotUnitResult,
     _execute_snapshot_unit,
     _plan_passthrough_values,
+    _bounded_tail,
     _relocate_source_roots,
     build_r0_claim,
     default_process_runner,
@@ -646,6 +648,8 @@ def run_isolated_canary(
     adapter: LanguageAdapter,
     process_runner: ProcessRunner,
     clock: Clock,
+    progress_stream=None,
+    target_index: int = 0,
 ) -> CanaryResult:
     """The installed CLI's own R3 entry point (P23 exact reexecution): proves
     *mechanism* against *target* from TWO INDEPENDENT P22 snapshots of
@@ -738,6 +742,27 @@ def run_isolated_canary(
         if lane.judge is not None and lane.judge.canary is not None
         else None
     )
+    effective_deadline_s = max(0.0, deadline.expires_at - deadline.monotonic())
+
+    def phase_event(phase: str, state: str, *, duration: float | None = None) -> None:
+        if progress_stream is None:
+            return
+        event = {
+            "event": "canary_attempt",
+            "target": target,
+            "target_index": target_index,
+            "phase": phase,
+            "state": state,
+            "watched": False,
+            "effective_deadline_s": effective_deadline_s,
+        }
+        if duration is not None:
+            event["duration_s"] = duration
+        try:
+            progress_stream.emit(event)
+        except Exception:
+            # Diagnostic output is not allowed to affect the canary result.
+            return
 
     prefix = prepared.spec.project_prefix
     canary_repo_path = (
@@ -766,6 +791,8 @@ def run_isolated_canary(
     # B006(b): `control_snapshot` is always an ephemeral, assay-owned P22
     # checkout (never the consumer's real worktree), so this is one of the
     # "snapshot-running call sites" allowed to opt in to parent creation.
+    control_started = time.monotonic()
+    phase_event("control", "started")
     with prepared.materialize(timeout=deadline.remaining()) as control_snapshot:
         with contention.ContentionWindow(
             observer_socket_path=observer_socket_path
@@ -809,6 +836,7 @@ def run_isolated_canary(
             observation_required=require_contention_observation,
         )
         control_outcome = _attribute_control(control_termination)
+        phase_event("control", "finished", duration=time.monotonic() - control_started)
         original_bytes = prepared.read_regular_file(
             canary_repo_path, timeout=deadline.remaining()
         )
@@ -851,6 +879,8 @@ def run_isolated_canary(
         )
 
     replacement_bytes = transformed_text.encode("utf-8")
+    transform_started = time.monotonic()
+    phase_event("transform", "started")
     with prepared.materialize_replacement(
         path=canary_repo_path,
         expected=original_bytes,
@@ -922,6 +952,7 @@ def run_isolated_canary(
                 receipt_path=receipt_path,
                 nonce=nonce,
             )
+            phase_event("transform", "finished", duration=time.monotonic() - transform_started)
         finally:
             shutil.rmtree(receipt_dir)
 
@@ -968,6 +999,7 @@ def run_isolated_canaries(
     adapter: LanguageAdapter,
     process_runner: ProcessRunner,
     clock: Clock,
+    progress_stream=None,
 ) -> tuple[CanaryResult, AssayError | None]:
     """(B007/A-432) the ORDERED multi-target R3 run: one
     :func:`run_isolated_canary` per declared target, in DECLARED order, with
@@ -1031,6 +1063,8 @@ def run_isolated_canaries(
                 adapter=adapter,
                 process_runner=process_runner,
                 clock=clock,
+                progress_stream=progress_stream,
+                target_index=index,
             )
         except AssayError as exc:
             if exc.outcome is not Outcome.BUDGET_EXCEEDED:
