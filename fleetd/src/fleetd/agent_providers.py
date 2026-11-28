@@ -21,6 +21,7 @@ from .hostside import open_beneath
 
 MAX_LEGACY_JOB_ENTRIES = 65536
 MAX_DOCKER_OUTPUT_BYTES = 4 * 1024 * 1024
+MAX_RUNNER_QUERY_OUTPUT_BYTES = 4 * 1024 * 1024
 _DOCKER_ENV = {"PATH": "/usr/bin:/bin", "HOME": "/nonexistent", "LC_ALL": "C"}
 _DOCKER_HOST = "unix:///var/run/docker.sock"
 _ADMISSION_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
@@ -392,15 +393,41 @@ def _raise_bounded_failure(failure_records: list[tuple[str, BaseException]]) -> 
     raise DockerInspectionError(f"Docker inspect cleanup failed: {failure}") from failure
 
 
+def run_bounded_command(
+    argv: list[str],
+    timeout_s: float | None,
+    *,
+    environment: Mapping[str, str],
+    cwd: str,
+    stdin: Any,
+    pass_fds: tuple[int, ...],
+    preexec_fn: Callable[[], None] | None = None,
+    output_limit: int = MAX_RUNNER_QUERY_OUTPUT_BYTES,
+    popen_factory: Callable[..., Any] | None = None,
+) -> subprocess.CompletedProcess[bytes]:
+    """Use the shared bounded collector for one non-lane runner command."""
+
+    return _run_bounded(
+        argv, timeout_s, popen_factory=popen_factory, output_limit=output_limit,
+        environment=environment, cwd=cwd, stdin=stdin, pass_fds=pass_fds,
+        preexec_fn=preexec_fn,
+    )
+
+
 def _run_bounded(
     argv: list[str],
-    timeout_s: float,
+    timeout_s: float | None,
     *,
     popen_factory: Callable[..., Any] | None = None,
     selector_factory: Callable[[], Any] | None = None,
     monotonic: Callable[[], float] | None = None,
     kill_group: Callable[[int, int], None] | None = None,
     output_limit: int | None = None,
+    environment: Mapping[str, str] | None = None,
+    cwd: str = "/",
+    stdin: Any = subprocess.DEVNULL,
+    pass_fds: tuple[int, ...] = (),
+    preexec_fn: Callable[[], None] | None = None,
 ) -> subprocess.CompletedProcess[bytes]:
     """Collect Docker output, observe exit without reaping, then clean its group.
 
@@ -422,7 +449,7 @@ def _run_bounded(
     if isinstance(limit, bool) or not isinstance(limit, int) or limit <= 0:
         raise ValueError("Docker output limit must be a positive integer")
 
-    deadline = clock() + timeout_s
+    deadline = None if timeout_s is None else clock() + timeout_s
     process: Any = None
     selector: Any | None = None
     pidfd: int | None = None
@@ -436,17 +463,19 @@ def _run_bounded(
     try:
         process = spawn(
             argv,
-            stdin=subprocess.DEVNULL,
+            stdin=stdin,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            cwd="/",
-            env=dict(_DOCKER_ENV),
+            cwd=cwd,
+            env=dict(_DOCKER_ENV if environment is None else environment),
             shell=False,
             close_fds=True,
             start_new_session=True,
             bufsize=0,
+            pass_fds=pass_fds,
+            preexec_fn=preexec_fn,
         )
-        if clock() >= deadline:
+        if deadline is not None and clock() >= deadline:
             raise DockerInspectionError("Docker inspect exceeded query_timeout_s during spawn")
 
         selector = selector_type()
@@ -458,8 +487,8 @@ def _run_bounded(
             selector.register(stream, selectors.EVENT_READ, (stream_name, buffer))
 
         while selector.get_map():
-            remaining = deadline - clock()
-            if remaining <= 0:
+            remaining = None if deadline is None else deadline - clock()
+            if remaining is not None and remaining <= 0:
                 raise DockerInspectionError("Docker inspect exceeded query_timeout_s")
             ready = selector.select(remaining)
             if not ready:
@@ -478,22 +507,27 @@ def _run_bounded(
                     raise DockerInspectionError("Docker inspect output exceeded MAX_DOCKER_OUTPUT_BYTES")
                 buffer.extend(chunk)
 
-        remaining = deadline - clock()
-        if remaining <= 0:
+        remaining = None if deadline is None else deadline - clock()
+        if remaining is not None and remaining <= 0:
             raise DockerInspectionError("Docker inspect exceeded query_timeout_s while observing child exit")
         try:
             pidfd = os.pidfd_open(process.pid)
         except OSError as exc:
             raise DockerInspectionError("Docker inspect could not open a child pidfd") from exc
-        remaining = deadline - clock()
-        if remaining <= 0:
+        remaining = None if deadline is None else deadline - clock()
+        if remaining is not None and remaining <= 0:
             raise DockerInspectionError("Docker inspect exceeded query_timeout_s while observing child exit")
         selector.register(pidfd, selectors.EVENT_READ, ("pidfd", None))
         ready = selector.select(remaining)
         if not any(key.fileobj == pidfd for key, _events in ready):
-            raise DockerInspectionError("Docker inspect exceeded query_timeout_s while observing child exit")
+            if deadline is not None:
+                raise DockerInspectionError("Docker inspect exceeded query_timeout_s while observing child exit")
+            while not ready:
+                ready = selector.select(None)
+            if not any(key.fileobj == pidfd for key, _events in ready):
+                raise DockerInspectionError("Docker inspect pidfd selector returned an unrelated event")
         selector.unregister(pidfd)
-        if clock() >= deadline:
+        if deadline is not None and clock() >= deadline:
             raise DockerInspectionError("Docker inspect exceeded query_timeout_s while observing child exit")
         success_observed = True
     except BaseException as exc:
@@ -509,7 +543,7 @@ def _run_bounded(
                 )
             except BaseException as exc:
                 failure_records.append(("cleanup", exc))
-            if success_observed:
+            if success_observed and deadline is not None:
                 try:
                     if clock() >= deadline:
                         failure_records.append((
@@ -549,7 +583,7 @@ def _run_bounded(
 
 def _kill_process_group_and_reap(
     process: Any,
-    deadline: float,
+    deadline: float | None,
     clock: Callable[[], float],
     kill_group: Callable[[int, int], None],
     *,
@@ -567,7 +601,7 @@ def _kill_process_group_and_reap(
         records.append(("group_signal", exc))
 
     try:
-        remaining = max(0.0, deadline - clock())
+        remaining = None if deadline is None else max(0.0, deadline - clock())
     except BaseException as exc:
         records.append(("cleanup_clock", exc))
         remaining = 0.0

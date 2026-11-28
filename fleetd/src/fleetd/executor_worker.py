@@ -41,7 +41,12 @@ from .executor import (
     _resolve_system_user,
     _EXECUTOR_JSON_MAX,
 )
-from .agent_providers import DockerInspectionError, run_docker_command
+from .agent_providers import (
+    DockerInspectionError,
+    MAX_RUNNER_QUERY_OUTPUT_BYTES as _MAX_RUNNER_QUERY_OUTPUT_BYTES,
+    run_bounded_command,
+    run_docker_command,
+)
 from .hostside import open_beneath
 
 _COMMIT_RE = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
@@ -72,6 +77,7 @@ MAX_EVENT_FILE_BYTES = 512 * 1024
 MAX_EVENT_COUNT = 128
 MAX_EVENT_OBSERVATIONS_BYTES = 256 * 1024
 MAX_DOCKER_JOB_CONTAINER_IDS = 4096
+MAX_RUNNER_QUERY_OUTPUT_BYTES = _MAX_RUNNER_QUERY_OUTPUT_BYTES
 MAX_DIRECTORY_ENTRIES = 4096
 MAX_TREE_ENTRIES = 16384
 MAX_TREE_DEPTH = 128
@@ -145,9 +151,11 @@ class SubprocessRunnerCommands:
         identity: RunnerIdentity,
         *,
         popen: Callable[..., Any] = subprocess.Popen,
+        bounded_runner: Callable[..., Any] = run_bounded_command,
     ) -> None:
         self.identity = identity
         self._popen = popen
+        self._bounded_runner = bounded_runner
 
     def _preexec(self, cwd_fd: int) -> Callable[[], None]:
         identity = self.identity
@@ -164,60 +172,43 @@ class SubprocessRunnerCommands:
         self, argv: Sequence[str], *, cwd_fd: int, env: Mapping[str, str],
         timeout: float | None = None,
     ) -> CommandResult:
-        process = self._popen(
-            list(argv), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            env=dict(env), close_fds=True, pass_fds=(cwd_fd,), preexec_fn=self._preexec(cwd_fd),
-        )
         try:
-            stdout, stderr = process.communicate(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            process.kill()
-            stdout, stderr = process.communicate()
-            raise
-        return CommandResult(process.returncode, stdout or b"", stderr or b"")
+            result = self._bounded_runner(
+                list(argv), timeout, environment=dict(env), cwd="/", stdin=subprocess.DEVNULL,
+                pass_fds=(cwd_fd,), preexec_fn=self._preexec(cwd_fd),
+                output_limit=MAX_RUNNER_QUERY_OUTPUT_BYTES, popen_factory=self._popen,
+            )
+        except (DockerInspectionError, OSError, subprocess.TimeoutExpired, ValueError) as exc:
+            raise AdmissionError(ExitCode.QUEUED_WITHDRAWN, f"runner query failed: {exc}") from exc
+        return CommandResult(result.returncode, result.stdout or b"", result.stderr or b"")
 
     def run_with_input(
         self, argv: Sequence[str], *, cwd_fd: int, env: Mapping[str, str], source_fd: int,
         timeout: float | None = None,
     ) -> CommandResult:
-        process = self._popen(
-            list(argv), stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
-            env=dict(env), close_fds=True, pass_fds=(cwd_fd,), preexec_fn=self._preexec(cwd_fd),
-        )
-        assert process.stdin is not None
         try:
-            while True:
-                chunk = os.read(source_fd, 1024 * 1024)
-                if not chunk:
-                    break
-                process.stdin.write(chunk)
-            process.stdin.close()
-            process.stdin = None
-            stderr = process.communicate(timeout=timeout)[1]
-        except (BrokenPipeError, OSError):
-            if process.stdin is not None:
-                try:
-                    process.stdin.close()
-                except OSError:
-                    pass
-                process.stdin = None
-            _stdout, stderr = process.communicate()
-        except subprocess.TimeoutExpired:
-            process.kill()
-            _stdout, stderr = process.communicate()
-            raise
-        return CommandResult(process.returncode, b"", stderr or b"")
+            result = self._bounded_runner(
+                list(argv), timeout, environment=dict(env), cwd="/", stdin=source_fd,
+                pass_fds=tuple(dict.fromkeys((cwd_fd, source_fd))),
+                preexec_fn=self._preexec(cwd_fd), output_limit=MAX_RUNNER_QUERY_OUTPUT_BYTES,
+                popen_factory=self._popen,
+            )
+        except (DockerInspectionError, OSError, subprocess.TimeoutExpired, ValueError) as exc:
+            raise AdmissionError(ExitCode.QUEUED_WITHDRAWN, f"runner input query failed: {exc}") from exc
+        return CommandResult(result.returncode, result.stdout or b"", result.stderr or b"")
 
     def run_to_fd(
         self, argv: Sequence[str], *, cwd_fd: int, env: Mapping[str, str], output_fd: int,
     ) -> CommandResult:
-        process = self._popen(
-            list(argv), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            env=dict(env), close_fds=True, pass_fds=(cwd_fd, output_fd),
-            preexec_fn=self._preexec(cwd_fd),
-        )
-        stdout, stderr = process.communicate()
-        return CommandResult(process.returncode, stdout or b"", stderr or b"")
+        try:
+            result = self._bounded_runner(
+                list(argv), None, environment=dict(env), cwd="/", stdin=subprocess.DEVNULL,
+                pass_fds=(cwd_fd, output_fd), preexec_fn=self._preexec(cwd_fd),
+                output_limit=MAX_RUNNER_QUERY_OUTPUT_BYTES, popen_factory=self._popen,
+            )
+        except (DockerInspectionError, OSError, subprocess.TimeoutExpired, ValueError) as exc:
+            raise AdmissionError(ExitCode.QUEUED_WITHDRAWN, f"runner archive command failed: {exc}") from exc
+        return CommandResult(result.returncode, result.stdout or b"", result.stderr or b"")
 
     def start(
         self, argv: Sequence[str], *, cwd_fd: int, env: Mapping[str, str], output_fd: int,
@@ -929,15 +920,22 @@ class HostJobWorker:
     def _run(self, argv: Sequence[str], *, cwd_fd: int | None = None, timeout: float | None = None) -> CommandResult:
         if self.runner is None:
             raise AdmissionError(ExitCode.RUNNER_FAILURE, "runner command interface is unavailable")
-        result = self.runner.run(argv, cwd_fd=self.repo_root_fd if cwd_fd is None else cwd_fd,
-                                 env=self._environment(), timeout=timeout)
+        result = self.runner.run(
+            argv, cwd_fd=self.repo_root_fd if cwd_fd is None else cwd_fd,
+            env=self._environment(), timeout=timeout,
+        )
         return result
+
+    def _run_query(self, argv: Sequence[str], *, cwd_fd: int | None = None) -> CommandResult:
+        """Run one state inspection under the host's single-command deadline."""
+
+        return self._run(argv, cwd_fd=cwd_fd, timeout=self.policy.query_timeout_s)
 
     def _run_checked(
         self, argv: Sequence[str], *, cwd_fd: int | None = None, exit_code: int = ExitCode.RUNNER_FAILURE,
-        detail: str,
+        detail: str, timeout: float | None = None,
     ) -> CommandResult:
-        result = self._run(argv, cwd_fd=cwd_fd)
+        result = self._run(argv, cwd_fd=cwd_fd, timeout=timeout)
         if result.returncode != 0:
             stderr = result.stderr.decode("utf-8", "replace").strip()
             raise AdmissionError(exit_code, f"{detail}{': ' + stderr if stderr else f' (exit {result.returncode})'}")
@@ -1016,7 +1014,9 @@ class HostJobWorker:
 
         base = self.request.get("base")
         if isinstance(base, str):
-            base_result = self._run(["git", "-C", str(self.repo_root / self.checkout_rel), "cat-file", "-e", f"{base}^{{commit}}"])
+            base_result = self._run_query([
+                "git", "-C", str(self.repo_root / self.checkout_rel), "cat-file", "-e", f"{base}^{{commit}}",
+            ])
             if base_result.returncode != 0:
                 self._log(f"base {base} missing on the host")
                 raise AdmissionError(ExitCode.MISSING_BASE, f"base {base} missing on the host")
@@ -1027,6 +1027,7 @@ class HostJobWorker:
         actual = self._run_checked(
             ["git", "-C", str(self.repo_root / self.checkout_rel), "rev-parse", "HEAD"],
             cwd_fd=self.repo_root_fd, exit_code=ExitCode.CHECKOUT_FAILURE, detail="cannot read host checkout commit",
+            timeout=self.policy.query_timeout_s,
         ).stdout.decode("ascii", "strict").strip()
         if actual != sha:
             raise AdmissionError(ExitCode.CHECKOUT_FAILURE, f"host checkout commit {actual!r} does not match request sha")
@@ -1086,7 +1087,7 @@ class HostJobWorker:
 
     def _copy_seed_refs(self, seed_rel: str) -> None:
         seed_path = str(self.repo_root / seed_rel)
-        listed = self._run([
+        listed = self._run_query([
             "git", "-C", seed_path, "for-each-ref", "--format=%(refname)", "refs/tags",
         ], cwd_fd=self.repo_root_fd)
         if listed.returncode != 0:
@@ -1205,7 +1206,7 @@ class HostJobWorker:
                 for seed_rel in (*seeds, None):
                     if not self._reset_checkout(seed_rel):
                         continue
-                    verified = self._run([
+                    verified = self._run_query([
                         "git", "-C", str(self.repo_root / self.checkout_rel), "bundle", "verify", bundle,
                     ], cwd_fd=self.repo_root_fd)
                     if verified.returncode != 0:
@@ -1220,7 +1221,7 @@ class HostJobWorker:
                             "git", "-C", str(self.repo_root / self.checkout_rel), "fetch", "--quiet",
                             bundle, f"+{ref}:{ref}",
                         ], cwd_fd=self.repo_root_fd)
-                    tags = self._run(["git", "ls-remote", bundle, "refs/tags/*"], cwd_fd=self.repo_root_fd)
+                    tags = self._run_query(["git", "ls-remote", bundle, "refs/tags/*"], cwd_fd=self.repo_root_fd)
                     if tags.returncode == 0:
                         for line in tags.stdout.decode("ascii", "replace").splitlines():
                             fields = line.split("\t", 1)
@@ -1231,7 +1232,7 @@ class HostJobWorker:
                                 or _RELEASE_TAG_RE.fullmatch(fields[1][len("refs/tags/"):]) is None
                             ):
                                 continue
-                            exists = self._run([
+                            exists = self._run_query([
                                 "git", "-C", str(self.repo_root / self.checkout_rel),
                                 "show-ref", "--verify", "--quiet", fields[1],
                             ], cwd_fd=self.repo_root_fd)
@@ -1243,7 +1244,7 @@ class HostJobWorker:
                             ], cwd_fd=self.repo_root_fd)
                     else:
                         self._log("release tag listing from bundle failed; retaining seed tags")
-                    resolved = self._run([
+                    resolved = self._run_query([
                         "git", "-C", str(self.repo_root / self.checkout_rel), "cat-file", "-e",
                         f"{request_sha}^{{commit}}",
                     ], cwd_fd=self.repo_root_fd)
@@ -1372,7 +1373,7 @@ class HostJobWorker:
             return
         if not isinstance(base, str) or not base or base.startswith("-") or "\0" in base:
             raise AdmissionError(ExitCode.PREREQUISITE_MISSING, "Run-Gate lane declares an invalid comparison base")
-        result = self._run([
+        result = self._run_query([
             "git", "-C", str(self.repo_root / self.checkout_rel), "cat-file", "-e", f"{base}^{{commit}}",
         ], cwd_fd=self.repo_root_fd)
         if result.returncode != 0:
@@ -1659,7 +1660,7 @@ class HostJobWorker:
         upload_name = self._find_seed_upload(str(digest), int(size))
         if upload_name is None:
             raise AdmissionError(ExitCode.STORE_SEED_FAILED, f"STORE-SEED-FAILED {target} checksum")
-        tracked = self._run([
+        tracked = self._run_query([
             "git", "-C", str(self.repo_root / self.checkout_rel), "ls-files", "--", target,
         ], cwd_fd=self.repo_root_fd)
         if tracked.returncode != 0:

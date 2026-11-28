@@ -2365,27 +2365,12 @@ def test_seed_upload_requires_matching_content_object_and_sha256_sidecar(tmp_pat
         os.close(worker.repo_root_fd)
 
 
-def test_subprocess_runner_adapters_cover_success_timeout_and_broken_pipe(monkeypatch, tmp_path):
-    class _Stdin:
-        def __init__(self, *, broken=False):
-            self.broken = broken
-            self.data = bytearray()
-            self.closed = False
-
-        def write(self, value):
-            if self.broken:
-                raise BrokenPipeError("closed fake input")
-            self.data.extend(value)
-
-        def close(self):
-            self.closed = True
-
+def test_subprocess_runner_adapters_use_bounded_commands_and_unbounded_lane(tmp_path):
     class _Process:
         def __init__(self, responses, *, broken=False):
             self.responses = list(responses)
             self.returncode = 7
-            self.stdin = _Stdin(broken=broken)
-            self.kills = 0
+            self.stdin = None
             self.communicate_calls = []
 
         def communicate(self, timeout=None):
@@ -2395,69 +2380,51 @@ def test_subprocess_runner_adapters_cover_success_timeout_and_broken_pipe(monkey
                 raise answer
             return answer
 
-        def kill(self):
-            self.kills += 1
-
     calls = []
     current = []
+    query_calls = []
 
     def popen(argv, **kwargs):
         calls.append((list(argv), kwargs))
         return current.pop(0)
 
-    runner = SubprocessRunnerCommands(RunnerIdentity("runner", 1001, 1002, (1002, 44)), popen=popen)
+    def bounded(argv, timeout_s, **kwargs):
+        query_calls.append((list(argv), timeout_s, kwargs))
+        if argv[0].startswith("timeout"):
+            raise subprocess.TimeoutExpired(argv, timeout_s)
+        return subprocess.CompletedProcess(argv, 7, b"bounded-out", b"bounded-err")
+
+    runner = SubprocessRunnerCommands(
+        RunnerIdentity("runner", 1001, 1002, (1002, 44)), popen=popen, bounded_runner=bounded,
+    )
     cwd_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
     output_fd = os.open(tmp_path / "output", os.O_CREAT | os.O_RDWR, 0o600)
     source_fd = _pipe_with(b"streamed input")
     try:
-        ok = _Process([(b"out", b"err")])
-        current.append(ok)
-        assert runner.run(["cmd"], cwd_fd=cwd_fd, env={"A": "B"}, timeout=3) == CommandResult(7, b"out", b"err")
-        assert calls[-1][1]["pass_fds"] == (cwd_fd,)
-        assert calls[-1][1]["close_fds"] is True
+        assert runner.run(
+            ["cmd"], cwd_fd=cwd_fd, env={"A": "B"}, timeout=3,
+        ) == CommandResult(7, b"bounded-out", b"bounded-err")
+        assert query_calls[-1][1] == 3
+        assert query_calls[-1][2]["pass_fds"] == (cwd_fd,)
+        assert query_calls[-1][2]["output_limit"] == executor_worker_module.MAX_RUNNER_QUERY_OUTPUT_BYTES
 
-        timed_out = _Process([subprocess.TimeoutExpired(["cmd"], 1), (b"after", b"term")])
-        current.append(timed_out)
-        with pytest.raises(subprocess.TimeoutExpired):
-            runner.run(["cmd"], cwd_fd=cwd_fd, env={})
-        assert timed_out.kills == 1
-        assert timed_out.communicate_calls == [None, None]
+        with pytest.raises(AdmissionError, match="runner query failed"):
+            runner.run(["timeout-query"], cwd_fd=cwd_fd, env={}, timeout=1)
 
-        streamed = _Process([(b"ignored", b"stream-error")])
-        current.append(streamed)
-        streamed_stdin = streamed.stdin
         assert runner.run_with_input(
             ["cmd"], cwd_fd=cwd_fd, env={}, source_fd=source_fd,
-        ) == CommandResult(7, b"", b"stream-error")
-        assert bytes(streamed_stdin.data) == b"streamed input"
-        assert streamed_stdin.closed
-        os.close(source_fd)
-        source_fd = -1
+            timeout=5,
+        ) == CommandResult(7, b"bounded-out", b"bounded-err")
+        assert query_calls[-1][1] == 5
+        assert query_calls[-1][2]["stdin"] == source_fd
+        assert query_calls[-1][2]["pass_fds"] == (cwd_fd, source_fd)
 
-        broken_source = _pipe_with(b"ignored after broken pipe")
-        broken = _Process([(b"", b"broken-pipe-stderr")], broken=True)
-        broken_stdin = broken.stdin
-        current.append(broken)
-        assert runner.run_with_input(
-            ["cmd"], cwd_fd=cwd_fd, env={}, source_fd=broken_source,
-        ) == CommandResult(7, b"", b"broken-pipe-stderr")
-        assert broken_stdin.closed
-        os.close(broken_source)
-
-        streamed_timeout = _Process([subprocess.TimeoutExpired(["cmd"], 2), (b"", b"")])
-        current.append(streamed_timeout)
-        source_again = _pipe_with(b"one chunk")
-        with pytest.raises(subprocess.TimeoutExpired):
-            runner.run_with_input(["cmd"], cwd_fd=cwd_fd, env={}, source_fd=source_again)
-        os.close(source_again)
-        assert streamed_timeout.kills == 1
-
-        fd_process = _Process([(b"fd-output", b"fd-error")])
-        current.append(fd_process)
         assert runner.run_to_fd(
             ["archive"], cwd_fd=cwd_fd, env={}, output_fd=output_fd,
-        ) == CommandResult(7, b"fd-output", b"fd-error")
-        assert calls[-1][1]["pass_fds"] == (cwd_fd, output_fd)
+        ) == CommandResult(7, b"bounded-out", b"bounded-err")
+        assert query_calls[-1][1] is None
+        assert query_calls[-1][2]["pass_fds"] == (cwd_fd, output_fd)
+        assert query_calls[-1][2]["output_limit"] == executor_worker_module.MAX_RUNNER_QUERY_OUTPUT_BYTES
 
         started = _Process([])
         current.append(started)
@@ -2468,6 +2435,61 @@ def test_subprocess_runner_adapters_cover_success_timeout_and_broken_pipe(monkey
             os.close(source_fd)
         os.close(output_fd)
         os.close(cwd_fd)
+
+
+def test_subprocess_runner_queries_use_the_shared_bounded_collector(tmp_path):
+    calls = []
+
+    def bounded(argv, timeout_s, **kwargs):
+        calls.append((list(argv), timeout_s, kwargs))
+        return subprocess.CompletedProcess(argv, 0, b"bounded output", b"")
+
+    runner = SubprocessRunnerCommands(
+        RunnerIdentity("runner", 1001, 1002, (1002,)), bounded_runner=bounded,
+    )
+    cwd_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    input_path = tmp_path / "input"
+    input_path.write_bytes(b"source payload")
+    source_fd = os.open(input_path, os.O_RDONLY)
+    try:
+        result = runner.run(["git", "status"], cwd_fd=cwd_fd, env={"PATH": "/trusted"}, timeout=4)
+        assert result == CommandResult(0, b"bounded output", b"")
+        assert calls[0][0] == ["git", "status"]
+        assert calls[0][1] == 4
+        assert calls[0][2]["cwd"] == "/"
+        assert calls[0][2]["environment"] == {"PATH": "/trusted"}
+        assert calls[0][2]["stdin"] == subprocess.DEVNULL
+        assert calls[0][2]["pass_fds"] == (cwd_fd,)
+        assert calls[0][2]["output_limit"] == executor_worker_module.MAX_RUNNER_QUERY_OUTPUT_BYTES
+
+        runner.run_with_input(
+            ["fleetd-helper", "extract-seed"], cwd_fd=cwd_fd,
+            env={"PATH": "/trusted"}, source_fd=source_fd,
+        )
+        assert calls[1][1] is None
+        assert calls[1][2]["stdin"] == source_fd
+        assert calls[1][2]["pass_fds"] == (cwd_fd, source_fd)
+    finally:
+        os.close(source_fd)
+        os.close(cwd_fd)
+
+
+def test_worker_separates_unbounded_commands_from_policy_timed_queries(tmp_path):
+    calls = []
+
+    class _Runner:
+        def run(self, argv, **kwargs):
+            calls.append((list(argv), kwargs))
+            return CommandResult(0, b"ok", b"")
+
+    worker = _worker(tmp_path, _Runner())
+    try:
+        assert worker._run(["git", "rev-parse", "HEAD"]).stdout == b"ok"
+        assert calls[0][1]["timeout"] is None
+        assert worker._run_query(["git", "cat-file", "-e", "HEAD^{commit}"]).stdout == b"ok"
+        assert calls[1][1]["timeout"] == worker.policy.query_timeout_s
+    finally:
+        os.close(worker.repo_root_fd)
 
 
 def test_docker_client_covers_inspection_passwd_query_and_remove_refusals():
