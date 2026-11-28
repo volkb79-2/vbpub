@@ -331,8 +331,8 @@ legacy-job and Docker inspection providers only when the optional boolean
 `executor_enabled` key in `agent.toml` is exactly `true`. If the key is absent,
 the value is `false`; a present non-boolean refuses policy loading. When false,
 no executor is wired and submit, status and cancel retain the C3a refusal before
-writing a request or charging admission. Keep it false until FD-067 and FD-068
-are closed and Run-Gate revision 78 is released and deployed. Host-mode
+writing a request or charging admission. Keep it false until FD-067, FD-068 and
+FD-075 are closed and Run-Gate revision 78 is released and deployed. Host-mode
 submissions additionally require FD-069 to close; exec-mode submissions require
 the live persistent-runner probe in FD-070. This package does not install or
 enable host services. `runner_user` is required only while the executor is
@@ -378,9 +378,12 @@ that it names a loaded systemd slice; a missing or unresolved tier refuses the
 job. Root Docker calls and the Run-Gate lane use the same fixed local Docker
 endpoint and closed environment.
 
-Repository- and lane-controlled inputs have explicit size and count ceilings.
-Exceeding one stops the lane through the normal stop path; after stop proofs the
-worker records a terminal ERROR. These ceilings do not impose a lane time limit.
+The listed repository- and lane-controlled inputs have explicit size and count
+ceilings. Exceeding one stops the lane through the normal stop path; after stop
+proofs the worker records a terminal ERROR. The total `lane.log` byte count and
+the summary scan are not yet bounded (FD-075); close that gap before setting
+`executor_enabled = true`. None of these input ceilings imposes a lane time
+limit.
 
 | Constant | Limit | Purpose |
 |---|---:|---|

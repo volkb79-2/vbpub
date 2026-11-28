@@ -75,6 +75,7 @@
 | FD-070 | Verify exec checkout mount against a real persistent runner before enablement | P1 | OPEN; LIVE PROBE REQUIRED | 2026-11-27 |
 | FD-071 | Preserve store collection failure detail in the host result | P2 | FIXED IN THIS BRANCH (C3b-1) | 2026-11-27 |
 | FD-072 | Bind Run-Gate repo/project labels to the request | P2 | FIXED IN THIS BRANCH (C3b-1) | 2026-11-27 |
+| FD-075 | Bound total lane log bytes and summary scan before executor enablement | P1 | OPEN; BLOCKER BEFORE ENABLEMENT | 2026-11-28 |
 
 ## FD-001 Lite campaign lifecycle
 
@@ -1357,3 +1358,18 @@ job containers stopped, finalize the terminal record, and only then release the
 charge. Do not infer safety from an expired process handle or reboot alone.
 
 Source: P-fd-05 C3b-1 fix round 2 controller ruling F5 (2026-11-28).
+
+## FD-075 Bound total lane log bytes and summary scan
+
+**State:** OPEN; BLOCKER BEFORE ENABLEMENT. **Priority:** P1. **Filed:** 2026-11-28.
+
+The lane's stdout and stderr are written to `lane.log` without an aggregate byte
+ceiling, and `_last_lane_summary` scans the whole file. A finite lane can fill
+host storage and make the root summary scan arbitrarily long. Before enabling
+the executor, enforce a total lane-output byte ceiling in the streaming writer;
+on overflow, stop the lane through the normal stop-and-prove path and bind a
+terminal ERROR. Bound the summary scan at the same ceiling. Do not add a lane
+runtime limit. This is not implemented in C3b-1 fix round 3.
+
+Source: P-fd-05 C3b-1 closure review C3 and round 3 controller ruling C3
+(2026-11-28).

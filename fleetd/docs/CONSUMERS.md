@@ -101,8 +101,8 @@ The optional closed-schema key `executor_enabled` accepts only a TOML boolean.
 If absent it is false; a present non-boolean refuses policy loading. While
 false, `fleetd-agent` wires no executor, and submit, status and cancel preserve
 the C3a no-executor refusal before any durable request record or admission
-charge. Keep it false until FD-067 and FD-068 are closed and Run-Gate revision
-78 is released and deployed. `mode = "host"` also requires FD-069 to close;
+charge. Keep it false until FD-067, FD-068 and FD-075 are closed and Run-Gate
+revision 78 is released and deployed. `mode = "host"` also requires FD-069 to close;
 `mode = "exec"` requires the live persistent-runner probe in FD-070. The
 executor uses the host worker's `CGROUP_PARENT_DEV_GATES` value for prerequisite
 containers and refuses unless it resolves to a loaded systemd slice. Deploy the
@@ -216,7 +216,7 @@ charged until disconnect and exact-name reconciliation confirms absence.
 A missing or refusing local socket returns 3 with no fallback transport.
 C3b-1 conditionally wires the executor when `executor_enabled = true`, while
 C3b-2a wires the legacy-job and Docker providers. Keep the key false until
-FD-067 and FD-068 are closed and Run-Gate revision 78 is released and deployed;
+FD-067, FD-068 and FD-075 are closed and Run-Gate revision 78 is released and deployed;
 host-mode submissions additionally wait for FD-069. Exec-mode submissions
 require the FD-070 live persistent-runner probe. With the key absent or false,
 submit, status and cancel retain the C3a no-executor refusal before request
