@@ -969,13 +969,22 @@ class AgentVerbService:
 
     def _reserve_upload(
         self, expected: int, store_limit: int, floor_bytes: int,
+        group: str | None = None, name: str | None = None, digest: str | None = None,
     ) -> _UploadReservation:
         if self.paths.incoming_dir.is_symlink() or not self.paths.incoming_dir.is_dir():
             raise AdmissionError(ExitCode.REFUSAL, "agent incoming directory is not a real directory")
         with self._upload_store_lock():
             in_flight, remaining, _live = self._recover_upload_reservations_locked()
             stored = self._stored_upload_bytes()
-            required = stored + in_flight + expected - store_limit
+            existing = False
+            if group is not None and name is not None and digest is not None:
+                existing_path = self.paths.uploads_dir / group / name / digest
+                if existing_path.is_symlink():
+                    raise AdmissionError(ExitCode.REFUSAL, "put destination is a symlink")
+                existing = existing_path.exists()
+                if existing and self._hash_file(existing_path) != (expected, digest):
+                    raise AdmissionError(ExitCode.REFUSAL, "existing host-created upload does not match its content address")
+            required = stored + in_flight + (0 if existing else expected) - store_limit
             available = self._upload_free_bytes()
             if available - remaining - expected < floor_bytes:
                 raise AdmissionError(
@@ -985,7 +994,7 @@ class AgentVerbService:
             if required > 0:
                 self._collect_upload_objects_locked(required, store_limit)
                 stored = self._stored_upload_bytes()
-            if stored + in_flight + expected > store_limit:
+            if stored + in_flight + (0 if existing else expected) > store_limit:
                 raise AdmissionError(
                     ExitCode.REFUSAL,
                     f"put would exceed policy.max_upload_store_bytes {store_limit}",
@@ -1283,7 +1292,9 @@ class AgentVerbService:
         reservation: _UploadReservation | None = None
         completed = False
         try:
-            reservation = self._reserve_upload(expected, store_limit, floor_bytes)
+            reservation = self._reserve_upload(
+                expected, store_limit, floor_bytes, identity.group, name, digest,
+            )
             with os.fdopen(reservation.temporary_fd, "wb", closefd=True) as target:
                 reservation.temporary_fd = -1
                 self._stream_upload(body_stream, expected, digest, target)
