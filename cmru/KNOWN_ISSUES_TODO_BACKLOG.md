@@ -304,6 +304,14 @@ wait for or reap processes; no surviving witness may retain that process leak. T
 remain open pending a process-clean local-remote setup. `12657b6dd362` in the same window has the
 narrow equivalence proof above.
 
+Source window 3467–3590 was not reached in batch 3: no witness or equivalence proof was attempted for
+`7a35e32b950c`, `0b184cf5f680`, `e69a3326b517`, `7a4e19814420`, `661d77d8a79d`, `f9a0fdd5dad2`,
+`5b47a8c147b2`, `431ccdcefc9e`, `40774a450dc5`, `fc580689f1a5` and `4dc4a4bed151`. They are open.
+
+Batch 3 totals over its 30 candidates: 5 killed, 3 equivalent (KI-226), 22 open (`e2fcfc263ad8` under
+KI-225, the 21 above). Each kill was measured in the probe run that followed its witness (`9b5abf12b48e`
+in the initial probe); no single final probe over all 30 was run.
+
 > **KI-12 … KI-16 shipped together** in `merge(cmru): KI-12..KI-17 and S15 tool
 > dependencies`, with the new S15 tool-dependency feature. SPEC: `S-CLI.5b/5c/5d`,
 > `S12.2a`–`S12.2e`, `S2.6`, `S15`. Mutation campaign green (115 candidates, 115

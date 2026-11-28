@@ -32,9 +32,10 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
      the `fix(cmru): ...` commit subject. -->
 
 <!-- cmru: pending release notes begin -->
-- tests(cmru): batch 3 adds cleanup rollback witnesses and records narrow transaction
-  equivalence proofs; the initial probe found one of 30 candidates already killed by
-  the earlier transaction tests. No product code changed.
+- tests(cmru): batch 3 adds cleanup, release-output retention and rollback witnesses
+  over the next 30 transaction mutation survivors: 5 killed (one of them already by an
+  earlier test), 3 recorded as equivalent (KI-226), 22 open (KI-225, KI-227). No
+  single final probe over all 30 was run. No product code changed.
 - tests(cmru): batch 2 review fixes withdraw the unsafe d255 scope-recovery witness
   and correct the 45f rollback witness: the caller still receives the original
   artifact-publication error while a concurrent logs sentinel survives. The final
