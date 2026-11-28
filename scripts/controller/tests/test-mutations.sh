@@ -9,6 +9,8 @@ unset CONTROLLER_HOME CONTROLLER_RUNS_DIR CONTROLLER_LOGS_DIR CONTROLLER_REPO CO
 unset CODEX_ROUTE CODEX_HOME_OVERRIDE CODEX_HOME_LUNA CODEX_HOME_DEEPSEEK_VOLKER CODEX_HOME_DEEPSEEK_GITHUB2 CODEX_HOME_REVIEW CODEX_MODEL CODEX_EFFORT
 unset CODEX_REVIEW_MODEL CODEX_REVIEW_EFFORT CODEX_SQLITE_HOME
 unset PI_TEST_FOCUS
+# Mutant runs pass this seam explicitly; it must not alter the unmutated baseline.
+unset PI_CTL_CORE_MODULE
 unset CONTROLLER_OD_STATE CONTROLLER_OD_PREFER_EXPIRING CONTROLLER_OD_UNKNOWN_BLOCK_SECONDS OPENDESIGN_API_KEY_VOLKER OPENDESIGN_API_KEY_GITHUB2
 unset CONTROLLER_OD_ACCOUNTS_SCRIPT OPENCODE_COMMAND OPENCODE_MODEL OPENCODE_PROVIDER OPENCODE_IMPL_SCRIPT
 unset PI_IMPL_SCRIPT PI_PIDNS_WORKER_SCRIPT PI_PIDNS_WRAPPER_SCRIPT
@@ -32,14 +34,14 @@ if ! CONTROLLER_TEST_PARALLEL_OD_STARTS=0 bash "$SCRIPT_DIR/test-wrappers.sh" > 
   exit 1
 fi
 echo 'PASS unmutated wrapper tests before wrapper mutation checks'
-for baseline in test-job-check.sh test-hardening-tools.sh test-gate-slots.sh test-pi-impl.sh test-pi-pidns.sh test-pi-review.sh; do
+for baseline in test-job-check.sh test-hardening-tools.sh test-gate-slots.sh test-pi-impl.sh test-pi-pidns.sh test-pi-review.sh test-pi-ctl.sh; do
   if ! bash "$SCRIPT_DIR/$baseline" > "$ROOT/${baseline%.sh}-unmutated.log" 2>&1; then
     cat "$ROOT/${baseline%.sh}-unmutated.log" >&2
     echo "FAIL: unmutated $baseline must pass before its mutants are judged" >&2
     exit 1
   fi
 done
-echo 'PASS unmutated job-check, hardening, gate-slot, pi-impl, pi-pidns and pi-review tests before their mutation checks'
+echo 'PASS unmutated job-check, hardening, gate-slot, pi-impl, pi-pidns, pi-review and pi-ctl tests before their mutation checks'
 export CONTROLLER_TEST_PARALLEL_OD_STARTS=0
 
 expect_killed mutation-runner-missing-result \
@@ -631,5 +633,23 @@ done
 for profile_mutant in image-regex work-mount; do
   expect_killed "dev-profile-$profile_mutant" \
     env DEV_PROFILE_SCRIPT="$ROOT/mutants/scripts/controller/dev-profile-$profile_mutant" "${TESTER_VENV:?}/bin/python" -m pytest -x -q -p no:cacheprovider "$SCRIPT_DIR/test_dev.py"
+done
+# Node 26's process-isolated test runner starts a child process per test file
+# and inherits NODE_OPTIONS into that child. A finite 2 TiB address-space cap
+# leaves about 0.7 TiB beyond V8's optional 1 TiB sandbox region plus roughly
+# 320 GiB of guards, and also covers the pointer-compression cage, code range,
+# external/trusted pointer tables and Wasm guard mappings. NODE_OPTIONS caps
+# each Node process's old space at 256 MiB; the lane's existing cgroup memory
+# ceiling remains the real-memory cap. Only these six checks get the larger cap.
+# See Node's test isolation and CLI docs, and V8's sandbox layout:
+# https://nodejs.org/api/test.html#child-process-option-inheritance
+# https://nodejs.org/api/cli.html#--max-old-space-size-size-in-mib
+# https://github.com/v8/v8/blob/main/src/sandbox/sandbox.h
+# https://github.com/nodejs/node/blob/main/deps/v8/include/v8-internal.h
+for pi_ctl_mutant in claim-before-inject name-validation agent-end-only wrapper-required root-symlink-components inherited-flock-required; do
+  expect_assertion_killed_with_address_space_limit "pi-ctl-$pi_ctl_mutant" 2147483648 \
+    env NODE_OPTIONS=--max-old-space-size=256 \
+      PI_CTL_CORE_MODULE="$ROOT/mutants/scripts/controller/pi-ctl-$pi_ctl_mutant/core.mjs" \
+      bash "$SCRIPT_DIR/test-pi-ctl.sh"
 done
 mutation_runner_finish || exit $?

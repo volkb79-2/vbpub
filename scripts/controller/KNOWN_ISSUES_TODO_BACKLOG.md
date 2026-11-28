@@ -76,6 +76,7 @@ together.
 | CTL-65 | The pi PID namespace guard's same-user-writable assets can be edited by an implementer, changing how later commands launch | Known limit | BY DESIGN 2026-11-27 (H2 ruling) |
 | CTL-67 | P-plat-26d review follow-ups: guard test gaps, no live isolation coverage, a process-group kill in a test, a missing mutant file counting as killed | Nice-to-have | OPEN |
 | CTL-68 | P-plat-35 review follow-ups: progress lines stop while the mutation queue drains; a missing runner mutant file counts as killed | Nice-to-have | OPEN |
+| CTL-69 | Pi automatic compaction summaries grow without bound and omit older in-flight status | Medium | OPEN 2026-11-27 |
 
 ---
 
@@ -1867,3 +1868,25 @@ From the static re-review of P-plat-35 (head `eaabf89ea`), two Low findings:
 
 - `PROGRESS:` lines print only from `expect_killed`, which no longer blocks. All of them appear at submission with `reaped=0`, and `mutation_runner_finish`, where nearly the whole run happens, prints none. Call `mutation_runner_progress` after each reap in `finish`.
 - A missing or misspelled `CONTROLLER_MUTATION_RUNNER_SCRIPT` in `tests/test-mutation-runner.sh` fails at `source`, exits 1 and is counted as KILLED. Not live at that head (all names match). Print the `ERROR: unreadable override` line, exit 2, and add the variable to the override `case` in `tests/mutation-runner.sh`.
+
+## CTL-69 — Pi automatic compaction summary grows without bound and omits older in-flight status
+
+**Status:** OPEN (filed 2026-11-27 from the P-plat-PICTL closure review; Medium, M1). FILED, NOT FIXED.
+
+`core.mjs` copies `preparation.previousSummary` into each automatic compaction summary in full. Repeated compactions therefore grow the retained summary without a bound. The transcript excerpt is bounded to the latest 32 messages, so in-flight status mentioned only in older messages can disappear.
+
+**Proposed minimal fix:** enforce a fixed summary budget while explicitly carrying the current in-flight list and identifiers forward. Add a test that performs consecutive automatic compactions with a long previous summary and verifies the bound and retained in-flight state.
+
+**Where:** `scripts/controller/pi-ctl/core.mjs:1295-1331` at review head `46ecf967cf0e4b87c1283063d8cfc6321f2eb984`.
+
+**Acceptance test idea:** pass a long previous summary through multiple automatic compactions; each returned summary stays under the budget and retains the current in-flight identifiers even when their source messages predate the latest 32-message excerpt.
+
+## CTL-70 — remote-gate's ssh argv must always carry `IdentityAgent=none`
+
+**Status:** OPEN (filed 2026-11-28 on the main controller's order).
+
+Since about 2026-11-28T00:01Z the forwarded VS Code ssh agent made every ssh from the controller hang. The workaround is `-o IdentityAgent=none` in the local controller hosts file, which another hosts file or a new host entry would not carry. Hand-written ssh needs `env -u SSH_AUTH_SOCK`.
+
+**Proposed minimal fix:** add `-o IdentityAgent=none` where the ssh argv is built (`controller_host_argv`, `scripts/controller/lib.sh:417`, used by `remote-gate.sh:127`), whatever the hosts file says, and check the other ssh callers of that helper.
+
+**Acceptance test idea:** with a fake hosts file that has no `IdentityAgent` option, the recorded ssh argv still contains `-o IdentityAgent=none` exactly once.

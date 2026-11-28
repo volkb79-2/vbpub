@@ -7,6 +7,9 @@
 MUTATION_RUNNER_MAX_JOBS=3
 MUTATION_RUNNER_CHECK_TIMEOUT_SECONDS=600
 MUTATION_RUNNER_MEMORY_LIMIT_KB=1048576
+# Explicit per-check ceiling: 2 TiB of virtual address space, never RSS.
+# It is reserved for checks that declare it; ordinary checks keep the 1 GiB cap.
+MUTATION_RUNNER_MAX_ADDRESS_SPACE_LIMIT_KB=2147483648
 
 mutation_runner_width_is_valid() {
   [[ ${MUTATION_RUNNER_JOBS:-} =~ ^[0-9]+$ ]] \
@@ -98,6 +101,8 @@ mutation_runner_init() {
   MUTATION_RUNNER_PID_GROUPS=()
   MUTATION_RUNNER_PENDING_LABELS=()
   MUTATION_RUNNER_PENDING_GROUPS=()
+  MUTATION_RUNNER_PENDING_MEMORY_LIMITS=()
+  MUTATION_RUNNER_PENDING_KILL_POLICIES=()
   MUTATION_RUNNER_FAILURE_LABELS=()
   MUTATION_RUNNER_FAILURE_REASONS=()
   MUTATION_RUNNER_REGISTERED_COUNT=0
@@ -108,6 +113,19 @@ mutation_runner_init() {
   MUTATION_RUNNER_FAILURE_COUNT=0
   MUTATION_RUNNER_SURVIVOR_OBSERVED=0
   MUTATION_RUNNER_STARTED_SECONDS=$SECONDS
+}
+
+mutation_runner_normalize_address_space_limit() {
+  local value=${1-} minimum_exclusive=${2-0} maximum=$MUTATION_RUNNER_MAX_ADDRESS_SPACE_LIMIT_KB
+  [[ $value =~ ^[0-9]+$ && $minimum_exclusive =~ ^[0-9]+$ ]] || return 1
+  while [[ ${#value} -gt 1 && ${value:0:1} == 0 ]]; do value=${value#0}; done
+  while [[ ${#minimum_exclusive} -gt 1 && ${minimum_exclusive:0:1} == 0 ]]; do
+    minimum_exclusive=${minimum_exclusive#0}
+  done
+  (( ${#value} <= ${#maximum} && ${#minimum_exclusive} <= ${#maximum} )) || return 1
+  local numeric_value=$((10#$value)) numeric_minimum=$((10#$minimum_exclusive))
+  (( numeric_value > numeric_minimum && numeric_value <= maximum )) || return 1
+  MUTATION_RUNNER_NORMALIZED_ADDRESS_SPACE_LIMIT_KB=$numeric_value
 }
 
 mutation_runner_fail() {
@@ -230,9 +248,15 @@ mutation_runner_override_unreadable() {
   return 1
 }
 
+mutation_runner_has_test_assertion_failure() {
+  local log=$1
+  grep -Eq '^not ok [0-9]+ - ' "$log" && grep -Fq 'ERR_ASSERTION' "$log"
+}
+
 mutation_runner_worker() {
-  local label=$1 log=$2 status outcome result_tmp stop_rc=0 log_fd
-  shift 2
+  local label=$1 log=$2 memory_limit_kb=$3 kill_policy=$4
+  local status outcome result_tmp stop_rc=0 log_fd
+  shift 4
 
   # The test command must not inherit the runner's admission descriptor.
   exec {MUTATION_RUNNER_LOCK_FD}>&-
@@ -240,9 +264,9 @@ mutation_runner_worker() {
     printf 'WORKER ERROR: could not open log for %s\n' "$label" >&2
     return 69
   fi
-  if ! ulimit -v "$MUTATION_RUNNER_MEMORY_LIMIT_KB"; then
+  if ! ulimit -v "$memory_limit_kb"; then
     printf 'WORKER ERROR: could not apply the %s KiB per-check address-space limit for %s\n' \
-      "$MUTATION_RUNNER_MEMORY_LIMIT_KB" "$label" >&"$log_fd"
+      "$memory_limit_kb" "$label" >&"$log_fd"
     exec {log_fd}>&-
     return 73
   fi
@@ -281,8 +305,15 @@ mutation_runner_worker() {
       outcome=RESOURCE_LIMIT
     elif mutation_runner_override_unreadable "$log" "$@"; then
       outcome=OVERRIDE_ERROR
-    else
+    elif [[ $kill_policy == assertion-only ]] \
+      && mutation_runner_has_test_assertion_failure "$log"; then
       outcome=KILLED
+    elif [[ $kill_policy == assertion-only ]]; then
+      outcome=CHECK_FAILURE
+    elif [[ $kill_policy == any-nonzero ]]; then
+      outcome=KILLED
+    else
+      outcome=RUNNER_ERROR
     fi
   fi
   exec {log_fd}>&-
@@ -314,6 +345,8 @@ mutation_runner_worker() {
   elif [[ $outcome == OVERRIDE_ERROR ]]; then
     printf 'WORKER ERROR: unreadable mutation override for %s (status %s)\n' \
       "$label" "$status" >&2
+  elif [[ $outcome == CHECK_FAILURE ]]; then
+    printf 'CHECK FAILURE: %s failed without a TAP test assertion failure\n' "$label" >&2
   else
     printf 'KILLED: %s\n' "$label"
   fi
@@ -323,13 +356,16 @@ mutation_runner_worker() {
 
 mutation_runner_pending_remove() {
   local index=$1
-  unset 'MUTATION_RUNNER_PENDING_LABELS[index]' 'MUTATION_RUNNER_PENDING_GROUPS[index]'
+  unset 'MUTATION_RUNNER_PENDING_LABELS[index]' 'MUTATION_RUNNER_PENDING_GROUPS[index]' \
+    'MUTATION_RUNNER_PENDING_MEMORY_LIMITS[index]' 'MUTATION_RUNNER_PENDING_KILL_POLICIES[index]'
   MUTATION_RUNNER_PENDING_LABELS=("${MUTATION_RUNNER_PENDING_LABELS[@]}")
   MUTATION_RUNNER_PENDING_GROUPS=("${MUTATION_RUNNER_PENDING_GROUPS[@]}")
+  MUTATION_RUNNER_PENDING_MEMORY_LIMITS=("${MUTATION_RUNNER_PENDING_MEMORY_LIMITS[@]}")
+  MUTATION_RUNNER_PENDING_KILL_POLICIES=("${MUTATION_RUNNER_PENDING_KILL_POLICIES[@]}")
 }
 
 mutation_runner_start_check() {
-  local label=$1 group=$2 argv_file=$3 log pid
+  local label=$1 group=$2 memory_limit_kb=$3 kill_policy=$4 argv_file=$5 log pid
   local -a command_argv=()
   if ! mapfile -d '' -t command_argv < "$argv_file" || (( ${#command_argv[@]} == 0 )); then
     mutation_runner_fail "$label" 'pending check has no readable command'
@@ -354,7 +390,7 @@ mutation_runner_start_check() {
     mutation_runner_fail "$label" 'could not create per-check log'
     return 1
   fi
-  ( mutation_runner_worker "$label" "$log" "${command_argv[@]}" ) &
+  ( mutation_runner_worker "$label" "$log" "$memory_limit_kb" "$kill_policy" "${command_argv[@]}" ) &
   pid=$!
   if [[ ! $pid =~ ^[0-9]+$ ]] || [[ $pid == 0 ]]; then
     mutation_runner_unlock_parent || mutation_runner_fail '<runner>' 'could not release the worker admission lock'
@@ -370,7 +406,7 @@ mutation_runner_start_check() {
 }
 
 mutation_runner_dispatch_pending() {
-  local index exclusive_index candidate label group argv_file
+  local index exclusive_index candidate label group memory_limit_kb kill_policy argv_file
   if ! mutation_runner_width_is_valid; then
     mutation_runner_fail '<runner>' \
       "effective mutation worker width is outside 1..$MUTATION_RUNNER_MAX_JOBS at dispatch"
@@ -424,9 +460,11 @@ mutation_runner_dispatch_pending() {
 
     label=${MUTATION_RUNNER_PENDING_LABELS[candidate]}
     group=${MUTATION_RUNNER_PENDING_GROUPS[candidate]}
+    memory_limit_kb=${MUTATION_RUNNER_PENDING_MEMORY_LIMITS[candidate]}
+    kill_policy=${MUTATION_RUNNER_PENDING_KILL_POLICIES[candidate]}
     argv_file=$MUTATION_RUNNER_PENDING_DIR/$label.argv
     mutation_runner_pending_remove "$candidate"
-    if ! mutation_runner_start_check "$label" "$group" "$argv_file"; then
+    if ! mutation_runner_start_check "$label" "$group" "$memory_limit_kb" "$kill_policy" "$argv_file"; then
       rm -f -- "$argv_file"
       continue
     fi
@@ -525,6 +563,13 @@ mutation_runner_reap_one() {
     OVERRIDE_ERROR)
       mutation_runner_fail "$label" 'used an unreadable mutation override; this is not a killed mutant'
       ;;
+    CHECK_FAILURE)
+      if [[ $status =~ ^[0-9]+$ ]] && (( status > 0 )); then
+        mutation_runner_fail "$label" 'check failed without a TAP test assertion failure; not counted as a killed mutant'
+      else
+        mutation_runner_fail "$label" "invalid CHECK_FAILURE result status: ${status:-missing}"
+      fi
+      ;;
     *)
       mutation_runner_fail "$label" "invalid worker result: $(<"$result_file")"
       ;;
@@ -544,13 +589,14 @@ mutation_runner_should_stop() {
   (( MUTATION_RUNNER_SURVIVOR_OBSERVED != 0 ))
 }
 
-expect_killed() {
-  local label=${1-} group argv_file
-  if (( $# < 2 )); then
+mutation_runner_register_check() {
+  local label=${1-} memory_limit_kb=${2-} kill_policy=${3-} minimum_exclusive=${4-0}
+  local group argv_file
+  if (( $# < 5 )); then
     mutation_runner_fail "${label:-<missing-label>}" 'check has no command'
     return 0
   fi
-  shift
+  shift 4
   mutation_runner_group_for_command "$@"
   group=$MUTATION_RUNNER_COMMAND_GROUP
   MUTATION_RUNNER_REGISTERED_COUNT=$((MUTATION_RUNNER_REGISTERED_COUNT + 1))
@@ -561,6 +607,18 @@ expect_killed() {
     mutation_runner_progress
     return 0
   fi
+
+  if [[ $kill_policy != any-nonzero && $kill_policy != assertion-only ]]; then
+    mutation_runner_fail "$label" "invalid mutation kill policy: $kill_policy"
+    mutation_runner_progress
+    return 1
+  fi
+  if ! mutation_runner_normalize_address_space_limit "$memory_limit_kb" "$minimum_exclusive"; then
+    mutation_runner_fail "$label" "invalid per-check address-space limit: ${memory_limit_kb:-missing} KiB"
+    mutation_runner_progress
+    return 1
+  fi
+  memory_limit_kb=$MUTATION_RUNNER_NORMALIZED_ADDRESS_SPACE_LIMIT_KB
 
   if [[ ! $label =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]]; then
     mutation_runner_fail '<runner>' "invalid check label: $label"
@@ -591,9 +649,33 @@ expect_killed() {
   fi
   MUTATION_RUNNER_PENDING_LABELS+=("$label")
   MUTATION_RUNNER_PENDING_GROUPS+=("$group")
+  MUTATION_RUNNER_PENDING_MEMORY_LIMITS+=("$memory_limit_kb")
+  MUTATION_RUNNER_PENDING_KILL_POLICIES+=("$kill_policy")
   mutation_runner_dispatch_pending || :
   mutation_runner_progress
   return 0
+}
+
+expect_killed() {
+  local label=${1-}
+  if (( $# < 2 )); then
+    mutation_runner_fail "${label:-<missing-label>}" 'check has no command'
+    return 0
+  fi
+  label=$1
+  shift
+  mutation_runner_register_check "$label" "$MUTATION_RUNNER_MEMORY_LIMIT_KB" any-nonzero 0 "$@"
+}
+
+expect_assertion_killed_with_address_space_limit() {
+  local label=${1-} memory_limit_kb=${2-}
+  if (( $# < 3 )); then
+    mutation_runner_fail "${label:-<missing-label>}" 'assertion-only check needs a limit and command'
+    return 0
+  fi
+  shift 2
+  mutation_runner_register_check "$label" "$memory_limit_kb" assertion-only \
+    "$MUTATION_RUNNER_MEMORY_LIMIT_KB" "$@"
 }
 
 mutation_runner_print_failure_entry() {
@@ -645,6 +727,8 @@ mutation_runner_finish() {
       fi
       MUTATION_RUNNER_PENDING_LABELS=()
       MUTATION_RUNNER_PENDING_GROUPS=()
+      MUTATION_RUNNER_PENDING_MEMORY_LIMITS=()
+      MUTATION_RUNNER_PENDING_KILL_POLICIES=()
       break
     fi
 
@@ -657,6 +741,8 @@ mutation_runner_finish() {
       mutation_runner_fail '<runner>' 'pending checks remain but no worker is available to start them'
       MUTATION_RUNNER_PENDING_LABELS=()
       MUTATION_RUNNER_PENDING_GROUPS=()
+      MUTATION_RUNNER_PENDING_MEMORY_LIMITS=()
+      MUTATION_RUNNER_PENDING_KILL_POLICIES=()
       break
     fi
   done
@@ -697,7 +783,8 @@ mutation_runner_finish() {
       : # The reap path has already recorded this as a failed command spawn.
     elif [[ $outcome == TIMEOUT && ( $status == 124 || $status == 137 ) ]] \
       || [[ $outcome == RESOURCE_LIMIT && $status =~ ^[0-9]+$ ]] \
-      || [[ $outcome == RUNNER_ERROR || $outcome == OVERRIDE_ERROR ]]; then
+      || [[ $outcome == RUNNER_ERROR || $outcome == OVERRIDE_ERROR ]] \
+      || { [[ $outcome == CHECK_FAILURE && $status =~ ^[0-9]+$ ]] && (( status > 0 )); }; then
       : # The reap path records these as lane failures, never as KILLED.
     elif [[ $outcome != KILLED || ! $status =~ ^[0-9]+$ ]] || (( status == 0 )); then
       mutation_runner_fail "$label" 'worker result did not say the check was killed'

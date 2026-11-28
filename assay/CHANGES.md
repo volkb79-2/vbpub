@@ -4,15 +4,86 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
-### Fixed
-- fix(assay): include reclaimable file cache and slab in B105 RAM admission
-  (B599)
-- assay: stabilize B577 resume identity across plugin injection, aggregate non-path passthrough diagnostics, and bound untrusted component metadata. **Only `PATH` and `PYTHONPATH` receive per-name passthrough value digests.** Sidecars live at `.diagnostics/judge-components/<judge>.json` within each state store and are written after record and deadline work. On first resume, old records whose judge included run-local assay-injected `PYTHONPATH` entries re-execute once, including when `PYTHONPATH` was absent before injection and not passed through; a present non-passthrough consumer `PYTHONPATH` and plans with no assay insertion are unchanged by this identity rule. Records made under a stale post-resolution PYTHONPATH snapshot also miss once when the current value differs from the recorded insertions. Stores without usable component sidecars report diagnostics unavailable.
-
 ### Testing
 - test(assay): preflight two consecutive CMRU changelog folds against docs tests (B596)
 
 <!-- cmru: release history -->
+
+## [12.4.1] - 2026-11-28
+<!-- cmru: generated -->
+<!-- cmru: source-end=e94f74ebc376e9c5cb968f28381ca83b2e94f1c7 -->
+
+### Fixed
+- fix(assay): track B577 component sidecar evidence (45bff0aa6)
+- fix(assay): isolate judge diagnostics from record commits (ebd069b5f)
+- fix(assay): harden B577 passthrough diagnostics (66e3ccb6e)
+- fix(assay): diagnose B577 resume judge mismatches (754d2761a)
+- fix(assay): read Docker's absent statement from a file, with no pipeline (B599 review) (353b1fce6)
+- fix(assay): compare Docker's absent statement byte for byte (B599 round-3 review) (aa2a1ab85)
+- fix(assay): require exit 1 and the exact absent statement for the B599 probe (6104416d6)
+- fix(assay): accept Docker's real absent-object answer for the B599 probe (efa9aae16)
+- fix(assay): retain ambiguous unit probe ownership (c93755545)
+- fix(assay): count reclaimable cache in B105 admission (b427d48d9)
+
+### Documentation
+- docs(assay): file B610 coverage gate and closure (428c67614)
+- docs(assay): file B609, one shard judged one mutant two ways (acbd8bfc0)
+- docs(assay): file B577 review follow-ups (c0f4b836c)
+- docs(assay): describe isolated judge sidecars (54fc513f2)
+- docs(assay): file B608 and name the B599 capture fix commit (79dde954a)
+- docs(assay): document B577 migration and digest limits (d19934d73)
+- docs(assay): close B577 resume identity entry (928c471f4)
+- docs(assay): record the B599 round-2 closure references (60c0802b3)
+- docs(assay): record the B599 fix-forward references (964c59d6c)
+- docs(assay): file B601, tooling-tests lane runs only part of gate/tests (721e647b7)
+- docs(assay): record B599 review fix references (8f561676f)
+- docs(assay): mark B599 issue as historical context (a7910db6b)
+- docs(assay): close B599 reclaimable headroom backlog (1f2b75f51)
+- docs(assay): file B600, advisory-budget comment wording (P-assay-4f review low) (9e2ec7cb7)
+
+### Testing
+- test(assay): close B577 component sidecar coverage gap (739c3793d)
+- test(assay): pin B577 review findings red (aee37b238)
+- test(assay): cover B577 privacy and hostile diagnostics (79136e9ff)
+- test(assay): pin B577 resume identity diagnostics (0600b4c85)
+- test(assay): a failing text tool must not turn Docker's exit into definite absence (red) (9822c7ead)
+- test(assay): extra stderr bytes after Docker's absent statement must stay ambiguous (red) (a822202f4)
+- test(assay): require an exact absent answer for the B599 probe (c4dc20c85)
+- test(assay): pin the real Docker absent-object shape for the B599 probe (2ee5aa9a4)
+- test(assay): fix generated probe busctl stub (a6b9f193a)
+- test(assay): pin B599 probe cleanup and reader execution (f94090150)
+- test(assay): cover reclaimable B105 headroom admission (c0f7817d2)
+
+<!-- cmru: pending release notes begin -->
+### Fixed
+- fix(assay): include reclaimable file cache and slab in B105 RAM admission
+  (B599)
+- B610: add behavioral coverage for every B577 component-sidecar line and branch missing from the 12.4.1 self-qualification-provisional run (739c3793d).
+- B577: the `PYTHONPATH` entries Assay itself injects (run-local plugin
+  directories) are no longer part of the native-R2 judge identity, so they no
+  longer make a resume reject stored records. A consumer's own `PYTHONPATH`
+  change still changes the identity. A passthrough variable with non-UTF-8
+  bytes is accepted.
+- B577: when a resume rejects records for a judge mismatch, the `resume`
+  progress event and stderr name the differing components, never a value or a
+  value fingerprint. **Only `PATH` and `PYTHONPATH` receive per-name
+  passthrough value digests**; the other passthrough variables share one
+  digest. The digests are stored in
+  `.diagnostics/judge-components/<judge>.json` inside the state store. A store
+  without usable metadata reports the components as unavailable.
+
+### Upgrade notes
+- Records stored by an earlier Assay release are not resumed: the Assay version
+  is part of the judge identity, so they re-execute, as after every upgrade.
+- Independently of the version: on the first resume under the new identity rule,
+  old records whose judge included run-local assay-injected `PYTHONPATH`
+  entries re-execute once,
+  including when `PYTHONPATH` was absent before injection
+  and not passed through. A present non-passthrough consumer
+  `PYTHONPATH` and plans with no Assay insertion are unchanged by this rule.
+  Records made under a stale post-resolution `PYTHONPATH` snapshot also miss
+  once when the current value differs from the recorded insertions.
+<!-- cmru: pending release notes end -->
 
 ## [12.4.0] - 2026-11-27
 <!-- cmru: generated -->

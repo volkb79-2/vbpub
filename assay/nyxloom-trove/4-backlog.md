@@ -246,6 +246,7 @@ items:
   - {id: B597, title: "An armed no-progress wall stop ends the sweep and can repeat on resume", type: bugfix, component: mutation, context_estimate: medium}
   - {id: B598, title: "P-assay-4f final-review follow-ups M1, M3 and L4-L7", type: bugfix, component: mutation, context_estimate: small}
   - {id: B599, title: "B105 RAM admission counts reclaimable file cache as used", type: bugfix, component: gate, context_estimate: small}
+  - {id: B610, title: "Assay merges that touch src/assay must pass self-qualification-provisional before merge", type: bugfix, component: gate, context_estimate: small}
 ---
 
 # assay — backlog
@@ -16477,3 +16478,38 @@ runs, and the file stays behind.
 **Close when.** A failed removal returns 3 (`rm -f -- "$stderr_file" || return
 3`), so there is no unmounted retry and the identity stays for the EXIT trap,
 and a `tester-unified` case that makes only this removal fail proves it.
+
+## B609 — two runs of one shard under one judge disagree on a mutant's outcome
+
+**Status: OPEN, filed 2026-11-27 (cmru R2 backfill, B562); severity: medium,
+because a stored verdict depends on which run produced it.**
+
+Shard 1 of 64 of `cmru-first-release-r2` at commit
+`5e02d731b72f43095d7bb8ec7b9be205efd2e71a` ran twice, both complete (75 of 75
+records) under judge `c6e270f2…`. One candidate differs:
+`20fc27434d6ff74b6ba6cbd9f2cd73c1882f075b51e4fac9037c93e65bd03568`,
+`cmru/src/cmru/bundle.py:165`, `python:bool-const-flip` (`True->False`).
+
+- `rgw-assay-first-release-r2-20261124T125223-v1001`: `survived`.
+- `rgw-assay-first-release-r2-20261124T152154-r1002`: `killed`, with
+  `first_failing_test` null.
+
+Stores: `cmru/.assay/r2-staging/<run>/assay-store.tgz` (untracked controller
+data). The cause is not established. A `killed` record that names no failing
+test (see B578) may be a failure unrelated to the mutant.
+
+**Close when.** The kill's cause is established from the run's evidence or a
+reproduction, and either the test or classification defect is fixed, or the
+limit is documented for consumers of resumed and merged stores.
+
+## B610 — Assay merges that touch src/assay must pass self-qualification-provisional before merge
+
+**Status: OPEN (filed 2026-11-27 after the assay 12.4.1 release lane failed); severity: high for release readiness, because a known whole-target coverage gap reached a release candidate.**
+
+The q361 B577 merge (`a4b4a3431`) passed `tooling-tests` and `tester-unified`, but did not pass `self-qualification-provisional`. The 12.4.1 candidate at `5f0bef658` then failed that lane with `FAIL/UNCOVERED_LINES` in `src/assay/mutation.py` and `src/assay/mutation_store.py`; the uncovered sidecar paths came from `754d2761a`, `66e3ccb6e`, and `ebd069b5f`.
+
+**Rule.** Every assay merge whose diff touches `assay/src/**` must pass `self-qualification-provisional` on the exact branch head before merge. This is the release lane that measures the 100% whole-target line and branch floor over `src/assay`.
+
+**Coverage gap closed in this branch.** Commit `739c3793d` adds behavioral assertions for every uncovered B577 component-sidecar line and branch from the 12.4.1 candidate. The tests pin the documented pre-injection `PYTHONPATH` identity, mismatch names and redaction, unavailable diagnostics for missing or corrupt metadata, sidecar write cleanup on I/O errors, and the reader's size and shape bounds. The process rule above remains OPEN; this branch does not establish that merge automation enforced it.
+
+**Close when.** The merge checklist mechanically runs `self-qualification-provisional` for every `assay/src/**` change against the exact branch head, and a passing receipt is required before merge.
