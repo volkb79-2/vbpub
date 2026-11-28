@@ -119,6 +119,7 @@ PY
 cp "$RECEIPT" "$ROOT/receipt-first.json"
 run "$ROOT/receipt-2.out" session-start "$MAIN_JSON" --state-dir "$STATE" --extract "$BIN/fake-extract"
 ! cmp -s "$ROOT/receipt-first.json" "$RECEIPT" || fail 'second compact receipt did not change'
+cp "$RECEIPT" "$ROOT/receipt-first.json"
 for source in resume startup; do
   run "$ROOT/receipt-$source.out" session-start \
     '{"session_id":"sess-1","cwd":"'"$ROOT"'","source":"'"$source"'"}' \
@@ -141,8 +142,7 @@ cmp -s "$ROOT/receipt-first.json" "$RECEIPT" || fail 'agent role compaction wrot
 printf 'blocked\n' > "$ROOT/controller-home-file"
 before_output=$ROOT/receipt-unwritable.out
 CONTROLLER_HOME=$ROOT/controller-home-file hook session-start "$MAIN_JSON" --state-dir "$STATE" --extract "$BIN/fake-extract" \
-  > "$before_output" 2>&1
-[[ $? == 0 ]] || fail 'unwritable compact receipt changed hook exit status'
+  > "$before_output" 2>&1 || fail 'unwritable compact receipt changed hook exit status'
 cmp -s "$ROOT/receipt-1.out" "$before_output" || fail 'unwritable compact receipt changed hook output'
 
 # 1. pre-compact success: readback-<sid>-N.md written, marker stored, summariser note.

@@ -698,7 +698,10 @@ with `❯`) is empty, so nothing is typed over text someone has in the input lin
 
 - **Default: `/compact` via `scripts/controller/compact-resume.sh <pane-id> <guidance-file>
   <prompt-file> <log>`.** Sends `/compact <guidance>`, waits for the compaction to finish, then
-  types the resume prompt. The context is kept as a summary and background work (subagents,
+  types the resume prompt after a changed receipt from the session's `SessionStart(compact)` hook.
+  The pane's session must run this checkout's hook; if it is missing or points at another
+  checkout, the compaction may complete but no receipt arrives and the helper exits 8 without
+  sending the resume prompt. The context is kept as a summary and background work (subagents,
   Monitors, background shells, codex runs) survives. Measured 2026-11-24: 442k -> ~60k in ~46 s.
 - **Clean slate: `/clear` via `scripts/controller/clear-resume.sh <pane-id> <prompt-file> <log>`.**
   Use it when the summary itself is untrustworthy or a different role takes the pane. Background

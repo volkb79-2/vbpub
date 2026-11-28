@@ -58,9 +58,12 @@ def mutant(source: str, name: str, before: str, after: str, destination: Path = 
     return target
 
 
-mutant("scripts/controller/compact-resume.sh", "compact-resume-no-spinner-confirm",
-       '  if [[ $spinner_state -eq 3 ]] || { box_at "$view" >/dev/null && spinner_above <<<"$(foot_of <<<"$view")"; }; then\n    started=1; break\n  fi',
-       '  if busy; then started=1; break; fi')
+mutant("scripts/controller/compact-resume.sh", "compact-resume-no-changed-receipt",
+       '    if [[ -n $receipt_now && $receipt_now != "$receipt_before" ]]; then',
+       '    if [[ -n $receipt_now ]]; then')
+mutant("scripts/controller/hooks/ctx-hooks.py", "compact-receipt-any-source",
+       '        if source == "compact":\n            write_compact_receipt(hook, log_path)',
+       '        if True:\n            write_compact_receipt(hook, log_path)')
 
 
 def pi_ctl_mutant(name: str, before: str, after: str) -> Path:

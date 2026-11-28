@@ -66,9 +66,12 @@ expect_killed mutation-runner-override-error-killed \
   env CONTROLLER_MUTATION_RUNNER_SCRIPT="$ROOT/mutants/scripts/controller/mutation-runner-override-error-killed.sh" \
     bash "$SCRIPT_DIR/test-mutation-runner.sh"
 
-expect_killed compact-resume-no-spinner-confirm \
-  env COMPACT_RESUME_SCRIPT="$ROOT/mutants/scripts/controller/compact-resume-no-spinner-confirm" \
+expect_killed compact-resume-no-changed-receipt \
+  env COMPACT_RESUME_SCRIPT="$ROOT/mutants/scripts/controller/compact-resume-no-changed-receipt" \
     bash "$SCRIPT_DIR/test-compact-resume.sh"
+expect_killed compact-receipt-any-source \
+  env CTX_HOOKS_SCRIPT="$ROOT/mutants/scripts/controller/compact-receipt-any-source" \
+    bash "$SCRIPT_DIR/test-ctx-hooks.sh"
 
 for pi_review_mutant in \
   pi-review-account-inverted pi-review-head-only pi-review-index-only \

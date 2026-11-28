@@ -5,7 +5,7 @@ set -uo pipefail
 # output from frame files that advance one per call (the last frame repeats), so the checks are
 # deterministic under any host load. The script's poll interval is shortened through its test seams.
 unset COMPACT_RESUME_POLL COMPACT_RESUME_IDLE_TRIES COMPACT_RESUME_TYPE_PAUSE COMPACT_RESUME_FINAL_WAIT \
-  COMPACT_RESUME_START_TRIES COMPACT_RESUME_START_POLL COMPACT_RESUME_DONE_TRIES COMPACT_RESUME_SETTLE
+  COMPACT_RESUME_START_TRIES COMPACT_RESUME_DONE_TRIES COMPACT_RESUME_SETTLE COMPACT_RESUME_RECEIPT_DIR
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 SCRIPT=${COMPACT_RESUME_SCRIPT:-$SCRIPT_DIR/../compact-resume.sh}
 # shellcheck source=pane-frame-lib.sh
@@ -34,7 +34,12 @@ case $1 in
     [[ -e $f ]] || f=$(printf '%s\n' "$s/frames/$phase".* | sort | tail -1)
     echo "capture $phase" >>"$s/calls.log"
     # like tmux: -e keeps the SGR escapes of the fixture, without it they are dropped
-    if [[ " $* " == *" -e "* ]]; then cat -- "$f"; else sed 's/\x1b\[[0-9;]*m//g' "$f"; fi ;;
+    if [[ " $* " == *" -e "* ]]; then cat -- "$f"; else sed 's/\x1b\[[0-9;]*m//g' "$f"; fi
+    if [[ $phase == compact && $k == "${STUB_RECEIPT_AT:-1}" ]]; then
+      mkdir -p "$COMPACT_RESUME_RECEIPT_DIR"
+      printf '{"session_id":"stub-session","timestamp":"stub","write_id":%s}\n' "$k" \
+        >"$COMPACT_RESUME_RECEIPT_DIR/${STUB_RECEIPT_PANE:-%9}.json"
+    fi ;;
   send-keys)
     # send-keys -t <pane> -l [--] <text> | -t <pane> Enter
     # Like tmux, a text that starts with "-" is parsed as flags (exit 1) unless "--" precedes it.
@@ -93,18 +98,19 @@ scenario() {
 }
 # run <args...>: the script under the stub, short polls; sets RC
 run() {
-  STUB_DIR=$D PATH=$ROOT/bin:$PATH COMPACT_RESUME_POLL=0.01 COMPACT_RESUME_TYPE_PAUSE=0.01 \
+  STUB_DIR=$D PATH=$ROOT/bin:$PATH COMPACT_RESUME_RECEIPT_DIR=$D/receipts \
+    STUB_RECEIPT_AT=${STUB_RECEIPT_AT:-1} STUB_RECEIPT_PANE=${STUB_RECEIPT_PANE:-%9} \
+    COMPACT_RESUME_POLL=0.01 COMPACT_RESUME_TYPE_PAUSE=0.01 \
     COMPACT_RESUME_FINAL_WAIT=0.01 COMPACT_RESUME_SETTLE=0.01 bash "$SCRIPT" "$@" </dev/null 2>"$D/stderr"; RC=$?
 }
 calls() { cat -- "$D/calls.log" 2>/dev/null; }
 rep() { local n=$1; shift; local i; for ((i = 0; i < n; i++)); do printf '%s\n' "$@"; done; }
 
 # 1. Busy then idle (3 idle checks in a row), /compact <guidance> typed exactly (newlines to spaces)
-#    and submitted, the first idle frame is skipped while waiting for the spinner, the Compacting
-#    spinner counts as busy, then 3 idle checks, and only then the resume prompt, exactly, then Enter.
-#    start: B I I I (4 checks) + footer-before = 5 captures.
-#    compact: I K K I I I (start wait: I, K; idle wait: K I I I) + done footer + 3 checks before the
-#    prompt + final footer = 11 captures.
+#    and submitted. A changed receipt confirms it; compaction-idle, settle, a second idle gate and
+#    only then the resume prompt are required.
+#    start: B I I I (4 checks) + footer-before = 5 captures. compact: receipt frame + five wait-idle
+#    captures + done footer + three prompt-gate captures + final footer = 11 captures.
 scenario happy "B I I I" "I K K I I I"
 run '%9' "$D/guidance.txt" "$D/prompt.txt" "$D/log"
 [[ $RC -eq 0 ]] || fail "happy path exit $RC"
@@ -115,25 +121,24 @@ cmp -s "$D/sent-start" "$D/expected-start.txt" || fail "/compact line was not se
 cmp -s "$D/sent-compact" "$D/expected-resume.txt" || fail "resume prompt was not sent exactly"
 cmp -s "$D/sent.1" <(printf '/compact ') || fail "the command prefix was not a separate first send"
 contains "$D/log" "pane idle, input empty; footer before: ctx 442k" "idle logged with the footer"
-contains "$D/log" "compaction spinner observed" "compaction start logged"
+contains "$D/log" "compaction receipt observed:" "compaction receipt logged"
 contains "$D/log" "compaction done; footer:" "compaction end logged"
 contains "$D/log" "resume prompt sent; footer:" "final footer logged"
 
-# A short-lived spinner above the prompt box is caught by the bounded active-spinner scan.
-scenario fast-spinner "I" "SPIN I I I"
-COMPACT_RESUME_START_TRIES=3 COMPACT_RESUME_DONE_TRIES=3 run '%9' "$D/guidance.txt" "$D/prompt.txt" "$D/log"
-[[ $RC -eq 0 ]] || fail "fast spinner exit $RC"
-contains "$D/log" "compaction spinner observed" "fast spinner confirmation logged"
-cmp -s "$D/sent-compact" "$D/expected-resume.txt" || fail "fast spinner: resume prompt not sent after completion"
+# A receipt appearing at the first otherwise-idle frame confirms an instant compaction.
+scenario instant-receipt "I" "I I I I"
+COMPACT_RESUME_START_TRIES=3 run '%9' "$D/guidance.txt" "$D/prompt.txt" "$D/log"
+[[ $RC -eq 0 ]] || fail "instant receipt exit $RC"
+cmp -s "$D/sent-compact" "$D/expected-resume.txt" || fail "instant receipt: resume prompt not sent"
 
-# The default confirmation window reaches a delayed spinner after more than 60 polls.
+# A busy compaction remains eligible for a receipt after the 60-poll confirmation window.
 delay_frames=
-for ((i = 0; i < 61; i++)); do delay_frames+="I "; done
-scenario delayed-default-spinner "I" "$delay_frames SPIN I I I I I"
-COMPACT_RESUME_START_POLL=0 run '%9' "$D/guidance.txt" "$D/prompt.txt" "$D/log"
-[[ $RC -eq 0 ]] || fail "default delayed spinner exit $RC"
-[[ $(calls | grep -c '^capture compact') -gt 60 ]] || fail "default spinner window stopped before poll 61"
-cmp -s "$D/sent-compact" "$D/expected-resume.txt" || fail "default delayed spinner: resume prompt not sent"
+for ((i = 0; i < 61; i++)); do delay_frames+="B "; done
+scenario delayed-receipt "I" "$delay_frames I I I I I"
+STUB_RECEIPT_AT=62 run '%9' "$D/guidance.txt" "$D/prompt.txt" "$D/log"
+[[ $RC -eq 0 ]] || fail "delayed receipt exit $RC"
+[[ $(calls | grep -c '^capture compact') -gt 60 ]] || fail "receipt wait stopped before poll 61"
+cmp -s "$D/sent-compact" "$D/expected-resume.txt" || fail "delayed receipt: resume prompt not sent"
 
 # 2. Idle blips (fewer than 3 in a row) do not count as idle, before the /compact or during it.
 scenario blips "I B I I B I I I" "K I I K I I K I I I"
@@ -151,10 +156,10 @@ contains "$D/log" "ERROR pane never idle" "never idle logged"
 [[ ! -e $D/sent.1 ]] || fail "never idle: something was sent"
 not_contains <(calls) "send-keys" "never idle: keys were sent"
 
-# 4. Compaction never finishes: the boxed K frame has only `Compacting` below the box, so it depends on the caller's
-#    BUSY_MARKERS addition; exit 4 (distinct from 3), /compact was sent, the resume prompt was not.
-scenario stuck "I" "K"
-COMPACT_RESUME_DONE_TRIES=5 run '%9' "$D/guidance.txt" "$D/prompt.txt" "$D/log"
+# 4. Compaction remains busy without a receipt through the completion bound: exit 4, /compact was
+#    sent, and the resume prompt was not.
+scenario stuck "I" "B"
+STUB_RECEIPT_AT=none COMPACT_RESUME_START_TRIES=3 COMPACT_RESUME_DONE_TRIES=5 run '%9' "$D/guidance.txt" "$D/prompt.txt" "$D/log"
 [[ $RC -eq 4 ]] || fail "never finishing exit $RC (want 4)"
 contains "$D/log" "ERROR compaction not finished" "never finishing logged"
 cmp -s "$D/sent-start" "$D/expected-start.txt" || fail "never finishing: /compact not sent"
@@ -162,23 +167,35 @@ cmp -s "$D/sent-start" "$D/expected-start.txt" || fail "never finishing: /compac
 [[ $(calls | grep -c '^send-keys') -eq 3 ]] || fail "never finishing: only the command, guidance and Enter expected"
 not_contains "$D/log" "compaction done" "never finishing: logged as done"
 
-# 5. Busy without a compaction spinner is not confirmation: exit 8 and send no resume prompt.
-scenario nospin "I" "I"
-COMPACT_RESUME_START_TRIES=3 run '%9' "$D/guidance.txt" "$D/prompt.txt" "$D/log"
-[[ $RC -eq 8 ]] || fail "no spinner exit $RC (want 8)"
-contains "$D/log" "ERROR no compaction spinner observed" "missing confirmation logged"
-[[ ! -e $D/sent.3 ]] || fail "no spinner: resume prompt was sent"
-scenario busy-no-spinner "I" "B"
-COMPACT_RESUME_START_TRIES=3 COMPACT_RESUME_DONE_TRIES=3 run '%9' "$D/guidance.txt" "$D/prompt.txt" "$D/log"
-[[ $RC -eq 8 ]] || fail "busy without compacting exit $RC (want 8)"
-[[ ! -e $D/sent.3 ]] || fail "busy without compacting: resume prompt was sent"
-# A transcript spinner-shaped line from an earlier turn and prose containing Compacting are not live evidence.
-scenario stale-spinner "I" "STALESPIN"
+# 5. An unchanged receipt is stale; an idle pane without a receipt and a pasted line that becomes
+#    idle are both unconfirmed and must not send the resume prompt.
+scenario unchanged-receipt "I" "I"
+mkdir -p "$D/receipts"
+printf '{"session_id":"old","timestamp":"old","write_id":1}\n' >"$D/receipts/%9.json"
+STUB_RECEIPT_AT=none COMPACT_RESUME_START_TRIES=3 run '%9' "$D/guidance.txt" "$D/prompt.txt" "$D/log"
+[[ $RC -eq 8 ]] || fail "unchanged receipt exit $RC (want 8)"
+contains "$D/log" "SessionStart(compact) hook may be missing" "unchanged receipt missing-hook guidance"
+contains "$D/log" "$D/receipts/%9.json" "receipt failure names its path"
+[[ ! -e $D/sent.3 ]] || fail "unchanged receipt: resume prompt was sent"
+scenario no-receipt-idle "I" "I"
+STUB_RECEIPT_AT=none COMPACT_RESUME_START_TRIES=3 run '%9' "$D/guidance.txt" "$D/prompt.txt" "$D/log"
+[[ $RC -eq 8 ]] || fail "idle without receipt exit $RC (want 8)"
+[[ ! -e $D/sent.3 ]] || fail "idle without receipt: resume prompt was sent"
+scenario pasted-without-receipt "I" "B I I I"
+STUB_RECEIPT_AT=none COMPACT_RESUME_START_TRIES=3 run '%9' "$D/guidance.txt" "$D/prompt.txt" "$D/log"
+[[ $RC -eq 8 ]] || fail "pasted line that becomes idle exit $RC (want 8)"
+[[ ! -e $D/sent.3 ]] || fail "pasted line without receipt: resume prompt was sent"
+scenario wrong-pane-receipt "I" "I"
+STUB_RECEIPT_AT=1 STUB_RECEIPT_PANE=%8 COMPACT_RESUME_START_TRIES=3 run '%9' "$D/guidance.txt" "$D/prompt.txt" "$D/log"
+[[ $RC -eq 8 ]] || fail "receipt for another pane exit $RC (want 8)"
+[[ ! -e $D/sent.3 ]] || fail "other pane receipt: resume prompt was sent"
+# Spinner text on screen without a receipt is not confirmation, even when it disappears into idle.
+scenario stale-spinner "I" "SPIN I I I"
 stale_frame=$D/frames/compact.001
 if [[ $(grep -cF "$RULE" "$stale_frame") -ne 2 ]] || ! grep -qF '❯' "$stale_frame"; then
   fail "stale spinner fixture must include a normal prompt box"
 fi
-COMPACT_RESUME_START_TRIES=3 COMPACT_RESUME_DONE_TRIES=3 run '%9' "$D/guidance.txt" "$D/prompt.txt" "$D/log"
+STUB_RECEIPT_AT=none COMPACT_RESUME_START_TRIES=3 run '%9' "$D/guidance.txt" "$D/prompt.txt" "$D/log"
 [[ $RC -eq 8 ]] || fail "stale spinner text exit $RC (want 8)"
 [[ ! -e $D/sent.3 ]] || fail "stale spinner text: resume prompt was sent"
 # Chunk boundaries are <=400 Unicode characters, valid in the C locale, preserve `;`, and retain text order.
@@ -218,10 +235,10 @@ printf '/compact éü§·' >"$D/expected-start.txt"
 COMPACT_RESUME_START_TRIES=3 run '%9' "$D/guidance.txt" "$D/prompt.txt" "$D/log"
 [[ $RC -eq 0 ]] || fail "Latin-1-range UTF-8 exit $RC"
 cmp -s "$D/sent-start" "$D/expected-start.txt" || fail "Latin-1-range characters were not byte-identical"
-# Guidance itself may mention Compacting; without a live spinner it remains unconfirmed.
+# Guidance itself may mention Compacting; without a receipt it remains unconfirmed.
 scenario guidance-mentions-spinner "I" "I"
 printf 'Compacting is only text in this guidance.\n' >"$D/guidance.txt"
-COMPACT_RESUME_START_TRIES=3 run '%9' "$D/guidance.txt" "$D/prompt.txt" "$D/log"
+STUB_RECEIPT_AT=none COMPACT_RESUME_START_TRIES=3 run '%9' "$D/guidance.txt" "$D/prompt.txt" "$D/log"
 [[ $RC -eq 8 && ! -e $D/sent.3 ]] || fail "guidance text falsely confirmed compaction"
 # An empty guidance file still submits the bare slash command.
 scenario empty-guidance "I" "K K I I I"
@@ -375,15 +392,6 @@ for kind in SPIN SPIN_EDGE; do
   not_contains <(calls) "send-keys" "L2 $kind: keys were sent while a compaction was running above the box"
   [[ $(grep -c 'WARN pane not ready: compaction spinner above the prompt box' "$D/log") -eq 1 ]] || fail "L2 $kind: spinner reason was not logged exactly once"
 done
-# A glyph-like transcript line without an ellipsis is not confirmation after submission.
-for kind in SPIN_PROSE PROSE; do
-  scenario "l2-$kind" "$kind" "I"
-  COMPACT_RESUME_START_TRIES=3 run '%9' "$D/guidance.txt" "$D/prompt.txt" "$D/log"
-  [[ $RC -eq 8 ]] || fail "L2 $kind: transcript prose must not confirm compaction (exit $RC)"
-  [[ ! -e $D/sent.3 ]] || fail "L2 $kind: unconfirmed compaction sent the resume prompt"
-  [[ $(calls | grep -c '^capture start') -eq 4 ]] || fail "L2 $kind: expected 3 idle checks + the footer"
-done
-
 # 6. Argument and precondition errors exit 2 and send nothing.
 scenario args "I" "I"
 run; [[ $RC -eq 2 ]] || fail "no arguments exit $RC"
