@@ -1227,6 +1227,18 @@ function jobParams(f, extra = {}) {
 	return { launcher: "codex-impl", worktree: f.jobWorktree, prompt_file: f.promptFile, run_name: "job-one", ...extra };
 }
 
+async function startJobResultWithin(promise) {
+	let timeout;
+	try {
+		return await Promise.race([
+			promise,
+			new Promise((_, reject) => { timeout = setTimeout(() => reject(new Error("start_job result did not settle within 60 seconds")), 60_000); }),
+		]);
+	} finally {
+		clearTimeout(timeout);
+	}
+}
+
 test("start_job refuses invalid launchers, paths, routes and launcher-specific parameters", async (t) => {
 	const f = fixture();
 	t.after(f.cleanup);
@@ -1278,7 +1290,7 @@ test("start_job launches codex through the PID namespace with a sanitized enviro
 		fs.writeFileSync(path.join(f.jobRuns, "job-one.lock"), `pid=42 started_epoch=1 launch_token=${options.env.CONTROLLER_RUN_TOKEN}\n`);
 		return child;
 	});
-	const result = await f.tools.get("start_job").execute("j1", jobParams(f, { route: "sol", effort: "xhigh", resume: "session-A" }));
+	const result = await startJobResultWithin(f.tools.get("start_job").execute("j1", jobParams(f, { route: "sol", effort: "xhigh", resume: "session-A" })));
 	assert.match(result.content[0].text, /started with codex-impl/);
 	assert.ok(result.content[0].text.includes(`'scripts/controller/job-check.sh' 'job-one' '${f.jobWorktree}' 'sol'`));
 	assert.equal(calls.length, 2, "the library path lookup precedes the detached launcher");
@@ -1302,9 +1314,9 @@ test("start_job launches pi directly and reports an early exit with this launch'
 		queueMicrotask(() => child.emit("close", 23, null));
 		return child;
 	});
-	const result = await f.tools.get("start_job").execute("j1", jobParams(f, {
+	const result = await startJobResultWithin(f.tools.get("start_job").execute("j1", jobParams(f, {
 		launcher: "pi-impl", run_name: "early", route: "deepseek-pi-github2", effort: "max", report: path.join(f.temp, "report.md"),
-	}));
+	})));
 	assert.match(result.content[0].text, /exited before its owner record changed \(exit 23\)/);
 	assert.match(result.content[0].text, /line 1\nline 2/);
 	assert.doesNotMatch(result.content[0].text, /old prior output/);
@@ -1323,9 +1335,9 @@ test("start_job launches pi-review directly with exactly its report and account 
 		fs.writeFileSync(path.join(f.jobRuns, "review-one.lock"), `pid=52 started_epoch=5 launch_token=${options.env.CONTROLLER_RUN_TOKEN}\n`);
 		return child;
 	});
-	const result = await f.tools.get("start_job").execute("j1", jobParams(f, {
+	const result = await startJobResultWithin(f.tools.get("start_job").execute("j1", jobParams(f, {
 		launcher: "pi-review", run_name: "review-one", report: path.join(f.temp, "review.md"), account: "volker", effort: "high",
-	}));
+	})));
 	assert.match(result.content[0].text, /started with pi-review/);
 	assert.ok(result.content[0].text.includes(`'scripts/controller/job-check.sh' 'review-one' '${f.jobWorktree}' 'deepseek-pi-volker' '${path.join(f.temp, "review.md")}'`));
 });
@@ -1340,7 +1352,7 @@ test("start_job returns after 30 seconds of preflight and never stops a detached
 	const timeout = f.findTimeout(30_000);
 	assert.ok(timeout, "the preflight response has a 30 second bound");
 	await f.fireTimeout(timeout);
-	const result = await pending;
+	const result = await startJobResultWithin(pending);
 	assert.ok(result.content[0].text.includes(`still preflighting; use 'scripts/controller/job-check.sh' 'job-one' '${f.jobWorktree}' 'luna'`));
 	assert.equal(launchChild.signals.length, 0);
 	f.events.get("session_shutdown")({});
@@ -1359,7 +1371,7 @@ test("start_job sends one end notice and excludes it from the saved original goa
 		fs.writeFileSync(path.join(f.jobRuns, "job-one.lock"), `pid=44 started_epoch=2 launch_token=${options.env.CONTROLLER_RUN_TOKEN}\n`);
 		fs.writeFileSync(path.join(f.jobRuns, "job-one.done"), "EXIT=0 OUTCOME=SUCCESS\n", { mode: 0o600 });
 	});
-	const result = await f.tools.get("start_job").execute("j1", jobParams(f));
+	const result = await startJobResultWithin(f.tools.get("start_job").execute("j1", jobParams(f)));
 	assert.match(result.content[0].text, /started with codex-impl/);
 	launchChild.emit("close", 0, null);
 	launchChild.emit("close", 0, null);
@@ -1386,7 +1398,7 @@ test("start_job binds same-name launches to their own owner token", async (t) =>
 	});
 	const first = f.tools.get("start_job").execute("j1", jobParams(f));
 	const second = f.tools.get("start_job").execute("j1", jobParams(f));
-	const [firstResult, secondResult] = await Promise.all([first, second]);
+	const [firstResult, secondResult] = await startJobResultWithin(Promise.all([first, second]));
 	assert.match(firstResult.content[0].text, /started with codex-impl/);
 	assert.match(secondResult.content[0].text, /exited before its owner record changed \(exit 2\)/);
 	assert.notEqual(launchChildren[0].token, launchChildren[1].token);
@@ -1405,7 +1417,7 @@ test("start_job reports a preflighted launch that exits without its owner record
 	const pending = f.tools.get("start_job").execute("j1", jobParams(f));
 	await f.flushPromises();
 	await f.fireTimeout(f.findTimeout(30_000));
-	assert.match((await pending).content[0].text, /still preflighting/);
+	assert.match((await startJobResultWithin(pending)).content[0].text, /still preflighting/);
 	launchChild.emit("close", 7, null);
 	const notices = f.calls.filter(({ message }) => message.customType === "pi-ctl-job");
 	assert.equal(notices.length, 1);
