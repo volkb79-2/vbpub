@@ -4168,10 +4168,12 @@ def _print_run_summary(
     ):
         configured_budget = lane.judge.canary.budget_per_attempt
         lane_budget = lane.budget
+        per_attempt = configured_budget or "none"
+        lane_deadline = "none (unbounded)" if lane_budget == "unbounded" else lane_budget
         print(
-            "  R3 canary halves: unwatched; "
-            f"budget_per_attempt={configured_budget} and lane budget={lane_budget} "
-            "remain binding",
+            "  R3 canary halves (when attempted): unwatched; "
+            f"per-attempt cap: {per_attempt}; lane deadline: {lane_deadline}; "
+            "configured finite caps remain binding",
             file=out,
         )
     # (B146) A post-command refusal can replace the direct R0 claim with
