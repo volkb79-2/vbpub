@@ -332,8 +332,9 @@ product-code defect was identified. The probe evidence is recorded in
 **Open, parked (main controller, 2026-11-28):** the 24 batch-3 mutation ids stay open until the
 volker route is available again or a cheaper route exists. A further attempt that day resolved no
 id: one probe run over all 24 reported every one as surviving the transaction survivor tests of
-that time. Its later, unprobed tests (one fails on a wrong call signature) are on the local branch
-`core-cmru-ki227-b3b-wip`. No id has a proven obstacle, so none is filed as unkillable.
+that time (run record `/home/vscode/core-runs/cmru-r2-bf3b-r2.jsonl`). Its later, unprobed tests
+(one fails on a wrong call signature) are on the local branch `core-cmru-ki227-b3b-wip`. No id has
+a proven obstacle, so none is filed as unkillable.
 
 Source window 3467–3590 was not reached in batch 3: no witness or equivalence proof was attempted for
 `7a35e32b950c`, `0b184cf5f680`, `e69a3326b517`, `7a4e19814420`, `661d77d8a79d`, `f9a0fdd5dad2`,
