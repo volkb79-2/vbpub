@@ -6,8 +6,9 @@ set -uo pipefail
 # a check reads or writes. Relying on the caller ("run it with env -u") moved the
 # same defect into the operator's shell, where it read as a product bug.
 unset CONTROLLER_HOME CONTROLLER_RUNS_DIR CONTROLLER_LOGS_DIR CONTROLLER_REPO CONTROLLER_HOSTS_FILE
-# PI_CTL_CORE_MODULE is a mutation-test seam, never suite-wide configuration.
-unset PI_CTL_CORE_MODULE
+# PI_CTL_CORE_MODULE and PI_CTL_BRIDGE_MODULE are mutation-test seams, never
+# suite-wide configuration.
+unset PI_CTL_CORE_MODULE PI_CTL_BRIDGE_MODULE
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 REPO_ROOT=$(cd -- "$SCRIPT_DIR/../../.." && pwd -P)
 command -v flock >/dev/null 2>&1 || {
@@ -24,6 +25,7 @@ files=(
   "$SCRIPT_DIR/../pi-impl.sh"
   "$SCRIPT_DIR/../pi-ctl-launch.sh"
   "$SCRIPT_DIR/../pi-ctl-pane.sh"
+  "$SCRIPT_DIR/../pi-ctl-send.sh"
   "$SCRIPT_DIR/../pi-pidns-bash-worker.sh"
   "$SCRIPT_DIR/../codex-review.sh"
   "$SCRIPT_DIR/../pi-review.sh"
@@ -57,6 +59,7 @@ files=(
   "$SCRIPT_DIR/test-wrappers.sh"
   "$SCRIPT_DIR/test-pi-impl.sh"
   "$SCRIPT_DIR/test-pi-ctl.sh"
+  "$SCRIPT_DIR/test-pi-ctl-send.sh"
   "$SCRIPT_DIR/test-pi-pidns.sh"
   "$SCRIPT_DIR/test-pi-review.sh"
   "$SCRIPT_DIR/test-hardening-tools.sh"
@@ -97,6 +100,7 @@ bash "$SCRIPT_DIR/test-job-check.sh" || exit $?
 bash "$SCRIPT_DIR/test-wrappers.sh" || exit $?
 bash "$SCRIPT_DIR/test-pi-impl.sh" || exit $?
 bash "$SCRIPT_DIR/test-pi-ctl.sh" || exit $?
+bash "$SCRIPT_DIR/test-pi-ctl-send.sh" || exit $?
 bash "$SCRIPT_DIR/test-pi-pidns.sh" || exit $?
 bash "$SCRIPT_DIR/test-pi-review.sh" || exit $?
 bash "$SCRIPT_DIR/test-hardening-tools.sh" || exit $?

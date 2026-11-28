@@ -26,7 +26,7 @@ export const CONFIG_DEFAULTS = Object.freeze({
 	monitorMaxQueuedLines: 1000,
 	monitorFlushMs: 1000,
 	deliveryMaxAttempts: 3,
-	deliveryBackoffMs: Object.freeze([1000, 5000, 30_000]),
+	deliveryRetryBackoffMs: 1000,
 	monitorReadyTimeoutMs: 10_000,
 	startupTimeoutSeconds: 30,
 	compactAt: 150_000,
@@ -47,7 +47,7 @@ function requireName(value, label) {
 	return value;
 }
 
-function envInteger(env, key, defaultValue, { min = 1, max = Number.MAX_SAFE_INTEGER } = {}) {
+export function envInteger(env, key, defaultValue, { min = 1, max = Number.MAX_SAFE_INTEGER } = {}) {
 	const raw = env[key];
 	if (raw === undefined || raw === "") return defaultValue;
 	if (!/^[0-9]+$/.test(raw)) throw new Error(`${key} must be an integer from ${min} to ${max}`);
@@ -339,10 +339,17 @@ export function createController(pi, injected = {}, overrides = {}) {
 	let pollTimer = null;
 	let stopped = false;
 	let initialized = false;
+	// Why this extension instance's session runtime started. Pi's "reload" keeps
+	// the live agent (and the agent-level follow-up queue that holds
+	// pi.sendMessage messages); startup, resume, new, and fork build a fresh
+	// agent, which is the only proof that a queued copy is gone.
+	let startReason = null;
 	let compactionAttempt = null;
 	let alertRetryTimer = null;
 	let pollingInbox = false;
 	let currentContext = null;
+	let primeContextPending = false;
+	let cachedOriginalGoal = null;
 	const wakeupTimers = new Map();
 	const monitors = new Map();
 
@@ -520,14 +527,82 @@ export function createController(pi, injected = {}, overrides = {}) {
 	function readClaimState(claimPath) {
 		const state = readJsonFile(fs, claimStatePath(claimPath), {});
 		if (!state || typeof state !== "object" || Array.isArray(state)) throw new Error("invalid inbox claim state");
+		const attempts = Number.isSafeInteger(state.attempts) && state.attempts >= 0 ? state.attempts : 0;
 		return {
 			id: typeof state.id === "string" ? state.id : null,
-			attempts: Number.isSafeInteger(state.attempts) && state.attempts >= 0 ? state.attempts : 0,
+			attempts,
 			nextAt: Number.isSafeInteger(state.nextAt) && state.nextAt >= 0 ? state.nextAt : 0,
 			stalled: state.stalled === true,
 			reported: state.reported === true,
 			reportAt: Number.isSafeInteger(state.reportAt) && state.reportAt >= 0 ? state.reportAt : 0,
+			unconfirmedSince: Number.isSafeInteger(state.unconfirmedSince) && state.unconfirmedSince >= 0 ? state.unconfirmedSince : 0,
+			unconfirmed: state.unconfirmed === true,
+			unconfirmedNoticeSent: state.unconfirmedNoticeSent === true,
+			queued: queuedFromRecord(state, attempts),
 		};
+	}
+
+	// `queued` means: pi accepted this id and its persisted entry has not been seen
+	// yet. A state file written before this field existed carries attempts without
+	// that fact, so a non-stalled legacy record reads as queued -- the safe reading,
+	// because waiting is a delay whereas re-injecting is a visible duplicate.
+	function queuedFromRecord(state, attempts) {
+		if (typeof state?.queued === "boolean") return state.queued;
+		return attempts > 0 && state?.stalled !== true;
+	}
+
+	// Every session runtime that is not a reload builds a fresh agent (pi's
+	// teardownCurrent -> createRuntime on resume/new/fork, and a new process on
+	// startup), so the accepted-but-unpersisted copy is provably gone and each id
+	// is delivered once more. A reload keeps the live agent and that queue.
+	function freshSessionRuntime() {
+		return startReason !== null && startReason !== "reload";
+	}
+
+	// "wait" while pi holds an accepted copy that was not persisted yet: the claim
+	// is left exactly as it is -- no attempt counted and nothing reported, because
+	// a duplicate would cost the model a turn. Only resetQueuedForFreshSession()
+	// makes it deliverable again, and only a fresh session runtime does that.
+	function acceptedCopyPending(record) {
+		return record?.queued === true;
+	}
+
+	// Clear the queued flag on every durable record so the fresh agent gets one
+	// delivery of each id again. A record whose id pi already persisted is
+	// removed by the normal confirmation path, not here. `attempts` and `nextAt`
+	// reset too: a copy the previous runtime accepted and then lost is not a
+	// failed delivery of this one, and the fresh agent must not inherit its spent
+	// budget or its retry delay. `attempts` counts refusals only.
+	function resetQueuedForFreshSession() {
+		let changed = false;
+		for (const file of regularMessageFiles(dirs.processing)) {
+			const claimPath = path.join(dirs.processing, file);
+			let state;
+			try {
+				state = readJsonFile(fs, claimStatePath(claimPath), null);
+			} catch {
+				continue;
+			}
+			if (!state || typeof state !== "object" || Array.isArray(state)) continue;
+			const attempts = Number.isSafeInteger(state.attempts) && state.attempts >= 0 ? state.attempts : 0;
+			// Same reading as readClaimState(), so a record written before the `queued`
+			// field existed is reset on a fresh runtime too instead of waiting forever.
+			if (!queuedFromRecord(state, attempts)) continue;
+			try {
+				writeClaimState(claimPath, { ...state, queued: false, attempts: 0, nextAt: 0 });
+				changed = true;
+			} catch {
+				// A claim whose state cannot be reset keeps waiting for confirmation.
+			}
+		}
+		const pending = readWakeups();
+		if (pending.some((entry) => entry.queued === true)) {
+			// nextAt = 0 with status "claimed" makes the fresh agent re-deliver at once
+			// instead of waiting out the previous runtime's due time again.
+			writeWakeups(pending.map((entry) => entry.queued === true ? { ...entry, queued: false, attempts: 0, nextAt: 0 } : entry));
+			changed = true;
+		}
+		if (changed) log("delivery_queue_reset", { reason: startReason });
 	}
 
 	function writeClaimState(claimPath, state) {
@@ -558,6 +633,59 @@ export function createController(pi, injected = {}, overrides = {}) {
 		} catch {
 			return ["[pending inbox claims unreadable; report uncertainty]"];
 		}
+	}
+
+	function notifyUnconfirmedInboxClaims(ctx) {
+		const entries = sessionEntries(ctx);
+		const unconfirmed = pendingInboxClaimIds().filter((id) => !hasPiConfirmation(entries, "pi-ctl-inbox", id));
+		const count = unconfirmed.length;
+		if (count === 0) return;
+		const content = `${count} inbox message(s) claimed but not confirmed; restart or ask the sender to resend`;
+		log("inbox_claims_unconfirmed", { count });
+		// This is context for the next turn, not a request to start one. Its own
+		// custom type is excluded from the inbox-claim scan, so it cannot recurse.
+		pi.sendMessage({ customType: "pi-ctl-claim-notice", content, display: true, details: { piCtlId: makeId() } }, { triggerTurn: false, deliverAs: "followUp" });
+	}
+
+	function contextIsIdleWithoutPending(ctx) {
+		try {
+			return typeof ctx?.isIdle === "function" && ctx.isIdle() === true &&
+				typeof ctx?.hasPendingMessages === "function" && ctx.hasPendingMessages() === false;
+		} catch {
+			return false;
+		}
+	}
+
+	function observeAcceptedUnconfirmed(kind, id, state, persist, report) {
+		if (state.unconfirmed) {
+			report();
+			return;
+		}
+		const time = now();
+		if (state.unconfirmedSince === 0) {
+			state.unconfirmedSince = time;
+			persist();
+			return;
+		}
+		if (time - state.unconfirmedSince < 30_000) return;
+		state.unconfirmed = true;
+		persist();
+		log(`${kind}_unconfirmed`, { id });
+		if (!state.unconfirmedNoticeSent) {
+			state.unconfirmedNoticeSent = true;
+			persist();
+			try {
+				pi.sendMessage({
+					customType: "pi-ctl-claim-notice",
+					content: "1 inbox message(s) claimed but not confirmed; restart or ask the sender to resend",
+					display: true,
+					details: { piCtlId: `claim-notice-${name}-${createHash("sha256").update(id).digest("hex").slice(0, 24)}` },
+				}, { triggerTurn: false, deliverAs: "followUp" });
+			} catch {
+				log(`${kind}_notice_error`, { id });
+			}
+		}
+		report();
 	}
 
 	function hasPiConfirmation(entries, customType, id) {
@@ -608,7 +736,10 @@ export function createController(pi, injected = {}, overrides = {}) {
 		const idDigest = createHash("sha256").update(envelope.id).digest("hex").slice(0, 32);
 		const messageId = `delivery-stalled-${name}-${idDigest}`;
 		try {
-			const result = writePeerMessage("main", `Delivery of peer message ${envelope.id} from ${envelope.from} is still unconfirmed after ${state.attempts} attempts. Its claim remains on disk; inspect the pi session and re-arm delivery if needed.`, { messageId });
+			const detail = state.unconfirmed
+				? `Delivery of peer message ${envelope.id} from ${envelope.from} was accepted by pi but was not persisted in the session while idle. Its claim remains on disk for a fresh runtime.`
+				: `Delivery of peer message ${envelope.id} from ${envelope.from} is still unconfirmed after ${state.attempts} attempts. Its claim remains on disk; inspect the pi session and re-arm delivery if needed.`;
+			const result = writePeerMessage("main", detail, { messageId });
 			if (result.ok) state.reported = true;
 			else state.reportAt = now() + 60_000;
 			writeClaimState(claimPath, state);
@@ -673,6 +804,17 @@ export function createController(pi, injected = {}, overrides = {}) {
 			reportClaimStalled(envelope, state, claimPath);
 			return false;
 		}
+		if (acceptedCopyPending(state)) {
+			if (contextIsIdleWithoutPending(ctx)) {
+				observeAcceptedUnconfirmed("inbox_claim", envelope.id, state,
+					() => writeClaimState(claimPath, state),
+					() => reportClaimStalled(envelope, state, claimPath));
+			}
+			// pi holds this id in the live agent's follow-up queue. Re-injecting would
+			// duplicate a message the model may already have seen; the claim stays on
+			// disk and a fresh session runtime delivers it once more.
+			return false;
+		}
 		if (state.nextAt > time) return false;
 		if (state.attempts >= CONFIG_DEFAULTS.deliveryMaxAttempts) {
 			state.stalled = true;
@@ -692,15 +834,23 @@ export function createController(pi, injected = {}, overrides = {}) {
 		const cappedBody = body.subarray(0, config.maxMessageBytes).toString("utf8");
 		const truncated = read.truncated || body.length > config.maxMessageBytes;
 		const content = `${PEER_MESSAGE_HEADER(envelope.from, envelope.id)}${cappedBody}${truncated ? `\n[Message truncated at ${config.maxMessageBytes} bytes.]` : ""}`;
-		state.attempts++;
-		state.nextAt = time + CONFIG_DEFAULTS.deliveryBackoffMs[Math.min(state.attempts - 1, CONFIG_DEFAULTS.deliveryBackoffMs.length - 1)];
+		// Recorded BEFORE the call: pi.sendMessage() returns void, so a crash or a
+		// lost queue entry between the call and this write must read as "queued",
+		// never as "not delivered" -- a pending claim is delayed, a duplicate is not.
+		state.queued = true;
+		state.nextAt = time + CONFIG_DEFAULTS.deliveryRetryBackoffMs;
 		writeClaimState(claimPath, state);
 		try {
-			// pi.sendMessage() returns void. The claim remains until message_end has
-			// been followed by a persisted custom_message entry with this same id.
 			inject("pi-ctl-inbox", envelope.id, content);
 		} catch {
+			// Only a refusal is a failed attempt: pi did not accept this message, so
+			// the claim keeps its id and the bounded report can describe a real failure.
+			state.queued = false;
+			state.attempts++;
+			state.nextAt = time + CONFIG_DEFAULTS.deliveryRetryBackoffMs;
+			writeClaimState(claimPath, state);
 			log("inbox_inject_error", { from: envelope.from });
+			return false;
 		}
 		log("inbox_delivery_attempt", { from: envelope.from, messageId: envelope.id, attempts: state.attempts, truncated });
 		return false;
@@ -758,14 +908,21 @@ export function createController(pi, injected = {}, overrides = {}) {
 			typeof entry.prompt !== "string" || !Number.isSafeInteger(entry.dueAt))) {
 			throw new Error("invalid wake-up state");
 		}
-		return value.map((entry) => ({
-			...entry,
-			attempts: Number.isSafeInteger(entry.attempts) && entry.attempts >= 0 ? entry.attempts : 0,
-			nextAt: Number.isSafeInteger(entry.nextAt) && entry.nextAt >= 0 ? entry.nextAt : entry.dueAt,
-			stalled: entry.stalled === true,
-			reported: entry.reported === true,
-			reportAt: Number.isSafeInteger(entry.reportAt) && entry.reportAt >= 0 ? entry.reportAt : 0,
-		}));
+		return value.map((entry) => {
+			const attempts = Number.isSafeInteger(entry.attempts) && entry.attempts >= 0 ? entry.attempts : 0;
+			return {
+				...entry,
+				attempts,
+				nextAt: Number.isSafeInteger(entry.nextAt) && entry.nextAt >= 0 ? entry.nextAt : entry.dueAt,
+				stalled: entry.stalled === true,
+				queued: queuedFromRecord(entry, attempts),
+				reported: entry.reported === true,
+				reportAt: Number.isSafeInteger(entry.reportAt) && entry.reportAt >= 0 ? entry.reportAt : 0,
+				unconfirmedSince: Number.isSafeInteger(entry.unconfirmedSince) && entry.unconfirmedSince >= 0 ? entry.unconfirmedSince : 0,
+				unconfirmed: entry.unconfirmed === true,
+				unconfirmedNoticeSent: entry.unconfirmedNoticeSent === true,
+			};
+		});
 	}
 
 	function writeWakeups(entries) {
@@ -775,7 +932,10 @@ export function createController(pi, injected = {}, overrides = {}) {
 	function reportWakeupStalled(entry) {
 		if (entry.reported || now() < entry.reportAt) return;
 		try {
-			const result = writePeerMessage("main", `Wake-up ${entry.id} for controller ${name} remains unconfirmed after ${entry.attempts} delivery attempts. The wake-up stays persisted; inspect the session and re-arm it if needed.`, { messageId: `wakeup-stalled-${name}-${entry.id}` });
+			const detail = entry.unconfirmed
+				? `Wake-up ${entry.id} for controller ${name} was accepted by pi but was not persisted in the session while idle. It stays persisted for a fresh runtime.`
+				: `Wake-up ${entry.id} for controller ${name} remains unconfirmed after ${entry.attempts} delivery attempts. The wake-up stays persisted; inspect the session and re-arm it if needed.`;
+			const result = writePeerMessage("main", detail, { messageId: `wakeup-stalled-${name}-${entry.id}` });
 			if (result.ok) entry.reported = true;
 			else entry.reportAt = now() + 60_000;
 			writeWakeups(readWakeups().map((item) => item.id === entry.id ? entry : item));
@@ -803,6 +963,16 @@ export function createController(pi, injected = {}, overrides = {}) {
 			reportWakeupStalled(entry);
 			return false;
 		}
+		if (entry.queued === true) {
+			if (contextIsIdleWithoutPending(ctx)) {
+				observeAcceptedUnconfirmed("wakeup", entry.id, entry,
+					() => writeWakeups(readWakeups().map((item) => item.id === entry.id ? entry : item)),
+					() => reportWakeupStalled(entry));
+			}
+			// pi accepted this wake-up and has not persisted it yet. A second
+			// injection would duplicate it; a fresh session runtime re-delivers it.
+			return false;
+		}
 		if (entry.attempts >= CONFIG_DEFAULTS.deliveryMaxAttempts) {
 			entry.stalled = true;
 			entry.reportAt = now();
@@ -812,21 +982,31 @@ export function createController(pi, injected = {}, overrides = {}) {
 			reportWakeupStalled(entry);
 			return false;
 		}
-		entry.attempts++;
-		entry.nextAt = now() + CONFIG_DEFAULTS.deliveryBackoffMs[Math.min(entry.attempts - 1, CONFIG_DEFAULTS.deliveryBackoffMs.length - 1)];
+		// nextAt covers only a REFUSED send; an accepted copy is blocked by `queued`.
+		entry.queued = true;
 		entry.status = "claimed";
 		entries[index] = entry;
 		writeWakeups(entries);
 		try {
 			inject("pi-ctl-wakeup", entry.id, `[Wake-up ${entry.id}] ${entry.prompt}`);
 		} catch {
+			// Only a refusal is a failed attempt; an accepted copy is blocked by `queued`.
+			entry.queued = false;
+			entry.attempts++;
+			entry.nextAt = now() + CONFIG_DEFAULTS.deliveryRetryBackoffMs;
+			entries[index] = entry;
+			writeWakeups(entries);
 			log("wakeup_inject_error", { id: entry.id });
+			// Only a refusal needs its own timer: no agent event will happen, and the
+			// record must come back by itself. An accepted copy needs none -- its
+			// confirmation arrives with the run that consumes it.
+			const handle = timers.setTimeout(() => {
+				void fireWakeup(entry.id).catch(() => log("wakeup_error", { id: entry.id }));
+			}, entry.nextAt - now());
+			wakeupTimers.set(entry.id, handle);
+			return false;
 		}
 		log("wakeup_delivery_attempt", { id: entry.id, attempts: entry.attempts });
-		const handle = timers.setTimeout(() => {
-			void fireWakeup(entry.id).catch(() => log("wakeup_error", { id: entry.id }));
-		}, entry.nextAt - now());
-		wakeupTimers.set(entry.id, handle);
 		return false;
 	}
 
@@ -923,8 +1103,12 @@ export function createController(pi, injected = {}, overrides = {}) {
 
 	function monitorEnv() {
 		const childEnv = { ...env };
-		delete childEnv.OPENDESIGN_API_KEY_VOLKER;
-		delete childEnv.OPENDESIGN_API_KEY_GITHUB2;
+		// The pidns wrapper strips every OPENDESIGN_API_KEY* name for the shell it
+		// starts, which is the authoritative place; this keeps the monitor's OWN
+		// process image clean as well, including an account name added later.
+		for (const key of Object.keys(childEnv)) {
+			if (key.startsWith("OPENDESIGN_API_KEY")) delete childEnv[key];
+		}
 		delete childEnv.PI_CTL_LOCK_FD;
 		return childEnv;
 	}
@@ -1278,12 +1462,22 @@ export function createController(pi, injected = {}, overrides = {}) {
 		atomicWrite(fs, path, compactionFile, `${JSON.stringify(state)}\n`);
 	}
 
+	function savedOriginalGoal(ctx) {
+		return sessionEntries(ctx).find((entry) => entry?.type === "custom" && entry.customType === "pi-ctl-original-goal" && typeof entry.data?.text === "string")?.data.text ?? null;
+	}
+
 	function originalGoal(ctx) {
+		if (typeof cachedOriginalGoal === "string") return cachedOriginalGoal;
 		let entries = [];
 		try {
 			entries = ctx?.sessionManager?.getEntries?.() ?? [];
 		} catch {
 			return "[Original goal unavailable from the session API.]";
+		}
+		const saved = savedOriginalGoal(ctx);
+		if (saved !== null) {
+			cachedOriginalGoal = saved;
+			return cachedOriginalGoal;
 		}
 		const first = entries.find((entry) => entry?.type === "message" && entry.message?.role === "user");
 		if (!first) return "[No original user goal was available from the session API.]";
@@ -1293,6 +1487,45 @@ export function createController(pi, injected = {}, overrides = {}) {
 			return content.map((part) => part?.type === "text" ? part.text : part?.type === "image" ? "[image content in original user message]" : "").join("");
 		}
 		return "[Original goal had a non-text content form.]";
+	}
+
+	function promptContentText(content) {
+		if (typeof content === "string") return content;
+		if (Array.isArray(content)) return content.map((part) => part?.type === "text" ? part.text : part?.type === "image" ? "[image content in original prompt]" : "").join("");
+		return "[Original goal had a non-text content form.]";
+	}
+
+	function hasSavedInitialContext(ctx) {
+		return sessionEntries(ctx).some((entry) => entry?.type === "custom_message" && entry.customType === "pi-ctl-prime-goal");
+	}
+
+	function captureOriginalGoal(event, ctx) {
+		if (!primeContextPending || savedOriginalGoal(ctx) !== null) return;
+		const existingGoal = originalGoal(ctx);
+		let text;
+		if (event?.messageType === "user" && typeof event.prompt === "string") {
+			text = event.prompt;
+			if (Array.isArray(event.images) && event.images.length > 0) text += "\n[image content in original prompt]";
+		} else if (event?.messageType === "custom" && event.message?.customType !== "pi-ctl-prime-goal") {
+			text = promptContentText(event.message?.content);
+		} else {
+			if (existingGoal === "[No original user goal was available from the session API.]") return;
+			text = existingGoal;
+		}
+		if (existingGoal !== "[No original user goal was available from the session API.]") text = existingGoal;
+		cachedOriginalGoal = text;
+		pi.appendEntry?.("pi-ctl-original-goal", { text });
+	}
+
+	function initialContextBlock(ctx) {
+		const prime = primeRulesExcerpt();
+		return [
+			"PI CONTROLLER ROLE PRIME AND ORIGINAL GOAL (included once for this session):",
+			"ROLE PRIME (bounded excerpt):",
+			prime.text,
+			"ORIGINAL GOAL (first prompt, verbatim):",
+			originalGoal(ctx),
+		].join("\n\n");
 	}
 
 	function primeRulesExcerpt() {
@@ -1593,16 +1826,25 @@ export function createController(pi, injected = {}, overrides = {}) {
 	};
 	pi.registerTool(stopMonitorTool);
 
-	pi.on("session_start", async (_event, ctx) => {
+	pi.on("session_start", async (event, ctx) => {
 		stopped = false;
 		currentContext = ctx;
-		log("start", { name, pid });
+		startReason = typeof event?.reason === "string" ? event.reason : null;
+		cachedOriginalGoal = null;
+		primeContextPending = !hasSavedInitialContext(ctx);
+		log("start", { name, pid, reason: startReason });
 		if (!initialized) {
 			await recoverMonitors();
 			if (stopped) return;
 			initialized = true;
 		}
 		if (stopped) return;
+		// A fresh session runtime is exactly the proof that pi dropped the accepted
+		// copy: it is the only observable fact that the old agent-level queue is
+		// gone. Pi's "reload" keeps that queue, so it re-delivers nothing.
+		if (freshSessionRuntime()) {
+			try { resetQueuedForFreshSession(); } catch { log("delivery_queue_reset_error", { reason: startReason }); }
+		}
 		if (readCompactionState().alertPending) attemptCompactionAlert();
 		await pollInbox(ctx);
 		if (stopped) return;
@@ -1614,7 +1856,16 @@ export function createController(pi, injected = {}, overrides = {}) {
 			void pollInbox(currentContext).catch(() => {
 				if (!stopped) log("inbox_poll_error", { reason: "poll failed" });
 			});
+			void armWakeups(currentContext).catch(() => {
+				if (!stopped) log("wakeup_reconcile_error", {});
+			});
 		}, config.pollMs);
+	});
+	pi.on("before_agent_start", (event, ctx) => {
+		captureOriginalGoal(event, ctx);
+		if (!primeContextPending || hasSavedInitialContext(ctx)) return;
+		primeContextPending = false;
+		return { message: { customType: "pi-ctl-prime-goal", content: initialContextBlock(ctx), display: false } };
 	});
 	pi.on("turn_end", (_event, ctx) => {
 		if (stopped) return;
@@ -1635,6 +1886,7 @@ export function createController(pi, injected = {}, overrides = {}) {
 	pi.on("agent_end", (_event, ctx) => {
 		if (stopped) return;
 		currentContext = ctx;
+		try { notifyUnconfirmedInboxClaims(ctx); } catch { log("inbox_claim_notice_error", {}); }
 		void pollInbox(ctx).catch(() => { if (!stopped) log("inbox_poll_error", { reason: "agent reconciliation failed" }); });
 		void armWakeups(ctx).catch(() => { if (!stopped) log("wakeup_reconcile_error", {}); });
 		triggerSelfCompaction(ctx);

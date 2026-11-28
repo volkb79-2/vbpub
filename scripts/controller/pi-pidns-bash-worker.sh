@@ -30,6 +30,19 @@ tmux_socket_dir=$(/usr/bin/realpath -m -- "$tmux_tmpdir/tmux-$UID") \
 docker_host=${DOCKER_HOST-}
 unset TMUX TMUX_PANE DOCKER_HOST
 
+# Every command this worker starts -- pi's model-facing bash tool, its `!`/`!!`
+# user commands and every monitor started by the extension -- runs behind this
+# one shell backend, so this is the single place that keeps the model away from
+# the route's API keys. pi itself keeps its key: it reads it at startup, and the
+# key arrives here only as inherited environment. All OPENDESIGN_API_KEY* names
+# are removed, not the two the launcher happens to know about, so a new account
+# name cannot silently stay exported.
+while IFS= read -r variable; do
+  case $variable in
+    OPENDESIGN_API_KEY*) unset -v "$variable" ;;
+  esac
+done < <(compgen -v)
+
 declare -a bwrap_args=(
   --unshare-user
   --unshare-pid
