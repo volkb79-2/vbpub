@@ -500,11 +500,15 @@ with `ERROR/BAD_LANE_CONFIG` on any other lane. `src/assay/cli.py:2394`,
   `src/assay/liveness.py:2709`, `src/assay/liveness.py:2717`,
   `src/assay/liveness.py:2755`, `src/assay/liveness.py:2774`
 - **LIV-120** The per-test CPU bound applies only to one in-flight pytest test,
-  outside xdist and without overlapping test starts. `test_start` identifies
-  the in-flight test; its first readable CPU sample initializes the measured
-  window. The window covers setup, call and teardown, and closes only at the
-  matching `test_finish`; each start, including a rerun of the same node id,
-  opens a fresh window. The bound is
+  outside xdist and without overlapping test starts. A `test_start`
+  identifies the in-flight test. At the poll that observes it, the monitor
+  initializes the per-test window from the latest available process-tree
+  CPU-series value, if any; if none exists, a later readable value
+  initializes it. The measured window may omit CPU before its initial value
+  and, when that value predates `test_start`, include earlier CPU. It stays
+  open across setup, call and teardown until the matching `test_finish`; each
+  start, including a rerun of the same node id, opens a fresh window. The
+  bound is
   `max(10 x baseline setup+call+teardown seconds, 60 CPU seconds)`. A node id
   absent from the baseline has no per-test bound;
   `session_finish` closes any open window. `src/assay/liveness.py:911`,
@@ -512,7 +516,8 @@ with `ERROR/BAD_LANE_CONFIG` on any other lane. `src/assay/cli.py:2394`,
   `src/assay/liveness.py:1650`,
   `src/assay/liveness.py:1714`, `src/assay/liveness.py:1724`,
   `src/assay/liveness.py:1725`, `src/assay/liveness.py:1730`,
-  `src/assay/liveness.py:2670`, `src/assay/liveness.py:2694`,
+  `src/assay/liveness.py:2660`, `src/assay/liveness.py:2670`,
+  `src/assay/liveness.py:2694`,
   `src/assay/liveness.py:2783`
 - **LIV-130** When liveness is injected and the baseline produced plugin
   events, the progress watch is armed. While the candidate CPU has been read
@@ -539,11 +544,15 @@ with `ERROR/BAD_LANE_CONFIG` on any other lane. `src/assay/cli.py:2394`,
   event or first `session_finish` re-dates its window first. Before any
   comparable resource interval, the window uses monotonic wall time; afterward
   it uses pressure-adjusted eligible time. A lane deadline or earlier stop can
-  end the attempt first. The wall stop is unclassified
-  `BUDGET_EXCEEDED/LANE_TIMEOUT`, stores no candidate bucket, and the candidate
-  is retried on resume; it never produces `hung`. `src/assay/liveness.py:738`,
+  end the attempt first. The wall stop refuses the lane as unclassified
+  `BUDGET_EXCEEDED/LANE_TIMEOUT`, unless process-tree cleanup cannot be proven
+  or an untargeted candidate has a cgroup resource-limit hit; either refuses
+  it as `ERROR/EXEC_FAILED` instead. These fatal paths store no candidate
+  bucket, and the candidate is retried on resume. The wall stop never produces
+  `hung`. `src/assay/liveness.py:738`,
   `src/assay/liveness.py:2698`, `src/assay/liveness.py:2900`,
-  `src/assay/liveness.py:2929`, `src/assay/mutation.py:4204`,
+  `src/assay/liveness.py:2929`, `src/assay/mutation.py:4164`,
+  `src/assay/mutation.py:4195`, `src/assay/mutation.py:4204`,
   `src/assay/mutation.py:4220`, `src/assay/mutation.py:5131`
 - **LIV-150** Every liveness stop currently classified as a hang is `hung`,
   never `killed`. CPU-bound and per-test stops carry their CPU evidence;
