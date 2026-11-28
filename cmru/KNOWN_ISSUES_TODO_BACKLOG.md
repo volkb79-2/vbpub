@@ -264,14 +264,15 @@ These original behaviors need a product decision and safe implementation before 
 assert them as desirable. No test blesses directory recreation; no product source was changed.
 
 
-### KI-226 — batch 3 transaction R2 equivalence proofs
+### KI-226 — batch 3 transaction R2 equivalence proof
 
-**Status:** OPEN; narrowly equivalent mutation outcomes, pending the complete batch 3 probe.
+**Status:** OPEN; one narrowly equivalent mutation outcome, pending the complete batch 3 probe.
 
 The new `test_noreplace_collision_returns_false_and_preserves_both_records` exercises the
-Linux `renameat2` errno channel because `use_errno=True` is the behavior under test; it checks
-that an occupied destination remains unchanged and the staged record stays available. This is
-a kernel API behavior test, not a timing test.
+Linux `renameat2` errno channel because `use_errno=True` is the behavior under test; it clears
+ctypes' private errno first, checks that an occupied destination remains unchanged and the
+staged record stays available. It needs a Linux kernel and filesystem with `renameat2`
+(`RENAME_NOREPLACE`). This is a kernel API behavior test, not a timing test.
 
 - `64756fcf5c5a` changes the successful descriptor assertion from `artifact_fd is not None
   and logs_fd is not None` to `or`. Each descriptor is assigned only by a successful
@@ -279,16 +280,16 @@ a kernel API behavior test, not a timing test.
   the preceding exception handlers. The assertion cannot see exactly one missing descriptor
   in reachable execution. Return values, exceptions, files and caller stderr are unchanged;
   there is no subprocess output to decode.
-- `9321dbe65f96` follows a dangling symlink while checking whether the public output name is
-  vacant. Without following links, `stat` sees the occupied symlink and returns `False` from
-  `_restore_cleanup_stage_record`. Following it raises `FileNotFoundError`, after which the
-  no-replace rename also refuses the occupied destination and returns `False`. The resulting
-  files and return value are identical. Neither path writes caller stderr or decodes subprocess
-  output.
-- `12657b6dd362` changes `text=True` to `False` for the captured `git merge-base --is-ancestor`
-  result. The caller reads only `returncode`; it never inspects stdout/stderr. `capture_output`
-  remains enabled, so even `GIT_TRACE=1` stays captured, and no output is decoded or returned to
-  the caller. Return code, exception, files and caller stderr are unchanged.
+
+Two candidates first recorded here are NOT equivalent (batch 3 review) and are open:
+
+- `9321dbe65f96` (follow symlinks while checking that the public output name is vacant): a
+  dangling link behaves the same, but a looping link (`output-1 -> output-1`) returns `False`
+  originally and raises an uncaught `ELOOP` `OSError` when flipped. A looping-link witness is the
+  likely kill; none was written or measured.
+- `12657b6dd362` (`text=True` to `False` on the captured `git merge-base --is-ancestor`): the
+  process runner decodes both captured streams strictly with `text=True`, so undecodable Git
+  output (diagnostics or `GIT_TRACE`) raises originally and not when flipped. No witness yet.
 
 ### KI-227 — batch 3 abandon-workspace mutations remain open
 
@@ -298,19 +299,29 @@ a kernel API behavior test, not a timing test.
 `fc7293486dc2`.
 
 An attempt to witness the abandonment paths with real local bare remotes passed its behavioral
-assertions but failed the suite's descendant guard: `run_remote_git` left Git child processes
-behind for the guard to reap. Those tests were removed. The batch rule forbids tests that signal,
-wait for or reap processes; no surviving witness may retain that process leak. The candidates
-remain open pending a process-clean local-remote setup. `12657b6dd362` in the same window has the
-narrow equivalence proof above.
+assertions but failed teardown on the suite's descendant guard (implementer report; the leftover
+processes were not identified). Those tests were removed. The batch rule forbids tests that signal,
+wait for or reap processes. Plausible product cause, unverified: `run_remote_git` runs captured
+commands through `cli_extended.procio.run_capture`, which can return with `abandoned_holders`
+after its bounded drain, and `run_remote_git` neither checks that nor ensures its Git process group
+is gone. Verify that first. The candidates remain open pending a process-clean local-remote setup.
+`12657b6dd362` (above) is in the same window.
 
 Source window 3467–3590 was not reached in batch 3: no witness or equivalence proof was attempted for
 `7a35e32b950c`, `0b184cf5f680`, `e69a3326b517`, `7a4e19814420`, `661d77d8a79d`, `f9a0fdd5dad2`,
 `5b47a8c147b2`, `431ccdcefc9e`, `40774a450dc5`, `fc580689f1a5` and `4dc4a4bed151`. They are open.
 
-Batch 3 totals over its 30 candidates: 5 killed, 3 equivalent (KI-226), 22 open (`e2fcfc263ad8` under
-KI-225, the 21 above). Each kill was measured in the probe run that followed its witness (`9b5abf12b48e`
-in the initial probe); no single final probe over all 30 was run.
+Batch 3 totals over its 30 candidates: 5 killed, 1 equivalent (KI-226), 24 open (`e2fcfc263ad8` under
+KI-225; `9321dbe65f96` and `12657b6dd362` in KI-226; 10 listed above for window 3363–3458 and 11 for
+window 3467–3590). Each kill was measured in the probe run that followed its witness (`9b5abf12b48e` in the initial
+probe; the later `ctypes.set_errno(0)` line of the `a6c9e60614e5` witness was not re-probed); no single
+final probe over all 30 was run.
+
+### KI-228 — a failed retained-output deletion can keep artifacts without their logs
+
+**Status:** OPEN; needs a product decision. `delete_retained_build_output` removes the logs record
+before the artifact record; if the second removal fails, the artifact record stays and its paired logs
+are gone, and the cleanup facts require both. No test may require the lost logs.
 
 > **KI-12 … KI-16 shipped together** in `merge(cmru): KI-12..KI-17 and S15 tool
 > dependencies`, with the new S15 tool-dependency feature. SPEC: `S-CLI.5b/5c/5d`,

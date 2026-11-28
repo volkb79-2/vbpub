@@ -34,8 +34,9 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 <!-- cmru: pending release notes begin -->
 - tests(cmru): batch 3 adds cleanup, release-output retention and rollback witnesses
   over the next 30 transaction mutation survivors: 5 killed (one of them already by an
-  earlier test), 3 recorded as equivalent (KI-226), 22 open (KI-225, KI-227). No
-  single final probe over all 30 was run. No product code changed.
+  earlier test), 1 recorded as equivalent (KI-226), 24 open (KI-225, KI-226, KI-227).
+  No single final probe over all 30 was run. KI-228 records a partial retained-output
+  deletion found on the way. No product code changed.
 - tests(cmru): batch 2 review fixes withdraw the unsafe d255 scope-recovery witness
   and correct the 45f rollback witness: the caller still receives the original
   artifact-publication error while a concurrent logs sentinel survives. The final

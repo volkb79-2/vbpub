@@ -46,7 +46,7 @@ def _release_retention_fixture(tmp_path: Path):
     return repo_root, workspace, project, "b" * 40
 
 
-def test_cleanup_rollback_restores_artifacts_after_logs_record_was_removed(
+def test_cleanup_rollback_restores_artifacts_when_their_removal_fails(
     tmp_path, monkeypatch,
 ):
     project_root = tmp_path / "demo"
@@ -85,7 +85,6 @@ def test_cleanup_rollback_restores_artifacts_after_logs_record_was_removed(
         )
 
     assert calls == 2
-    assert not logs_root.exists()
     assert (artifact_root / "dist" / "demo.whl").read_bytes() == b"wheel"
     assert (artifact_root / "build.json").is_file()
 
@@ -153,6 +152,9 @@ def test_noreplace_collision_returns_false_and_preserves_both_records(tmp_path):
     (parent / "destination").write_text("concurrent\n", encoding="utf-8")
     parent_fd = os.open(parent, transaction._directory_open_flags())
     try:
+        # Without use_errno the call leaves this private copy untouched, so a stale
+        # EEXIST from an earlier test cannot stand in for the real error.
+        transaction.ctypes.set_errno(0)
         restored = transaction._rename_noreplace_at(
             "source", parent_fd, "destination", parent_fd,
         )
