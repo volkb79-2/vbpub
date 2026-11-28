@@ -739,6 +739,16 @@ def test_analysis_pilot_accepts_consistent_complete_evidence(tmp_path: Path):
     checker.verify_pilot(**_valid_pilot(tmp_path))
 
 
+def test_analysis_pilot_accepts_canary_attempt_after_mutation_end(tmp_path: Path):
+    evidence = _valid_pilot(tmp_path)
+    events = [json.loads(line) for line in evidence["progress_raw"].splitlines()]
+    end_index = next(index for index, item in enumerate(events) if item["event"] == "end")
+    events.insert(end_index + 1, {"event": "canary_attempt"})
+    evidence["progress_raw"] = _producer_progress_bytes(events)
+
+    checker.verify_pilot(**evidence)
+
+
 def test_analysis_pilot_ignores_unrelated_prior_progress_segments(tmp_path: Path):
     evidence = _valid_pilot(tmp_path)
     events = [json.loads(line) for line in evidence["progress_raw"].splitlines()]

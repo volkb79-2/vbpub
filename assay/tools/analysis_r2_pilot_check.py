@@ -1014,7 +1014,11 @@ def _check_progress(
             ):
                 raise ValueError(f"progress resume_merged event {index} differs from resume accounting")
             current_run["resume_merged_event"] = event
-        elif current_run is not None and current_run["end"] is not None:
+        elif (
+            current_run is not None
+            and current_run["end"] is not None
+            and kind != "canary_attempt"
+        ):
             raise ValueError(f"progress event {index} follows the mutation sweep end")
     if not runs:
         raise ValueError("progress has no run header")
