@@ -326,8 +326,11 @@ dev and candidate objects, and seed archive sidecars stay with referenced
 seeds. A request published before admission but left without any book record
 continues to protect its references and the group's bundles; if submit never
 reaches a terminal book record, those objects can remain protected
-indefinitely. Bundles for a group remain protected until every job request in that
-group has a valid terminal admission record. An earlier upload collected
+indefinitely. Once `request.json` is present and valid, collector classification
+uses that durable request and the book record; other job-directory entries
+belong to the executor and worker and do not block collection. Bundles for a
+group remain protected until every job request in that group has a valid
+terminal admission record. An earlier upload collected
 before submit causes a missing seed/dev/candidate object refusal by name, and
 the client can upload it again. A missing bundle is not detected by submit; if
 checkout needs it, the job fails with `CHECKOUT_FAILURE`. `have` remains the

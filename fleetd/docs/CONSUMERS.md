@@ -111,7 +111,9 @@ does not report upload presence. A replay collected while its request body is
 streaming is committed again or refused. Collection preflights both store-cap
 and disk-floor deficits and deletes nothing if the reclaimable set is too
 small. A floor-only breach refuses without collection, and the floor is
-rechecked after collection.
+rechecked after collection. For a valid durable `request.json`, executor and
+worker outputs beside it do not block collection; the request contents and
+admission-book state determine which uploads remain protected.
 
 The optional closed-schema key `executor_enabled` accepts only a TOML boolean.
 If absent it is false; a present non-boolean refuses policy loading. While

@@ -6,7 +6,7 @@ All notable changes to this project are recorded here.
 
 ### Added
 - Add the standard-library host lane executor and worker, one transient systemd scope per confirmed job, runner-user checkout operations, bundle verification, seed/collect archives, Run-Gate verdict binding and host-written `result.json`. The executor remains disabled unless the optional `executor_enabled = true` policy key is set.
-- Add opt-in upload object collection through `upload_collection_enabled`; collection preserves durable job inputs, protects bundles through job completion, accounts for cap and disk-floor deficits, and refuses futile deletion. A delayed submit reports missing seed/dev/candidate inputs by name; a missing bundle needed for checkout fails with `CHECKOUT_FAILURE`. Re-uploads remain charged.
+- Add opt-in upload object collection through `upload_collection_enabled`; collection preserves durable job inputs, protects bundles through job completion, ignores executor/worker outputs beside a valid `request.json`, accounts for cap and disk-floor deficits, and refuses futile deletion. A delayed submit reports missing seed/dev/candidate inputs by name; a missing bundle needed for checkout fails with `CHECKOUT_FAILURE`. Re-uploads remain charged.
 - Persist FD-061 executor result fields before releasing the admission charge; terminal status reads them after restart. An `archive-store` pack failure is recorded as failed collection detail and does not rewrite the lane verdict; it is not retried (FD-071).
 
 ### Changed
