@@ -477,7 +477,7 @@ test("an idle async pi rejection reports an inbox claim after two spaced observa
 	}, { root: f.root, name: "peer" });
 	f.rejectNextSendAsync();
 	sender.writePeerMessage("receiver", "accepted but absent");
-	await f.controller.pollInbox();
+	await f.controller.pollInbox(f.fakeContext);
 	await f.flushPromises();
 	assert.equal(f.calls.filter(({ message }) => message.customType === "pi-ctl-inbox").length, 1);
 	assert.equal(f.queuedCount, 0, "the simulated asynchronous rejection queued no message and started no turn");
@@ -486,14 +486,14 @@ test("an idle async pi rejection reports an inbox claim after two spaced observa
 	assert.equal(state.unconfirmedSince, 0, "the injection poll leaves the initial observation marker unchanged");
 	assert.equal(f.calls.filter(({ message }) => message.customType === "pi-ctl-claim-notice").length, 0,
 		"the injection poll does not report an asynchronous rejection");
-	await f.controller.pollInbox();
+	await f.controller.pollInbox(f.fakeContext);
 	await f.flushPromises();
 	state = JSON.parse(fs.readFileSync(stateFile, "utf8"));
 	assert.equal(state.unconfirmedSince, f.now(), "the next idle poll persists the first missing-entry observation");
 	assert.equal(f.calls.filter(({ message }) => message.customType === "pi-ctl-claim-notice").length, 0,
 		"one missing-entry observation is not enough to report a rejection");
 	f.setTime(f.now() + 30_000);
-	await f.controller.pollInbox();
+	await f.controller.pollInbox(f.fakeContext);
 	await f.flushPromises();
 	state = JSON.parse(fs.readFileSync(stateFile, "utf8"));
 	assert.equal(state.unconfirmed, true);
@@ -506,7 +506,7 @@ test("an idle async pi rejection reports an inbox claim after two spaced observa
 	assert.equal(fs.readdirSync(path.join(f.root, "inbox", "main")).filter((file) => file.endsWith(".msg")).length, 1,
 		"the existing bounded delivery report reaches main once");
 	f.setTime(f.now() + 60_000);
-	await f.controller.pollInbox();
+	await f.controller.pollInbox(f.fakeContext);
 	assert.equal(f.calls.filter(({ message }) => message.customType === "pi-ctl-claim-notice").length, 1,
 		"later polls do not repeat the notice");
 	assert.equal(fs.readdirSync(path.join(f.root, "inbox", "main")).filter((file) => file.endsWith(".msg")).length, 1,
@@ -779,17 +779,17 @@ test("an idle async pi rejection reports a wake-up after two spaced observations
 	const wakeup = f.controller.scheduleWakeup(10, "wake rejected before run start");
 	f.setTime(wakeup.dueAt + 1);
 	f.rejectNextSendAsync();
-	await f.controller.armWakeups();
+	await f.controller.armWakeups(f.fakeContext);
 	await f.flushPromises();
 	let pending = JSON.parse(fs.readFileSync(path.join(f.root, "wakeups", "receiver.json"), "utf8"));
 	assert.equal(pending[0].queued, true);
 	assert.equal(f.queuedCount, 0, "the simulated rejection leaves no queued copy or turn");
 	assert.equal(pending[0].unconfirmedSince, 0, "the injected wake-up starts with the zero observation marker");
-	await f.controller.armWakeups();
+	await f.controller.armWakeups(f.fakeContext);
 	pending = JSON.parse(fs.readFileSync(path.join(f.root, "wakeups", "receiver.json"), "utf8"));
 	assert.equal(pending[0].unconfirmedSince, f.now(), "the first missing-entry observation is persisted");
 	f.setTime(f.now() + 30_000);
-	await f.controller.armWakeups();
+	await f.controller.armWakeups(f.fakeContext);
 	await f.flushPromises();
 	pending = JSON.parse(fs.readFileSync(path.join(f.root, "wakeups", "receiver.json"), "utf8"));
 	assert.equal(pending[0].unconfirmed, true);
