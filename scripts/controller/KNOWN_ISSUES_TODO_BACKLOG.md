@@ -1891,6 +1891,12 @@ Since about 2026-11-28T00:01Z the forwarded VS Code ssh agent made every ssh fro
 
 **Acceptance test idea:** with a fake hosts file that has no `IdentityAgent` option, the recorded ssh argv still contains `-o IdentityAgent=none` exactly once.
 
+**Also in scope (added 2026-11-28 on the main controller's order): ssh inside `pi-pidns-bash`.** In the wrapper's user namespace root-owned files show as uid 65534, so ssh stops with `Bad owner or permissions on /etc/ssh/ssh_config.d/20-systemd-ssh-proxy.conf`. This broke `scripts/controller/dev ... test` in a pi implementer job. The local workaround is `-F <empty user-owned file>` in the controller hosts file's ssh argv.
+
+**Proposed fix:** `controller_host_argv` always adds `-F <empty user-owned file>` as well as `-o IdentityAgent=none`.
+
+**Acceptance test idea:** `test-pi-ctl` runs one ssh dry check through `pi-pidns-bash`.
+
 ## CTL-71 — a claimed inbox message can be lost when pi aborts before persistence
 
 **Status:** OPEN (filed 2026-11-28 from P-plat-PICTL-FIX F1b). The controller
