@@ -1,9 +1,14 @@
 from dataclasses import replace
+import hashlib
 from pathlib import Path
+import socket
+import threading
+from contextlib import contextmanager
 
 import pytest
 
 from fleetd.admission import AdmissionError
+from test_agent_protocol import _submit
 from test_agent_verbs import _put, _service, _upload_policy
 
 
@@ -85,3 +90,92 @@ def test_unknown_incoming_entry_stops_collection(tmp_path):
 
     with pytest.raises(AdmissionError, match="unknown incoming upload artifact"):
         service._recover_upload_reservations_locked(strict=True)
+
+
+def test_submit_refuses_a_candidate_collected_before_submit(tmp_path):
+    service, identity, _checkout = _service(
+        tmp_path, extra_argv='[["--only-candidates", "<host-candidates>"]]'
+    )
+    service.executor = object()
+    _enable_collection(service)
+    result = _put(service, identity, "candidates", b"candidate")
+    request = _submit()
+    request["extra_argv"] = ["--only-candidates", result["path"]]
+    with service._upload_store_lock():
+        assert service._collect_upload_objects_locked(1, 1) == len(b"candidate")
+
+    with pytest.raises(AdmissionError, match="missing upload object candidates/"):
+        service.handle(request, identity)
+
+
+def test_submit_and_have_enter_store_lock(tmp_path, monkeypatch):
+    service, identity, checkout = _service(tmp_path)
+    (checkout / ".git").write_text("gitdir: ../.git/worktrees/test\n", encoding="utf-8")
+    entered = []
+    original = service._upload_store_lock
+
+    @contextmanager
+    def observed_lock():
+        with original():
+            entered.append(True)
+            yield
+
+    monkeypatch.setattr(service, "_upload_store_lock", observed_lock)
+    assert service.handle({"verb": "have", "repo": "vbpub"}, identity).document["refs"]
+    assert entered
+
+    entered.clear()
+    service.executor = object()
+    service.admission.submit = lambda *_args: {"job_id": "job", "state": "queued"}
+    service.handle(_submit(), identity)
+    assert entered
+
+
+def test_replay_streaming_during_collection_is_published_again(tmp_path, monkeypatch):
+    service, identity, _checkout = _service(tmp_path)
+    _enable_collection(service)
+    _upload_policy(service, store_bytes=7, floors={"checkout": 0})
+    old = _put(service, identity, "candidates", b"abc")
+    replay_digest = old["sha256"]
+    replay_started = threading.Event()
+    allow_replay = threading.Event()
+    deleted = threading.Event()
+    allow_collection = threading.Event()
+    real_stream = service._stream_upload
+
+    def pause_replay(stream, expected, digest, target):
+        if digest == replay_digest:
+            replay_started.set()
+            assert allow_replay.wait(60)
+        return real_stream(stream, expected, digest, target)
+
+    def pause_collection(_item):
+        deleted.set()
+        assert allow_collection.wait(60)
+
+    monkeypatch.setattr(service, "_stream_upload", pause_replay)
+    monkeypatch.setattr(service, "_collection_hook", pause_collection)
+    errors = []
+
+    def put(content):
+        try:
+            _put(service, identity, "candidates", content)
+        except BaseException as exc:
+            errors.append(exc)
+
+    replay = threading.Thread(target=put, args=(b"abc",))
+    collector = threading.Thread(target=put, args=(b"1234",))
+    replay.start()
+    assert replay_started.wait(60)
+    collector.start()
+    assert deleted.wait(60)
+    allow_replay.set()
+    allow_collection.set()
+    replay.join(60)
+    collector.join(60)
+
+    assert not replay.is_alive()
+    assert not collector.is_alive()
+    assert errors == []
+    assert Path(old["path"]).read_bytes() == b"abc"
+    assert (service.paths.uploads_dir / identity.group / "candidates" / hashlib.sha256(b"1234").hexdigest()).read_bytes() == b"1234"

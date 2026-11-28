@@ -801,6 +801,40 @@ class AgentVerbService:
                 digests.add(self._candidate_reference(argv[index + 1] if index + 1 < len(argv) else None, group, name))
         return digests
 
+    def _require_submit_uploads(self, request: Mapping[str, Any], group: str) -> None:
+        """Refuse a request whose named content-addressed inputs were collected."""
+
+        stores = request.get("stores")
+        seed = stores.get("seed") if isinstance(stores, Mapping) else None
+        dev = request.get("dev")
+        argv = request.get("extra_argv")
+        required: list[tuple[str, str]] = []
+        if isinstance(dev, Mapping):
+            required.extend(
+                (f"dev.{key}.tar", _record_descriptor_digest(dev.get(key), f"dev.{key}", "submit"))
+                for key in ("tracked", "untracked")
+            )
+        if isinstance(argv, list):
+            for index, item in enumerate(argv):
+                if item == "--only-candidates":
+                    value = argv[index + 1] if index + 1 < len(argv) else None
+                    required.append(("candidates", self._candidate_reference(value, group, "submit")))
+
+        objects = self._upload_store_objects()
+        for name, digest in required:
+            if not any(item.group == group and item.name == name and item.digest == digest for item in objects):
+                raise AdmissionError(ExitCode.REFUSAL, f"submit names missing upload object {name}/{digest}")
+        if seed is not None:
+            digest = _record_descriptor_digest(seed, "stores.seed", "submit")
+            archive = next((
+                item for item in objects
+                if item.group == group and item.digest == digest and item.seed_stem == item.name
+            ), None)
+            if archive is None:
+                raise AdmissionError(ExitCode.REFUSAL, f"submit names missing upload object assay-seed-*.tgz/{digest}")
+            if not any(item.group == group and item.name == archive.name + ".sha256" for item in objects):
+                raise AdmissionError(ExitCode.REFUSAL, f"submit names missing upload object {archive.name}.sha256")
+
     def _candidate_reference(self, value: object, group: str, name: str) -> str:
         if not isinstance(value, str) or not value or _UPLOAD_DIGEST_RE.fullmatch(Path(value).name) is None:
             raise AdmissionError(
@@ -1130,6 +1164,20 @@ class AgentVerbService:
     ) -> AgentReply:
         """Validate the full request before dispatching a verb or creating files."""
         candidate_paths = self.paths.candidate_paths(identity.group)
+        if isinstance(request, Mapping) and request.get("verb") == "submit":
+            argv = request.get("extra_argv")
+            if isinstance(argv, list):
+                for index, item in enumerate(argv):
+                    if item != "--only-candidates" or index + 1 >= len(argv):
+                        continue
+                    candidate = argv[index + 1]
+                    if (
+                        isinstance(candidate, str)
+                        and Path(candidate).is_absolute()
+                        and Path(candidate).parent == self.paths.candidate_root(identity.group)
+                        and _UPLOAD_DIGEST_RE.fullmatch(Path(candidate).name) is not None
+                    ):
+                        candidate_paths = candidate_paths | frozenset({candidate})
         normalized = validate_request(
             request, identity, self.policy, created_candidate_paths=candidate_paths,
         )
@@ -1139,7 +1187,8 @@ class AgentVerbService:
         if verb == "facts":
             return AgentReply(self._envelope(facts=self._facts()))
         if verb == "have":
-            return AgentReply(self._have(str(normalized["repo"])))
+            with self._upload_store_lock():
+                return AgentReply(self._have(str(normalized["repo"])))
         if verb == "put":
             if body_stream is None:
                 raise AdmissionError(ExitCode.IDENTITY_OR_TRANSPORT, "put request has no streamed body")
@@ -1154,7 +1203,9 @@ class AgentVerbService:
                     ExitCode.REFUSAL,
                     "executor unavailable: fleetd host executor is not configured",
                 )
-            result = self.admission.submit(normalized, identity, self.executor)
+            with self._upload_store_lock():
+                self._require_submit_uploads(normalized, identity.group)
+                result = self.admission.submit(normalized, identity, self.executor)
             return AgentReply(self._envelope(**result))
         if verb == "status":
             result = self.admission.status(str(normalized["job_id"]), identity, self.executor)
@@ -1369,7 +1420,7 @@ class AgentVerbService:
                 self._remove_upload_metadata(reservation.path.name)
                 self._fsync_directory(self.paths.incoming_dir)
                 self._remove_upload_owner(reservation.owner_path, reservation.fd)
-            reply_path = str(destination.resolve(strict=True))
+                reply_path = str(destination.resolve(strict=True))
             completed = True
             return AgentReply(self._envelope(name=name, sha256=digest, bytes=expected, path=reply_path))
         except AdmissionError:
