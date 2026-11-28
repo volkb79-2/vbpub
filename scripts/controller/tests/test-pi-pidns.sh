@@ -315,6 +315,19 @@ check_live_isolation() {
     fail 'the live namespace probe failed for a reason other than namespace availability'
   fi
 
+  local owner_file=$ROOT/outer-owner.lock owner_pid owner_ticks outer_ticks
+  local owner_command
+  owner_command=". '$SCRIPT_DIR/../lib.sh'; CONTROLLER_RUN_LOCK_PATH='$owner_file'; controller_run_record_owner"
+  TMUX_TMPDIR="$ROOT/tmux-owner" "$SOURCE" -c "$owner_command" > "$ROOT/owner-record.out" 2> "$errors" \
+    || fail 'could not write a run owner record from the real pi PID namespace'
+  owner_pid=$(sed -n 's/.*pid=\([0-9]*\).*/\1/p' "$owner_file")
+  owner_ticks=$(sed -n 's/.*pid_start_ticks=\([0-9]*\).*/\1/p' "$owner_file")
+  [[ $owner_pid =~ ^[0-9]+$ && $owner_pid -gt 2 && -r /proc/$owner_pid/stat ]] \
+    || fail 'owner record written inside pi PID namespace did not hold an outer procfs pid'
+  outer_ticks=$(sed 's/^[^)]*) //' "/proc/$owner_pid/stat" | awk '{print $20}')
+  [[ $owner_ticks == "$outer_ticks" ]] \
+    || fail 'owner record start ticks did not match the outer procfs entry'
+
   mkfifo "$release" || fail 'could not create the live-test child release FIFO'
   /bin/bash -c 'IFS= read -r release_line < "$1"' pidns-child "$release" &
   child_pid=$!

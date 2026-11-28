@@ -1238,4 +1238,19 @@ if "$PUSH_IMAGE_SCRIPT" runner-a 'image with spaces' > "$ROOT/push-invalid.out" 
   fail 'invalid image reference was accepted'
 fi
 
+# The run owner must come from the procfs visible to this shell, not its
+# namespace-local $$ value. CONTROLLER_SELF_STAT is the test seam for that fact.
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/../lib.sh"
+printf '424242 (fake (pi) shell) S' > "$ROOT/self-stat"
+for ((owner_field = 0; owner_field < 18; owner_field++)); do printf ' 0' >> "$ROOT/self-stat"; done
+printf ' 777\n' >> "$ROOT/self-stat"
+# shellcheck disable=SC2034 # consumed by controller_run_record_owner from the sourced library
+CONTROLLER_RUN_LOCK_PATH=$ROOT/self-stat-owner.lock
+# shellcheck disable=SC2034 # consumed by controller_run_record_owner from the sourced library
+CONTROLLER_SELF_STAT=$ROOT/self-stat
+controller_run_record_owner || fail 'owner record seam failed'
+contains "$ROOT/self-stat-owner.lock" 'pid=424242' 'owner record uses the procfs-visible pid'
+contains "$ROOT/self-stat-owner.lock" 'pid_start_ticks=777' 'owner record uses procfs start ticks'
+
 echo 'PASS wrappers: identity SSH, route handling, child exit markers, release archive, pipeline status'

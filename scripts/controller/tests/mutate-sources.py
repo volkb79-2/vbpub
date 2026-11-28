@@ -412,7 +412,7 @@ mutant("scripts/controller/job-check.sh", "job-check-owner-boot.sh",
        '    if [[ -n $owner_boot && -n $current_boot && $owner_boot != "$current_boot" ]]; then',
        '    if false; then')
 mutant("scripts/controller/job-check.sh", "job-check-owner-liveness.sh",
-       '    elif ! kill -0 "$owner_pid" 2>/dev/null; then',
+       '    elif [[ ! -e /proc/$owner_pid ]] && ! kill -0 "$owner_pid" 2>/dev/null; then',
        '    elif false; then')
 mutant("scripts/controller/job-check.sh", "job-check-run-traversal.sh",
        '[[ $run =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ && $run != *..* ]] || { echo "invalid run name" >&2; exit 2; }',

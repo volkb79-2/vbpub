@@ -141,7 +141,7 @@ else
       # A pid cannot survive a reboot, so the recorded owner is gone even if its
       # number happens to be in use now.
       dead_reason="wrapper pid $owner_pid is from a previous boot ($owner_boot)"
-    elif ! kill -0 "$owner_pid" 2>/dev/null; then
+    elif [[ ! -e /proc/$owner_pid ]] && ! kill -0 "$owner_pid" 2>/dev/null; then
       dead_reason="wrapper pid $owner_pid gone"
     else
       live_ticks=$(controller_pid_start_ticks "$owner_pid" 2>/dev/null || printf '%s' '-')

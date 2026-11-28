@@ -162,13 +162,30 @@ controller_run_record_owner() {
   # Write THIS invocation's identity into the claimed name's lock file. Call it
   # only after the claim succeeded AND the caller's own preflight passed; a
   # refusal before this point leaves the previous owner's identity readable.
-  local lock=${CONTROLLER_RUN_LOCK_PATH:-} started started_utc ticks
+  local lock=${CONTROLLER_RUN_LOCK_PATH:-} started started_utc ticks self_stat self_pid self_rest
+  local -a self_fields=()
   [[ -n $lock ]] || return 1
   started=$(date -u +%s)
   started_utc=$(date -u -d "@$started" +%Y-%m-%dT%H:%M:%SZ)
-  ticks=$(controller_pid_start_ticks "$$") || ticks='-'
+  # Inside pi-pidns-bash, $$ is the namespace PID while /proc is the outer
+  # procfs. Read this shell's procfs identity in the current shell: command
+  # substitution would create a child whose visible identity is different.
+  if IFS= read -r self_stat < "${CONTROLLER_SELF_STAT:-/proc/self/stat}" 2>/dev/null; then
+    self_pid=${self_stat%% *}
+    self_rest=${self_stat##*) }
+    read -r -a self_fields <<< "$self_rest"
+    if [[ $self_pid =~ ^[0-9]+$ && ${self_fields[19]:-} =~ ^[0-9]+$ ]]; then
+      ticks=${self_fields[19]}
+    else
+      self_pid=$$
+      ticks=$(controller_pid_start_ticks "$self_pid") || ticks='-'
+    fi
+  else
+    self_pid=$$
+    ticks=$(controller_pid_start_ticks "$self_pid") || ticks='-'
+  fi
   printf 'pid=%s started_epoch=%s started_utc=%s pid_start_ticks=%s boot_id=%s\n' \
-    "$$" "$started" "$started_utc" "$ticks" "$(cat /proc/sys/kernel/random/boot_id 2>/dev/null || printf '%s' '-')" > "$lock"
+    "$self_pid" "$started" "$started_utc" "$ticks" "$(cat /proc/sys/kernel/random/boot_id 2>/dev/null || printf '%s' '-')" > "$lock"
   return 0
 }
 
