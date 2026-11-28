@@ -177,7 +177,7 @@ check_inbox_not_a_directory() {
   if run_send "$WORK" -- linkedrole 'text' > "$out" 2>&1; then
     fail 'a symlinked inbox was accepted'
   fi
-  contains "$out" 'not a plain directory' 'a symlinked inbox path is refused'
+  contains "$out" 'symlink in the state path' 'a symlinked inbox path is refused'
   [[ -z $(find "$STATE/inbox/linkedrole-target" -mindepth 1) ]] || fail 'a refused symlinked inbox still received files'
   rm -f -- "$STATE/inbox/plainrole"
   rm -f -- "$STATE/inbox/linkedrole"
