@@ -45,6 +45,11 @@ _SEED_CHECKSUM_NAME_RE = re.compile(r"assay-seed-[0-9]+\.tgz\.sha256\Z")
 _UPLOAD_OBJECT_NAMES = frozenset({"in.bundle", "candidates", "dev.tracked.tar", "dev.untracked.tar"})
 _MAX_UPLOAD_RECORDS = 65536
 _MAX_UPLOAD_RECORD_BYTES = 64 * 1024
+_UPLOAD_REFERENCE_REQUEST_FIELDS = frozenset({"stores", "dev", "extra_argv"})
+_NON_UPLOAD_REQUEST_FIELDS = frozenset({
+    "verb", "job_id", "repo", "sha", "base", "project", "lane", "shard", "resources",
+    "priority", "requested_by", "env", "kind",
+})
 _SEMVER_RE = re.compile(
     r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"
     r"(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?\Z"
@@ -774,31 +779,42 @@ class AgentVerbService:
         return str(record["group"]), self._request_upload_digests(record["request"], str(record["group"]), name)
 
     def _request_upload_digests(self, request: Mapping[str, Any], group: str, name: str) -> set[str]:
+        if set(request) != _UPLOAD_REFERENCE_REQUEST_FIELDS | _NON_UPLOAD_REQUEST_FIELDS:
+            raise AdmissionError(
+                ExitCode.RUNNER_FAILURE,
+                f"cannot collect upload objects: job request record {name!r} has an unknown request field set",
+            )
         digests: set[str] = set()
         stores = request.get("stores")
-        if stores is not None and not isinstance(stores, Mapping):
+        if not isinstance(stores, Mapping) or set(stores) != {"collect", "seed"}:
             raise AdmissionError(
                 ExitCode.RUNNER_FAILURE,
                 f"cannot collect upload objects: job request record {name!r} has an unknown stores shape",
             )
-        seed = stores.get("seed") if isinstance(stores, Mapping) else None
+        seed = stores.get("seed")
         if seed is not None:
+            if not isinstance(seed, Mapping) or set(seed) != {"path", "sha256", "bytes"}:
+                raise AdmissionError(ExitCode.RUNNER_FAILURE, f"cannot collect upload objects: job request record {name!r} has an unknown seed descriptor shape")
             digests.add(_record_descriptor_digest(seed, "stores.seed", name))
         dev = request.get("dev")
         if dev is not None:
-            if not isinstance(dev, Mapping):
+            if not isinstance(dev, Mapping) or set(dev) != {"tracked", "untracked", "verb_argv", "tty", "worktree_key"}:
                 raise AdmissionError(
                     ExitCode.RUNNER_FAILURE,
                     f"cannot collect upload objects: job request record {name!r} has an unknown dev shape",
                 )
             for key in ("tracked", "untracked"):
+                descriptor = dev.get(key)
+                if not isinstance(descriptor, Mapping) or set(descriptor) != {"sha256", "bytes"}:
+                    raise AdmissionError(ExitCode.RUNNER_FAILURE, f"cannot collect upload objects: job request record {name!r} has an unknown dev.{key} descriptor shape")
                 digests.add(_record_descriptor_digest(dev.get(key), f"dev.{key}", name))
         argv = request.get("extra_argv")
-        if isinstance(argv, list):
-            for index, item in enumerate(argv):
-                if item != "--only-candidates":
-                    continue
-                digests.add(self._candidate_reference(argv[index + 1] if index + 1 < len(argv) else None, group, name))
+        if not isinstance(argv, list):
+            raise AdmissionError(ExitCode.RUNNER_FAILURE, f"cannot collect upload objects: job request record {name!r} has an unknown extra_argv shape")
+        for index, item in enumerate(argv):
+            if item != "--only-candidates":
+                continue
+            digests.add(self._candidate_reference(argv[index + 1] if index + 1 < len(argv) else None, group, name))
         return digests
 
     def _require_submit_uploads(self, request: Mapping[str, Any], group: str) -> None:

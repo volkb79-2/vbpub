@@ -8,6 +8,7 @@ from contextlib import contextmanager
 import pytest
 
 from fleetd.admission import AdmissionError
+from fleetd import agent_verbs
 from test_agent_protocol import _submit
 from test_agent_verbs import _put, _service, _upload_policy
 
@@ -129,6 +130,15 @@ def test_submit_and_have_enter_store_lock(tmp_path, monkeypatch):
     service.admission.submit = lambda *_args: {"job_id": "job", "state": "queued"}
     service.handle(_submit(), identity)
     assert entered
+
+
+def test_collector_classifies_every_submit_request_field(tmp_path):
+    service, identity, _checkout = _service(tmp_path)
+    classified = agent_verbs._UPLOAD_REFERENCE_REQUEST_FIELDS | agent_verbs._NON_UPLOAD_REQUEST_FIELDS
+    assert classified == frozenset(agent_verbs._CAPABILITIES["submit"])
+    request = _submit()
+    with pytest.raises(AdmissionError, match="unknown request field set"):
+        service._request_upload_digests(request | {"new_upload_reference": "unknown"}, identity.group, "job")
 
 
 def test_replay_streaming_during_collection_is_published_again(tmp_path, monkeypatch):
