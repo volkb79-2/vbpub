@@ -804,25 +804,24 @@ class AgentVerbService:
         """Read a private bundle put record; untrusted state means keep it."""
 
         path = self.paths.upload_submissions_dir / f"{group}--{digest}.json"
-        fd = -1
         try:
             directory_info = self.paths.upload_submissions_dir.lstat()
             if (not stat.S_ISDIR(directory_info.st_mode)
                     or stat.S_IMODE(directory_info.st_mode) & 0o077):
                 return None
             fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-            info = os.fstat(fd)
-            if not stat.S_ISREG(info.st_mode) or stat.S_IMODE(info.st_mode) & 0o077 or info.st_size > 65536:
-                return None
-            raw = os.read(fd, 65537)
-            if len(raw) > 65536:
-                return None
-            value = json.loads(raw.decode("utf-8"))
+            try:
+                info = os.fstat(fd)
+                if not stat.S_ISREG(info.st_mode) or stat.S_IMODE(info.st_mode) & 0o077 or info.st_size > 65536:
+                    return None
+                raw = os.read(fd, 65537)
+                if len(raw) > 65536:
+                    return None
+                value = json.loads(raw.decode("utf-8"))
+            finally:
+                os.close(fd)
         except (OSError, UnicodeDecodeError, json.JSONDecodeError):
             return None
-        finally:
-            if fd >= 0:
-                os.close(fd)
         if (not isinstance(value, dict) or set(value) != {"schema", "group", "digest", "job_ids"}
                 or value.get("schema") != "fleet-upload-submission/1" or value.get("group") != group
                 or value.get("digest") != digest or not isinstance(value.get("job_ids"), list)

@@ -12100,6 +12100,44 @@ def test_lane_log_drain_handles_missing_stream_and_stopped_pipe_events(tmp_path,
     assert (post_read_root / "post-read.log").read_bytes() == b"buffered"
     os.close(worker.repo_root_fd)
 
+    wait_root = tmp_path / "wait-branch"
+    wait_root.mkdir()
+    worker = _worker(wait_root, _VersionRunner({}))
+    read_fd, write_fd = os.pipe()
+    log_fd = os.open(wait_root / "wait-branch.log", os.O_CREAT | os.O_WRONLY, 0o600)
+
+    class StepStop:
+        set_value = False
+        waits = 0
+
+        def is_set(self):
+            return self.set_value
+
+        def wait(self, _duration):
+            self.waits += 1
+            self.set_value = True
+            return self.waits > 1
+
+    step_stop = StepStop()
+    worker._lane_log_stop = step_stop
+
+    def empty_pipe(fd, _size):
+        if fd == read_fd:
+            raise BlockingIOError()
+        return real_read(fd, _size)
+
+    monkeypatch.setattr(executor_worker_module.os, "read", empty_pipe)
+
+    class WaitProcess:
+        stdout = os.fdopen(read_fd, "rb", buffering=0)
+
+    process = WaitProcess()
+    worker._drain_lane_log(process, log_fd)
+    process.stdout.close()
+    os.close(write_fd)
+    assert step_stop.waits == 2
+    os.close(worker.repo_root_fd)
+
 
 def test_lane_log_short_write_becomes_write_failure_and_discards(tmp_path, monkeypatch):
     worker = _worker(tmp_path, _VersionRunner({}))
@@ -12120,7 +12158,8 @@ def test_lane_log_short_write_becomes_write_failure_and_discards(tmp_path, monke
     os.close(worker.repo_root_fd)
 
 
-def test_run_lane_joins_pipe_drainer_and_keeps_normal_exit_output(tmp_path):
+@pytest.mark.parametrize("close_error", [False, True])
+def test_run_lane_joins_pipe_drainer_and_keeps_normal_exit_output(tmp_path, close_error):
     worker = _worker(tmp_path, _VersionRunner({}))
     worker.runner_identity = RunnerIdentity("runner", 1001, 1002, (1002,))
     worker.request = {"repo": "vbpub", "project": ".", "lane": "r0-r1", "extra_argv": [], "base": None}
@@ -12143,9 +12182,20 @@ def test_run_lane_joins_pipe_drainer_and_keeps_normal_exit_output(tmp_path):
     payload = b"normal buffered lane output\n"
     read_fd, write_fd = os.pipe()
 
+    raw_stdout = os.fdopen(read_fd, "rb", buffering=0)
+
+    class LaneOutput:
+        def fileno(self):
+            return raw_stdout.fileno()
+
+        def close(self):
+            if close_error:
+                raise OSError("injected close error")
+            raw_stdout.close()
+
     class Process:
         pid = 876
-        stdout = os.fdopen(read_fd, "rb", buffering=0)
+        stdout = LaneOutput()
 
         @staticmethod
         def poll():
@@ -12164,8 +12214,10 @@ def test_run_lane_joins_pipe_drainer_and_keeps_normal_exit_output(tmp_path):
         assert worker._run_lane("run-gate", "host", {"runner_name": None}, None) == 0
         assert (worker.job_dir / "lane.log").read_bytes() == payload
         assert worker._lane_log_bytes == len(payload)
-        assert process.stdout.closed
+        assert raw_stdout.closed is not close_error
     finally:
+        if not raw_stdout.closed:
+            raw_stdout.close()
         for fd in (worker.project_fd, worker.checkout_fd, worker.repo_root_fd):
             if fd >= 0:
                 os.close(fd)
