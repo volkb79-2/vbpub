@@ -736,23 +736,15 @@ class AgentVerbService:
                     with _upload_directory(jobs_fd, name, "agent job record directory") as job_fd:
                         entries = set(_upload_directory_entries(job_fd, f"job record {name!r}"))
                         if "request.json" not in entries:
-                            if entries != {"submit.lock"}:
+                            temp_names = {entry for entry in entries if entry.startswith("request-") and len(entry) > len("request-")}
+                            allowed = not entries or ("submit.lock" in entries and entries == temp_names | {"submit.lock"})
+                            if not allowed:
                                 raise AdmissionError(
                                     ExitCode.RUNNER_FAILURE,
                                     f"cannot collect upload objects: job record directory {name!r} has no request.json and unexpected entries",
                                 )
-                            try:
-                                lock_stat = os.stat("submit.lock", dir_fd=job_fd, follow_symlinks=False)
-                            except OSError as exc:
-                                raise AdmissionError(
-                                    ExitCode.RUNNER_FAILURE,
-                                    f"cannot collect upload objects: submit lock for {name!r} is unreadable: {exc}",
-                                ) from exc
-                            if not stat.S_ISREG(lock_stat.st_mode) or lock_stat.st_mode & 0o077:
-                                raise AdmissionError(
-                                    ExitCode.RUNNER_FAILURE,
-                                    f"cannot collect upload objects: submit lock for {name!r} is not a private regular file",
-                                )
+                            for entry in entries:
+                                self._validate_submit_write_entry(job_fd, entry, name)
                             try:
                                 book_record = self.admission.book.read_record(name)
                             except AdmissionError as exc:
@@ -766,6 +758,24 @@ class AgentVerbService:
                                     f"cannot collect upload objects: job record directory {name!r} has no request.json but has an admission record",
                                 )
                             continue
+                        allowed = {"request.json", "submit.lock"} | {
+                            entry for entry in entries if entry.startswith("request-") and len(entry) > len("request-")
+                        }
+                        if not entries <= allowed:
+                            raise AdmissionError(
+                                ExitCode.RUNNER_FAILURE,
+                                f"cannot collect upload objects: job record directory {name!r} has unexpected entries",
+                            )
+                        if "submit.lock" in entries:
+                            self._validate_submit_write_entry(job_fd, "submit.lock", name)
+                        request_info = os.stat("request.json", dir_fd=job_fd, follow_symlinks=False)
+                        for entry in entries - {"request.json", "submit.lock"}:
+                            temp_info = self._validate_submit_write_entry(job_fd, entry, name)
+                            if (temp_info.st_dev, temp_info.st_ino) != (request_info.st_dev, request_info.st_ino):
+                                raise AdmissionError(
+                                    ExitCode.RUNNER_FAILURE,
+                                    f"cannot collect upload objects: request temporary {entry!r} for {name!r} is not linked to request.json",
+                                )
                         group, digests = self._job_record_references(job_fd, name)
                         try:
                             book_record = self.admission.book.read_record(name)
@@ -784,6 +794,23 @@ class AgentVerbService:
         for group in protected_bundle_groups:
             references.setdefault(group, set()).add("*")
         return {group: frozenset(digests) for group, digests in references.items()}
+
+    @staticmethod
+    def _validate_submit_write_entry(job_fd: int, entry: str, job_id: str):
+        try:
+            info = os.stat(entry, dir_fd=job_fd, follow_symlinks=False)
+        except OSError as exc:
+            label = "submit lock" if entry == "submit.lock" else "submit write entry"
+            raise AdmissionError(
+                ExitCode.RUNNER_FAILURE,
+                f"cannot collect upload objects: {label} {entry!r} for {job_id!r} is unreadable: {exc}",
+            ) from exc
+        if not stat.S_ISREG(info.st_mode) or stat.S_IMODE(info.st_mode) & 0o077:
+            raise AdmissionError(
+                ExitCode.RUNNER_FAILURE,
+                f"cannot collect upload objects: submit write entry {entry!r} for {job_id!r} is not a private regular file",
+            )
+        return info
 
     def _job_record_references(self, job_fd: int, name: str) -> tuple[str, set[str]]:
         raw = _read_upload_record(job_fd, "request.json", f"job request record {name!r}")

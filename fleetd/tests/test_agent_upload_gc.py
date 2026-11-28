@@ -1,4 +1,5 @@
 from dataclasses import replace
+import fcntl
 import hashlib
 import json
 import os
@@ -327,6 +328,64 @@ def test_refused_submit_leaves_collectable_empty_job_directory(tmp_path, monkeyp
     assert Path(new["path"]).read_bytes() == b"new!!"
 
 
+@pytest.mark.parametrize("crash_shape", ["empty", "submit_lock", "request_temp", "linked_request_temp"])
+def test_submit_crash_window_job_shapes_do_not_wedge_collection(tmp_path, crash_shape):
+    service, identity, _checkout = _service(tmp_path)
+    _enable_collection(service)
+    _upload_policy(service, store_bytes=100, floors={"checkout": 0})
+    old = _put(service, identity, "candidates", b"old-data")
+    job_dir = service.paths.jobs_dir / "crash-job"
+    job_dir.mkdir()
+    if crash_shape != "empty":
+        (job_dir / "submit.lock").write_bytes(b"")
+        (job_dir / "submit.lock").chmod(0o600)
+    if crash_shape in {"request_temp", "linked_request_temp"}:
+        if crash_shape == "request_temp":
+            (job_dir / "request-partial").write_bytes(b"partial request")
+        else:
+            record = {
+                "schema": "fleet-host-job-request/1", "group": identity.group,
+                "digest": "e" * 64, "request": _submit(),
+            }
+            (job_dir / "request.json").write_text(json.dumps(record), encoding="utf-8")
+            (job_dir / "request.json").chmod(0o600)
+            os.link(job_dir / "request.json", job_dir / "request-linked")
+        (job_dir / ("request-partial" if crash_shape == "request_temp" else "request-linked")).chmod(0o600)
+
+    _upload_policy(service, store_bytes=3, floors={"checkout": 0})
+    result = _put(service, identity, "candidates", b"new")
+
+    assert not Path(old["path"]).exists()
+    assert Path(result["path"]).read_bytes() == b"new"
+
+
+@pytest.mark.parametrize("shape", ["temp_symlink", "temp_public", "linked_temp_mismatch"])
+def test_malformed_submit_temporary_shapes_refuse_collection(tmp_path, shape):
+    service, identity, _checkout = _service(tmp_path)
+    _enable_collection(service)
+    old = _put(service, identity, "candidates", b"preserve")
+    job_dir = service.paths.jobs_dir / "bad-crash-job"
+    job_dir.mkdir()
+    (job_dir / "submit.lock").write_bytes(b"")
+    (job_dir / "submit.lock").chmod(0o600)
+    temp = job_dir / "request-bad"
+    if shape == "temp_symlink":
+        temp.symlink_to(service.paths.state_dir, target_is_directory=True)
+    else:
+        temp.write_bytes(b"partial")
+        temp.chmod(0o644 if shape == "temp_public" else 0o600)
+    if shape == "linked_temp_mismatch":
+        (job_dir / "request.json").write_text(json.dumps({
+            "schema": "fleet-host-job-request/1", "group": identity.group,
+            "digest": "e" * 64, "request": _submit(),
+        }), encoding="utf-8")
+        (job_dir / "request.json").chmod(0o600)
+
+    with pytest.raises(AdmissionError, match="submit write entry|not linked to request.json"):
+        service._referenced_upload_objects_locked()
+    assert Path(old["path"]).read_bytes() == b"preserve"
+
+
 def test_upload_store_path_that_is_a_regular_file_refuses_accounting(tmp_path):
     service, _identity, _checkout = _service(tmp_path)
     service.paths.uploads_dir.rmdir()
@@ -433,47 +492,32 @@ def test_collection_disabled_submit_ignores_missing_upload_and_odd_store(tmp_pat
     assert (service.paths.uploads_dir / "unexpected").read_text(encoding="utf-8") == "preserve"
 
 
-def test_blocked_admission_does_not_block_unrelated_put_or_have(tmp_path, monkeypatch):
+def test_admission_hook_observes_released_store_lock_and_runs_put_and_have(tmp_path, monkeypatch):
     service, identity, checkout = _service(tmp_path)
     _enable_collection(service)
     service.executor = object()
     (checkout / ".git").write_text("gitdir: ../.git/worktrees/test\n", encoding="utf-8")
-    admission_entered = threading.Event()
-    release_admission = threading.Event()
-    submit_errors = []
+    hook_results = []
 
-    def blocked_submit(*_args, **_kwargs):
-        admission_entered.set()
-        assert release_admission.wait(10)
+    def admission_hook(*_args, **_kwargs):
+        lock_fd = os.open(service.paths.state_dir / ".upload-store.lock", os.O_RDWR)
+        try:
+            try:
+                fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                pytest.fail("upload store lock remained held during admission")
+            finally:
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        finally:
+            os.close(lock_fd)
+        hook_results.append(_put(service, identity, "candidates", b"parallel")["bytes"])
+        hook_results.append(service.handle({"verb": "have", "repo": "vbpub"}, identity).document["refs"])
         raise AdmissionError(2, "test admission refusal")
 
-    monkeypatch.setattr(service.admission.book, "submit", blocked_submit)
-
-    def submit_job():
-        try:
-            service.handle(_submit(), identity)
-        except AdmissionError as exc:
-            submit_errors.append(exc.reason)
-
-    submit_thread = threading.Thread(target=submit_job)
-    submit_thread.start()
-    assert admission_entered.wait(10)
-
-    put_done = threading.Event()
-    have_done = threading.Event()
-    put_thread = threading.Thread(target=lambda: (_put(service, identity, "candidates", b"parallel"), put_done.set()))
-    have_thread = threading.Thread(
-        target=lambda: (service.handle({"verb": "have", "repo": "vbpub"}, identity), have_done.set()),
-    )
-    put_thread.start()
-    have_thread.start()
-    assert put_done.wait(10)
-    assert have_done.wait(10)
-    release_admission.set()
-    submit_thread.join()
-    put_thread.join()
-    have_thread.join()
-    assert submit_errors == ["test admission refusal"]
+    monkeypatch.setattr(service.admission.book, "submit", admission_hook)
+    with pytest.raises(AdmissionError, match="test admission refusal"):
+        service.handle(_submit(), identity)
+    assert hook_results == [8, ["a" * 40]]
 
 
 def test_collector_classifies_every_submit_request_field(tmp_path):
@@ -897,45 +941,25 @@ def test_replay_streaming_during_collection_is_published_again(tmp_path, monkeyp
     _upload_policy(service, store_bytes=7, floors={"checkout": 0})
     old = _put(service, identity, "candidates", b"abc")
     replay_digest = old["sha256"]
-    replay_started = threading.Event()
-    allow_replay = threading.Event()
-    deleted = threading.Event()
-    allow_collection = threading.Event()
     real_stream = service._stream_upload
+    collected = []
+    nested_puts = []
+    replay_interleaved = False
 
-    def pause_replay(stream, expected, digest, target):
+    def interleave_replay(stream, expected, digest, target):
+        nonlocal replay_interleaved
         if digest == replay_digest:
-            replay_started.set()
-            assert allow_replay.wait(60)
+            replay_interleaved = True
+            nested_puts.append(_put(service, identity, "candidates", b"1234"))
         return real_stream(stream, expected, digest, target)
 
-    def pause_collection(_item):
-        deleted.set()
-        assert allow_collection.wait(60)
+    monkeypatch.setattr(service, "_stream_upload", interleave_replay)
+    monkeypatch.setattr(service, "_collection_hook", lambda item: collected.append(item.key))
+    replay_result = _put(service, identity, "candidates", b"abc")
 
-    monkeypatch.setattr(service, "_stream_upload", pause_replay)
-    monkeypatch.setattr(service, "_collection_hook", pause_collection)
-    errors = []
-
-    def put(content):
-        try:
-            _put(service, identity, "candidates", content)
-        except BaseException as exc:
-            errors.append(exc)
-
-    replay = threading.Thread(target=put, args=(b"abc",))
-    collector = threading.Thread(target=put, args=(b"1234",))
-    replay.start()
-    assert replay_started.wait(60)
-    collector.start()
-    assert deleted.wait(60)
-    allow_replay.set()
-    allow_collection.set()
-    replay.join(60)
-    collector.join(60)
-
-    assert not replay.is_alive()
-    assert not collector.is_alive()
-    assert errors == []
+    assert replay_interleaved is True
+    assert collected == [(identity.group, "candidates")]
+    assert nested_puts[0]["bytes"] == 4
+    assert replay_result["bytes"] == 3
     assert Path(old["path"]).read_bytes() == b"abc"
     assert (service.paths.uploads_dir / identity.group / "candidates" / hashlib.sha256(b"1234").hexdigest()).read_bytes() == b"1234"
