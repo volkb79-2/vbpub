@@ -70,3 +70,21 @@ def isolate_git(monkeypatch, tmp_path: Path) -> Path:
 @pytest.fixture
 def git_isolation(monkeypatch, tmp_path):
     return isolate_git(monkeypatch, tmp_path)
+
+
+@pytest.fixture
+def reap_git_zombie_children():
+    """Reap completed Git helper children adopted by pytest's subreaper."""
+    import os
+
+    from cmru.process_guard import descendants
+
+    root_pid = os.getpid()
+    before = descendants(root_pid)
+    yield
+    for child in descendants(root_pid).values():
+        if child.ppid == root_pid and child.state == "Z" and child.pid not in before:
+            try:
+                os.waitpid(child.pid, os.WNOHANG)
+            except ChildProcessError:
+                pass

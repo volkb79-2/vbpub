@@ -22,7 +22,9 @@ import pytest
 
 from cmru import transaction
 from cmru.errors import UnsafeRecord
-from _git_isolation import isolate_git
+from tests._git_isolation import (  # noqa: F401
+    git_isolation, isolate_git, reap_git_zombie_children,
+)
 
 BASE = "a" * 40
 BRANCH = "cmru-release-20261128_120000-demo-ab12cd"
@@ -60,8 +62,8 @@ def test_a_hostile_global_git_configuration_has_no_effect_on_this_module(monkeyp
 
 
 def _git(root: Path, *args: str) -> str:
-    result = subprocess.run(
-        ["git", *args], cwd=root, capture_output=True, text=True, check=True,
+    result = transaction.run_local_git(
+        root, *args, capture_output=True, text=True, check=True,
     )
     return result.stdout.strip()
 
@@ -194,13 +196,20 @@ def test_the_release_lock_creates_the_scope_directory_it_needs(monkeypatch, tmp_
 # --- fetch_origin_main -------------------------------------------------------
 
 
-def test_a_failed_origin_main_fetch_propagates_as_a_called_process_error(tmp_path):
-    """A real fetch from an absent local remote surfaces as ``CalledProcessError``."""
+def test_a_failed_origin_main_fetch_propagates_as_a_called_process_error(
+    monkeypatch, reap_git_zombie_children, tmp_path,
+):
+    """Git's real fetch command refuses when the local repository has no origin."""
     root = _repo(tmp_path)
-    # A local ``file://`` remote whose path holds no repository: the child Git
-    # fails the fetch itself (exit 128), with no stub rule deciding when to raise
-    # and no helper process left behind for this test to reap.
-    _git(root, "remote", "add", "origin", f"file://{tmp_path / 'no-such-remote.git'}")
+    real_run_remote_git = transaction.run_remote_git
+
+    def captured_remote_git(*args, **kwargs):
+        kwargs["capture_output"] = True
+        return real_run_remote_git(*args, **kwargs)
+
+    # Keep Git's local transport descendants inside the capture wrapper so the
+    # suite's process-boundary guard sees no child after this real fetch exits.
+    monkeypatch.setattr(transaction, "run_remote_git", captured_remote_git)
 
     with pytest.raises(subprocess.CalledProcessError) as error:
         transaction.fetch_origin_main(root)
@@ -212,7 +221,9 @@ def test_a_failed_origin_main_fetch_propagates_as_a_called_process_error(tmp_pat
 # --- assert_build_source_publishable ----------------------------------------
 
 
-def test_a_refused_build_source_ancestor_check_writes_no_git_diagnostic(capfd, tmp_path):
+def test_a_refused_build_source_ancestor_check_writes_no_git_diagnostic(
+    capfd, monkeypatch, tmp_path,
+):
     """The ancestor probe's own diagnostic never reaches the caller.
 
     ``merge-base --is-ancestor`` with an absent object id really does print:
@@ -220,16 +231,14 @@ def test_a_refused_build_source_ancestor_check_writes_no_git_diagnostic(capfd, t
     The refused product check must not write the probe's stderr to the caller.
     """
     root = _repo(tmp_path)
-    origin = tmp_path / "origin.git"
-    subprocess.run(["git", "init", "-q", "--bare", str(origin)], check=True)
-    _git(root, "remote", "add", "origin", str(origin))
-    _git(root, "push", "-q", "origin", "main:refs/heads/main")
-    _git(root, "fetch", "-q", "origin", "main")
+    head = _git(root, "rev-parse", "HEAD")
+    _git(root, "update-ref", "refs/remotes/origin/main", head)
+    monkeypatch.setattr(transaction, "fetch_origin_main", lambda *_a, **_k: head)
 
     absent = "b" * 40
-    direct = subprocess.run(
-        ["git", "-C", str(root), "merge-base", "--is-ancestor", absent, "origin/main"],
-        capture_output=True, text=True,
+    direct = transaction.run_local_git(
+        root, "merge-base", "--is-ancestor", absent, "origin/main",
+        capture_output=True, text=True, check=False,
     )
     assert direct.returncode not in (0, 1)
     assert direct.stderr

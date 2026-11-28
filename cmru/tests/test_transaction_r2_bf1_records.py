@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 from cmru import transaction
+from tests._git_isolation import git_isolation  # noqa: F401
 
 BASE = "a" * 40
 BRANCH = "cmru-release-20261128_120000-demo-ab12cd"
