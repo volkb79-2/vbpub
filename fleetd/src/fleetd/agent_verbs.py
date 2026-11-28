@@ -82,6 +82,24 @@ def _upload_directory(parent_fd: int, name: str, what: str) -> Iterator[int]:
         os.close(fd)
 
 
+def _open_optional_upload_directory(parent_fd: int, name: str, what: str) -> int | None:
+    """Open a real child directory, treating only an absent directory as empty."""
+
+    try:
+        fd = open_beneath(parent_fd, name, directory=True)
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError) as exc:
+        raise AdmissionError(ExitCode.RUNNER_FAILURE, f"cannot collect upload objects: {what} {name!r} is unreadable: {exc}") from exc
+    try:
+        if not stat.S_ISDIR(os.fstat(fd).st_mode):
+            raise AdmissionError(ExitCode.RUNNER_FAILURE, f"cannot collect upload objects: {what} {name!r} is not a real directory")
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
 def _upload_directory_entries(directory_fd: int, what: str) -> list[str]:
     """List a trusted directory without a symlink or an unbounded entry count."""
 
@@ -524,7 +542,7 @@ class AgentVerbService:
                 kind = "partial"
                 token = name[len("upload-part-"):]
             else:
-                continue
+                raise self._upload_recovery_refusal(name, "unknown incoming upload artifact; inspect the incoming directory")
             if not token or re.fullmatch(r"[A-Za-z0-9_-]+", token) is None:
                 raise self._upload_recovery_refusal(name, "filename token is malformed; check the incoming directory for unexpected names")
             group = groups.setdefault(token, {})
@@ -716,11 +734,16 @@ class AgentVerbService:
         references: dict[str, set[str]] = {}
         state_fd = self._state_directory_fd()
         try:
-            with _upload_directory(state_fd, "jobs", "agent job records") as jobs_fd:
+            jobs_fd = _open_optional_upload_directory(state_fd, "jobs", "agent job records")
+            if jobs_fd is None:
+                return {}
+            try:
                 for name in _upload_directory_entries(jobs_fd, "agent job records"):
                     with _upload_directory(jobs_fd, name, "agent job record directory") as job_fd:
                         group, digests = self._job_record_references(job_fd, name)
                         references.setdefault(group, set()).update(digests)
+            finally:
+                os.close(jobs_fd)
         finally:
             os.close(state_fd)
         return {group: frozenset(digests) for group, digests in references.items()}
@@ -791,7 +814,11 @@ class AgentVerbService:
 
     def _stored_upload_bytes(self) -> int:
         total = 0
-        if self.paths.uploads_dir.is_symlink() or not self.paths.uploads_dir.is_dir():
+        if self.paths.uploads_dir.is_symlink():
+            raise AdmissionError(ExitCode.REFUSAL, "agent upload directory is not a real directory")
+        if not self.paths.uploads_dir.exists():
+            return 0
+        if not self.paths.uploads_dir.is_dir():
             raise AdmissionError(ExitCode.REFUSAL, "agent upload directory is not a real directory")
 
         def visit(directory: Path) -> None:
@@ -850,7 +877,10 @@ class AgentVerbService:
         state_fd = self._state_directory_fd()
         objects: list[_UploadObjectRef] = []
         try:
-            with _upload_directory(state_fd, "uploads", "agent upload store") as uploads_fd:
+            uploads_fd = _open_optional_upload_directory(state_fd, "uploads", "agent upload store")
+            if uploads_fd is None:
+                return ()
+            try:
                 for group in _upload_directory_entries(uploads_fd, "agent upload store groups"):
                     if _UPLOAD_GROUP_RE.fullmatch(group) is None:
                         raise AdmissionError(
@@ -866,6 +896,8 @@ class AgentVerbService:
                                 )
                             with _upload_directory(group_fd, name, "agent upload name") as name_fd:
                                 objects.extend(self._upload_name_objects(group, name, name_fd))
+            finally:
+                os.close(uploads_fd)
         finally:
             os.close(state_fd)
         return tuple(objects)

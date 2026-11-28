@@ -43,3 +43,21 @@ def test_reupload_of_stored_object_does_not_collect(tmp_path, monkeypatch):
     assert result["path"] == old["path"]
     assert Path(old["path"]).read_bytes() == b"abc"
     assert deleted == []
+
+
+def test_absent_jobs_and_uploads_are_empty_on_fresh_state(tmp_path):
+    service, _identity, _checkout = _service(tmp_path)
+    service.paths.jobs_dir.rmdir()
+    service.paths.uploads_dir.rmdir()
+
+    assert service._referenced_upload_objects_locked() == {}
+    assert service._upload_store_objects() == ()
+    assert service._stored_upload_bytes() == 0
+
+
+def test_unknown_incoming_entry_stops_collection(tmp_path):
+    service, _identity, _checkout = _service(tmp_path)
+    (service.paths.incoming_dir / "unexpected").write_text("unknown")
+
+    with pytest.raises(AdmissionError, match="unknown incoming upload artifact"):
+        service._recover_upload_reservations_locked()
