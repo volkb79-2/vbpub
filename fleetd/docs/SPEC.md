@@ -312,8 +312,19 @@ the validated token and never from record contents. It removes torn records,
 leftover record temporaries, and partials only after acquiring the owner's
 lock; a live owner keeps its partial. If the owner lock is missing, inaccessible,
 or busy while its record is invalid, `put` refuses with the offending filename
-and an operator check. Retention and garbage collection are not implemented
-(FD-062).
+and an operator check. Upload object collection is disabled unless the optional
+host-owned `upload_collection_enabled = true` key is set in `agent.toml`; absent
+means false and non-boolean values reject the policy. When enabled, an over-limit
+new upload first validates the durable job-request references and the complete
+reclaimable set, then deletes oldest unreferenced objects only if they are
+sufficient to make the reservation fit. A refused size or disk-floor request
+does not collect. Re-uploads are charged as new bytes and never trigger
+collection. `submit` serializes with collection and refuses by object name when
+an earlier upload was collected before its request was submitted. The client can
+upload the object again. Seed archive sidecars remain with any referenced seed.
+The lock does not cover body streaming; a replay collected while its body is
+streaming is published again at commit or the `put` refuses. FD-076 tracks the
+upload-then-collection window.
 
 `agent.toml.max_connections` is a required positive integer with no default. It
 bounds ordinary local connections; an excess connection is refused with exit
