@@ -214,7 +214,7 @@ class RealProbeSocket(unittest.TestCase):
             self.assertEqual(connection.level, "observe")
             self.assertEqual(
                 connection.verbs,
-                ["hello", "status", "current", "subscribe", "unsubscribe"],
+                ["hello", "status", "current", "subscribe", "unsubscribe", "events"],
             )
             self.assertEqual(connection.limits["tick_ms"], 100)
             self.assertEqual(connection.limits["min_interval_ms"], 1_000)
