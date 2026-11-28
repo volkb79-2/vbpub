@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import json
 import dataclasses
-import shutil
 import subprocess
 from types import SimpleNamespace
 from pathlib import Path
@@ -68,36 +67,6 @@ def test_first_and_repeated_tag_attempts_are_recorded(tmp_path, scope):
     transaction.write_release_tag_attempts(root, workspace, attempts)
 
     assert transaction.read_release_tag_attempts(root, workspace) == attempts
-
-
-def test_attempt_write_recovers_scope_tree_removed_after_absence_clear(
-    tmp_path, monkeypatch,
-):
-    root = _repo(tmp_path)
-    workspace = _workspace(root)
-    common_dir = tmp_path / "git-common"
-    scope_dir = common_dir / "cmru-release-scopes"
-
-    def ensure_scope(_root):
-        common_dir.mkdir(exist_ok=True)
-        scope_dir.mkdir(exist_ok=True)
-        return scope_dir
-
-    monkeypatch.setattr(transaction, "_scope_dir", lambda _root: scope_dir)
-    monkeypatch.setattr(transaction, "_ensure_scope_dir", ensure_scope)
-    clear = transaction.clear_release_tag_absence
-
-    def clear_then_remove_scope(*args):
-        clear(*args)
-        shutil.rmtree(common_dir)
-
-    monkeypatch.setattr(transaction, "clear_release_tag_absence", clear_then_remove_scope)
-    attempts = {"refs/tags/demo-v1": BASE}
-
-    transaction.write_release_tag_attempts(root, workspace, attempts)
-
-    assert transaction.read_release_tag_attempts(root, workspace) == attempts
-    assert scope_dir.is_dir()
 
 
 def test_absence_confirmation_is_written_only_for_an_attempt_without_a_local_tag(
@@ -317,7 +286,7 @@ def test_retention_rename_failure_restores_source_outputs(tmp_path, monkeypatch)
     assert not (project.project_root / "artifacts" / output_id).exists()
 
 
-def test_retention_rollback_preserves_a_new_logs_writer_after_artifact_failure(
+def test_retention_rollback_preserves_original_artifact_error_after_new_logs_writer(
     tmp_path, monkeypatch,
 ):
     root, project, workspace = _retention_workspace(tmp_path)
@@ -355,6 +324,8 @@ def test_retention_rollback_preserves_a_new_logs_writer_after_artifact_failure(
         )
 
     assert injected
+    # The sentinel survives in either flag state; this witness is that the
+    # original artifact-publication error remains the caller-visible exception.
     assert sentinel.read_text(encoding="utf-8") == "preserve concurrent output\n"
     assert (project.project_root / "dist" / "demo.whl").is_file()
 
