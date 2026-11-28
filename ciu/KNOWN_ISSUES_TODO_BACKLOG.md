@@ -710,6 +710,7 @@ entries.
 | CIU-235 | The CIU R2 lane's 5m per-candidate wall budget was shorter than the full suite, so an unkillable mutant was reported `BUDGET_EXCEEDED` and the lane could never report a survivor (now `budget_per_candidate = "auto"`, derived from the run's own baseline; liveness ends idle stalls only, and the working-candidate bound is the interim until Assay P4) | Major for CIU R2 evidence | FIXED IN THIS BRANCH (P-core-11 r2fix) |
 | CIU-236 | Restricted-mode enrollment lacks a real-sshd acceptance test; `TestEnrollAgainstRealSystem` covers only ordinary enrollment | Minor | OPEN 2026-11-28 |
 | CIU-237 | CIU's authorized_keys lock cannot serialize changes made by target-side writers that do not take the lock | Medium | OPEN 2026-11-28 |
+| CIU-239 | `ciu worktree create` fails at env generation with `DOCKER_GID not found` where the Docker socket is hidden (pi controller sandbox) | Minor | OPEN 2026-11-28 |
 
 
 The approved milestone decisions and serial package order are in
@@ -7609,3 +7610,28 @@ this prepared state, allowing hashes recorded for other users and names.
 **Close when.** A deterministic first-add crash-before-replace test with an
 unrelated orphan marker line, and one with an orphan shape line, show a refusal
 that names the line and leaves the file unchanged.
+
+## CIU-239 — `ciu worktree create` fails with `DOCKER_GID not found` where the Docker socket is hidden
+
+**Status:** OPEN (filed 2026-11-28). Related: CIU-160. Severity: Minor.
+
+**Observed** (hostobs pi controller pilot, reported by the main controller).
+In the cockpit, from a pi bash tool call,
+`ciu worktree create --prefix hostobs --feature m3b6` failed at env generation
+with `DOCKER_GID not found`. `ciu worktree ensure` run with `DOCKER_GID=994`
+completed the worktree.
+
+**Cause (source read).** The pi bash sandbox hides the Docker sockets
+(`scripts/controller/pi-pidns-bash-worker.sh`), and
+`workspace_env.py` raises `DockerGidUnavailableError` when no candidate socket
+exists and there is no `docker` group. The error text says `ciu worktree create`
+prepares a root that does not use Docker without a gid; not checked here why
+that did not apply to this root.
+
+**Wanted.** `create` either completes without a gid where Docker is unreachable,
+or refuses before creating anything and names the remedy. CIU-160 plans to
+remove the `DOCKER_GID` input, which removes the workaround above, so settle
+both together.
+
+**Close when.** A test with no candidate socket and no `docker` group shows the
+chosen behaviour for `create`.
