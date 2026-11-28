@@ -187,11 +187,12 @@ What would help more, or be cleaner (non-normative):
   `src/assay/mutation_store.py:1784`, `src/assay/mutation_store.py:4980`
 - **RIG-365** After the sweep, unless a campaign-deadline mask fired, each
   candidate executed in this invocation with bucket `crashed`,
-  `budget_exceeded` or `hung` is re-run once, serially, in plan order, while
-  the remaining lane deadline is at least `budget_per_candidate` (no such stop
-  when it is `none`). The retry's bucket is final and persisted; resumed
-  records are never retried. `src/assay/mutation.py:4807`,
-  `src/assay/mutation.py:4817`
+  `budget_exceeded` or `hung` is re-run once, serially, in plan order. When
+  the liveness watch is not armed, the retry is skipped if the remaining lane
+  time is less than `budget_per_candidate`; with the watch armed, that
+  advisory budget does not gate the retry. The retry's bucket is final and
+  persisted; resumed records are never retried. `src/assay/mutation.py:5213`,
+  `src/assay/mutation.py:5219`, `src/assay/mutation.py:5222`
 - **RIG-370** A native R2 run whose lane process cannot observe its cgroup v2
   ancestry is refused before the baseline: `NO_MEASUREMENT/
   CGROUP_OBSERVATION_UNAVAILABLE`. `src/assay/mutation.py:1715`
@@ -399,61 +400,67 @@ with `ERROR/BAD_LANE_CONFIG` on any other lane. `src/assay/cli.py:2394`,
 - **LIV-010** Every lane declares `budget`: a duration (`90s`, `5m`, `1h30m`;
   a bare number is refused) or the literal `unbounded`. Expiry of the lane
   budget is `BUDGET_EXCEEDED/LANE_TIMEOUT`. `src/assay/config.py:380`,
-  `src/assay/config.py:401`, `src/assay/runner.py:274`,
-  `src/assay/runner.py:307`
+  `src/assay/config.py:416`, `src/assay/runner.py:313`,
+  `src/assay/runner.py:8153`, `src/assay/runner.py:1842`
 - **LIV-020** `unbounded` is admitted only for a native R2 lane whose
   candidates are bounded; `budget_per_candidate = "none"` with `unbounded`
   is refused at load; R0/R1 (with or without R3) and ingested R2 lanes cannot
   be unbounded; an unbounded lane declaring R3 MUST declare
   `judge.canary.budget_per_attempt`. The native R2 baseline then runs with no
   timeout; its watcher is the caller. `src/assay/config.py:2621`,
-  `src/assay/config.py:2696`, `src/assay/config.py:2746`
+  `src/assay/config.py:2693`, `src/assay/config.py:2792`
 - **LIV-030** `judge.mutation.budget_per_candidate`: a duration, `auto`
   (also the meaning of an omitted key) = `max(3 x baseline_wall,
   baseline_wall + 60 s)` computed after the baseline ran, or `none` (no
-  per-candidate bound, WARN at run time). Expiry → bucket `budget_exceeded`.
-  `src/assay/config.py:412`, `src/assay/mutation.py:2136`,
-  `src/assay/mutation.py:2636`, `src/assay/runner.py:6011`
+  per-candidate wall bound, WARN at run time). When this budget binds, expiry
+  is `budget_exceeded`; the armed-watch role is LIV-130.
+  `src/assay/config.py:403`, `src/assay/config.py:3755`,
+  `src/assay/mutation.py:2366`, `src/assay/mutation.py:2892`,
+  `src/assay/liveness.py:2863`, `src/assay/runner.py:6151`,
+  `src/assay/mutation.py:6100`
 - **LIV-040** Liveness applies only to native R2 Python candidates, never to
   the baseline or R1. `judge.mutation.liveness` is `auto` (on iff the
   declared argv invokes pytest), `true` (refused at load for non-pytest argv)
   or `false`. When on, a pytest plugin is appended to `argv_appended` and
-  candidates run under the liveness monitor. `src/assay/liveness.py:1`,
-  `src/assay/liveness.py:243`, `src/assay/liveness.py:518`
+  candidates run under the liveness monitor. `src/assay/liveness.py:546`,
+  `src/assay/liveness.py:553`, `src/assay/runner.py:5384`
 - **LIV-045** `judge.mutation.liveness_cpu_window` and
   `judge.mutation.liveness_idle_floor` are durations in [5 s, 1 h]; declaring
   either is refused at load when `liveness = false` or when liveness can never
   activate (not Python, or argv does not invoke pytest).
-  `src/assay/config.py:484`, `src/assay/config.py:3787`,
-  `src/assay/config.py:3800`, `src/assay/config.py:3810`
-- **LIV-050** A candidate is `hung` (`CANDIDATE_HUNG`) iff, over a window with
-  complete, pressure-free resource evidence: no new plugin event and no
-  stdout/stderr growth for the calibrated bound AND tree CPU grew less than
-  `W/30` in the trailing `W` (`W` = `liveness_cpu_window`, default 30 s); or
-  `session_finish` was seen and the process lives 30 s later with the same
-  quiet conditions. All three intervals run on a pressure-adjusted clock
-  (TIM-140). `src/assay/liveness.py:672`, `src/assay/liveness.py:1547`,
-  `src/assay/liveness.py:1649`, `src/assay/liveness.py:2073`,
-  `src/assay/liveness.py:1979`
+  `src/assay/config.py:3811`, `src/assay/config.py:3834`,
+  `src/assay/config.py:3841`, `src/assay/config.py:3853`
+- **LIV-050** An idle or session-finish hang requires a complete resource
+  trace and no new plugin event or stdout/stderr growth for the calibrated
+  idle bound with less than `W/30` tree CPU growth over the trailing `W`
+  (`W` = `liveness_cpu_window`, default 30 s). The session-finish case also
+  requires 30 s since `session_finish`. These windows advance only over clear
+  resource intervals; the separate CPU bounds are LIV-110 and LIV-120.
+  `src/assay/config.py:681`, `src/assay/liveness.py:738`,
+  `src/assay/liveness.py:2143`, `src/assay/liveness.py:2586`,
+  `src/assay/liveness.py:2747`, `src/assay/liveness.py:2748`,
+  `src/assay/liveness.py:2794`
 - **LIV-060** Calibrated idle bounds: `max(3 x worst baseline event gap, F)`
   after the first event and `max(3 x leading gap, F)` before it (`F` =
   `liveness_idle_floor`, default 15 s); without baseline events,
   `max(60 s, baseline_s / 4)` for both (`F` does not apply).
-  `src/assay/liveness.py:1250`, `src/assay/liveness.py:1297`,
-  `src/assay/liveness.py:1303`,
-  `src/assay/liveness.py:1311`, `src/assay/liveness.py:816`
+  `src/assay/liveness.py:966`, `src/assay/liveness.py:1388`,
+  `src/assay/liveness.py:1479`,
+  `src/assay/liveness.py:1532`, `src/assay/liveness.py:1546`
 - **LIV-070** A candidate that keeps completing plugin events can exceed
   `budget_per_candidate` while the liveness watch is armed; the CPU-without-
   progress and per-test CPU bounds can end it as `hung`. If the watch is not
   armed, the per-candidate budget binds as `budget_exceeded`; `none` leaves
-  the lane deadline as the bound. `src/assay/liveness.py:2774`,
+  the lane deadline as the bound. `src/assay/config.py:2655`,
+  `src/assay/liveness.py:2774`,
   `src/assay/liveness.py:2842`, `src/assay/liveness.py:2912`,
-  `src/assay/runner.py:1842`
+  `src/assay/runner.py:1842`, `src/assay/mutation.py:6100`
 - **LIV-075** The resource trace is compacted at its sample cap without
   disabling hang decisions. An `unknown` resource interval resets the trace
   and the idle clock; a later complete interval starts a new trace.
   `src/assay/liveness.py:1808`, `src/assay/liveness.py:1852`,
-  `src/assay/liveness.py:2611`, `src/assay/liveness.py:2620`
+  `src/assay/liveness.py:2611`, `src/assay/liveness.py:2620`,
+  `src/assay/liveness.py:2622`
 - **LIV-080** A stored `hung` record is reusable with either validated
   pressure-adjusted idle evidence (`idle-hang` or `session-finish-hang`) or
   validated CPU-bound evidence (`cpu-without-progress` or
@@ -461,7 +468,8 @@ with `ERROR/BAD_LANE_CONFIG` on any other lane. `src/assay/cli.py:2394`,
   `src/assay/mutation_store.py:1841`
 - **LIV-090** SIGTERM/SIGINT/SIGHUP during `run` kill the live process
   groups and write an incomplete verdict (`BUDGET_EXCEEDED/LANE_TIMEOUT`).
-  `src/assay/cli.py:801`, `src/assay/runner.py:274`
+  `src/assay/cli.py:801`, `src/assay/runner.py:267`,
+  `src/assay/runner.py:1752`
   Cleaner future design: a cancellation is not a timeout; it needs its own
   reason.
 - **LIV-100** `--progress PATH` appends an NDJSON stream flushed per event
@@ -481,9 +489,13 @@ with `ERROR/BAD_LANE_CONFIG` on any other lane. `src/assay/cli.py:2394`,
   completed events. The bound ignores pressure, and its CPU series does not
   decrease when a child exits. A hit is `hung` with decision
   `cpu-without-progress`; its evidence records measured and required CPU,
-  completed-event count, and the resource snapshot. `src/assay/liveness.py:883`,
+  completed-event count, and the resource snapshot. The first observed
+  `session_finish` re-dates the CPU and no-progress wall windows once; later
+  reads do not restart them. `src/assay/liveness.py:883`,
   `src/assay/liveness.py:896`, `src/assay/liveness.py:946`,
-  `src/assay/liveness.py:2478`, `src/assay/liveness.py:2702`,
+  `src/assay/liveness.py:2487`, `src/assay/liveness.py:2510`,
+  `src/assay/liveness.py:2527`, `src/assay/liveness.py:2702`,
+  `src/assay/liveness.py:2709`, `src/assay/liveness.py:2717`,
   `src/assay/liveness.py:2755`, `src/assay/liveness.py:2774`
 - **LIV-120** The per-test CPU bound applies only to one in-flight pytest test,
   outside xdist and without overlapping test starts. Its window opens at
@@ -492,20 +504,25 @@ with `ERROR/BAD_LANE_CONFIG` on any other lane. `src/assay/cli.py:2394`,
   fresh window. The bound is `max(10 x baseline setup+call+teardown seconds,
   60 CPU seconds)`. A node id absent from the baseline has no per-test bound;
   `session_finish` closes any open window. `src/assay/liveness.py:911`,
-  `src/assay/liveness.py:924`, `src/assay/liveness.py:1650`,
+  `src/assay/liveness.py:924`, `src/assay/liveness.py:1214`,
+  `src/assay/liveness.py:1650`,
   `src/assay/liveness.py:1714`, `src/assay/liveness.py:1724`,
-  `src/assay/liveness.py:1725`, `src/assay/liveness.py:2667`,
+  `src/assay/liveness.py:1725`, `src/assay/liveness.py:1730`,
+  `src/assay/liveness.py:2667`,
   `src/assay/liveness.py:2783`
 - **LIV-130** When liveness is injected and the baseline produced plugin
   events, the progress watch is armed. While the candidate CPU has been read
   and its event stream remains intact, `budget_per_candidate` is advisory and
-  emits one warning when first exceeded. If the watch cannot arm, or the event
-  stream breaks at runtime, that budget binds as `budget_exceeded`; a broken
-  stream also disarms the event-derived CPU bounds and no-progress wall stop.
-  The `plan` progress record states the watch regime. `src/assay/runner.py:6067`,
+  emits one warning when first exceeded. If the watch cannot arm, the candidate
+  CPU is never readable, or the event stream breaks at runtime, a duration
+  budget binds as `budget_exceeded`; with `none`, the lane deadline remains
+  the bound. A broken stream also disarms the event-derived CPU bounds and
+  no-progress wall stop. The `plan` progress record states the watch regime.
+  `src/assay/runner.py:6067`,
   `src/assay/runner.py:6082`, `src/assay/mutation.py:2528`,
   `src/assay/mutation.py:2965`, `src/assay/liveness.py:1621`,
-  `src/assay/liveness.py:2842`, `src/assay/liveness.py:2901`
+  `src/assay/liveness.py:2842`, `src/assay/liveness.py:2901`,
+  `src/assay/mutation.py:6100`
 - **LIV-140** The resource trace is capped by compacting eligible adjacent
   samples; it does not truncate evidence or disable hang decisions. The first
   two samples remain unmerged, and an unknown resource interval starts a new
@@ -514,7 +531,7 @@ with `ERROR/BAD_LANE_CONFIG` on any other lane. `src/assay/cli.py:2394`,
 - **LIV-150** Every liveness stop currently classified as a hang is `hung`,
   never `killed`. CPU-bound and per-test stops carry their CPU evidence;
   idle and session-finish stops require their pressure-adjusted trace.
-  `src/assay/liveness.py:668`, `src/assay/liveness.py:2079`,
+  `src/assay/runner.py:1867`, `src/assay/mutation.py:6107`,
   `src/assay/mutation_store.py:1630`
 - **LIV-155** PLANNED (operator decision 2026-11-26; `docs/VERDICT-V21-DELTA.md`
   §8.2, §8.8). In the next verdict-schema cut, only a load-independent
@@ -566,47 +583,55 @@ summary fields carry raw and normalized time; schema impact.
 ### 7.2 Places where wall time can affect a verdict today
 
 - **TIM-110** Lane budget: monotonic wall deadline → `LANE_TIMEOUT`.
-  `src/assay/runner.py:307`, `src/assay/runner.py:8034`
+  `src/assay/runner.py:313`, `src/assay/runner.py:355`,
+  `src/assay/runner.py:8153`, `src/assay/runner.py:1842`
 - **TIM-120** Campaign deadline: a persisted UTC expiry bounds the lane
   deadline; candidates left at expiry are recorded never started
-  (`budget_exceeded`). `src/assay/runner.py:282`, `src/assay/mutation.py:4891`
-- **TIM-130** Auto per-candidate budget derives from the baseline's wall
-  duration (the difference of its recorded realtime `started`/`ended`
-  timestamps) and is enforced as monotonic wall elapsed time.
-  `src/assay/mutation.py:2121`, `src/assay/mutation.py:2636`,
-  `src/assay/liveness.py:2097`
-- **TIM-140** Liveness idle bounds, the CPU window and the session-finish
-  grace are wall intervals on a pressure-adjusted clock that stops during
-  non-clear resource intervals (which also reset the CPU window); the
-  per-candidate budget is raw monotonic wall time.
-  `src/assay/liveness.py:1979`, `src/assay/liveness.py:1985`,
-  `src/assay/liveness.py:2051`, `src/assay/liveness.py:2076`,
-  `src/assay/liveness.py:2097`
+  (`budget_exceeded`). `src/assay/cli.py:2017`,
+  `src/assay/runner.py:300`, `src/assay/mutation.py:5213`,
+  `src/assay/mutation.py:5277`
+- **TIM-130** Auto per-candidate budget derives from the baseline's recorded
+  wall duration (`ended` minus `started`). When binding, it is enforced as
+  monotonic wall elapsed time; with the liveness watch armed, it is advisory
+  as LIV-130 states. `src/assay/mutation.py:2366`,
+  `src/assay/mutation.py:2892`, `src/assay/liveness.py:2842`,
+  `src/assay/liveness.py:2875`
+- **TIM-140** Idle and session-finish windows advance only over clear resource
+  intervals. Non-clear intervals stop that clock and reset the idle rule's
+  flat-CPU growth window. The per-candidate budget uses monotonic wall time.
+  CPU-without-progress and per-test bounds measure process-tree CPU seconds.
+  `src/assay/liveness.py:2586`, `src/assay/liveness.py:2593`,
+  `src/assay/liveness.py:2747`, `src/assay/liveness.py:2750`,
+  `src/assay/liveness.py:2875`, `src/assay/liveness.py:2774`
 - **TIM-150** Canary `budget_per_attempt` is a wall bound per attempt; an
   exhausted lane deadline marks later targets `budget_exhausted`.
   `src/assay/canary.py:737`, `src/assay/verdict.py:887`
 - **TIM-160** Git and snapshot calls run against the remaining lane deadline;
   the commit-label read after expiry has a 2 s wall grace.
-  `src/assay/runner.py:4267`, `src/assay/cli.py:180`
+  `src/assay/runner.py:1604`, `src/assay/runner.py:4263`,
+  `src/assay/cli.py:180`, `src/assay/cli.py:3757`
 - **TIM-170** The serial tail retry (RIG-365) opens only without a
-  campaign-deadline mask and stops when the remaining wall deadline drops
-  below `budget_per_candidate`. `src/assay/mutation.py:4807`,
-  `src/assay/mutation.py:4817`
+  campaign-deadline mask. When the liveness watch is not armed, it stops when
+  the remaining wall deadline drops below `budget_per_candidate`; with the
+  watch armed, the advisory candidate budget does not gate the retry.
+  `src/assay/mutation.py:5213`, `src/assay/mutation.py:5219`,
+  `src/assay/mutation.py:5222`
 - **TIM-180** The cgroup observer request times out after 5 s and its
   preflight join after 6 s; a slow observer makes observation unavailable
   (RIG-370 before the baseline, `unobserved`/`crashed` per candidate).
   `src/assay/resource_limits.py:61`, `src/assay/resource_limits.py:1126`,
   `src/assay/resource_limits.py:1423`
 - **TIM-190** A candidate process tree that does not empty within its
-  cleanup deadline is `ERROR/EXEC_FAILED`. `src/assay/process_tree.py:632`,
-  `src/assay/runner.py:1895`
+  cleanup deadline is `ERROR/EXEC_FAILED`. `src/assay/process_tree.py:636`,
+  `src/assay/runner.py:1924`
 - **TIM-200** The liveness trace cap (LIV-075) is 1024 poll samples at a
   nominal 1 s interval, including pressure-stalled samples. It therefore
   spans about 1024 s of wall time after progress or a trace restart, not
   eligible time. The samples compact at the cap, so it does not disable
-  `hung`. `src/assay/liveness.py:742`, `src/assay/liveness.py:1811`,
-  `src/assay/liveness.py:1888`, `src/assay/liveness.py:2126`,
-  `src/assay/liveness.py:2620`, `src/assay/liveness.py:2625`
+  `hung`. `src/assay/liveness.py:742`, `src/assay/liveness.py:743`,
+  `src/assay/liveness.py:1881`, `src/assay/liveness.py:1888`,
+  `src/assay/liveness.py:2124`, `src/assay/liveness.py:2625`,
+  `src/assay/liveness.py:2638`
 
 ## 8. CLI and exit codes (CLI)
 
