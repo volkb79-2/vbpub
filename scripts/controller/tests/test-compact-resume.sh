@@ -125,6 +125,15 @@ COMPACT_RESUME_START_TRIES=3 COMPACT_RESUME_DONE_TRIES=3 run '%9' "$D/guidance.t
 contains "$D/log" "compaction spinner observed" "fast spinner confirmation logged"
 cmp -s "$D/sent-compact" "$D/expected-resume.txt" || fail "fast spinner: resume prompt not sent after completion"
 
+# The default confirmation window reaches a delayed spinner after more than 60 polls.
+delay_frames=
+for ((i = 0; i < 61; i++)); do delay_frames+="I "; done
+scenario delayed-default-spinner "I" "$delay_frames SPIN I I I I I"
+COMPACT_RESUME_START_POLL=0 run '%9' "$D/guidance.txt" "$D/prompt.txt" "$D/log"
+[[ $RC -eq 0 ]] || fail "default delayed spinner exit $RC"
+[[ $(calls | grep -c '^capture compact') -gt 60 ]] || fail "default spinner window stopped before poll 61"
+cmp -s "$D/sent-compact" "$D/expected-resume.txt" || fail "default delayed spinner: resume prompt not sent"
+
 # 2. Idle blips (fewer than 3 in a row) do not count as idle, before the /compact or during it.
 scenario blips "I B I I B I I I" "K I I K I I K I I I"
 run '%9' "$D/guidance.txt" "$D/prompt.txt" "$D/log"

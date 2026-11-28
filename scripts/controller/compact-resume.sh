@@ -23,12 +23,13 @@ set -u
 # compaction-specific spinner was observed after sending /compact, so the resume prompt was not sent.
 # Progress goes to <log-file>. Footer markers and the shared idle logic: resume-lib.sh. Test seams
 # (tests/test-compact-resume.sh): COMPACT_RESUME_{POLL,IDLE_TRIES,TYPE_PAUSE,FINAL_WAIT,START_TRIES,START_POLL,DONE_TRIES,SETTLE,LOCK_DIR,LOCK_WAIT}.
+# Spinner confirmation defaults to 600 polls at 0.2 seconds (at least 120 seconds).
 RESUME_PREFIX=COMPACT_RESUME
 # shellcheck source=resume-lib.sh
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/resume-lib.sh"
 BUSY_MARKERS+=("$COMPACTING_MARKER")
 FOOT_LINES=6                   # the compaction spinner sits higher than the working one
-start_tries=$(seam START_TRIES 60) start_poll=$(seam START_POLL 0.05) done_tries=$(seam DONE_TRIES 1800) settle=$(seam SETTLE 3)
+start_tries=$(seam START_TRIES 600) start_poll=$(seam START_POLL 0.2) done_tries=$(seam DONE_TRIES 1800) settle=$(seam SETTLE 3)
 [[ $# -eq 4 ]] || { echo "usage: ${0##*/} <tmux-pane-id> <compact-guidance-file> <resume-prompt-file> <log-file>" >&2; exit 2; }
 pane=$1; guidance_file=$2; prompt_file=$3; log=$4
 check_log
