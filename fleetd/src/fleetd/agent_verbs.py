@@ -742,6 +742,18 @@ class AgentVerbService:
                                     f"cannot collect upload objects: job record directory {name!r} has no request.json and unexpected entries",
                                 )
                             try:
+                                lock_stat = os.stat("submit.lock", dir_fd=job_fd, follow_symlinks=False)
+                            except OSError as exc:
+                                raise AdmissionError(
+                                    ExitCode.RUNNER_FAILURE,
+                                    f"cannot collect upload objects: submit lock for {name!r} is unreadable: {exc}",
+                                ) from exc
+                            if not stat.S_ISREG(lock_stat.st_mode) or lock_stat.st_mode & 0o077:
+                                raise AdmissionError(
+                                    ExitCode.RUNNER_FAILURE,
+                                    f"cannot collect upload objects: submit lock for {name!r} is not a private regular file",
+                                )
+                            try:
                                 book_record = self.admission.book.read_record(name)
                             except AdmissionError as exc:
                                 raise AdmissionError(
@@ -1262,9 +1274,12 @@ class AgentVerbService:
                         self._require_submit_uploads(normalized, identity.group)
                         return self.admission._write_request(normalized, identity, digest)
 
-            result = self.admission.submit(
-                normalized, identity, self.executor, prepare_request=prepare_request,
-            )
+            if prepare_request is None:
+                result = self.admission.submit(normalized, identity, self.executor)
+            else:
+                result = self.admission.submit(
+                    normalized, identity, self.executor, prepare_request=prepare_request,
+                )
             return AgentReply(self._envelope(**result))
         if verb == "status":
             result = self.admission.status(str(normalized["job_id"]), identity, self.executor)

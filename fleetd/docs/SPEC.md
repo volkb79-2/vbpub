@@ -12,8 +12,8 @@ executor serve the host protocol described below.
 
 `fleetd.admission` is a standard-library-only host admission library. C3a wires
 its book to the host protocol; C3b-1 adds a scoped lane executor. The current
-planner and runners do not call it yet. C3b-2 still owns recovery, legacy-job
-and Docker inspector providers, and upload garbage collection.
+planner and runners do not call it yet. C3b-2 adds recovery, legacy-job and
+Docker inspector providers, plus opt-in upload object collection.
 
 `HostCapacity` is the typed projection of the admission-relevant `host-facts/2`
 fields. Each input is a `Fact[T]`: a known value has no reason; an unavailable
@@ -220,8 +220,8 @@ include the in-flight executor work. C3b-1 adds the standard-library
 transient systemd scope per job and hands its admission flock to that worker.
 When enabled, repository content steps run as the required non-root
 `agent.toml.runner_user`; the supervisor remains root. C3b-1 does not install a systemd unit or socket
-group (C3c), recover after executor/host loss, or implement upload garbage
-collection (C3b-2 follow-up).
+group (C3c), or recover after executor/host loss. C3b-2 implements opt-in
+upload object collection.
 
 Local socket peers are authenticated from `SO_PEERCRED`'s UID and primary GID;
 the configured supplementary socket group only grants connect permission. The
@@ -314,18 +314,24 @@ lock; a live owner keeps its partial. If the owner lock is missing, inaccessible
 or busy while its record is invalid, `put` refuses with the offending filename
 and an operator check. Upload object collection is disabled unless the optional
 host-owned `upload_collection_enabled = true` key is set in `agent.toml`; absent
-means false and non-boolean values reject the policy. When enabled, an over-limit
-new upload first validates the durable job-request references and the complete
-reclaimable set, then deletes oldest unreferenced objects only if they are
-sufficient to make the reservation fit. A refused size or disk-floor request
-does not collect. Re-uploads are charged as new bytes and never trigger
-collection. `submit` serializes with collection and refuses by object name when
-an earlier upload was collected before its request was submitted. The client can
-upload the object again. `have` remains the repo-checkout ref listing; it does
-not report upload presence. Seed archive sidecars remain with any referenced seed.
-The lock does not cover body streaming; a replay collected while its body is
-streaming is published again at commit or the `put` refuses. FD-076 tracks the
-upload-then-collection window.
+means false and non-boolean values reject the policy. With it false, `put`,
+`submit` and `have` retain their pre-collection behavior. When enabled, an
+over-limit new upload first validates the durable job-request references and
+the complete reclaimable set. It deletes oldest unreferenced objects only when
+they cover the larger of the cap deficit and disk-floor deficit; if they are
+insufficient, nothing is deleted. The floor is checked again after collection;
+a floor breach alone does not trigger collection. Re-uploads are charged as
+new bytes and never trigger collection. Durable requests retain their seed,
+dev and candidate objects, and seed archive sidecars stay with referenced
+seeds. Bundles for a group remain protected until every job request in that
+group has a valid terminal admission record. An earlier upload collected
+before submit causes a missing seed/dev/candidate object refusal by name, and
+the client can upload it again. A missing bundle is not detected by submit; if
+checkout needs it, the job fails with `CHECKOUT_FAILURE`. `have` remains the
+repo-checkout ref listing and does not report upload presence. The lock does
+not cover body streaming; a replay collected while its body is streaming is
+published again at commit or the `put` refuses. FD-076 tracks this upload-then-
+collection window.
 
 `agent.toml.max_connections` is a required positive integer with no default. It
 bounds ordinary local connections; an excess connection is refused with exit

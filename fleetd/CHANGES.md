@@ -6,7 +6,7 @@ All notable changes to this project are recorded here.
 
 ### Added
 - Add the standard-library host lane executor and worker, one transient systemd scope per confirmed job, runner-user checkout operations, bundle verification, seed/collect archives, Run-Gate verdict binding and host-written `result.json`. The executor remains disabled unless the optional `executor_enabled = true` policy key is set.
-- Add opt-in upload object collection through `upload_collection_enabled`; collection preserves durable job inputs, refuses futile deletion, and reports missing inputs by name when a delayed submit follows collection. Re-uploads remain charged.
+- Add opt-in upload object collection through `upload_collection_enabled`; collection preserves durable job inputs, protects bundles through job completion, accounts for cap and disk-floor deficits, and refuses futile deletion. A delayed submit reports missing seed/dev/candidate inputs by name; a missing bundle needed for checkout fails with `CHECKOUT_FAILURE`. Re-uploads remain charged.
 - Persist FD-061 executor result fields before releasing the admission charge; terminal status reads them after restart. An `archive-store` pack failure is recorded as failed collection detail and does not rewrite the lane verdict; it is not retried (FD-071).
 
 ### Changed
@@ -110,7 +110,7 @@ All notable changes to this project are recorded here.
 - Open lane declarations and progress streams through trusted directory descriptors without following any path component; cap progress ranges and client response bodies at 8 MiB.
 - Return terminal status only from its durable completion record and refuse cancel of completed jobs. C3b owns executor-backed terminal details (FD-061).
 - Advertise `lease` only when object, legacy-job and container-identity inspectors are configured; C3b-2a wires those providers from `agent.toml.legacy_jobs_dir`, so the shipped C3a CLI does not advertise it.
-- Keep each upload's full declared size reserved through durable commit or partial removal; bytes buffered or written do not lower the upload filesystem disk-floor charge. Publish reservation records atomically under a stable owner lock and reclaim torn records only after confirming the owner is absent. Leave retention and garbage collection to C3b (FD-062).
+- Keep each upload's full declared size reserved through durable commit or partial removal; bytes buffered or written do not lower the upload filesystem disk-floor charge. Publish reservation records atomically under a stable owner lock and reclaim torn records only after confirming the owner is absent. FD-062 adds opt-in collection for new puts that exceed the store cap; a floor-only breach still refuses without collection.
 - Bound Assay progress candidate counting to the opened file's 8 MiB snapshot; larger files return `done: null` with a reason, and incremental counting remains FD-063.
 
 ### Fixed

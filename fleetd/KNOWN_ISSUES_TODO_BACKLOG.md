@@ -64,7 +64,7 @@
 | FD-059 | Measure and design PSI-aware admission before enforcing a prediction | P1 | OPEN (design only) | 2026-11-27 |
 | FD-060 | A granted lease client can stay connected forever without binding | P2 | FIXED IN THIS BRANCH (C3a) | 2026-11-27 |
 | FD-061 | Persist executor result details for terminal status | P2 | FIXED IN THIS BRANCH (C3b-1) | 2026-11-27 |
-| FD-062 | Retain and garbage-collect host upload objects | P2 | FIXED IN THIS BRANCH (C3b-2; opt-in) | 2026-11-27 |
+| FD-062 | Retain and garbage-collect host upload objects | P2 | OPEN; implementation present, final coverage and regression rerun required | 2026-11-27 |
 | FD-063 | Incrementally count large Assay progress files | P2 | OPEN | 2026-11-27 |
 | FD-064 | A legacy job directory without EXIT after host reboot remains charged | P2 | OPEN | 2026-11-27 |
 | FD-065 | Legacy-job listing is point-in-time and completed directories consume the entry ceiling | P2 | OPEN | 2026-11-27 |
@@ -1187,12 +1187,16 @@ charge in place.
 
 ## FD-062 Retain and garbage-collect host upload objects
 
-**State:** FIXED IN THIS BRANCH (C3b-2; collection is opt-in). **Priority:** P2. **Filed:** 2026-11-27.
+**State:** OPEN; implementation is present, but final coverage and regression rerun remain. **Priority:** P2. **Filed:** 2026-11-27.
 
 C3a bounds aggregate stored and in-flight upload bytes with
 `policy.max_upload_store_bytes`. C3b-2 adds host-opt-in collection, preserving
-objects referenced by durable job request records and coordinating with active
-uploads. Re-uploads remain charged. There is no expiry or quota default.
+objects referenced by durable job request records, protecting group bundles
+until each job has a valid terminal admission record, and coordinating with
+active uploads. Collection preflights both cap and disk-floor deficits and
+deletes nothing when the reclaimable set is insufficient. A disk-floor breach
+alone still refuses without collection. Re-uploads remain charged. There is no
+expiry or quota default.
 
 Source: P-fd-05 C3a round 2 controller ruling (2026-11-27).
 
@@ -1200,12 +1204,15 @@ Source: P-fd-05 C3a round 2 controller ruling (2026-11-27).
 
 **State:** OPEN. **Priority:** P2. **Filed:** 2026-11-28.
 
-An unreferenced object may be collected after a successful `put` and before the
-client submits a job naming it. `submit` refuses with the missing object name;
-the client must upload it again. `have` remains the repo-checkout ref listing
-and does not report upload presence. Keep this window visible to controllers
-and consumers. A replay being streamed while collection removes its prior copy
-must be republished at commit or refused.
+An unreferenced seed, dev or candidate object may be collected after a
+successful `put` and before the client submits a job naming it. `submit`
+refuses with the missing object name and the client must upload it again. A
+bundle may also be collected before submit; submit does not detect the missing
+bundle, and a job whose checkout needs it fails with `CHECKOUT_FAILURE`.
+`have` remains the repo-checkout ref listing and does not report upload
+presence. Keep this window visible to controllers and consumers. A replay
+being streamed while collection removes its prior copy must be republished at
+commit or refused.
 
 Source: P-fd-05 C3b-2 controller ruling (2026-11-28).
 

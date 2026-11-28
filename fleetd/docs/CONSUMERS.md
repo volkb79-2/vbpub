@@ -103,10 +103,15 @@ behavior. Collection runs when a new put would exceed the store cap, preserves
 objects named by durable job requests, and refuses the put without deleting
 anything if the reclaimable set cannot make it fit. Re-uploads count toward the
 cap and do not trigger collection. An uploaded object can be collected before a
-later submit names it; that submit refuses with the missing object name, and the
-controller can upload it again. `have` continues to list repo checkout refs and
+later submit names it; a missing seed/dev/candidate object makes submit refuse
+with its name, and the controller can upload it again. A bundle collected
+before submit is not detected there; a job whose checkout needs that bundle
+fails with `CHECKOUT_FAILURE`. `have` continues to list repo checkout refs and
 does not report upload presence. A replay collected while its request body is
-streaming is committed again or refused.
+streaming is committed again or refused. Collection preflights both store-cap
+and disk-floor deficits and deletes nothing if the reclaimable set is too
+small. A floor-only breach refuses without collection, and the floor is
+rechecked after collection.
 
 The optional closed-schema key `executor_enabled` accepts only a TOML boolean.
 If absent it is false; a present non-boolean refuses policy loading. While
