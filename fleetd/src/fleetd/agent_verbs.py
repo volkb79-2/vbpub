@@ -1096,14 +1096,27 @@ class AgentVerbService:
                     raise AdmissionError(ExitCode.REFUSAL, "existing host-created upload does not match its content address")
             required = stored + in_flight + expected - store_limit
             available = self._upload_free_bytes()
-            if available - remaining - expected < floor_bytes:
+            floor_deficit = max(0, floor_bytes - (available - remaining - expected))
+            can_collect = required > 0 and self.policy.upload_collection_enabled and not existing
+            if floor_deficit and not can_collect:
                 raise AdmissionError(
                     ExitCode.REFUSAL,
                     f"put would breach configured disk floor {floor_bytes}",
                 )
-            if required > 0 and self.policy.upload_collection_enabled and not existing:
-                self._collect_upload_objects_locked(required, store_limit)
+            if can_collect:
+                needed = max(required, floor_deficit)
+                reclaimed = self._collect_upload_objects_locked(needed, store_limit)
+                if reclaimed < needed and floor_deficit:
+                    raise AdmissionError(
+                        ExitCode.REFUSAL,
+                        f"put cannot reclaim {needed} bytes required by configured disk floor {floor_bytes}; nothing was collected",
+                    )
                 stored = self._stored_upload_bytes()
+                if self._upload_free_bytes() - remaining - expected < floor_bytes:
+                    raise AdmissionError(
+                        ExitCode.REFUSAL,
+                        f"put would breach configured disk floor {floor_bytes} after collection",
+                    )
             if stored + in_flight + expected > store_limit:
                 raise AdmissionError(
                     ExitCode.REFUSAL,

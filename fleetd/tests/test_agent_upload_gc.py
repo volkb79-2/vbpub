@@ -52,11 +52,40 @@ def test_disk_floor_refusal_does_not_collect(tmp_path, monkeypatch):
     _enable_collection(service)
     _upload_policy(service, store_bytes=100, floors={"checkout": 0})
     old = _put(service, identity, "candidates", b"old")
-    _upload_policy(service, store_bytes=1, floors={"checkout": 10})
+    _upload_policy(service, store_bytes=100, floors={"checkout": 10})
     monkeypatch.setattr(service, "_upload_free_bytes", lambda: 10)
 
     with pytest.raises(AdmissionError, match="disk floor"):
-        service._reserve_upload(1, 1, 10)
+        service._reserve_upload(1, 100, 10)
+
+    assert Path(old["path"]).read_bytes() == b"old"
+
+
+def test_collection_satisfies_combined_store_cap_and_disk_floor(tmp_path, monkeypatch):
+    service, identity, _checkout = _service(tmp_path)
+    _enable_collection(service)
+    _upload_policy(service, store_bytes=100, floors={"checkout": 0})
+    old = _put(service, identity, "candidates", b"reclaim")
+    _upload_policy(service, store_bytes=7, floors={"checkout": 12})
+    free_space = iter((10, 20))
+    monkeypatch.setattr(service, "_upload_free_bytes", lambda: next(free_space))
+
+    reservation = service._reserve_upload(1, 7, 12, identity.group, "candidates", "a" * 64)
+    assert not Path(old["path"]).exists()
+    service._discard_upload_reservation(reservation)
+    service._release_upload_reservation(reservation)
+
+
+def test_combined_cap_and_floor_shortfall_deletes_nothing(tmp_path, monkeypatch):
+    service, identity, _checkout = _service(tmp_path)
+    _enable_collection(service)
+    _upload_policy(service, store_bytes=100, floors={"checkout": 0})
+    old = _put(service, identity, "candidates", b"old")
+    _upload_policy(service, store_bytes=1, floors={"checkout": 20})
+    monkeypatch.setattr(service, "_upload_free_bytes", lambda: 10)
+
+    with pytest.raises(AdmissionError, match="cannot reclaim.*nothing was collected"):
+        service._reserve_upload(1, 1, 20, identity.group, "candidates", "a" * 64)
 
     assert Path(old["path"]).read_bytes() == b"old"
 
