@@ -38,7 +38,7 @@ case $1 in
     if [[ " $* " == *" -e "* ]]; then cat -- "$f"; else sed 's/\x1b\[[0-9;]*m//g' "$f"; fi
     if [[ $phase == compact && $k == "${STUB_RECEIPT_AT:-1}" ]]; then
       mkdir -p "$COMPACT_RESUME_RECEIPT_DIR"
-      printf '{"session_id":"stub-session","timestamp":"stub","write_id":%s}\n' "$k" \
+      printf '{"session_id":"%s","timestamp":"stub","write_id":%s}\n' "${STUB_SESSION_ID:-stub-session}" "$k" \
         >"$COMPACT_RESUME_RECEIPT_DIR/${STUB_RECEIPT_PANE:-%9}.json"
     fi ;;
   send-keys)
@@ -190,6 +190,29 @@ scenario wrong-pane-receipt "I" "I"
 STUB_RECEIPT_AT=1 STUB_RECEIPT_PANE=%8 COMPACT_RESUME_START_TRIES=3 run '%9' "$D/guidance.txt" "$D/prompt.txt" "$D/log"
 [[ $RC -eq 8 ]] || fail "receipt for another pane exit $RC (want 8)"
 [[ ! -e $D/sent.3 ]] || fail "other pane receipt: resume prompt was sent"
+scenario foreign-session-receipt "I" "I"
+COMPACT_RESUME_SESSION_ID=target-session STUB_SESSION_ID=foreign-session COMPACT_RESUME_START_TRIES=3 \
+  run '%9' "$D/guidance.txt" "$D/prompt.txt" "$D/log"
+[[ $RC -eq 8 ]] || fail "foreign session receipt exit $RC (want 8)"
+[[ ! -e $D/sent.3 ]] || fail "foreign session receipt: resume prompt was sent"
+[[ $(calls | grep -c 'send-keys %9 Enter') -eq 1 ]] || fail "foreign session receipt: a second Enter was sent"
+scenario matching-session-receipt "I" "I I I I"
+COMPACT_RESUME_SESSION_ID=target-session STUB_SESSION_ID=target-session COMPACT_RESUME_START_TRIES=3 \
+  run '%9' "$D/guidance.txt" "$D/prompt.txt" "$D/log"
+[[ $RC -eq 0 ]] || fail "matching session receipt exit $RC"
+cmp -s "$D/sent-compact" "$D/expected-resume.txt" || fail "matching session receipt: resume prompt not sent"
+scenario self-launch-foreign-session "I" "I"
+TMUX_PANE=%9 CLAUDE_CODE_SESSION_ID=self-session STUB_SESSION_ID=foreign-session COMPACT_RESUME_START_TRIES=3 \
+  run '%9' "$D/guidance.txt" "$D/prompt.txt" "$D/log"
+[[ $RC -eq 8 && ! -e $D/sent.3 ]] || fail "self-launch rejected neither foreign receipt nor prompt"
+scenario self-launch-own-session "I" "I I I I"
+TMUX_PANE=%9 CLAUDE_CODE_SESSION_ID=self-session STUB_SESSION_ID=self-session COMPACT_RESUME_START_TRIES=3 \
+  run '%9' "$D/guidance.txt" "$D/prompt.txt" "$D/log"
+[[ $RC -eq 0 ]] || fail "self-launch own session receipt exit $RC"
+scenario unrelated-session-env "I" "I I I I"
+TMUX_PANE=%8 CLAUDE_CODE_SESSION_ID=ignored-session STUB_SESSION_ID=stub-session COMPACT_RESUME_START_TRIES=3 \
+  run '%9' "$D/guidance.txt" "$D/prompt.txt" "$D/log"
+[[ $RC -eq 0 ]] || fail "CLAUDE_CODE_SESSION_ID with a different pane was not ignored"
 # Spinner text on screen without a receipt is not confirmation, even when it disappears into idle.
 scenario stale-spinner "I" "SPIN I I I"
 stale_frame=$D/frames/compact.001

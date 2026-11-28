@@ -687,12 +687,15 @@ then type the prompt file's text and Enter. Exit codes are in each script header
 (0: prompt sent; 2: bad arguments or no pane, nothing sent; 3: never idle;
 compact only, 4: compaction unfinished; 5: the input line never emptied, or
 the pane stayed busy before the second send; 6: a `tmux send-keys` call failed;
-7: per-pane lock timeout; compact only, 8: no compaction spinner was
-confirmed, so the resume prompt was not sent). Compact sends `/compact `
-separately, then guidance and prompt text in UTF-8-safe chunks of at most 400
-characters. Spinner confirmation defaults to 600 polls at 0.2 seconds.
-It requires the live spinner line (`Compacting` with the spinner and ellipsis)
-after the send before it types the resume prompt. Before EVERY typed send both
+7: per-pane lock timeout; compact only, 8: no changed compaction receipt for
+the expected session was confirmed, so the resume prompt was not sent).
+Compact sends `/compact ` separately, then guidance and prompt text in
+UTF-8-safe chunks of at most 400 characters. Receipt confirmation defaults
+to a 120-second window (60 polls at 2 seconds). The expected session id comes
+from `COMPACT_RESUME_SESSION_ID`, or from `CLAUDE_CODE_SESSION_ID` when the
+caller's `TMUX_PANE` is the resolved target pane. Without a known id, any
+changed receipt for that pane is accepted, so another session sharing the
+pane can confirm it. Before EVERY typed send both
 helpers wait until the pane is idle AND the input row (the last line starting
 with `❯`) is empty, so nothing is typed over text someone has in the input line.
 

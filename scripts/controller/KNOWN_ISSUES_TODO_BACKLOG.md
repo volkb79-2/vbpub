@@ -78,7 +78,7 @@ together.
 | CTL-68 | P-plat-35 review follow-ups: progress lines stop while the mutation queue drains; a missing runner mutant file counts as killed | Nice-to-have | OPEN |
 | CTL-69 | Pi automatic compaction summaries grow without bound and omit older in-flight status | Medium | OPEN 2026-11-27 |
 | CTL-79 | `pi-ctl-send.sh` has a check-then-use window after its symlink scan | Known limit | BY DESIGN 2026-11-28 (main ruling) |
-| CTL-80 | `compact-resume.sh` can deliver `/compact` as pasted text and then send the resume prompt although no compaction ran | High | FIXED 2026-11-28 (P-plat-CTL80 r2) |
+| CTL-80 | `compact-resume.sh` can deliver `/compact` as pasted text and then send the resume prompt although no compaction ran | High | FIXED 2026-11-28 (P-plat-CTL80 r3) |
 | CTL-81 | A fresh pi controller session saves the previous session's monitor-restart notice as its original goal | Medium | FIXED 2026-11-28 (P-plat-CTL80) |
 | CTL-82 | An IDE selection chip in an empty Claude Code prompt row is read as typed input | Medium | OPEN 2026-11-28 (main smoke evidence) |
 
@@ -2023,7 +2023,7 @@ does not start a turn.
 
 ## CTL-80 — compact-resume can paste `/compact` and resume without a compaction
 
-**Status:** FIXED 2026-11-28 (P-plat-CTL80 r2). The command prefix and guidance are sent separately; all long literal text is chunked at Unicode-safe boundaries, and the resume prompt is withheld unless a changed receipt from the session's `SessionStart(compact)` hook is observed. A missing receipt with an idle pane exits 8; a pane that remains busy is bounded by `DONE_TRIES` and exits 4. Live pane behavior remains for the controller's smoke check.
+**Status:** FIXED 2026-11-28 (P-plat-CTL80 r3). The command prefix and guidance are sent separately; all long literal text is chunked at Unicode-safe boundaries, and the resume prompt is withheld unless a changed receipt from the session's `SessionStart(compact)` hook is observed. When known, the receipt's session id must match the explicit expected id or the caller's id when `TMUX_PANE` matches the target; without a known id, any changed pane receipt is accepted, so a different session sharing that pane can confirm. Spawned sessions do not write receipts. A missing or mismatched receipt with an idle pane exits 8; a pane that remains busy is bounded by `DONE_TRIES` and exits 4. Live pane behavior remains for the controller's smoke check.
 
 Filed 2026-11-28, reported by main; High. At about 11:28Z on
 pane `%13` both the `/compact <guidance>` line and the resume prompt arrived in
