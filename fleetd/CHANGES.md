@@ -4,6 +4,13 @@ All notable changes to this project are recorded here.
 
 ## [Unreleased]
 
+### Added
+- Add the standard-library host lane executor and worker, one transient systemd scope per confirmed job, runner-user checkout operations, bundle verification, seed/collect archives, Run-Gate verdict binding and host-written `result.json`. The executor remains disabled unless the optional `executor_enabled = true` policy key is set.
+- Persist FD-061 executor result fields before releasing the admission charge; terminal status reads them after restart. An `archive-store` pack failure is recorded as failed collection detail and does not rewrite the lane verdict; it is not retried (FD-071).
+
+### Changed
+- Conditionally wire `fleetd-agent` to the executor only when `executor_enabled = true`; an absent key means false, and a non-boolean refuses policy loading. `runner_user` is required only when the executor is enabled; when present while disabled it is name-checked but not looked up. Keep the key false until FD-067, FD-068 and FD-075 are closed and Run-Gate revision 78 is released and deployed. Host-mode submissions also wait for FD-069; exec-mode submissions require the FD-070 persistent-runner probe. With the key false, submit, status and cancel retain the C3a no-executor refusal before request record or charge. C3b-1 does not install or enable host services. The worker records and inspects lane-started containers as events arrive, and confirms its scope and exact-label containers before collection or release. Cancellation refuses with a named deferral when guard presence is true or unknown and no merged `deregister` callable is available.
+
 <!-- cmru: release history -->
 
 ## [0.2.0] - 2026-11-27

@@ -77,7 +77,7 @@ wrapper, which must sit beside a repository checkout. A facts-only host needs
 neither the wrapper nor a checkout (FD-023 tracks the installed-wheel path for
 the wrapper).
 
-### Host agent packages C3a and C3b-2a
+### Host agent packages C3a, C3b-1 and C3b-2a
 
 `fleetd-agent serve --socket-path /run/fleetd-agent/agent.sock` binds a local
 Unix socket, while `fleetd-agent serve --listen-fd 3` accepts an inherited
@@ -85,16 +85,41 @@ listening descriptor. The direct path form requires an existing real runtime
 directory and never creates or removes that directory. `fleetd-agent
 forced-command --group GROUP` serves one framed request on the ssh forced
 command's stdin/stdout. Package C3a supplies the protocol, admission wiring and
-CLI. C3b-2a adds the legacy-job and Docker inspection providers. It does not
-include the separate in-flight job executor work. The systemd units, socket
-group and host mounts belong to C3c.
+CLI.
+C3b-1 adds the standard-library host executor and worker, guarded by the optional
+`executor_enabled` key described below. When enabled, after scope start is
+confirmed, the worker owns the admission flock in one transient systemd scope
+per job. The root supervisor runs checkout, seed unpack, lane, collection and
+other repository-content operations as the non-root `runner_user` required by
+the enabled executor policy.
+C3b-2a adds the legacy-job and Docker inspection providers. C3b-1 does not
+install or enable host services; the systemd units, socket group and mounts
+belong to C3c. Executor/reboot recovery and upload garbage collection remain
+follow-up work.
+
+The optional closed-schema key `executor_enabled` accepts only a TOML boolean.
+If absent it is false; a present non-boolean refuses policy loading. While
+false, `fleetd-agent` wires no executor, and submit, status and cancel preserve
+the C3a no-executor refusal before any durable request record or admission
+charge. Keep it false until FD-067, FD-068 and FD-075 are closed and Run-Gate
+revision 78 is released and deployed. `mode = "host"` also requires FD-069 to close;
+`mode = "exec"` requires the live persistent-runner probe in FD-070. The
+executor uses the host worker's `CGROUP_PARENT_DEV_GATES` value for prerequisite
+containers and refuses unless it resolves to a loaded systemd slice. Deploy the
+disabled binary with the existing policy unchanged; add `runner_user` only in
+the later enablement change, together with `executor_enabled = true`.
 
 `/etc/fleetd/agent.toml` is a closed host-owned config. It requires
 `schema_version`, `idle_connection_s`, `query_timeout_s`, `legacy_jobs_dir`,
 `lease_reconcile_interval_s`, `lease_bind_timeout_s`, `max_connections`, `identities`,
 `repo_roots`, `requested_by_clients`, `extra_argv`, `dev_argv`, and
 `env_values`; none has a consumer-invented fallback. All four time values are
-positive. `legacy_jobs_dir` is an absolute, fully-resolved path with no
+positive. `runner_user` is required only when `executor_enabled = true`. If
+present while disabled, its name is validated but it is never looked up. When
+enabled it must resolve to a known non-root host account; a missing key,
+unknown name or uid 0 refuses execution. The root
+supervisor stays root and drops privileges for every step that touches checkout
+content. `legacy_jobs_dir` is an absolute, fully-resolved path with no
 default. It must point to the legacy runner user's real `$HOME/jobs`
 directory, and the resolved directory must be checked before enabling the
 agent. The provider opens every path component from `/` with descriptor-
@@ -180,7 +205,7 @@ for `error`, so a status `exit_code` is returned as job data. A malformed
 `error` maps to exit 70. See the [response schema](agent-response.schema.json).
 A probe includes `lease` only when exact-object inspection, the legacy-job
 list, and container-identity inspection are configured. C3b-2a wires these
-providers from `legacy_jobs_dir` and `query_timeout_s`. The shipped C3a CLI has
+providers from `legacy_jobs_dir` and `query_timeout_s`; the shipped C3a CLI has
 none and refuses lease with exit 2.
 A configured inspector reconciles pending and bound leases at startup and at
 the configured interval. Pre-bind disconnect tombstones before checking the
@@ -188,9 +213,15 @@ exact name; bound leases are checked by immutable ID. Only a confirmed absence
 releases a charge. The granted-but-never-bound live-connection case has no
 deadline in §4.5; its held flock prevents pending reconciliation, so it remains
 charged until disconnect and exact-name reconciliation confirms absence.
-A missing or refusing local socket returns 3 with no fallback transport. The
-C3a and C3b-2a wheels have no executor: submit refuses with exit 2 and a named
-reason before admission or a durable request write.
+A missing or refusing local socket returns 3 with no fallback transport.
+C3b-1 conditionally wires the executor when `executor_enabled = true`, while
+C3b-2a wires the legacy-job and Docker providers. Keep the key false until
+FD-067, FD-068 and FD-075 are closed and Run-Gate revision 78 is released and deployed;
+host-mode submissions additionally wait for FD-069. Exec-mode submissions
+require the FD-070 live persistent-runner probe. With the key absent or false,
+submit, status and cancel retain the C3a no-executor refusal before request
+record or charge. C3b-1 does not install or enable host services; see the
+executor section below.
 
 Lane declarations and progress files are opened from trusted directory
 descriptors with no-follow traversal of every component. Progress replies cap
@@ -199,10 +230,28 @@ larger response body. The host counts Assay candidates only when the opened
 progress file is at most 8 MiB; larger files return `done: null` and a
 non-empty `done_reason`, while smaller files omit `done_reason`. The scan is
 bounded to the opened-size snapshot. Incremental counting remains FD-063.
-Terminal status reads only `fleet-admission-terminal/1`
-and returns `completed` plus its recorded completion time, without fabricating
-executor results. Cancel of a terminal job refuses with exit 2. C3b owns the
-durable executor result details (FD-061).
+Terminal status reads only `fleet-admission-terminal/1` and returns the
+recorded completion time plus C3b-1's `verdict`, `exit_code`, `lane`, `api`,
+`collected_at`, `result_sha256` and `result_size` when present. Older C2 records
+remain readable; absent executor fields are unknown. Cancel of a terminal job
+refuses with exit 2. For an executed lane, PASS requires agreement among the
+request sha, host checkout line, Run-Gate event, exact-lane summary, process
+status, and inspected container identity and checkout mount.
+The worker observes and persists each `lane-started` container while Run-Gate is
+running. A container gone at observation is an error; the short-lane race is
+FD-067 and must be closed before enabling submissions. The worker confirms that
+its scope contains only itself and that Docker has no running container with
+this exact job label before it collects or releases the charge. The strict
+persistent exec checkout-mount requirement still needs a real runner probe
+(FD-070).
+
+Cancel records intent only. The worker deregisters/thaws through the merged
+thrashguard interface, sends TERM and waits for the lane process itself. When
+guard presence is true but no callable `deregister` is injected, it keeps the
+job in `stopping` with its charge and checkout. Exec-mode cancellation or an
+end without the Run-Gate verdict proof cannot establish that the in-runner
+process stopped, so it also remains charged and stopping (FD-068). A host-mode
+lane shares the runner uid that owns the event file and can modify it (FD-069).
 
 ### Agent skills
 

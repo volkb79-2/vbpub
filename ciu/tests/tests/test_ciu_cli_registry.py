@@ -81,6 +81,10 @@ def _tokens(*argv: str) -> list[str]:
         (["env", "generate"], ["env", "generate"]),
         (["host", "enroll", "box", "--ssh-host", "1.2.3.4", "--port", "2222"],
          ["host", "enroll", "box", "--port", "2222", "--ssh-host", "1.2.3.4"]),
+        (["host", "enroll", "box", "--forced-command", "--agent-path",
+          "/usr/bin/fleetd-agent", "--fleetd-group", "campaigns"],
+         ["host", "enroll", "box", "--forced-command", "--agent-path",
+          "/usr/bin/fleetd-agent", "--fleetd-group", "campaigns"]),
     ],
 )
 def test_adapters_respell_the_validated_command(argv, expected):
@@ -105,6 +109,17 @@ def test_status_modes_route_to_the_report_the_gate_and_the_preflight():
         (["clean", "--expected-checkout", "/x"], "--expected-checkout requires --identity"),
         (["host", "enroll", "n", "--abort", "--replace"], "cannot be used together"),
         (["host", "enroll", "n", "--fingerprint", "SHA256:x"], "--fingerprint requires --ssh-host"),
+        (["host", "enroll", "n", "--forced-command", "--fleetd-group", "campaigns"],
+         "explicit agent and group inputs"),
+        (["host", "enroll", "n", "--agent-path", "/usr/bin/fleetd-agent"],
+         "only to an opt-in restricted key"),
+        (["host", "enroll", "n", "--forced-command", "--agent-path",
+          "/usr/bin/fleetd-agent", "--fleetd-group", "campaigns", "--from", "10.0.0.0/8"],
+         "cannot also use --from"),
+        (["host", "enroll", "n", "--forced-command", "--agent-path",
+          "/usr/bin/fleetd-agent", "--fleetd-group", "campaigns", "--ssh-host", "target",
+          "--fingerprint", "SHA256:x"],
+         "only to step 1"),
         (["worktree", "create", "a", "--name", "n", "--prefix", "p"], "cannot be used together"),
         (["worktree", "lease", "a"], "--extend"),
         (["worktree", "branches", "--discard-protected-state", "b"], "requires"),
@@ -115,6 +130,33 @@ def test_declared_rules_refuse_before_the_implementation_runs(argv, needle):
     status, _out, err, recorded = harness.run(argv)
     assert status == 2 and recorded == []
     assert needle in err
+
+
+@pytest.mark.parametrize("forced_inputs", [
+    ["--forced-command"],
+    ["--agent-path", "/usr/bin/fleetd-agent"],
+    ["--fleetd-group", "campaigns"],
+    ["--agent-policy", "/etc/fleetd/agent.toml"],
+])
+def test_host_enroll_step2_refuses_forced_inputs_before_calling_enrollment(
+    monkeypatch, tmp_path, capsys, forced_inputs,
+):
+    from ciu import host_enroll
+
+    monkeypatch.setattr(cli, "_resolve_repo_root_deploy", lambda _root: tmp_path)
+    monkeypatch.setattr(cli, "_load_remote_config", lambda _root: {})
+    monkeypatch.setattr(
+        host_enroll, "enroll_step2",
+        lambda *args, **kwargs: pytest.fail("step 2 must reject forced-mode inputs"),
+    )
+
+    status = cli._host([
+        "enroll", "fixture-host", "--ssh-host", "host.example.invalid",
+        *forced_inputs,
+    ])
+
+    assert status == 2
+    assert "forced-command inputs apply only to step 1" in capsys.readouterr().err
 
 
 def test_every_delegated_registry_shares_the_one_exception_policy():

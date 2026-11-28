@@ -63,12 +63,19 @@
 | FD-058 | Aged-holder scan can skip queue-ordered merge-gate waiters | P1 | FIXED IN THIS BRANCH (C3a) | 2026-11-27 |
 | FD-059 | Measure and design PSI-aware admission before enforcing a prediction | P1 | OPEN (design only) | 2026-11-27 |
 | FD-060 | A granted lease client can stay connected forever without binding | P2 | FIXED IN THIS BRANCH (C3a) | 2026-11-27 |
-| FD-061 | Persist executor result details for terminal status | P2 | OPEN | 2026-11-27 |
-| FD-062 | Retain and garbage-collect host upload objects | P2 | OPEN (C3b follow-up) | 2026-11-27 |
+| FD-061 | Persist executor result details for terminal status | P2 | FIXED IN THIS BRANCH (C3b-1) | 2026-11-27 |
+| FD-062 | Retain and garbage-collect host upload objects | P2 | OPEN (C3b-2 follow-up) | 2026-11-27 |
 | FD-063 | Incrementally count large Assay progress files | P2 | OPEN | 2026-11-27 |
 | FD-064 | A legacy job directory without EXIT after host reboot remains charged | P2 | OPEN | 2026-11-27 |
 | FD-065 | Legacy-job listing is point-in-time and completed directories consume the entry ceiling | P2 | OPEN | 2026-11-27 |
 | FD-066 | Synchronous Docker process creation cannot be cancelled by the query deadline | P2 | OPEN | 2026-11-27 |
+| FD-067 | Close the short-lane event-observation race before enabling the executor | P1 | OPEN; BLOCKER BEFORE ENABLEMENT | 2026-11-27 |
+| FD-068 | Prove persistent exec-lane work stopped before cancellation releases its charge | P1 | OPEN; cancellation remains stopping | 2026-11-27 |
+| FD-069 | Protect host-owned Run-Gate events from a same-uid host lane | P1 | OPEN; transport limit | 2026-11-27 |
+| FD-070 | Verify exec checkout mount against a real persistent runner before enablement | P1 | OPEN; LIVE PROBE REQUIRED | 2026-11-27 |
+| FD-071 | Preserve store collection failure detail in the host result | P2 | FIXED IN THIS BRANCH (C3b-1) | 2026-11-27 |
+| FD-072 | Bind Run-Gate repo/project labels to the request | P2 | FIXED IN THIS BRANCH (C3b-1) | 2026-11-27 |
+| FD-075 | Bound total lane log bytes and summary scan before executor enablement | P1 | OPEN; BLOCKER BEFORE ENABLEMENT | 2026-11-28 |
 
 ## FD-001 Lite campaign lifecycle
 
@@ -1168,18 +1175,18 @@ Source: P-fd-05 C3a fix round 2 controller ruling (2026-11-27).
 
 ## FD-061 Persist executor result details for terminal status
 
-**State:** OPEN; C3b follow-up. **Priority:** P2. **Filed:** 2026-11-27.
+**State:** FIXED IN THIS BRANCH (C3b-1). **Priority:** P2. **Filed:** 2026-11-27.
 
-C2's durable terminal record stores only job id, group, request digest,
-`state: completed`, and completion time. C3a status therefore returns only
-those durable facts and must not invent a verdict or exit code. C3b must decide
-which executor result fields are durable and atomically persist them before
-releasing the admission charge, then let terminal status answer from that
-record after restart. Cancel of this terminal record remains a refusal.
+C3b-1 writes `verdict`, `exit_code`, `lane`, `api`, `collected_at`,
+`result_sha256` and `result_size` into the durable terminal record before
+removing the admission charge. `status` returns those details after restart.
+Old C2 records remain readable; absent executor fields remain unknown. Cancel
+of a terminal record remains a refusal. Completion-write failure leaves the
+charge in place.
 
 ## FD-062 Retain and garbage-collect host upload objects
 
-**State:** OPEN; C3b follow-up. **Priority:** P2. **Filed:** 2026-11-27.
+**State:** OPEN; C3b-2 follow-up. **Priority:** P2. **Filed:** 2026-11-27.
 
 C3a bounds aggregate stored and in-flight upload bytes with
 `policy.max_upload_store_bytes`, but it does not delete committed objects.
@@ -1245,3 +1252,133 @@ attempt. The deadline still bounds output collection, reaping and the answer
 from the outer admission call; it cannot bound process creation itself.
 
 Source: P-fd-05 C3b-2a fix round 2 controller ruling R2-2 (2026-11-27).
+
+## FD-067 Close the short-lane event-observation race before enabling the executor
+
+**State:** OPEN; BLOCKER BEFORE ENABLEMENT. **Priority:** P1. **Filed:** 2026-11-27.
+
+The worker follows the host-owned event file while Run-Gate is running and
+inspects and durably records each `lane-started` observation. If Run-Gate removes
+a very short-lived container before the worker can inspect it, the observation
+is an ERROR and the job cannot PASS. Close this race in Run-Gate or establish an
+equivalent host-observable handoff before enabling executor submissions. Do not
+relax the identity or checkout-mount checks. Keep the global `executor_enabled`
+policy false until this item and FD-068 are closed and Run-Gate revision 78 is
+released and deployed.
+
+Source: P-fd-05 C3b-1 fix round 1 controller ruling for H3 (2026-11-27).
+
+## FD-068 Persistent exec cancellation cannot prove the in-runner process stopped
+
+**State:** OPEN; cancellation remains `stopping`. **Priority:** P1. **Filed:** 2026-11-27.
+
+The executor cannot prove that terminating the local `docker exec` client stopped
+the process inside a persistent runner. Cancellation of `mode = "exec"` and an
+end without the Run-Gate verdict proof therefore retain the checkout, containers
+and admission charge. Define and test a host-observable stop protocol before
+allowing either path to finalize. Keep the global `executor_enabled` policy
+false until this item and FD-067 are closed and Run-Gate revision 78 is released
+and deployed.
+
+Source: P-fd-05 C3b-1 fix round 1 controller ruling for H4 (2026-11-27).
+
+## FD-069 Same-uid host lanes can modify the host-owned Run-Gate event file
+
+**State:** OPEN; transport limit. **Priority:** P1. **Filed:** 2026-11-27.
+
+The event file is outside the checkout and inaccessible to the lane container,
+but a host-mode lane runs as the configured runner uid that owns the file. It can
+rewrite that file and influence event binding. Before host-mode submissions are
+enabled, move event ownership behind a host-only writer or provide an equivalent
+mechanism that preserves the Run-Gate event contract. Even after the common
+FD-067/FD-068 and Run-Gate revision 78 rollout conditions are met, host-mode
+submissions stay disabled until this item is closed.
+
+Source: P-fd-05 C3b-1 fix round 1 controller ruling for M6 (2026-11-27).
+
+## FD-070 Verify exec checkout mount against a persistent runner
+
+**State:** OPEN; live probe required. **Priority:** P1. **Filed:** 2026-11-27.
+
+The executor keeps the strict requirement that the inspected persistent runner
+has a bind mount whose source is this job's checkout. No real persistent runner
+has been probed to establish that the configured runner can satisfy that
+per-job source. Keep exec-mode enablement behind a live acceptance probe; do not
+weaken the mount check. Exec mode stays unavailable until this probe is complete
+and the common FD-067/FD-068 and Run-Gate revision 78 rollout conditions are met.
+
+Source: P-fd-05 C3b-1 fix round 1 controller ruling for M7 (2026-11-27).
+
+## FD-071 Preserve store collection failure detail in the host result
+
+**State:** FIXED IN THIS BRANCH (C3b-1). **Priority:** P2. **Filed:** 2026-11-27.
+
+An `archive-store` pack failure is returned as final
+`collection.status = "failed"` with its per-store `pack-failed` details. That
+pack failure is not retried; terminal completion may proceed and the lane
+verdict remains unchanged. Other retryable worker finalization failures retain
+the job and charge while the worker retries.
+
+Source: P-fd-05 C3b-1 fix round 1 controller ruling for L5 (2026-11-27).
+
+## FD-072 Bind Run-Gate repository and project labels to the request
+
+**State:** FIXED IN THIS BRANCH (C3b-1). **Priority:** P2. **Filed:** 2026-11-27.
+
+Container binding requires the `run-gate.repo` and `run-gate.project` label
+values to equal the authenticated request, in addition to requiring the full
+Run-Gate label set. This prevents a correctly named job/lane/commit container
+from another repository or project from satisfying the binding.
+
+Source: P-fd-05 C3b-1 fix round 1 controller ruling for L2 (2026-11-27).
+
+## FD-073 Carry the authenticated current main OID for main-based lanes
+
+**State:** OPEN. **Priority:** P1. **Filed:** 2026-11-28.
+
+The executor deletes `main` and `origin/main` imported from a host seed because
+the seed does not authenticate the controller's current main value. A lane
+whose effective base is `main` or `origin/main` is refused unless the request
+already carries an explicit base commit. Extend the authenticated request with
+the controller's current main OID and verify that commit before supplying those
+refs to a checkout. Until then, main-based lanes without an explicit request
+base remain unavailable.
+
+Source: P-fd-05 C3b-1 fix round 2 controller ruling F2 (2026-11-28).
+
+## FD-074 Recover jobs after the scoped worker dies or the host reboots
+
+**State:** OPEN; no recovery owner in C3b-1. **Priority:** P1. **Filed:** 2026-11-28.
+
+If the worker process dies or the host reboots after a lane may have started,
+the durable admission charge can remain while the scope, lane process or
+container needs stop proof. C3b-1 does not reconnect to or reap that work. C3b-2
+must discover the durable job, re-establish ownership, prove all processes and
+job containers stopped, finalize the terminal record, and only then release the
+charge. Do not infer safety from an expired process handle or reboot alone.
+
+The same recovery owner must handle an ambiguous lane-start interruption outside
+the `OSError`/`ValueError` cases that prove no child was created. When the start
+call did not return a process handle, C3b-1 records
+`lane-start-outcome-uncertain-no-worker-handle`, leaves the job stopping and
+charged, and exits rather than waiting for an exit status that no process can
+write. Recovery must discover the actual scope and job containers, prove they
+are stopped, and then finalize or retain the charge on failed proof.
+
+Source: P-fd-05 C3b-1 fix round 2 controller ruling F5 and round 3 controller
+ruling C2 (2026-11-28).
+
+## FD-075 Bound total lane log bytes and summary scan
+
+**State:** OPEN; BLOCKER BEFORE ENABLEMENT. **Priority:** P1. **Filed:** 2026-11-28.
+
+The lane's stdout and stderr are written to `lane.log` without an aggregate byte
+ceiling, and `_last_lane_summary` scans the whole file. A finite lane can fill
+host storage and make the root summary scan arbitrarily long. Before enabling
+the executor, enforce a total lane-output byte ceiling in the streaming writer;
+on overflow, stop the lane through the normal stop-and-prove path and bind a
+terminal ERROR. Bound the summary scan at the same ceiling. Do not add a lane
+runtime limit. This is not implemented in C3b-1 fix round 3.
+
+Source: P-fd-05 C3b-1 closure review C3 and round 3 controller ruling C3
+(2026-11-28).

@@ -1791,6 +1791,10 @@ def _host(rest: list[str]) -> int:
     p_enroll.add_argument("--controller", default=None)
     p_enroll.add_argument("--from", dest="from_pattern", default=None, metavar="PATTERN")
     p_enroll.add_argument("--docker", action="store_true", default=False)
+    p_enroll.add_argument("--forced-command", action="store_true", default=False)
+    p_enroll.add_argument("--agent-path", default=None, metavar="PATH")
+    p_enroll.add_argument("--fleetd-group", default=None, metavar="GROUP")
+    p_enroll.add_argument("--agent-policy", default=None, metavar="PATH")
     p_enroll.add_argument("--installer-url", dest="installer_url", default=None)
     p_enroll.add_argument("--replace", action="store_true", default=False)
     p_enroll.add_argument("--abort", action="store_true", default=False)
@@ -1806,6 +1810,12 @@ def _host(rest: list[str]) -> int:
         if opts.abort:
             return enroll_abort(repo_root, opts.name)
         if opts.ssh_host:
+            if (opts.forced_command or opts.agent_path is not None
+                    or opts.fleetd_group is not None or opts.agent_policy is not None):
+                raise EnrollError(
+                    "[CIU-218] forced-command inputs apply only to step 1, "
+                    "before --ssh-host."
+                )
             return enroll_step2(
                 repo_root, opts.name,
                 config=config,
@@ -1826,6 +1836,10 @@ def _host(rest: list[str]) -> int:
             docker=opts.docker,
             installer_url_override=opts.installer_url,
             replace=opts.replace,
+            forced_command=opts.forced_command,
+            agent_path=opts.agent_path,
+            fleetd_group=opts.fleetd_group,
+            agent_policy=opts.agent_policy,
         )
     except EnrollError as exc:
         print(f"[ERROR] {exc}", file=sys.stderr)
