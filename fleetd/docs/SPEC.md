@@ -218,8 +218,8 @@ legacy-job and Docker inspection providers into the entry point; it does not
 include the in-flight executor work. C3b-1 adds the standard-library
 `executor.py` and `executor_worker.py` modules. A confirmed submit starts one
 transient systemd scope per job and hands its admission flock to that worker.
-Repository content steps run as the required non-root `agent.toml.runner_user`;
-the supervisor remains root. C3b-1 does not install a systemd unit or socket
+When enabled, repository content steps run as the required non-root
+`agent.toml.runner_user`; the supervisor remains root. C3b-1 does not install a systemd unit or socket
 group (C3c), recover after executor/host loss, or implement upload garbage
 collection (C3b-2 follow-up).
 
@@ -335,7 +335,9 @@ writing a request or charging admission. Keep it false until FD-067 and FD-068
 are closed and Run-Gate revision 78 is released and deployed. Host-mode
 submissions additionally require FD-069 to close; exec-mode submissions require
 the live persistent-runner probe in FD-070. This package does not install or
-enable host services. A lane's PASS is
+enable host services. `runner_user` is required only while the executor is
+enabled. If present while disabled, it is checked as a safe name but is not
+looked up. A lane's PASS is
 accepted only when the request sha, host-authored checkout line, one exact
 `lane-verdict` event, exact-lane anchored summary, Run-Gate process status, and
 inspected container identity/mount all agree. It writes `result.json` from

@@ -217,6 +217,53 @@ def test_service_does_not_construct_or_wire_executor_until_enabled(tmp_path, mon
     assert "executor" not in calls["service"][4]
 
 
+def test_origin_main_policy_fixture_drives_disabled_service_without_runner_user(tmp_path, monkeypatch):
+    from test_agent_policy import _policy_text
+    from test_agent_protocol import _submit
+
+    policy_path = tmp_path / "agent.toml"
+    policy_path.write_text(_policy_text(tmp_path / "checkouts"), encoding="utf-8")
+    monkeypatch.setattr(agent_entry, "installed_agent_version", lambda: "1.2.3")
+    service, policy = agent_entry._service(policy_path, tmp_path / "state")
+
+    assert "runner_user" not in policy_path.read_text(encoding="utf-8")
+    assert policy.runner_user is None
+    assert policy.executor_enabled is False
+    assert service.executor is None
+    identity = policy.resolve_peer(1000, 100)
+    probe = service.handle({"verb": "probe"}, identity).document
+    assert "submit" in probe["capabilities"]
+    with pytest.raises(AdmissionError, match="executor unavailable"):
+        service.handle(_submit(), identity)
+    with pytest.raises(AdmissionError):
+        service.handle({"verb": "status", "job_id": "controller-run-1"}, identity)
+    with pytest.raises(AdmissionError):
+        service.handle({"verb": "cancel", "job_id": "controller-run-1", "reason": "test"}, identity)
+    assert list((tmp_path / "state" / "jobs").iterdir()) == []
+
+
+def test_disabled_service_does_not_resolve_a_present_runner_user(tmp_path, monkeypatch):
+    from test_agent_policy import _policy_text
+
+    policy_path = tmp_path / "agent.toml"
+    policy_path.write_text(
+        _policy_text(tmp_path / "checkouts").replace(
+            "max_connections = 4", 'max_connections = 4\nrunner_user = "no-such-runner-account"',
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(agent_entry, "installed_agent_version", lambda: "1.2.3")
+    monkeypatch.setattr(
+        agent_entry, "HostJobExecutor",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("disabled policy must not resolve runner")),
+    )
+
+    service, policy = agent_entry._service(policy_path, tmp_path / "state")
+
+    assert policy.runner_user == "no-such-runner-account"
+    assert service.executor is None
+
+
 def test_service_guard_presence_stays_unknown_when_host_facts_fail(tmp_path, monkeypatch):
     policy = type("Policy", (), {"executor_enabled": True})()
 

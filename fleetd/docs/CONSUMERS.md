@@ -90,7 +90,8 @@ C3b-1 adds the standard-library host executor and worker, guarded by the optiona
 `executor_enabled` key described below. When enabled, after scope start is
 confirmed, the worker owns the admission flock in one transient systemd scope
 per job. The root supervisor runs checkout, seed unpack, lane, collection and
-other repository-content operations as the required non-root `runner_user`.
+other repository-content operations as the non-root `runner_user` required by
+the enabled executor policy.
 C3b-2a adds the legacy-job and Docker inspection providers. C3b-1 does not
 install or enable host services; the systemd units, socket group and mounts
 belong to C3c. Executor/reboot recovery and upload garbage collection remain
@@ -104,16 +105,19 @@ charge. Keep it false until FD-067 and FD-068 are closed and Run-Gate revision
 78 is released and deployed. `mode = "host"` also requires FD-069 to close;
 `mode = "exec"` requires the live persistent-runner probe in FD-070. The
 executor uses the host worker's `CGROUP_PARENT_DEV_GATES` value for prerequisite
-containers and refuses unless it resolves to a loaded systemd slice.
+containers and refuses unless it resolves to a loaded systemd slice. Deploy the
+disabled binary with the existing policy unchanged; add `runner_user` only in
+the later enablement change, together with `executor_enabled = true`.
 
 `/etc/fleetd/agent.toml` is a closed host-owned config. It requires
-`schema_version`, `idle_connection_s`, `query_timeout_s`, `runner_user`,
-`legacy_jobs_dir`,
+`schema_version`, `idle_connection_s`, `query_timeout_s`, `legacy_jobs_dir`,
 `lease_reconcile_interval_s`, `lease_bind_timeout_s`, `max_connections`, `identities`,
 `repo_roots`, `requested_by_clients`, `extra_argv`, `dev_argv`, and
 `env_values`; none has a consumer-invented fallback. All four time values are
-positive. `runner_user` is required and must resolve to a known non-root host
-account; a missing key, unknown name or uid 0 refuses execution. The root
+positive. `runner_user` is required only when `executor_enabled = true`. If
+present while disabled, its name is validated but it is never looked up. When
+enabled it must resolve to a known non-root host account; a missing key,
+unknown name or uid 0 refuses execution. The root
 supervisor stays root and drops privileges for every step that touches checkout
 content. `legacy_jobs_dir` is an absolute, fully-resolved path with no
 default. It must point to the legacy runner user's real `$HOME/jobs`

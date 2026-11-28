@@ -38,7 +38,7 @@ class AgentPolicy:
     lease_reconcile_interval_s: float
     lease_bind_timeout_s: float
     max_connections: int
-    runner_user: str
+    runner_user: str | None
     identities: tuple[AgentIdentity, ...]
     repo_roots: Mapping[str, Path]
     requested_by_clients: frozenset[str]
@@ -76,10 +76,16 @@ class AgentPolicy:
         raise AdmissionError(ExitCode.IDENTITY_OR_TRANSPORT, "unknown forced-command group")
 
 
-def _object(value: object, where: str, required: set[str]) -> dict[str, object]:
+def _object(
+    value: object,
+    where: str,
+    required: set[str],
+    optional: set[str] | None = None,
+) -> dict[str, object]:
     if not isinstance(value, dict):
         raise ContractError(f"{where}: expected table")
-    extra = sorted(set(value) - required)
+    optional_keys = set() if optional is None else optional
+    extra = sorted(set(value) - required - optional_keys)
     missing = sorted(required - set(value))
     if extra:
         raise ContractError(f"{where}: unknown key(s): {', '.join(extra)}")
@@ -215,11 +221,9 @@ def load_agent_policy(path: Path = DEFAULT_AGENT_POLICY_PATH) -> AgentPolicy:
     policy_keys = {
         "schema_version", "idle_connection_s", "query_timeout_s", "identities", "repo_roots", "requested_by_clients",
         "extra_argv", "dev_argv", "env_values", "lease_reconcile_interval_s", "lease_bind_timeout_s",
-        "max_connections", "legacy_jobs_dir", "runner_user",
+        "max_connections", "legacy_jobs_dir",
     }
-    if isinstance(parsed, dict) and "executor_enabled" in parsed:
-        policy_keys.add("executor_enabled")
-    root = _object(parsed, "agent.toml", policy_keys)
+    root = _object(parsed, "agent.toml", policy_keys, {"runner_user", "executor_enabled"})
     if type(root["schema_version"]) is not int or root["schema_version"] != 1:
         raise ContractError("agent.toml.schema_version: expected integer 1")
     idle_connection_s = _positive_number(root["idle_connection_s"], "agent.toml.idle_connection_s")
@@ -232,10 +236,15 @@ def load_agent_policy(path: Path = DEFAULT_AGENT_POLICY_PATH) -> AgentPolicy:
         root["lease_bind_timeout_s"], "agent.toml.lease_bind_timeout_s",
     )
     max_connections = _positive_integer(root["max_connections"], "agent.toml.max_connections")
-    runner_user = _safe_name(root["runner_user"], "agent.toml.runner_user")
     executor_enabled = root.get("executor_enabled", False)
     if type(executor_enabled) is not bool:
         raise ContractError("agent.toml.executor_enabled: expected boolean")
+    runner_user = (
+        _safe_name(root["runner_user"], "agent.toml.runner_user")
+        if "runner_user" in root else None
+    )
+    if executor_enabled and runner_user is None:
+        raise ContractError("agent.toml: missing key(s): runner_user (required when executor_enabled is true)")
     identities = _identities(root["identities"])
 
     raw_roots = root["repo_roots"]

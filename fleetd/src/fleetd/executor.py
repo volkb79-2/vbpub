@@ -354,6 +354,11 @@ class HostJobExecutor:
         return path
 
     def _resolve_runner(self) -> RunnerIdentity:
+        if not isinstance(self.policy.runner_user, str):
+            raise AdmissionError(
+                ExitCode.REFUSAL,
+                "agent.toml.runner_user is required when the executor is enabled",
+            )
         try:
             if self.user_resolver is not None:
                 identity = self.user_resolver(self.policy.runner_user)

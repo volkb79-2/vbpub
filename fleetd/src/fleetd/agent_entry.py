@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import importlib.metadata
-import inspect
 import re
 import sys
 from pathlib import Path
@@ -107,14 +106,10 @@ def _service(policy_path: Path, state_dir: Path) -> tuple[AgentVerbService, Agen
             policy_path=policy_path,
             guard_presence=guard_presence,
         )
-    service_args = (state_dir, policy, collect_host_facts)
     service_kwargs = {"agent_version": installed_agent_version(), **provider_kwargs}
-    constructor = inspect.signature(AgentVerbService).parameters
-    if executor is not None and ("executor" in constructor or any(
-        parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in constructor.values()
-    )):
+    if executor is not None:
         service_kwargs["executor"] = executor
-    service = AgentVerbService(*service_args, **service_kwargs)
+    service = AgentVerbService(state_dir, policy, collect_host_facts, **service_kwargs)
     return service, policy
 
 

@@ -41,7 +41,18 @@ from fleetd.executor_worker import (
     _write_stdin_file,
     main as worker_main,
 )
-from test_agent_protocol import SHA, _policy, _submit
+from test_agent_protocol import SHA, _policy as _protocol_policy, _submit
+
+
+def _policy(tmp_path, identities="", extra_argv='[["--verbose"]]'):
+    _policy_value, checkout = _protocol_policy(tmp_path, identities=identities, extra_argv=extra_argv)
+    path = tmp_path / "agent.toml"
+    text = path.read_text(encoding="utf-8").replace(
+        "max_connections = 4\n",
+        'max_connections = 4\nrunner_user = "vscode"\nexecutor_enabled = true\n',
+    )
+    path.write_text(text, encoding="utf-8")
+    return load_agent_policy(path), checkout
 
 
 class _Handle:
