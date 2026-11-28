@@ -1004,6 +1004,37 @@ def test_canary_progress_emit_failure_does_not_change_result(git_repo: GitRepo, 
     assert result.attempts[0].disposition == "attempted"
 
 
+@pytest.mark.parametrize("failure", [ValueError("bad producer event"), TypeError("bad producer value")])
+def test_canary_progress_producer_errors_propagate(
+    git_repo: GitRepo, tmp_path: Path, failure: Exception
+):
+    head_rev = _seed(git_repo)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+
+    class BrokenProducer:
+        def emit(self, _event):
+            raise failure
+
+    with prepared_snapshot(git_repo, commit=head_rev, scratch_root=scratch) as prepared:
+        with pytest.raises(type(failure), match="bad producer"):
+            run_isolated_canaries(
+                _lane(git_repo, targets=(TARGETS[0],), aggregation=None),
+                prepared=prepared,
+                plan=make_plan(_lane(git_repo, targets=(TARGETS[0],), aggregation=None)),
+                deadline=make_deadline(budget_seconds=60.0),
+                project_root=git_repo.path,
+                resolved_base=None,
+                mechanism="import-break",
+                targets=(TARGETS[0],),
+                aggregation=None,
+                adapter=PythonAdapter(),
+                process_runner=_Gate(catches=False),
+                clock=_clock,
+                progress_stream=BrokenProducer(),
+            )
+
+
 def test_budget_expiry_after_half_start_has_no_finish_record(git_repo: GitRepo, tmp_path: Path):
     head_rev = _seed(git_repo)
     scratch = tmp_path / "scratch"
