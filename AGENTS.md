@@ -942,9 +942,15 @@ in `/proc/self/fdinfo/<fd>`. A hand-started pi without the pane descriptor is re
 `--print-command` shows the lock path and requirement without starting anything. The
 registered suite checks that tester-unified provides `flock`.
 
-A process started from a pi bash tool call ends with that call, also under `setsid`.
-Hold a long launch (for example `codex-impl.sh`) under `start_monitor`, which lasts at
-most 3600 s (CTL-84).
+Use the pi-ctl `start_job` tool to launch `codex-impl.sh`, `pi-impl.sh`, or
+`pi-review.sh` in a worktree under the repository's `.worktrees/` directory.
+Codex implementation jobs run inside `pi-pidns-bash`; pi launchers start
+directly because nesting that wrapper fails, and `pi-impl.sh` puts its agent's
+bash calls inside the wrapper itself. Pi implementer jobs must be started with
+`start_job`, not from a bash tool call or under `start_monitor`. Jobs have no
+lifetime cap and no stop tool. Watch for the `pi-ctl-job` end notice, or use
+`scripts/controller/job-check.sh <run_name>` after a restart or when you need
+the recorded result.
 
 ```bash
 scripts/controller/pi-ctl-launch.sh hostobs

@@ -2087,15 +2087,28 @@ has no case for that refusal.
 
 ## CTL-84 — a job launched from a pi bash call dies when the call ends
 
-**Status:** OPEN 2026-11-28; found by the hostobs pi pilot. Severity: Medium.
+**Status:** FIXED 2026-11-28 (detached `start_job`, owner identity and liveness,
+tests, docs). Found by the hostobs pi pilot. Severity: Medium.
 
 A child started from a pi bash tool call (observed with `codex-impl.sh`, also
 under `setsid`) dies when the call returns. `pi-pidns-bash-worker.sh` runs each
 call under `bwrap --unshare-pid --die-with-parent`, so a new session does not
 leave the call's PID namespace.
 
-**Workaround.** Hold a long launch under `start_monitor` for its whole run. A
-monitor lasts at most 3600 s (`monitorMaxSeconds`), so a longer job does not fit.
+**Resolution.** The pi-ctl `start_job` tool launches only `codex-impl.sh`,
+`pi-impl.sh`, or `pi-review.sh` from the controller's own directory, with the
+validated arguments and route/effort environment. It detaches the process,
+closes the controller session-lock descriptor, logs to `<run>.launch.log`, and
+has no runtime cap or stop tool. It returns after the owner record changes, or
+reports an early exit / 30-second preflight. A live session receives one
+`pi-ctl-job` completion notice; after restart, use `job-check.sh <run_name>`.
 
-**Wanted.** A supported way for a pi controller to start a job that outlives one
-call and the monitor cap, without weakening the sandbox for ordinary calls.
+Codex launches run through `pi-pidns-bash`. Pi launchers run directly because
+the wrapper cannot be nested: the attempted nested `bwrap` fails opening
+`/proc/10/ns/ns` with exit 125. `pi-impl.sh` performs its own wrapper preflight
+and starts the agent's bash calls inside that wrapper.
+
+**Closed when.** `start_job` is registered, the owner record holds the
+procfs-visible pid and start ticks, `job-check.sh` recognizes an outer procfs
+owner that `kill -0` cannot reach, and fake-pi tests pin the launcher and
+completion contract.
