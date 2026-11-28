@@ -752,6 +752,56 @@ def test_a_lane_declaring_no_per_attempt_bound_is_byte_unchanged(git_repo: GitRe
     _accepted(verdict)
 
 
+def test_canary_without_progress_preserves_base_deadline_clock_reads_at_boundary(
+    git_repo: GitRepo, tmp_path: Path
+):
+    """Without progress, diagnostics must not add a deadline clock read.
+
+    Base c9320f98c has no effective-deadline diagnostic read in
+    ``run_isolated_canary``. The 38 reads include deadline start, then the
+    ``remaining()`` reads made by snapshot materialisation, command
+    execution, artifact checks, and snapshot cleanup. Expiry is at read 39:
+    the base path completes on read 38, while one extra diagnostic read would
+    move its last deadline check onto the expiry boundary.
+    """
+    head_rev = _seed(git_repo)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+
+    class ReadCountingClock:
+        def __init__(self) -> None:
+            self.reads = 0
+
+        def __call__(self) -> float:
+            self.reads += 1
+            return float(self.reads)
+
+    monotonic = ReadCountingClock()
+    deadline = make_deadline(budget_seconds=38.0, monotonic=monotonic)
+    lane = _lane(git_repo, targets=(TARGETS[0],), aggregation=None)
+    with prepared_snapshot(
+        git_repo, commit=head_rev, scratch_root=scratch
+    ) as prepared:
+        result, terminal = run_isolated_canaries(
+            lane,
+            prepared=prepared,
+            plan=make_plan(lane),
+            deadline=deadline,
+            project_root=git_repo.path,
+            resolved_base=None,
+            mechanism="import-break",
+            targets=(TARGETS[0],),
+            aggregation=None,
+            adapter=PythonAdapter(),
+            process_runner=_Gate(catches=False),
+            clock=_clock,
+        )
+
+    assert terminal is None
+    assert result.attempts[0].disposition == "attempted"
+    assert monotonic.reads == 38
+
+
 @pytest.mark.parametrize("aggregation", ["any", "all"])
 def test_the_declared_order_is_the_attempted_order(
     git_repo: GitRepo, aggregation: str
