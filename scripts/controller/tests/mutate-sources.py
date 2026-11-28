@@ -65,8 +65,8 @@ mutant("scripts/controller/compact-resume.sh", "compact-resume-no-session-id-che
        '    [[ $session_id == "$expected_session_id" ]] || return 1',
        '    [[ -n $session_id ]] || return 1')
 mutant("scripts/controller/hooks/ctx-hooks.py", "compact-receipt-any-source",
-       '        if source == "compact":\n            write_compact_receipt(hook, log_path)',
-       '        if True:\n            write_compact_receipt(hook, log_path)')
+       '        if source == "compact":\n            write_compact_receipt(args, hook, log_path)',
+       '        if True:\n            write_compact_receipt(args, hook, log_path)')
 
 
 def pi_ctl_mutant(name: str, before: str, after: str) -> Path:
