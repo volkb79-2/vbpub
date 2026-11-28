@@ -12369,6 +12369,7 @@ def test_run_lane_joins_pipe_drainer_and_keeps_normal_exit_output(tmp_path, clos
 @pytest.mark.parametrize("failure", [
     "dup", "thread-start", "dup-stop-refused", "thread-start-close-error",
     "drain-fileno-refused", "drain-fcntl-refused", "dup-after-exit", "stdout-lookup",
+    "dup-stop-oserror", "thread-start-dup-close-error",
 ])
 def test_run_lane_log_setup_failure_stops_live_child_and_records_exit(tmp_path, monkeypatch, failure):
     worker = _worker(tmp_path, _VersionRunner({}))
@@ -12461,6 +12462,11 @@ def test_run_lane_log_setup_failure_stops_live_child_and_records_exit(tmp_path, 
             raise AdmissionError(ExitCode.REFUSAL, "injected stop refusal")
 
         worker._request_worker_stop = refuse_stop
+    if failure == "dup-stop-oserror":
+        def break_stop(_process):
+            raise OSError("injected stop state failure")
+
+        worker._request_worker_stop = break_stop
     saved_states = []
     original_save_state = worker._save_state
 
@@ -12480,7 +12486,7 @@ def test_run_lane_log_setup_failure_stops_live_child_and_records_exit(tmp_path, 
     worker._record_lane_exit = capture_exit
     duplicate_fds = []
     real_dup = os.dup
-    if failure in {"dup", "dup-stop-refused", "dup-after-exit"}:
+    if failure in {"dup", "dup-stop-refused", "dup-after-exit", "dup-stop-oserror"}:
         def fail_log_dup(fd):
             if fd == runner.log_fd:
                 raise OSError("dup failed")
@@ -12495,6 +12501,16 @@ def test_run_lane_log_setup_failure_stops_live_child_and_records_exit(tmp_path, 
             return duplicate
 
         monkeypatch.setattr(executor_worker_module.os, "dup", record_dup)
+        if failure == "thread-start-dup-close-error":
+            real_close = os.close
+
+            def close_then_report(fd):
+                real_close(fd)
+                if fd in duplicate_fds:
+                    monkeypatch.setattr(executor_worker_module.os, "close", real_close)
+                    raise OSError("injected duplicate close failure")
+
+            monkeypatch.setattr(executor_worker_module.os, "close", close_then_report)
         if failure.startswith("thread-start"):
             monkeypatch.setattr(
                 executor_worker_module.threading.Thread, "start",
@@ -12543,6 +12559,11 @@ def test_run_lane_log_setup_failure_stops_live_child_and_records_exit(tmp_path, 
 
         worker.waiter = bounded_waiter
         expected_status = 0 if failure == "dup-after-exit" else 143
+        if failure == "dup-stop-oserror":
+            with pytest.raises(OSError, match="injected stop state failure"):
+                worker._run_lane("run-gate", "host", {"runner_name": None}, memory_lock)
+            assert lane_output.closed
+            return
         assert worker._run_lane("run-gate", "host", {"runner_name": None}, memory_lock) == expected_status
         state = worker._state()
         assert worker.lane_error.startswith("lane-log-setup-failed:")

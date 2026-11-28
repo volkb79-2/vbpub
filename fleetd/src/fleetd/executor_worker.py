@@ -2091,16 +2091,22 @@ class HostJobWorker:
             except Exception as exc:
                 self.lane_error = self.lane_error or f"lane-log-setup-failed: {exc}"
                 self._lane_log_setup_failed.set()
-                if duplicate_fd >= 0:
-                    os.close(duplicate_fd)
                 try:
+                    if duplicate_fd >= 0:
+                        try:
+                            os.close(duplicate_fd)
+                        except OSError:
+                            pass
                     self._request_worker_stop(process)
                 except AdmissionError:
                     pass
-                if lane_stdout is not None:
-                    close_error = self._close_lane_stdout(lane_stdout)
-                    if close_error is not None and self._lane_log_setup_error is None:
-                        self._lane_log_setup_error = f"lane-log-setup-failed: {close_error}"
+                finally:
+                    # No drainer exists: whatever the stop does, a live lane
+                    # must not be left blocking on a pipe nobody reads.
+                    if lane_stdout is not None:
+                        close_error = self._close_lane_stdout(lane_stdout)
+                        if close_error is not None and self._lane_log_setup_error is None:
+                            self._lane_log_setup_error = f"lane-log-setup-failed: {close_error}"
         finally:
             os.close(log_fd)
         status: int | None = self._lane_exit_status
