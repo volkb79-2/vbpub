@@ -57,7 +57,7 @@ def _analyze_test_source(source: str, **kwargs):
 
 _estate_policy.analyze_source = _analyze_test_source
 
-pytest_plugins = ["cli_extended.pytest_plugin", "estate_test_policy.plugin", "_git_isolation"]
+pytest_plugins = ["cli_extended.pytest_plugin", "estate_test_policy.plugin"]
 
 #: The process environment when the session started (before any test ran).
 SESSION_START_ENVIRON = dict(os.environ)
