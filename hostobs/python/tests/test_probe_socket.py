@@ -22,7 +22,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from hostobs_client.conn import Connection  # noqa: E402
-from hostobs_client.wire import ConnectionLost  # noqa: E402
+from hostobs_client.wire import ConnectionLost, ServerError  # noqa: E402
 
 HOSTOBS_ROOT = Path(__file__).resolve().parents[2]
 FIXTURE_CGROUP = HOSTOBS_ROOT / "crates/kernel/tests/fixtures/cgroupfs"
@@ -130,20 +130,35 @@ class RealProbeSocket(unittest.TestCase):
         self.address = path
         self.addCleanup(listener.close)
 
-    def spawn_probe(self, *, fdnames: str = "observe", with_config: bool = True):
+    def spawn_probe(
+        self,
+        *,
+        fdnames: str = "observe",
+        with_config: bool = True,
+        extra_listeners: tuple[socket.socket, ...] = (),
+    ):
         """Spawn the shell shape from PROBE-PROCESS §(h), with the listener at fd 3."""
-        command = (
-            'exec 3<&"$2" && LISTEN_PID=$$ exec "$0" --config "$1"'
-            if with_config
-            else 'exec 3<&"$2" && LISTEN_PID=$$ exec "$0"'
+        descriptors = (self.listener, *extra_listeners)
+        setup = " && ".join(
+            f'exec {3 + index}<&"${2 + index}"' for index in range(len(descriptors))
+        )
+        command = f'{setup} && LISTEN_PID=$$ exec "$0" --config "$1"' if with_config else (
+            f'{setup} && LISTEN_PID=$$ exec "$0"'
         )
         env = os.environ.copy()
         env.pop("LISTEN_PID", None)
-        env["LISTEN_FDS"] = "1"
+        env["LISTEN_FDS"] = str(len(descriptors))
         env["LISTEN_FDNAMES"] = fdnames
         return subprocess.Popen(
-            ["sh", "-c", command, self.binary, str(self.config), str(self.listener.fileno())],
-            pass_fds=(self.listener.fileno(),),
+            [
+                "sh",
+                "-c",
+                command,
+                self.binary,
+                str(self.config),
+                *(str(listener.fileno()) for listener in descriptors),
+            ],
+            pass_fds=tuple(listener.fileno() for listener in descriptors),
             close_fds=True,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
@@ -356,6 +371,120 @@ class RealProbeSocket(unittest.TestCase):
         finally:
             if connection is not None:
                 connection.close()
+            child.send_signal(signal.SIGTERM)
+            self.reap(child)
+
+    def test_observe_events_reads_observer_annotations_with_bounded_cursor(self) -> None:
+        self.use_filesystem_socket()
+        observer_listener, observer_address = self.listener_address()
+        self.addCleanup(observer_listener.close)
+        self.write_config(self.tmpfs_dir, self.store_dir, level="observe")
+        self.config.write_text(
+            self.config.read_text(encoding="utf-8").replace(
+                'levels = ["observe"]', 'levels = ["observe", "observer"]'
+            ),
+            encoding="utf-8",
+        )
+        child = self.spawn_probe(
+            fdnames="observe:observer", extra_listeners=(observer_listener,)
+        )
+        observe = observer = None
+        try:
+            observe = Connection.open(
+                self.address, "observe", client="m3-b6-events", timeout_s=CHILD_WAIT_S
+            )
+            observer = Connection.open(
+                observer_address, "observer", client="m3-b6-annotate", timeout_s=CHILD_WAIT_S
+            )
+            self.assertIn("events", observe.verbs)
+            self.assertEqual(observer.verbs, ["hello", "annotate"])
+            status = observe.request("status", {})
+            started = status["started_real_ns"]
+            key = f"b6-{os.getpid()}-{time.monotonic_ns()}"
+            begin = observer.request(
+                "annotate",
+                {
+                    "kind": "begin",
+                    "name": "probe.b6.begin",
+                    "key": key,
+                    "ctx": {},
+                    "outcome": None,
+                    "code": None,
+                    "attrs": {},
+                },
+            )
+            point = observer.request(
+                "annotate",
+                {
+                    "kind": "point",
+                    "name": "probe.b6.point",
+                    "key": key,
+                    "ctx": {},
+                    "outcome": None,
+                    "code": None,
+                    "attrs": {},
+                },
+            )
+            end = observer.request(
+                "annotate",
+                {
+                    "kind": "end",
+                    "name": "probe.b6.end",
+                    "key": key,
+                    "ctx": {},
+                    "outcome": "ok",
+                    "code": None,
+                    "attrs": {},
+                },
+            )
+            self.assertEqual(end["span"], begin["span"])
+            args = {
+                "from_real_ns": started,
+                "to_real_ns": time.time_ns() + 1_000_000_000,
+                "names": [],
+                "limit": 1,
+                "cursor": None,
+            }
+            first = observe.request("events", args)
+            self.assertEqual(first["started_real_ns"], started)
+            self.assertIsInstance(first["oldest_real_ns"], int)
+            cursor = first["next"]
+            self.assertIsInstance(cursor, str)
+            changed = dict(args, from_real_ns=started + 1, cursor=cursor)
+            with self.assertRaises(ServerError) as invalid:
+                observe.request("events", changed)
+            self.assertEqual(invalid.exception.code, "cursor-invalid")
+
+            pages = [first]
+            while cursor is not None:
+                args = dict(args, cursor=cursor)
+                page = observe.request("events", args)
+                pages.append(page)
+                cursor = page["next"]
+            items = [item for page in pages for item in page["events"]]
+            self.assertEqual(
+                {item["name"] for item in items},
+                {"probe.b6.begin", "probe.b6.point", "probe.b6.end"},
+            )
+            self.assertEqual({item["span"] for item in items if item["name"] == "probe.b6.begin"}, {begin["span"]})
+            self.assertTrue(all(item["span"] is None for item in items if item["name"] == "probe.b6.point"))
+            self.assertEqual({item["span"] for item in items if item["name"] == "probe.b6.end"}, {end["span"]})
+            self.assertTrue(
+                all(
+                    set(item)
+                    == {
+                        "kind", "name", "key", "ctx", "outcome", "code", "attrs", "t_mono_ns",
+                        "real_ns", "issuer", "peer", "span", "inferred",
+                    }
+                    for item in items
+                )
+            )
+            self.assertTrue(all(set(item["peer"]) == {"pid", "comm", "cgroup"} for item in items))
+        finally:
+            if observe is not None:
+                observe.close()
+            if observer is not None:
+                observer.close()
             child.send_signal(signal.SIGTERM)
             self.reap(child)
 

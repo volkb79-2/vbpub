@@ -299,6 +299,13 @@ impl<B: Backend> Backend for StatusView<'_, B> {
         self.backend.annotate(conn, peer, args)
     }
 
+    fn events(
+        &mut self,
+        args: &crate::backend::EventsArgs,
+    ) -> Result<crate::backend::EventWindow, crate::backend::PageRefusal> {
+        self.backend.events(args)
+    }
+
     fn connection_closed(&mut self, conn: ConnId) {
         self.backend.connection_closed(conn);
     }
@@ -821,6 +828,13 @@ mod tests {
                 t_mono_ns: self.now_ns,
                 span,
             })
+        }
+
+        fn events(
+            &mut self,
+            args: &crate::backend::EventsArgs,
+        ) -> Result<crate::backend::EventWindow, crate::backend::PageRefusal> {
+            self.fixed.events(args)
         }
 
         fn connection_closed(&mut self, conn: ConnId) {

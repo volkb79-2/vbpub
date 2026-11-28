@@ -703,6 +703,14 @@ mod tests {
             })
         }
 
+        fn events(
+            &mut self,
+            args: &hostobs_serve::backend::EventsArgs,
+        ) -> Result<hostobs_serve::backend::EventWindow, hostobs_serve::backend::PageRefusal>
+        {
+            self.fixed.events(args)
+        }
+
         fn connection_closed(&mut self, conn: hostobs_serve::hub::ConnId) {
             self.closed.fetch_add(1, Ordering::SeqCst);
             self.fixed.connection_closed(conn);
@@ -743,6 +751,14 @@ mod tests {
             args: &AnnotateArgs,
         ) -> Result<AnnotateReply, AnnotateRefusal> {
             self.inner.annotate(conn, peer, args)
+        }
+
+        fn events(
+            &mut self,
+            args: &hostobs_serve::backend::EventsArgs,
+        ) -> Result<hostobs_serve::backend::EventWindow, hostobs_serve::backend::PageRefusal>
+        {
+            self.inner.events(args)
         }
 
         fn connection_closed(&mut self, conn: hostobs_serve::hub::ConnId) {
