@@ -804,9 +804,29 @@ pi by hand without the pane descriptor is refused. `--print-command` shows the
 lock path and flock requirement without starting a process. The gate suite
 checks that tester-unified provides `flock`.
 
-A process started from a pi bash tool call ends with that call, also under
-`setsid`. Hold a long launch (for example `codex-impl.sh`) under
-`start_monitor`, which lasts at most 3600 s (CTL-84).
+Use the pi-ctl `start_job` tool to launch `codex-impl.sh`, `pi-impl.sh`, or
+`pi-review.sh` in a worktree under the repository's `.worktrees/` directory.
+Codex implementation jobs run inside `pi-pidns-bash`; pi launchers start
+directly because nesting that wrapper fails, and `pi-impl.sh` puts its agent's
+bash calls inside the wrapper itself. Pi implementer jobs must be started with
+`start_job`, not from a bash tool call or under `start_monitor`. Codex and pi
+implementer jobs have no `start_job` lifetime cap or stop tool. `pi-review`
+keeps its own review budget: `PI_REVIEW_MAX_SECONDS` (default 7200) and the
+`PI_REVIEW_MAX_STREAM_BYTES` stream-size limit (default 268435456 bytes); it
+stops its review when either limit is exceeded. Watch for the `pi-ctl-job` end notice, or use
+`scripts/controller/job-check.sh '<run>' '<worktree>' '<route>' [ '<report>' ]`
+after a restart or when you need the recorded result. `start_job` prints this
+complete shell-quoted command; the route is the launcher's effective route, and
+the optional report argument is included when supplied.
+`controller.local.env` is sourced by `controller_init`, but route precedence is
+launcher-specific. `codex-impl.sh` sources it after launch setup, so its
+`CODEX_ROUTE` overrides an inherited or `start_job` route. `pi-impl.sh` restores
+nonempty caller values for `PI_ROUTE`, `PI_MODEL`, `PI_THINKING`, and
+`PI_SESSION_DIR`; for `PI_EXTRA_ARGS` and `PI_RUN_MODE`, any caller-set value,
+including empty, wins. Otherwise those pi fields can come from the local file.
+`pi-review.sh` passes its account-derived `PI_ROUTE` to `pi-impl.sh` and sets
+review mode with empty extra args, so those explicit values win. Other local
+configuration values remain available unless a launcher pins them later.
 
 ```bash
 scripts/controller/pi-ctl-launch.sh hostobs
@@ -833,8 +853,8 @@ does not create project `.pi/settings.json`. Pi's configured global model
 catalogue remains the operator-owned `$HOME/.pi/agent/models.json`.
 
 The `pi-ctl/` extension provides `send_message`, persisted wake-up
-schedule/list/cancel tools, bounded monitor start/list/stop tools, inbox polling,
-an event log and context recovery. Main receives peer messages through the
+schedule/list/cancel tools, detached `start_job`, bounded monitor
+start/list/stop tools, inbox polling, an event log and context recovery. Main receives peer messages through the
 tested bridge, which prints a fixed untrusted-peer header and id, prints each
 claim once per watch process, replays unacknowledged claims after a restart, and
 removes a claim only after an explicit acknowledgment:

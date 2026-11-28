@@ -81,6 +81,8 @@ together.
 | CTL-80 | `compact-resume.sh` can deliver `/compact` as pasted text and then send the resume prompt although no compaction ran | High | FIXED 2026-11-28 (P-plat-CTL80 r3) |
 | CTL-81 | A fresh pi controller session saves the previous session's monitor-restart notice as its original goal | Medium | FIXED 2026-11-28 (P-plat-CTL80) |
 | CTL-82 | An IDE selection chip in an empty Claude Code prompt row is read as typed input | Medium | OPEN 2026-11-28 (main smoke evidence) |
+| CTL-85 | `controller.local.env` and launcher-specific route/environment precedence | Known limit | BY DESIGN 2026-11-28 (main decision) |
+| CTL-86 | `start_job` prints `job-check.sh` with the requested Codex route, not the effective configured route | Medium | OPEN |
 
 ---
 
@@ -2087,15 +2089,61 @@ has no case for that refusal.
 
 ## CTL-84 — a job launched from a pi bash call dies when the call ends
 
-**Status:** OPEN 2026-11-28; found by the hostobs pi pilot. Severity: Medium.
+**Status:** FIXED 2026-11-28 (detached `start_job`, owner identity and liveness,
+tests, docs). Found by the hostobs pi pilot. Severity: Medium.
 
 A child started from a pi bash tool call (observed with `codex-impl.sh`, also
 under `setsid`) dies when the call returns. `pi-pidns-bash-worker.sh` runs each
 call under `bwrap --unshare-pid --die-with-parent`, so a new session does not
 leave the call's PID namespace.
 
-**Workaround.** Hold a long launch under `start_monitor` for its whole run. A
-monitor lasts at most 3600 s (`monitorMaxSeconds`), so a longer job does not fit.
+**Resolution.** The pi-ctl `start_job` tool launches only `codex-impl.sh`,
+`pi-impl.sh`, or `pi-review.sh` from the controller's own directory, with the
+validated arguments and route/effort environment. It detaches the process,
+closes the controller session-lock descriptor, logs to `<run>.launch.log`, and
+has no `start_job` runtime cap or stop tool for Codex and pi implementer jobs.
+`pi-review` keeps `PI_REVIEW_MAX_SECONDS` (default 7200) and
+`PI_REVIEW_MAX_STREAM_BYTES` (default 268435456 bytes), and stops its review
+when either limit is exceeded. The tool returns after the owner record changes,
+or reports an early exit / 30-second preflight. A live session receives one
+`pi-ctl-job` completion notice; after restart, use
+`job-check.sh '<run>' '<worktree>' '<route>' [ '<report>' ]`.
 
-**Wanted.** A supported way for a pi controller to start a job that outlives one
-call and the monitor cap, without weakening the sandbox for ordinary calls.
+Codex launches run through `pi-pidns-bash`. Pi launchers run directly because
+the wrapper cannot be nested: the attempted nested `bwrap` fails opening
+`/proc/10/ns/ns` with exit 125. `pi-impl.sh` performs its own wrapper preflight
+and starts the agent's bash calls inside that wrapper.
+
+**Closed when.** `start_job` is registered, the owner record holds the
+procfs-visible pid and start ticks, `job-check.sh` recognizes an outer procfs
+owner that `kill -0` cannot reach, and fake-pi tests pin the launcher and
+completion contract.
+
+## CTL-85 — controller.local.env and launcher-specific start_job precedence
+
+**Status:** BY DESIGN 2026-11-28 (main decision); severity: known limit.
+
+`controller_init` sources `controller.local.env`, but field precedence depends
+on the launcher. `codex-impl.sh` sources it after launch setup, so a local
+`CODEX_ROUTE` wins over an inherited or `start_job` route. `pi-impl.sh` restores
+nonempty caller `PI_ROUTE`, `PI_MODEL`, `PI_THINKING`, and `PI_SESSION_DIR`; a
+caller-set `PI_EXTRA_ARGS` or `PI_RUN_MODE` wins even when empty. When those
+values are absent (or empty for the first four fields), the local file can
+supply them. `pi-review.sh` passes its account-derived `PI_ROUTE` explicitly
+and sets `PI_RUN_MODE=review` and `PI_EXTRA_ARGS=''`, which win for that child.
+The launcher documentation records these distinctions.
+
+**Where:** `scripts/controller/lib.sh` (`controller_init`) and launcher docs.
+
+## CTL-86 — `start_job` prints a `job-check.sh` command with the requested Codex route
+
+**Status:** OPEN; severity: medium.
+
+`start_job` builds its printed `job-check.sh` command from the requested route
+(`params.route`, defaulting to `luna`). `codex-impl.sh` then sources
+`controller.local.env` through `controller_init`, where a configured
+`CODEX_ROUTE` can replace that route. The printed command can therefore select
+the wrong route-specific completion expectation for the launched run.
+
+**Where:** `scripts/controller/pi-ctl/core.mjs` (`start_job` response) and
+`scripts/controller/codex-impl.sh` (`controller_init` route precedence).

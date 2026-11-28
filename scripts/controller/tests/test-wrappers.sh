@@ -1238,4 +1238,38 @@ if "$PUSH_IMAGE_SCRIPT" runner-a 'image with spaces' > "$ROOT/push-invalid.out" 
   fail 'invalid image reference was accepted'
 fi
 
+# The run owner must come from the procfs visible to this shell, not its
+# namespace-local $$ value. CONTROLLER_SELF_STAT is the test seam for that fact.
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/../lib.sh"
+token_home=$ROOT/token-home
+mkdir -p "$token_home"
+printf 'CONTROLLER_RUN_TOKEN=config-token\n' > "$token_home/controller.local.env"
+HOME=$ROOT/home CONTROLLER_HOME=$token_home CONTROLLER_RUN_TOKEN=caller-token
+export HOME CONTROLLER_HOME CONTROLLER_RUN_TOKEN
+controller_init || fail 'controller init failed with a configured launch token'
+[[ $CONTROLLER_RUN_TOKEN == caller-token ]] || fail 'controller init replaced the caller launch token'
+case $(declare -p CONTROLLER_RUN_TOKEN) in
+  'declare -x CONTROLLER_RUN_TOKEN='*) ;;
+  *) fail 'controller init removed the launch token export attribute' ;;
+esac
+unset CONTROLLER_RUN_TOKEN
+controller_init || fail 'controller init failed with no caller launch token'
+[[ ! ${CONTROLLER_RUN_TOKEN+x} ]] || fail 'controller init introduced a configured launch token'
+
+printf '424242 (fake (pi) shell) S' > "$ROOT/self-stat"
+for ((owner_field = 0; owner_field < 18; owner_field++)); do printf ' 0' >> "$ROOT/self-stat"; done
+printf ' 777\n' >> "$ROOT/self-stat"
+# shellcheck disable=SC2034 # consumed by controller_run_record_owner from the sourced library
+CONTROLLER_RUN_LOCK_PATH=$ROOT/self-stat-owner.lock
+# shellcheck disable=SC2034 # consumed by controller_run_record_owner from the sourced library
+CONTROLLER_SELF_STAT=$ROOT/self-stat
+# shellcheck disable=SC2034 # consumed by controller_run_record_owner from the sourced library
+CONTROLLER_RUN_TOKEN=launch-token-42
+controller_run_record_owner || fail 'owner record seam failed'
+contains "$ROOT/self-stat-owner.lock" 'pid=424242' 'owner record uses the procfs-visible pid'
+contains "$ROOT/self-stat-owner.lock" 'pid_start_ticks=777' 'owner record uses procfs start ticks'
+contains "$ROOT/self-stat-owner.lock" 'launch_token=launch-token-42' 'owner record binds the launch token'
+[[ ! ${CONTROLLER_RUN_TOKEN+x} ]] || fail 'owner record library leaves no launch token for nested launches'
+
 echo 'PASS wrappers: identity SSH, route handling, child exit markers, release archive, pipeline status'

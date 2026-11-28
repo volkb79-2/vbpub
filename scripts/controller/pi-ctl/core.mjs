@@ -28,6 +28,7 @@ export const CONFIG_DEFAULTS = Object.freeze({
 	deliveryMaxAttempts: 3,
 	deliveryRetryBackoffMs: 1000,
 	monitorReadyTimeoutMs: 10_000,
+	jobStartTimeoutMs: 30_000,
 	startupTimeoutSeconds: 30,
 	compactAt: 150_000,
 	compactPrimeMaxBytes: 8192,
@@ -1113,6 +1114,289 @@ export function createController(pi, injected = {}, overrides = {}) {
 		return childEnv;
 	}
 
+	function startJobEnv(params) {
+		const childEnv = monitorEnv();
+		for (const key of Object.keys(childEnv)) {
+			if (key === "TMUX" || key === "TMUX_PANE" || key === "BASH_ENV" || key === "ENV" || key === "SHELLOPTS" || key === "BASHOPTS"
+				|| key.startsWith("BASH_FUNC_") || key.startsWith("PI_CTL_")
+				|| ["CONTROLLER_RUN_FORCE", "CONTROLLER_RUN_TOKEN", "PI_ROUTE", "PI_MODEL", "PI_THINKING", "PI_SESSION_DIR", "PI_EXTRA_ARGS", "PI_RUN_MODE",
+					"CODEX_ROUTE", "CODEX_MODEL", "CODEX_EFFORT", "CODEX_HOME_OVERRIDE", "CODEX_AUTO_CONTINUE"].includes(key)) {
+				delete childEnv[key];
+			}
+		}
+		if (params.launcher === "codex-impl") {
+			childEnv.CODEX_ROUTE = params.route ?? "luna";
+			if (params.effort !== undefined) childEnv.CODEX_EFFORT = params.effort;
+		} else if (params.launcher === "pi-impl") {
+			childEnv.PI_ROUTE = params.route ?? "deepseek-pi";
+			if (params.effort !== undefined) childEnv.PI_THINKING = params.effort;
+		} else if (params.effort !== undefined) {
+			childEnv.PI_THINKING = params.effort;
+		}
+		return childEnv;
+	}
+
+	function readFirstLine(filename) {
+		let fd;
+		try {
+			fd = fs.openSync(filename, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
+		} catch (error) {
+			if (error?.code === "ENOENT") return "";
+			throw error;
+		}
+		try {
+			if (!fs.fstatSync(fd).isFile()) throw new Error(`not a regular file: ${filename}`);
+			const buffer = Buffer.alloc(8192);
+			const count = fs.readSync(fd, buffer, 0, buffer.length, 0);
+			const text = buffer.subarray(0, count).toString("utf8");
+			return text.split(/\r?\n/, 1)[0];
+		} finally {
+			fs.closeSync(fd);
+		}
+	}
+
+	function readLaunchLogTail(filename, offset) {
+		let fd;
+		try {
+			fd = fs.openSync(filename, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
+		} catch {
+			return "";
+		}
+		try {
+			const size = fs.fstatSync(fd).size;
+			const start = Math.max(offset, size - 4096);
+			const buffer = Buffer.alloc(Math.max(0, size - start));
+			const count = buffer.length ? fs.readSync(fd, buffer, 0, buffer.length, start) : 0;
+			return buffer.subarray(0, count).toString("utf8").split(/\r?\n/).filter(Boolean).slice(-20).join("\n");
+		} finally {
+			fs.closeSync(fd);
+		}
+	}
+
+	function readJobDone(runsDirectory, runName) {
+		try {
+			const line = readFirstLine(path.join(runsDirectory, `${runName}.done`));
+			return line || "no .done";
+		} catch {
+			return "no .done";
+		}
+	}
+
+	function jobCheckCommand(params) {
+		const route = params.launcher === "codex-impl" ? (params.route ?? "luna")
+			: params.launcher === "pi-impl" ? (params.route ?? "deepseek-pi")
+				: params.account ? `deepseek-pi-${params.account}` : "any";
+		const args = ["scripts/controller/job-check.sh", params.run_name, params.worktree, route];
+		if (params.report !== undefined) args.push(params.report);
+		return args.map(shellQuote).join(" ");
+	}
+
+	function jobOwnsRecord(runsDirectory, runName, launchToken) {
+		try {
+			const line = readFirstLine(path.join(runsDirectory, `${runName}.lock`));
+			return new RegExp(`(?:^| )launch_token=${launchToken}(?: |$)`).test(line);
+		} catch {
+			return false;
+		}
+	}
+
+	function controllerPaths(childEnv, controllerDirectory) {
+		if (typeof spawn !== "function") return Promise.reject(new Error("child process API is unavailable"));
+		const library = path.join(controllerDirectory, "lib.sh");
+		const source = `. ${shellQuote(library)} && controller_init && printf '%s\\n%s\\n' "$CONTROLLER_RUNS_DIR" "$CONTROLLER_LOGS_DIR"`;
+		return new Promise((resolve, reject) => {
+			let child;
+			try {
+				child = spawn("/bin/bash", ["-c", source], { cwd, env: childEnv, stdio: ["ignore", "pipe", "pipe"] });
+			} catch (error) {
+				reject(new Error(`controller library could not resolve run paths: ${error.message}`));
+				return;
+			}
+			let output = "";
+			let errors = "";
+			child.stdout?.on("data", (chunk) => { output += Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk); });
+			child.stderr?.on("data", (chunk) => { errors += Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk); });
+			child.once?.("error", (error) => reject(new Error(`controller library could not resolve run paths: ${error.message}`)));
+			child.once?.("close", (code) => {
+				if (code !== 0) {
+					reject(new Error(`controller library could not resolve run paths${errors ? `: ${errors.trim()}` : ` (exit ${code})`}`));
+					return;
+				}
+				const lines = output.trimEnd().split(/\r?\n/);
+				if (lines.length !== 2 || lines.some((line) => !path.isAbsolute(line))) {
+					reject(new Error("controller library returned invalid run paths"));
+					return;
+				}
+				resolve({ runs: lines[0], logs: lines[1] });
+			});
+		});
+	}
+
+	function validateJobParams(params) {
+		if (!params || typeof params !== "object" || Array.isArray(params)) throw new Error("parameters must be an object");
+		const launcher = params.launcher;
+		if (!["codex-impl", "pi-impl", "pi-review"].includes(launcher)) throw new Error("launcher must be codex-impl, pi-impl or pi-review");
+		const allowed = {
+			"codex-impl": new Set(["launcher", "worktree", "prompt_file", "run_name", "route", "effort", "resume"]),
+			"pi-impl": new Set(["launcher", "worktree", "prompt_file", "run_name", "route", "effort", "resume", "report"]),
+			"pi-review": new Set(["launcher", "worktree", "prompt_file", "run_name", "effort", "report", "implementer_run", "account"]),
+		}[launcher];
+		for (const key of Object.keys(params)) if (!allowed.has(key)) throw new Error(`${key} does not belong to launcher ${launcher}`);
+		if (typeof params.worktree !== "string" || !path.isAbsolute(params.worktree)) throw new Error("worktree must be an absolute path");
+		if (typeof params.prompt_file !== "string" || !path.isAbsolute(params.prompt_file)) throw new Error("prompt_file must be an absolute path");
+		if (typeof params.run_name !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(params.run_name) || params.run_name.includes("..")) {
+			throw new Error("run_name must match the controller run-name rule and must not contain ..");
+		}
+		if (params.route !== undefined) {
+			const routes = launcher === "codex-impl" ? ["luna", "sol"] : launcher === "pi-impl" ? ["deepseek-pi", "deepseek-pi-volker", "deepseek-pi-github2"] : [];
+			if (!routes.includes(params.route)) throw new Error(`route is not valid for ${launcher}`);
+		}
+		if (params.effort !== undefined && !["minimal", "low", "medium", "high", "xhigh", "max"].includes(params.effort)) {
+			throw new Error("effort must be minimal, low, medium, high, xhigh or max");
+		}
+		if (params.resume !== undefined && (launcher === "pi-review" || typeof params.resume !== "string"
+			|| !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(params.resume))) {
+			throw new Error("resume must be a valid session id for an implementer launcher");
+		}
+		if (params.report !== undefined && (typeof params.report !== "string" || !path.isAbsolute(params.report))) throw new Error("report must be an absolute path");
+		if (launcher === "pi-review") {
+			if (params.report === undefined) throw new Error("pi-review requires report");
+			const hasRun = params.implementer_run !== undefined;
+			const hasAccount = params.account !== undefined;
+			if (hasRun === hasAccount) throw new Error("pi-review requires exactly one of implementer_run and account");
+			if (hasRun && (typeof params.implementer_run !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(params.implementer_run) || params.implementer_run.includes(".."))) {
+				throw new Error("implementer_run must match the controller run-name rule and must not contain ..");
+			}
+			if (hasAccount && !["volker", "github2"].includes(params.account)) throw new Error("account must be volker or github2");
+		}
+		return params;
+	}
+
+	async function startJob(rawParams) {
+		const params = validateJobParams(rawParams);
+		if (!repository) throw new Error("controller cwd is not inside a repository");
+		const worktree = fs.realpathSync(params.worktree);
+		if (!fs.statSync(worktree).isDirectory()) throw new Error("worktree must resolve to a directory");
+		const worktreeRoot = fs.realpathSync(path.join(repository, ".worktrees"));
+		if (worktree === worktreeRoot || !isInside(path, worktree, worktreeRoot)) throw new Error("worktree must be strictly under the controller repository's .worktrees directory");
+		const promptFile = fs.realpathSync(params.prompt_file);
+		if (!fs.statSync(promptFile).isFile()) throw new Error("prompt_file must resolve to a regular file");
+		const controllerDirectory = wrapperPath ? path.dirname(wrapperPath) : null;
+		if (!controllerDirectory) throw new Error("controller launcher directory is unavailable");
+		const launcherPath = path.join(controllerDirectory, `${params.launcher}.sh`);
+		if (params.launcher === "codex-impl") verifyWrapper("job");
+		const childEnv = startJobEnv(params);
+		const { runs, logs } = await controllerPaths(childEnv, controllerDirectory);
+		const launchToken = makeId();
+		childEnv.CONTROLLER_RUN_TOKEN = launchToken;
+		const launchLog = path.join(logs, `${params.run_name}.launch.log`);
+		let logFd;
+		try {
+			logFd = fs.openSync(launchLog, fs.constants.O_WRONLY | fs.constants.O_APPEND | fs.constants.O_CREAT | (fs.constants.O_NOFOLLOW ?? 0), 0o600);
+			if (!fs.fstatSync(logFd).isFile()) throw new Error("launch log is not a regular file");
+			fs.fchmodSync(logFd, 0o600);
+		} catch (error) {
+			if (logFd !== undefined) fs.closeSync(logFd);
+			throw new Error(`launch log could not be opened safely: ${error.message}`);
+		}
+		const logOffset = fs.fstatSync(logFd).size;
+		let args;
+		let executable;
+		if (params.launcher === "codex-impl") {
+			args = [worktree, promptFile, params.run_name];
+			if (params.resume !== undefined) args.push("resume", params.resume);
+			const command = `exec bash ${[launcherPath, ...args].map(shellQuote).join(" ")}`;
+			executable = wrapperPath;
+			args = ["-c", command];
+		} else {
+			args = [launcherPath, worktree, promptFile, params.run_name];
+			if (params.launcher === "pi-review") {
+				args.push("--report", params.report, params.implementer_run !== undefined ? "--implementer-run" : "--account",
+					params.implementer_run ?? params.account);
+			} else {
+				if (params.resume !== undefined) args.push("resume", params.resume);
+				if (params.report !== undefined) args.push("--report", params.report);
+			}
+			executable = "/bin/bash";
+		}
+		const childStdio = ["ignore", logFd, logFd];
+		while (childStdio.length <= sessionLockFd) childStdio.push("ignore");
+		let child;
+		const job = {
+			name: params.run_name, launcher: params.launcher, runs, launchLog, logOffset,
+			launchToken, checkCommand: jobCheckCommand({ ...params, worktree }), closed: false, exitCode: null, signal: null, started: false, preflightReported: false,
+			noticeSent: false, pollTimer: null, startTimeout: null, resolveStart: null,
+		};
+		try {
+			child = spawn(executable, args, { cwd, env: childEnv, detached: true, stdio: childStdio });
+			job.child = child;
+			child.once?.("error", (error) => { job.spawnError = error.message; });
+			child.once?.("close", (code, signal) => {
+				job.closed = true;
+				job.exitCode = code;
+				job.signal = signal;
+				if (!job.started && jobOwnsRecord(runs, job.name, launchToken)) job.started = true;
+				try { log("job_exit", { run: job.name, launcher: job.launcher, code: code ?? null, signal: signal ?? null }); } catch { /* the child result still reaches pi */ }
+				if (job.resolveStart) job.resolveStart(job.started ? { started: true } : { earlyExit: true });
+				sendJobExitNotice(job);
+			});
+			child.unref?.();
+		} catch (error) {
+			throw new Error(`job could not start: ${error.message}`);
+		} finally {
+			if (logFd !== undefined) fs.closeSync(logFd);
+		}
+		try { log("job_start", { run: params.run_name, launcher: params.launcher }); } catch { /* the child is already detached */ }
+		const result = await new Promise((resolve) => {
+			const finish = (value) => {
+				if (!job.resolveStart) return;
+				job.resolveStart = null;
+				if (job.pollTimer !== null) timers.clearTimeout(job.pollTimer);
+				if (job.startTimeout !== null) timers.clearTimeout(job.startTimeout);
+				resolve(value);
+			};
+			const poll = () => {
+				job.pollTimer = null;
+				if (!job.started && jobOwnsRecord(runs, job.name, launchToken)) job.started = true;
+				if (job.started) finish({ started: true });
+				else if (job.closed) finish({ earlyExit: true });
+				else job.pollTimer = timers.setTimeout(poll, 100);
+			};
+			job.resolveStart = finish;
+			poll();
+			if (job.resolveStart) {
+				job.startTimeout = timers.setTimeout(() => {
+					job.preflightReported = true;
+					finish({ preflighting: true });
+				}, CONFIG_DEFAULTS.jobStartTimeoutMs);
+			}
+		});
+		if (result.started) {
+			job.started = true;
+			return `Job ${params.run_name} started with ${params.launcher}; watch for its end notice or run ${job.checkCommand}.`;
+		}
+		if (result.preflighting) return `Job ${params.run_name} is still preflighting; use ${job.checkCommand}.`;
+		const tail = readLaunchLogTail(launchLog, logOffset);
+		const code = job.exitCode === null ? `null${job.signal ? ` (signal ${job.signal})` : ""}` : String(job.exitCode);
+		return `Job ${params.run_name} exited before its owner record changed (exit ${code}). Check with ${job.checkCommand}.${tail ? `\nLast launch log lines:\n${tail}` : ""}`;
+	}
+
+	function sendJobExitNotice(job) {
+		if ((!job.started && !job.preflightReported) || job.noticeSent || stopped) return;
+		job.noticeSent = true;
+		const done = readJobDone(job.runs, job.name);
+		try {
+			const message = job.started
+				? `Run ${job.name} ended with launcher exit code ${job.exitCode === null ? "null" : job.exitCode}; ${done}. Check with ${job.checkCommand}`
+				: `Run ${job.name} exited without starting (exit ${job.exitCode === null ? "null" : job.exitCode}); no owner record was written.`;
+			inject("pi-ctl-job", `job-${job.name}-${makeId()}`, message);
+			log("job_exit_notice", { run: job.name, code: job.exitCode ?? null, done });
+		} catch {
+			job.noticeSent = false;
+			try { log("job_exit_notice_error", { run: job.name }); } catch { /* session shutdown may make event logging unavailable */ }
+		}
+	}
+
 	function appendMonitorLine(monitor, line) {
 		if (stopped || monitor.shuttingDown) return;
 		const original = Buffer.from(line, "utf8");
@@ -1316,15 +1600,15 @@ export function createController(pi, injected = {}, overrides = {}) {
 		else void finishMonitorIfDrained(monitor);
 	}
 
-	function verifyWrapper() {
-		if (typeof wrapperPath !== "string" || !path.isAbsolute(wrapperPath)) throw new Error("PI_CTL_PIDNS_WRAPPER must name the absolute pi-pidns-bash wrapper");
+	function verifyWrapper(context = "monitor") {
+		if (typeof wrapperPath !== "string" || !path.isAbsolute(wrapperPath)) throw new Error(`PI_CTL_PIDNS_WRAPPER must name the absolute pi-pidns-bash wrapper; ${context} refused`);
 		let stat;
 		try {
 			stat = fs.lstatSync(wrapperPath);
 		} catch {
-			throw new Error("pi-pidns-bash wrapper is missing; monitor refused");
+			throw new Error(`pi-pidns-bash wrapper is missing; ${context} refused`);
 		}
-		if (!stat.isFile() || stat.isSymbolicLink() || (stat.mode & 0o111) === 0) throw new Error("pi-pidns-bash wrapper is not an executable regular file; monitor refused");
+		if (!stat.isFile() || stat.isSymbolicLink() || (stat.mode & 0o111) === 0) throw new Error(`pi-pidns-bash wrapper is not an executable regular file; ${context} refused`);
 	}
 
 	async function startMonitor(command, maxSeconds) {
@@ -1783,6 +2067,33 @@ export function createController(pi, injected = {}, overrides = {}) {
 		},
 	};
 	pi.registerTool(cancelWakeupTool);
+	const startJobTool = {
+		name: "start_job",
+		label: "Start detached controller job",
+		description: "Start one allowlisted Codex or pi controller launcher as a detached job. Codex and pi-impl jobs have no start_job lifetime cap or stop tool; pi-review keeps PI_REVIEW_MAX_SECONDS (default 7200) and PI_REVIEW_MAX_STREAM_BYTES (default 268435456 bytes), and stops its review when over either limit. Use scripts/controller/job-check.sh <run> <worktree> <route> [report] to inspect the result.",
+		parameters: objectSchema({
+			launcher: { type: "string", enum: ["codex-impl", "pi-impl", "pi-review"] },
+			worktree: { type: "string", minLength: 1, description: "Absolute worktree path under the repository's .worktrees directory." },
+			prompt_file: { type: "string", minLength: 1, description: "Absolute path to an existing prompt file." },
+			run_name: { type: "string", minLength: 1, maxLength: 128, pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" },
+			route: { type: "string", enum: ["luna", "sol", "deepseek-pi", "deepseek-pi-volker", "deepseek-pi-github2"] },
+			effort: { type: "string", enum: ["minimal", "low", "medium", "high", "xhigh", "max"] },
+			resume: { type: "string", minLength: 1, maxLength: 128, pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" },
+			report: { type: "string", minLength: 1, description: "Absolute report path; required for pi-review." },
+			implementer_run: { type: "string", minLength: 1, maxLength: 128, pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" },
+			account: { type: "string", enum: ["volker", "github2"] },
+		}, ["launcher", "worktree", "prompt_file", "run_name"]),
+		async execute(_id, params) {
+			try {
+				const result = await startJob(params);
+				return textResult(result);
+			} catch (error) {
+				try { log("job_refused", { launcher: params?.launcher ?? null, run: params?.run_name ?? null, reason: error.message }); } catch { /* return the refusal */ }
+				return textResult(`Job refused: ${error.message}`);
+			}
+		},
+	};
+	pi.registerTool(startJobTool);
 	const startMonitorTool = {
 		name: "start_monitor",
 		label: "Start bounded monitor",
@@ -1862,7 +2173,7 @@ export function createController(pi, injected = {}, overrides = {}) {
 		}, config.pollMs);
 	});
 	pi.on("before_agent_start", (event, ctx) => {
-		if (event?.messageType === "custom" && event.message?.customType === "pi-ctl-monitor") return;
+		if (event?.messageType === "custom" && ["pi-ctl-monitor", "pi-ctl-job"].includes(event.message?.customType)) return;
 		captureOriginalGoal(event, ctx);
 		if (!primeContextPending || hasSavedInitialContext(ctx)) return;
 		primeContextPending = false;
@@ -1948,6 +2259,7 @@ export function createController(pi, injected = {}, overrides = {}) {
 			schedule_wakeup: scheduleWakeupTool,
 			list_wakeups: listWakeupsTool,
 			cancel_wakeup: cancelWakeupTool,
+			start_job: startJobTool,
 			start_monitor: startMonitorTool,
 			list_monitors: listMonitorsTool,
 			stop_monitor: stopMonitorTool,

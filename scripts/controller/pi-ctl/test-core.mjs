@@ -13,11 +13,22 @@ function fixture(envExtra = {}) {
 	const repo = path.join(temp, "repo");
 	const root = path.join(temp, "state");
 	const wrapper = path.join(temp, "pi-pidns-bash");
+	const jobWorktree = path.join(repo, ".worktrees", "job-fixture");
+	const promptFile = path.join(temp, "job-prompt.md");
+	const jobRuns = path.join(temp, "controller", "runs");
+	const jobLogs = path.join(temp, "controller", "logs");
 	const prime = path.join(temp, "PRIME-receiver.md");
 	fs.mkdirSync(repo, { mode: 0o700 });
+	fs.mkdirSync(jobWorktree, { recursive: true, mode: 0o700 });
+	fs.mkdirSync(jobRuns, { recursive: true, mode: 0o700 });
+	fs.mkdirSync(jobLogs, { recursive: true, mode: 0o700 });
 	fs.writeFileSync(path.join(repo, ".git"), "gitdir: fake\n", { mode: 0o600 });
 	fs.writeFileSync(wrapper, "#!/bin/sh\n", { mode: 0o700 });
 	fs.chmodSync(wrapper, 0o700);
+	fs.writeFileSync(promptFile, "job prompt\n", { mode: 0o600 });
+	for (const script of ["codex-impl.sh", "pi-impl.sh", "pi-review.sh", "lib.sh"]) {
+		fs.writeFileSync(path.join(temp, script), "#!/bin/sh\n", { mode: 0o700 });
+	}
 	fs.writeFileSync(prime, "Role rules marker: preserve the T4 queue and report to main.\n", { mode: 0o600 });
 	const calls = [];
 	const sessionEntries = [];
@@ -141,6 +152,10 @@ function fixture(envExtra = {}) {
 		repo,
 		root,
 		wrapper,
+		jobWorktree,
+		promptFile,
+		jobRuns,
+		jobLogs,
 		prime,
 		env,
 		calls,
@@ -168,7 +183,9 @@ function fixture(envExtra = {}) {
 			child.stdout = new EventEmitter();
 			child.stderr = new EventEmitter();
 			child.signals = [];
+			child.unrefCalls = 0;
 			child.kill = (signal) => { child.signals.push(signal); return true; };
+			child.unref = () => { child.unrefCalls++; };
 			return child;
 		},
 		fireTimeout(task) {
@@ -1188,6 +1205,226 @@ test("main bridge completes a durable acknowledgement left before a crash", (t) 
 	assert.equal(output.length, 1, "a committed ack prevents replay after watcher restart");
 	assert.equal(fs.existsSync(path.join(dirs, "claimed", `${id}.msg`)), false);
 	assert.equal(acknowledge(f.root, id, { now: f.now }), true);
+});
+
+function configureJobSpawn(f, onLaunch) {
+	const calls = [];
+	f.setSpawn((command, args, options) => {
+		const child = f.makeChild();
+		calls.push({ command, args, options, child });
+		if (args[0] === "-c" && String(args[1]).includes("controller_init")) {
+			queueMicrotask(() => {
+				child.stdout.emit("data", `${f.jobRuns}\n${f.jobLogs}\n`);
+				child.emit("close", 0, null);
+			});
+		} else onLaunch?.({ command, args, options, child });
+		return child;
+	});
+	return calls;
+}
+
+function jobParams(f, extra = {}) {
+	return { launcher: "codex-impl", worktree: f.jobWorktree, prompt_file: f.promptFile, run_name: "job-one", ...extra };
+}
+
+async function startJobResultWithin(promise) {
+	let timeout;
+	try {
+		return await Promise.race([
+			promise,
+			new Promise((_, reject) => { timeout = setTimeout(() => reject(new Error("start_job result did not settle within 60 seconds")), 60_000); }),
+		]);
+	} finally {
+		clearTimeout(timeout);
+	}
+}
+
+test("start_job refuses invalid launchers, paths, routes and launcher-specific parameters", async (t) => {
+	const f = fixture();
+	t.after(f.cleanup);
+	let spawnCalls = 0;
+	f.setSpawn(() => { spawnCalls++; return f.makeChild(); });
+	for (const [params, expected] of [
+		[{ ...jobParams(f), launcher: "shell", command: "true" }, /launcher must be/],
+		[{ ...jobParams(f), worktree: f.repo }, /strictly under/],
+		[{ ...jobParams(f), run_name: "bad..name" }, /run_name/],
+		[{ ...jobParams(f), route: "deepseek-pi" }, /route is not valid/],
+		[{ ...jobParams(f), resume: "bad/session" }, /resume must be/],
+		[{ ...jobParams(f), effort: "turbo" }, /effort must be/],
+		[{ ...jobParams(f), report: path.join(f.temp, "report.md") }, /does not belong/],
+		[{ ...jobParams(f), launcher: "pi-review", report: path.join(f.temp, "review.md") }, /exactly one/],
+		[{ ...jobParams(f), launcher: "pi-review", report: path.join(f.temp, "review.md"), account: "other" }, /account must be/],
+	]) {
+		const result = await f.tools.get("start_job").execute("j1", params);
+		assert.match(result.content[0].text, expected);
+	}
+	assert.equal(spawnCalls, 0, "refusals happen before controller path lookup or launcher spawn");
+});
+
+test("start_job launches codex through the PID namespace with a sanitized environment and detached stdio", async (t) => {
+	const f = fixture({
+		TMUX: "old", TMUX_PANE: "%1", BASH_ENV: "/tmp/startup", ENV: "/tmp/env", SHELLOPTS: "x", BASHOPTS: "y",
+		"BASH_FUNC_demo%%": "() { :; }", PI_CTL_EXTRA: "state", CONTROLLER_RUN_FORCE: "1", CONTROLLER_RUN_TOKEN: "inherited-token", PI_ROUTE: "old-pi", PI_MODEL: "old-model",
+		PI_THINKING: "low", PI_SESSION_DIR: "/old/session", PI_EXTRA_ARGS: "bad", PI_RUN_MODE: "review",
+		CODEX_ROUTE: "deepseek", CODEX_MODEL: "old-model", CODEX_EFFORT: "max", CODEX_HOME_OVERRIDE: "/old/home",
+		CODEX_AUTO_CONTINUE: "1", DOCKER_HOST: "unix:///run/docker.sock",
+	});
+	t.after(f.cleanup);
+	const calls = configureJobSpawn(f, ({ command, args, options, child }) => {
+		assert.equal(command, f.wrapper);
+		assert.deepEqual(args, ["-c", `exec bash '${path.join(path.dirname(f.wrapper), "codex-impl.sh")}' '${f.jobWorktree}' '${f.promptFile}' 'job-one' 'resume' 'session-A'`]);
+		assert.equal(options.cwd, f.repo);
+		assert.equal(options.detached, true);
+		assert.equal(options.env.CODEX_ROUTE, "sol");
+		assert.match(options.env.CONTROLLER_RUN_TOKEN, /^[A-Za-z0-9-]{1,64}$/);
+		assert.notEqual(options.env.CONTROLLER_RUN_TOKEN, "inherited-token");
+		assert.equal(options.env.CODEX_EFFORT, "xhigh");
+		assert.equal(options.env.DOCKER_HOST, "unix:///run/docker.sock");
+		for (const key of ["TMUX", "TMUX_PANE", "BASH_ENV", "ENV", "SHELLOPTS", "BASHOPTS", "BASH_FUNC_demo%%", "PI_CTL_EXTRA",
+			"PI_CTL_LOCK_FD", "CONTROLLER_RUN_FORCE", "PI_ROUTE", "PI_MODEL", "PI_THINKING", "PI_SESSION_DIR", "PI_EXTRA_ARGS",
+			"PI_RUN_MODE", "CODEX_MODEL", "CODEX_HOME_OVERRIDE", "CODEX_AUTO_CONTINUE"]) assert.equal(Object.hasOwn(options.env, key), false, `${key} is removed`);
+		assert.equal(options.stdio[0], "ignore");
+		assert.equal(options.stdio[1], options.stdio[2]);
+		assert.equal(options.stdio[12], "ignore", "the controller session lock fd is closed in the job");
+		assert.equal(fs.statSync(path.join(f.jobLogs, "job-one.launch.log")).mode & 0o777, 0o600);
+		fs.writeFileSync(path.join(f.jobRuns, "job-one.lock"), `pid=42 started_epoch=1 launch_token=${options.env.CONTROLLER_RUN_TOKEN}\n`);
+		return child;
+	});
+	const result = await startJobResultWithin(f.tools.get("start_job").execute("j1", jobParams(f, { route: "sol", effort: "xhigh", resume: "session-A" })));
+	assert.match(result.content[0].text, /started with codex-impl/);
+	assert.ok(result.content[0].text.includes(`'scripts/controller/job-check.sh' 'job-one' '${f.jobWorktree}' 'sol'`));
+	assert.equal(calls.length, 2, "the library path lookup precedes the detached launcher");
+	assert.equal(calls[1].child.unrefCalls, 1);
+});
+
+test("start_job launches pi directly and reports an early exit with this launch's log tail", async (t) => {
+	const f = fixture({ DOCKER_HOST: "tcp://docker.example", PI_CTL_LOCK_FD: "12", PI_ROUTE: "old", CODEX_ROUTE: "old" });
+	t.after(f.cleanup);
+	fs.writeFileSync(path.join(f.jobLogs, "early.launch.log"), "old prior output\n");
+	configureJobSpawn(f, ({ command, args, options, child }) => {
+		assert.equal(command, "/bin/bash");
+		assert.deepEqual(args, [path.join(path.dirname(f.wrapper), "pi-impl.sh"), f.jobWorktree, f.promptFile, "early", "--report", path.join(f.temp, "report.md")]);
+		assert.equal(options.detached, true);
+		assert.equal(options.env.PI_ROUTE, "deepseek-pi-github2");
+		assert.equal(options.env.PI_THINKING, "max");
+		assert.equal(options.env.DOCKER_HOST, "tcp://docker.example");
+		assert.equal(Object.hasOwn(options.env, "PI_CTL_LOCK_FD"), false);
+		assert.equal(options.stdio[12], "ignore");
+		fs.appendFileSync(path.join(f.jobLogs, "early.launch.log"), "line 1\nline 2\n");
+		queueMicrotask(() => child.emit("close", 23, null));
+		return child;
+	});
+	const result = await startJobResultWithin(f.tools.get("start_job").execute("j1", jobParams(f, {
+		launcher: "pi-impl", run_name: "early", route: "deepseek-pi-github2", effort: "max", report: path.join(f.temp, "report.md"),
+	})));
+	assert.match(result.content[0].text, /exited before its owner record changed \(exit 23\)/);
+	assert.match(result.content[0].text, /line 1\nline 2/);
+	assert.doesNotMatch(result.content[0].text, /old prior output/);
+});
+
+test("start_job launches pi-review directly with exactly its report and account arguments", async (t) => {
+	const f = fixture({ PI_ROUTE: "old", PI_THINKING: "low", CODEX_ROUTE: "sol" });
+	t.after(f.cleanup);
+	configureJobSpawn(f, ({ command, args, options, child }) => {
+		assert.equal(command, "/bin/bash");
+		assert.deepEqual(args, [path.join(path.dirname(f.wrapper), "pi-review.sh"), f.jobWorktree, f.promptFile, "review-one",
+			"--report", path.join(f.temp, "review.md"), "--account", "volker"]);
+		assert.equal(options.env.PI_THINKING, "high");
+		assert.equal(Object.hasOwn(options.env, "PI_ROUTE"), false, "review has no route parameter");
+		assert.equal(Object.hasOwn(options.env, "CODEX_ROUTE"), false);
+		fs.writeFileSync(path.join(f.jobRuns, "review-one.lock"), `pid=52 started_epoch=5 launch_token=${options.env.CONTROLLER_RUN_TOKEN}\n`);
+		return child;
+	});
+	const result = await startJobResultWithin(f.tools.get("start_job").execute("j1", jobParams(f, {
+		launcher: "pi-review", run_name: "review-one", report: path.join(f.temp, "review.md"), account: "volker", effort: "high",
+	})));
+	assert.match(result.content[0].text, /started with pi-review/);
+	assert.ok(result.content[0].text.includes(`'scripts/controller/job-check.sh' 'review-one' '${f.jobWorktree}' 'deepseek-pi-volker' '${path.join(f.temp, "review.md")}'`));
+});
+
+test("start_job returns after 30 seconds of preflight and never stops a detached job on shutdown", async (t) => {
+	const f = fixture();
+	t.after(f.cleanup);
+	let launchChild;
+	configureJobSpawn(f, ({ child }) => { launchChild = child; });
+	const pending = f.tools.get("start_job").execute("j1", jobParams(f));
+	await f.flushPromises();
+	const timeout = f.findTimeout(30_000);
+	assert.ok(timeout, "the preflight response has a 30 second bound");
+	await f.fireTimeout(timeout);
+	const result = await startJobResultWithin(pending);
+	assert.ok(result.content[0].text.includes(`still preflighting; use 'scripts/controller/job-check.sh' 'job-one' '${f.jobWorktree}' 'luna'`));
+	assert.equal(launchChild.signals.length, 0);
+	f.events.get("session_shutdown")({});
+	launchChild.emit("close", 0, null);
+	assert.equal(launchChild.signals.length, 0, "session shutdown never signals the detached job");
+	assert.equal(f.calls.filter(({ message }) => message.customType === "pi-ctl-job").length, 0,
+		"a job that exits after shutdown injects no notice");
+});
+
+test("start_job sends one end notice and excludes it from the saved original goal", async (t) => {
+	const f = fixture();
+	t.after(f.cleanup);
+	let launchChild;
+	configureJobSpawn(f, ({ child, options }) => {
+		launchChild = child;
+		fs.writeFileSync(path.join(f.jobRuns, "job-one.lock"), `pid=44 started_epoch=2 launch_token=${options.env.CONTROLLER_RUN_TOKEN}\n`);
+		fs.writeFileSync(path.join(f.jobRuns, "job-one.done"), "EXIT=0 OUTCOME=SUCCESS\n", { mode: 0o600 });
+	});
+	const result = await startJobResultWithin(f.tools.get("start_job").execute("j1", jobParams(f)));
+	assert.match(result.content[0].text, /started with codex-impl/);
+	launchChild.emit("close", 0, null);
+	launchChild.emit("close", 0, null);
+	const notices = f.calls.filter(({ message }) => message.customType === "pi-ctl-job");
+	assert.equal(notices.length, 1);
+	assert.match(notices[0].message.content, /Run job-one ended with launcher exit code 0; EXIT=0 OUTCOME=SUCCESS/);
+	assert.ok(notices[0].message.content.includes(`'scripts/controller/job-check.sh' 'job-one' '${f.jobWorktree}' 'luna'`));
+	f.events.get("before_agent_start")({ messageType: "custom", message: { customType: "pi-ctl-job", content: notices[0].message.content } }, f.fakeContext);
+	assert.equal(f.sessionEntries.some((entry) => entry.customType === "pi-ctl-original-goal"), false);
+	await f.flushPromises();
+});
+
+test("start_job binds same-name launches to their own owner token", async (t) => {
+	const f = fixture();
+	t.after(f.cleanup);
+	const launchChildren = [];
+	configureJobSpawn(f, ({ options, child }) => {
+		launchChildren.push({ child, token: options.env.CONTROLLER_RUN_TOKEN });
+		if (launchChildren.length === 1) {
+			fs.writeFileSync(path.join(f.jobRuns, "job-one.lock"), `pid=60 launch_token=${options.env.CONTROLLER_RUN_TOKEN}\n`);
+		} else {
+			queueMicrotask(() => child.emit("close", 2, null));
+		}
+		return child;
+	});
+	const first = f.tools.get("start_job").execute("j1", jobParams(f));
+	const second = f.tools.get("start_job").execute("j1", jobParams(f));
+	const [firstResult, secondResult] = await startJobResultWithin(Promise.all([first, second]));
+	assert.match(firstResult.content[0].text, /started with codex-impl/);
+	assert.match(secondResult.content[0].text, /exited before its owner record changed \(exit 2\)/);
+	assert.notEqual(launchChildren[0].token, launchChildren[1].token);
+	assert.equal(f.calls.filter(({ message }) => message.customType === "pi-ctl-job").length, 0,
+		"a losing same-name launch cannot send an end notice for the winner");
+	launchChildren[0].child.emit("close", 0, null);
+	assert.equal(f.calls.filter(({ message }) => message.customType === "pi-ctl-job").length, 1,
+		"the owner launch sends its own single end notice");
+	await f.flushPromises();
+});
+
+test("start_job reports a preflighted launch that exits without its owner record", async (t) => {
+	const f = fixture();
+	t.after(f.cleanup);
+	let launchChild;
+	configureJobSpawn(f, ({ child }) => { launchChild = child; });
+	const pending = f.tools.get("start_job").execute("j1", jobParams(f));
+	await f.flushPromises();
+	await f.fireTimeout(f.findTimeout(30_000));
+	assert.match((await startJobResultWithin(pending)).content[0].text, /still preflighting/);
+	launchChild.emit("close", 7, null);
+	const notices = f.calls.filter(({ message }) => message.customType === "pi-ctl-job");
+	assert.equal(notices.length, 1);
+	assert.match(notices[0].message.content, /exited without starting \(exit 7\)/);
+	await f.flushPromises();
 });
 
 function fakeApiNoop() {

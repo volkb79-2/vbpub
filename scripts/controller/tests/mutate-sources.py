@@ -412,7 +412,7 @@ mutant("scripts/controller/job-check.sh", "job-check-owner-boot.sh",
        '    if [[ -n $owner_boot && -n $current_boot && $owner_boot != "$current_boot" ]]; then',
        '    if false; then')
 mutant("scripts/controller/job-check.sh", "job-check-owner-liveness.sh",
-       '    elif ! kill -0 "$owner_pid" 2>/dev/null; then',
+       '    elif [[ ! -e /proc/$owner_pid ]] && ! kill -0 "$owner_pid" 2>/dev/null; then',
        '    elif false; then')
 mutant("scripts/controller/job-check.sh", "job-check-run-traversal.sh",
        '[[ $run =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ && $run != *..* ]] || { echo "invalid run name" >&2; exit 2; }',
@@ -2036,8 +2036,8 @@ pi_ctl_mutant(
 )
 pi_ctl_mutant(
     "monitor-notice-captured-as-goal",
-    '\t\tif (event?.messageType === "custom" && event.message?.customType === "pi-ctl-monitor") return;',
-    '\t\t// mutant: monitor controller notice consumes the original-goal slot',
+    '\t\tif (event?.messageType === "custom" && ["pi-ctl-monitor", "pi-ctl-job"].includes(event.message?.customType)) return;',
+    '\t\t// mutant: monitor/job controller notice consumes the original-goal slot',
 )
 pi_ctl_mutant(
     "prime-repeats-on-resume",

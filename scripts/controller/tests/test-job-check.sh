@@ -596,6 +596,16 @@ CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO \
   || { cat "$ROOT/live-owner.out" >&2; fail 'a live owner was reported as dead'; }
 contains "$ROOT/live-owner.out" "owner record: pid $$ alive" 'a live owner is named as the run owner'
 
+# A pi PID namespace cannot signal a PID from the outer namespace, even though
+# the shared procfs still exposes its /proc entry. Procfs presence therefore
+# keeps this owner live when kill -0 cannot reach it.
+printf 'kill() { return 1; }\n' > "$ROOT/kill-hidden.sh"
+CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO BASH_ENV="$ROOT/kill-hidden.sh" \
+  "$SRC" live-owner "$REPO" luna > "$ROOT/live-owner-proc.out" 2>&1 \
+  || { cat "$ROOT/live-owner-proc.out" >&2; fail 'an owner visible in procfs was reported dead when kill -0 could not reach it'; }
+contains "$ROOT/live-owner-proc.out" 'RUNNING (no .done)' \
+  'procfs presence keeps an owner live when kill -0 cannot reach the outer pid'
+
 printf '{"type":"item.completed","item":{"type":"agent_message","text":"working"}}\n' \
   > "$HOME_ROOT/runs/dead-owner.jsonl"
 printf 'pid=%s started_epoch=%s started_utc=%s pid_start_ticks=%s boot_id=%s\n' \

@@ -13,6 +13,8 @@ controller_init() {
   : "${HOME:?HOME must be set}"
   CONTROLLER_HOME=${CONTROLLER_HOME:-"$HOME/controller"}
   local requested_runs_dir=${CONTROLLER_RUNS_DIR-}
+  local requested_run_token=${CONTROLLER_RUN_TOKEN-} requested_run_token_set=0
+  [[ -v CONTROLLER_RUN_TOKEN ]] && requested_run_token_set=1
   if [[ -f $CONTROLLER_HOME/controller.local.env ]]; then
     set -a
     # shellcheck disable=SC1090,SC1091
@@ -20,6 +22,12 @@ controller_init() {
     set +a
   fi
   [[ -z $requested_runs_dir ]] || CONTROLLER_RUNS_DIR=$requested_runs_dir
+  if (( requested_run_token_set == 1 )); then
+    CONTROLLER_RUN_TOKEN=$requested_run_token
+    export CONTROLLER_RUN_TOKEN
+  else
+    unset CONTROLLER_RUN_TOKEN
+  fi
   CONTROLLER_HOME=${CONTROLLER_HOME:-"$HOME/controller"}
   # The configured spellings (before symlinks are resolved) are kept for ctl-doctor.sh: the resolved paths below no
   # longer show that a directory lives behind a symlink.
@@ -162,13 +170,34 @@ controller_run_record_owner() {
   # Write THIS invocation's identity into the claimed name's lock file. Call it
   # only after the claim succeeded AND the caller's own preflight passed; a
   # refusal before this point leaves the previous owner's identity readable.
-  local lock=${CONTROLLER_RUN_LOCK_PATH:-} started started_utc ticks
+  local lock=${CONTROLLER_RUN_LOCK_PATH:-} started started_utc ticks self_stat self_pid self_rest launch_token=''
+  local -a self_fields=()
+  if [[ ${CONTROLLER_RUN_TOKEN:-} =~ ^[A-Za-z0-9-]{1,64}$ ]]; then launch_token=$CONTROLLER_RUN_TOKEN; fi
+  unset CONTROLLER_RUN_TOKEN
   [[ -n $lock ]] || return 1
   started=$(date -u +%s)
   started_utc=$(date -u -d "@$started" +%Y-%m-%dT%H:%M:%SZ)
-  ticks=$(controller_pid_start_ticks "$$") || ticks='-'
-  printf 'pid=%s started_epoch=%s started_utc=%s pid_start_ticks=%s boot_id=%s\n' \
-    "$$" "$started" "$started_utc" "$ticks" "$(cat /proc/sys/kernel/random/boot_id 2>/dev/null || printf '%s' '-')" > "$lock"
+  # Inside pi-pidns-bash, $$ is the namespace PID while /proc is the outer
+  # procfs. Read this shell's procfs identity in the current shell: command
+  # substitution would create a child whose visible identity is different.
+  if IFS= read -r self_stat < "${CONTROLLER_SELF_STAT:-/proc/self/stat}" 2>/dev/null; then
+    self_pid=${self_stat%% *}
+    self_rest=${self_stat##*) }
+    read -r -a self_fields <<< "$self_rest"
+    if [[ $self_pid =~ ^[0-9]+$ && ${self_fields[19]:-} =~ ^[0-9]+$ ]]; then
+      ticks=${self_fields[19]}
+    else
+      self_pid=$$
+      ticks=$(controller_pid_start_ticks "$self_pid") || ticks='-'
+    fi
+  else
+    self_pid=$$
+    ticks=$(controller_pid_start_ticks "$self_pid") || ticks='-'
+  fi
+  printf 'pid=%s started_epoch=%s started_utc=%s pid_start_ticks=%s boot_id=%s' \
+    "$self_pid" "$started" "$started_utc" "$ticks" "$(cat /proc/sys/kernel/random/boot_id 2>/dev/null || printf '%s' '-')" > "$lock"
+  [[ -z $launch_token ]] || printf ' launch_token=%s' "$launch_token" >> "$lock"
+  printf '\n' >> "$lock"
   return 0
 }
 
