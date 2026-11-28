@@ -305,14 +305,36 @@ Two candidates first recorded here are NOT equivalent (batch 3 review) and are o
 `7e3c34b77cab`, `1e61bad9c004`, `febb3a206762`, `f05bd3dda1fd`, and
 `fc7293486dc2`.
 
-An attempt to witness the abandonment paths with real local bare remotes passed its behavioral
-assertions but failed teardown on the suite's descendant guard (implementer report; the leftover
-processes were not identified). Those tests were removed. The batch rule forbids tests that signal,
-wait for or reap processes. Plausible product cause, unverified: `run_remote_git` runs captured
-commands through `cli_extended.procio.run_capture`, which can return with `abandoned_holders`
-after its bounded drain, and `run_remote_git` neither checks that nor ensures its Git process group
-is gone. Verify that first. The candidates remain open pending a process-clean local-remote setup.
+The local-bare-remote witness teardown was caused by Git's receiver-side automatic maintenance, not
+captured-pipe holders. In the process-observation probe, every `run_remote_git` push and lease-delete
+reported `abandoned_holders=()` and `warning=None`. `GIT_TRACE` showed local transport explicitly
+unsetting `GIT_CONFIG_COUNT` before starting `git-receive-pack`; the receiver therefore did not get
+the test's command-scope maintenance overrides. The test environment's `GIT_CONFIG_NOSYSTEM=1`
+did reach it, hiding tester-unified's `/etc/gitconfig` `maintenance.autoDetach=false` and
+`gc.autoDetach=false`. The receiver then started `git maintenance run --auto --quiet --detach`
+after each push/delete (`--no-detach` with system config visible). The guard observed Git zombies
+(`state=Z`, PPID 8); their `/proc/<pid>/cmdline` was already empty, while the trace recorded the
+exact detached command. Receiver `receive.autogc` was unset, so Git's default enabled it.
+
+The control with bare-repository `receive.autogc=false` reported no descendants and passed its own
+guard boundary. **Fixed for tests that use `tests/_git_isolation.py`:** `isolate_git` writes
+`receive.autogc=false` into the isolated global config file, which the local receiving side reads
+(an entry in `GIT_CONFIG_COUNT` does not reach it). `tests/test_git_isolation_ki227.py` checks that a
+push and a lease delete run the receiving side and start no maintenance. Tests that push into a local
+bare repository without that helper while system config is hidden still need the setting themselves.
+In product use, the same local-process behavior is possible for a local path/file remote when the
+caller sets `GIT_CONFIG_NOSYSTEM=1` and the bare remote leaves `receive.autogc` enabled; a network
+remote runs receive-side maintenance on the remote host, outside the client process tree. No
+product-code defect was identified. The probe evidence is recorded in
+`/home/vscode/core-runs/cmru-ki227-report.md`.
 `12657b6dd362` (above) is in the same window.
+
+**Open, parked (main controller, 2026-11-28):** the 24 batch-3 mutation ids stay open until the
+volker route is available again or a cheaper route exists. A further attempt that day resolved no
+id: one probe run over all 24 reported every one as surviving the transaction survivor tests of
+that time (run record `/home/vscode/core-runs/cmru-r2-bf3b-r2.jsonl`). Its later, unprobed tests
+(one fails on a wrong call signature) are on the local branch `core-cmru-ki227-b3b-wip`. No id has
+a proven obstacle, so none is filed as unkillable.
 
 Source window 3467–3590 was not reached in batch 3: no witness or equivalence proof was attempted for
 `7a35e32b950c`, `0b184cf5f680`, `e69a3326b517`, `7a4e19814420`, `661d77d8a79d`, `f9a0fdd5dad2`,
