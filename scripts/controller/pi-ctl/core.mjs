@@ -348,6 +348,8 @@ export function createController(pi, injected = {}, overrides = {}) {
 	let alertRetryTimer = null;
 	let pollingInbox = false;
 	let currentContext = null;
+	let primeContextPending = false;
+	let cachedOriginalGoal = null;
 	const wakeupTimers = new Map();
 	const monitors = new Map();
 
@@ -1397,12 +1399,22 @@ export function createController(pi, injected = {}, overrides = {}) {
 		atomicWrite(fs, path, compactionFile, `${JSON.stringify(state)}\n`);
 	}
 
+	function savedOriginalGoal(ctx) {
+		return sessionEntries(ctx).find((entry) => entry?.type === "custom" && entry.customType === "pi-ctl-original-goal" && typeof entry.data?.text === "string")?.data.text ?? null;
+	}
+
 	function originalGoal(ctx) {
+		if (typeof cachedOriginalGoal === "string") return cachedOriginalGoal;
 		let entries = [];
 		try {
 			entries = ctx?.sessionManager?.getEntries?.() ?? [];
 		} catch {
 			return "[Original goal unavailable from the session API.]";
+		}
+		const saved = savedOriginalGoal(ctx);
+		if (saved !== null) {
+			cachedOriginalGoal = saved;
+			return cachedOriginalGoal;
 		}
 		const first = entries.find((entry) => entry?.type === "message" && entry.message?.role === "user");
 		if (!first) return "[No original user goal was available from the session API.]";
@@ -1412,6 +1424,45 @@ export function createController(pi, injected = {}, overrides = {}) {
 			return content.map((part) => part?.type === "text" ? part.text : part?.type === "image" ? "[image content in original user message]" : "").join("");
 		}
 		return "[Original goal had a non-text content form.]";
+	}
+
+	function promptContentText(content) {
+		if (typeof content === "string") return content;
+		if (Array.isArray(content)) return content.map((part) => part?.type === "text" ? part.text : part?.type === "image" ? "[image content in original prompt]" : "").join("");
+		return "[Original goal had a non-text content form.]";
+	}
+
+	function hasSavedInitialContext(ctx) {
+		return sessionEntries(ctx).some((entry) => entry?.type === "custom_message" && entry.customType === "pi-ctl-prime-goal");
+	}
+
+	function captureOriginalGoal(event, ctx) {
+		if (!primeContextPending || savedOriginalGoal(ctx) !== null) return;
+		const existingGoal = originalGoal(ctx);
+		let text;
+		if (event?.messageType === "user" && typeof event.prompt === "string") {
+			text = event.prompt;
+			if (Array.isArray(event.images) && event.images.length > 0) text += "\n[image content in original prompt]";
+		} else if (event?.messageType === "custom" && event.message?.customType !== "pi-ctl-prime-goal") {
+			text = promptContentText(event.message?.content);
+		} else {
+			if (existingGoal === "[No original user goal was available from the session API.]") return;
+			text = existingGoal;
+		}
+		if (existingGoal !== "[No original user goal was available from the session API.]") text = existingGoal;
+		cachedOriginalGoal = text;
+		pi.appendEntry?.("pi-ctl-original-goal", { text });
+	}
+
+	function initialContextBlock(ctx) {
+		const prime = primeRulesExcerpt();
+		return [
+			"PI CONTROLLER ROLE PRIME AND ORIGINAL GOAL (included once for this session):",
+			"ROLE PRIME (bounded excerpt):",
+			prime.text,
+			"ORIGINAL GOAL (first prompt, verbatim):",
+			originalGoal(ctx),
+		].join("\n\n");
 	}
 
 	function primeRulesExcerpt() {
@@ -1716,6 +1767,8 @@ export function createController(pi, injected = {}, overrides = {}) {
 		stopped = false;
 		currentContext = ctx;
 		startReason = typeof event?.reason === "string" ? event.reason : null;
+		cachedOriginalGoal = null;
+		primeContextPending = !hasSavedInitialContext(ctx);
 		log("start", { name, pid, reason: startReason });
 		if (!initialized) {
 			await recoverMonitors();
@@ -1741,6 +1794,12 @@ export function createController(pi, injected = {}, overrides = {}) {
 				if (!stopped) log("inbox_poll_error", { reason: "poll failed" });
 			});
 		}, config.pollMs);
+	});
+	pi.on("before_agent_start", (event, ctx) => {
+		captureOriginalGoal(event, ctx);
+		if (!primeContextPending || hasSavedInitialContext(ctx)) return;
+		primeContextPending = false;
+		return { message: { customType: "pi-ctl-prime-goal", content: initialContextBlock(ctx), display: false } };
 	});
 	pi.on("turn_end", (_event, ctx) => {
 		if (stopped) return;

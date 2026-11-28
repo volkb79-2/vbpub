@@ -71,6 +71,9 @@ function fixture(envExtra = {}) {
 		registerTool(tool) {
 			tools.set(tool.name, tool);
 		},
+		appendEntry(customType, data) {
+			sessionEntries.push({ type: "custom", customType, data });
+		},
 		sendMessage(message, options) {
 			if (sendsBeforeRefusal > 0) {
 				sendsBeforeRefusal--;
@@ -194,6 +197,7 @@ function restartController(f, entries, makeIdPrefix = "restart") {
 	const pi = {
 		on(event, handler) { handlers.set(event, handler); },
 		registerTool() {},
+		appendEntry(customType, data) { entries.push({ type: "custom", customType, data }); },
 		sendMessage(message) {
 			messages.push({ message });
 			pending.push(message);
@@ -830,6 +834,44 @@ test("self-compaction runs only at agent_end and carries the goal, in-flight ids
 	await f.flushPromises();
 	const finalEvents = fs.readFileSync(path.join(f.root, "events", "receiver.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line));
 	assert.equal(finalEvents.at(-1).event, "shutdown", "queued Pi events cannot write extension state after session shutdown");
+});
+
+test("session-start PRIME context captures the first prompt once and survives resume for compaction", async (t) => {
+	for (const firstPrompt of [
+		{ messageType: "user", prompt: "typed startup goal" },
+		{ messageType: "custom", message: { customType: "pi-ctl-inbox", content: "Peer startup goal" } },
+		{ messageType: "custom", message: { customType: "pi-ctl-wakeup", content: "Wake-up startup goal" } },
+	]) {
+		const f = fixture({ PI_CTL_COMPACT_AT: "1000" });
+		t.after(f.cleanup);
+		const ctx = f.fakeContext;
+		await f.events.get("session_start")({ type: "session_start", reason: "startup" }, ctx);
+		assert.equal(f.calls.length, 0, "arming the session context does not start a model turn");
+		const firstResult = f.events.get("before_agent_start")({ systemPrompt: "base prompt", ...firstPrompt }, ctx);
+		assert.equal(firstResult.message.customType, "pi-ctl-prime-goal");
+		assert.match(firstResult.message.content, /Role rules marker: preserve the T4 queue/);
+		assert.match(firstResult.message.content, new RegExp(firstPrompt.messageType === "user" ? "typed startup goal" : firstPrompt.message.content));
+		f.sessionEntries.push({ type: "custom_message", customType: firstResult.message.customType, content: firstResult.message.content });
+		assert.equal(f.sessionEntries.filter((entry) => entry.type === "custom_message" && entry.customType === "pi-ctl-prime-goal").length, 1);
+		assert.equal(f.sessionEntries.filter((entry) => entry.customType === "pi-ctl-original-goal").length, 1);
+		assert.equal(f.sessionEntries.find((entry) => entry.customType === "pi-ctl-original-goal").data.text,
+			firstPrompt.messageType === "user" ? firstPrompt.prompt : firstPrompt.message.content);
+		const resumed = restartController(f, f.sessionEntries);
+		await resumed.handlers.get("session_start")({ type: "session_start", reason: "resume" }, resumed.context);
+		assert.equal(resumed.handlers.get("before_agent_start")({ systemPrompt: "base prompt", messageType: "user", prompt: "later prompt" }, resumed.context), undefined,
+			"a persisted session marker prevents PRIME from repeating after resume");
+		let compactOptions;
+		resumed.context.getContextUsage = () => ({ tokens: 2000 });
+		resumed.context.compact = (options) => { compactOptions = options; };
+		resumed.handlers.get("agent_end")({}, resumed.context);
+		assert.match(compactOptions.customInstructions, new RegExp(firstPrompt.messageType === "user" ? "typed startup goal" : firstPrompt.message.content),
+			"the first prompt remains available to compaction after restart");
+		resumed.handlers.get("session_shutdown")?.({});
+		f.sessionEntries.length = 0;
+		await f.events.get("session_start")({ type: "session_start", reason: "new" }, f.fakeContext);
+		const nextSession = f.events.get("before_agent_start")({ systemPrompt: "base prompt", messageType: "user", prompt: "new session original goal" }, f.fakeContext);
+		assert.match(nextSession.message.content, /new session original goal/, "a new session does not reuse the previous session's cached goal");
+	}
 });
 
 test("automatic compaction returns a supported persisted summary with role and goal readback", (t) => {

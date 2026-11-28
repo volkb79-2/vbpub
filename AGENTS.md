@@ -962,6 +962,13 @@ a turn, and the claim is never re-injected into the same live runtime because
 pi may still hold it or may have dropped it during abort. Restarting the session
 replays the durable claim. This abort-drop uncertainty is the known issue CTL-71.
 
+At `session_start`, the extension arms one-time role context for the first model
+turn: a persistent context message with a bounded `PI_CTL_PRIME` excerpt and the
+first prompt, which may be typed input, a peer message or a wake-up. It adds
+that message before the model runs, without starting a turn, and saves the
+original goal in the session log so compaction and restart can recover it. A
+persisted marker prevents repeating the role context on resume.
+
 `send_message` writes atomically to `inbox/<to>/`; use `to=main` to reach the Claude main
 controller. A shell outside pi uses `scripts/controller/pi-ctl-send.sh <role> <text|->`, which
 writes the same envelope atomically, prints the message id, and refuses an invalid name, an

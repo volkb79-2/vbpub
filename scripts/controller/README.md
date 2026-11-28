@@ -900,6 +900,13 @@ pi's accepted follow-up copy before it is saved. The claim is replayed after a
 session restart; until then, the notice says to restart or ask the sender to
 resend. This unresolved abort-drop case is tracked as CTL-71.
 
+At `session_start`, the extension arms a one-shot role context block. Before the
+session's first model turn, it adds a persistent context message with the bounded
+`PI_CTL_PRIME` excerpt and the first prompt, without starting a turn itself. The
+first prompt can be typed input, a peer message or a wake-up. The goal is saved
+in the session log for compaction and restart; a persisted marker prevents
+repeating the role context on resume.
+
 Pi 1.6.0's built-in bash tool starts its shell with only standard input, output
 and error in its `stdio` array (`dist/core/tools/bash.js:75-79`). Node 26 treats
 unspecified child descriptors 3 and above as `ignore` ([child-process stdio

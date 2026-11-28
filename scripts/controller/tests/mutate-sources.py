@@ -2009,6 +2009,26 @@ pi_ctl_mutant(
     "\t\tif (count >= 0) return;",
 )
 pi_ctl_mutant(
+    "prime-context-omitted",
+    '\t\treturn { message: { customType: "pi-ctl-prime-goal", content: initialContextBlock(ctx), display: false } };',
+    "\t\treturn undefined;",
+)
+pi_ctl_mutant(
+    "original-goal-not-persisted",
+    '\t\tpi.appendEntry?.("pi-ctl-original-goal", { text });',
+    "\t\t// mutant: original goal is not persisted",
+)
+pi_ctl_mutant(
+    "prime-repeats-on-resume",
+    '\t\treturn sessionEntries(ctx).some((entry) => entry?.type === "custom_message" && entry.customType === "pi-ctl-prime-goal");',
+    "\t\treturn false;",
+)
+pi_ctl_mutant(
+    "original-goal-cache-not-reset",
+    "\t\tcachedOriginalGoal = null;",
+    "\t\t// mutant: new session inherits the previous goal cache",
+)
+pi_ctl_mutant(
     "monitor-keeps-route-keys",
     '\t\t\tif (key.startsWith("OPENDESIGN_API_KEY")) delete childEnv[key];',
     "\t\t\tif (false) delete childEnv[key];",

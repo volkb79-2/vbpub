@@ -21,6 +21,11 @@ no separate version number, so entries are grouped by the work that landed.
   redeliver or recursively count itself. Abort can still drop pi's queued copy
   before persistence; the durable claim is replayed after restart, and this
   live-runtime uncertainty is documented as CTL-71.
+- A session-start marker arms the role's bounded PRIME excerpt and original
+  goal for the first model turn (PRIME/goal): typed input, a peer message or a
+  wake-up can be the original goal. The one-shot persistent context message is
+  added before the turn without starting one, and the goal is saved in the session log for
+  compaction and restart. Resume does not repeat the context.
 - The main bridge (F2) delivers a claim once per watch process: a successful
   print is the delivery, so the same process never prints the same id again.
   A restarted watch replays unacknowledged claims once, and the UNACKNOWLEDGED
