@@ -162,8 +162,10 @@ controller_run_record_owner() {
   # Write THIS invocation's identity into the claimed name's lock file. Call it
   # only after the claim succeeded AND the caller's own preflight passed; a
   # refusal before this point leaves the previous owner's identity readable.
-  local lock=${CONTROLLER_RUN_LOCK_PATH:-} started started_utc ticks self_stat self_pid self_rest
+  local lock=${CONTROLLER_RUN_LOCK_PATH:-} started started_utc ticks self_stat self_pid self_rest launch_token=''
   local -a self_fields=()
+  if [[ ${CONTROLLER_RUN_TOKEN:-} =~ ^[A-Za-z0-9-]{1,64}$ ]]; then launch_token=$CONTROLLER_RUN_TOKEN; fi
+  unset CONTROLLER_RUN_TOKEN
   [[ -n $lock ]] || return 1
   started=$(date -u +%s)
   started_utc=$(date -u -d "@$started" +%Y-%m-%dT%H:%M:%SZ)
@@ -184,8 +186,10 @@ controller_run_record_owner() {
     self_pid=$$
     ticks=$(controller_pid_start_ticks "$self_pid") || ticks='-'
   fi
-  printf 'pid=%s started_epoch=%s started_utc=%s pid_start_ticks=%s boot_id=%s\n' \
+  printf 'pid=%s started_epoch=%s started_utc=%s pid_start_ticks=%s boot_id=%s' \
     "$self_pid" "$started" "$started_utc" "$ticks" "$(cat /proc/sys/kernel/random/boot_id 2>/dev/null || printf '%s' '-')" > "$lock"
+  [[ -z $launch_token ]] || printf ' launch_token=%s' "$launch_token" >> "$lock"
+  printf '\n' >> "$lock"
   return 0
 }
 

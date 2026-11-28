@@ -1252,7 +1252,7 @@ test("start_job refuses invalid launchers, paths, routes and launcher-specific p
 test("start_job launches codex through the PID namespace with a sanitized environment and detached stdio", async (t) => {
 	const f = fixture({
 		TMUX: "old", TMUX_PANE: "%1", BASH_ENV: "/tmp/startup", ENV: "/tmp/env", SHELLOPTS: "x", BASHOPTS: "y",
-		"BASH_FUNC_demo%%": "() { :; }", PI_CTL_EXTRA: "state", CONTROLLER_RUN_FORCE: "1", PI_ROUTE: "old-pi", PI_MODEL: "old-model",
+		"BASH_FUNC_demo%%": "() { :; }", PI_CTL_EXTRA: "state", CONTROLLER_RUN_FORCE: "1", CONTROLLER_RUN_TOKEN: "inherited-token", PI_ROUTE: "old-pi", PI_MODEL: "old-model",
 		PI_THINKING: "low", PI_SESSION_DIR: "/old/session", PI_EXTRA_ARGS: "bad", PI_RUN_MODE: "review",
 		CODEX_ROUTE: "deepseek", CODEX_MODEL: "old-model", CODEX_EFFORT: "max", CODEX_HOME_OVERRIDE: "/old/home",
 		CODEX_AUTO_CONTINUE: "1", DOCKER_HOST: "unix:///run/docker.sock",
@@ -1264,6 +1264,8 @@ test("start_job launches codex through the PID namespace with a sanitized enviro
 		assert.equal(options.cwd, f.repo);
 		assert.equal(options.detached, true);
 		assert.equal(options.env.CODEX_ROUTE, "sol");
+		assert.match(options.env.CONTROLLER_RUN_TOKEN, /^[A-Za-z0-9-]{1,64}$/);
+		assert.notEqual(options.env.CONTROLLER_RUN_TOKEN, "inherited-token");
 		assert.equal(options.env.CODEX_EFFORT, "xhigh");
 		assert.equal(options.env.DOCKER_HOST, "unix:///run/docker.sock");
 		for (const key of ["TMUX", "TMUX_PANE", "BASH_ENV", "ENV", "SHELLOPTS", "BASHOPTS", "BASH_FUNC_demo%%", "PI_CTL_EXTRA",
@@ -1273,7 +1275,7 @@ test("start_job launches codex through the PID namespace with a sanitized enviro
 		assert.equal(options.stdio[1], options.stdio[2]);
 		assert.equal(options.stdio[12], "ignore", "the controller session lock fd is closed in the job");
 		assert.equal(fs.statSync(path.join(f.jobLogs, "job-one.launch.log")).mode & 0o777, 0o600);
-		fs.writeFileSync(path.join(f.jobRuns, "job-one.lock"), "pid=42 started_epoch=1\n");
+		fs.writeFileSync(path.join(f.jobRuns, "job-one.lock"), `pid=42 started_epoch=1 launch_token=${options.env.CONTROLLER_RUN_TOKEN}\n`);
 		return child;
 	});
 	const result = await f.tools.get("start_job").execute("j1", jobParams(f, { route: "sol", effort: "xhigh", resume: "session-A" }));
@@ -1316,7 +1318,7 @@ test("start_job launches pi-review directly with exactly its report and account 
 		assert.equal(options.env.PI_THINKING, "high");
 		assert.equal(Object.hasOwn(options.env, "PI_ROUTE"), false, "review has no route parameter");
 		assert.equal(Object.hasOwn(options.env, "CODEX_ROUTE"), false);
-		fs.writeFileSync(path.join(f.jobRuns, "review-one.lock"), "pid=52 started_epoch=5\n");
+		fs.writeFileSync(path.join(f.jobRuns, "review-one.lock"), `pid=52 started_epoch=5 launch_token=${options.env.CONTROLLER_RUN_TOKEN}\n`);
 		return child;
 	});
 	const result = await f.tools.get("start_job").execute("j1", jobParams(f, {
@@ -1349,9 +1351,9 @@ test("start_job sends one end notice and excludes it from the saved original goa
 	const f = fixture();
 	t.after(f.cleanup);
 	let launchChild;
-	configureJobSpawn(f, ({ child }) => {
+	configureJobSpawn(f, ({ child, options }) => {
 		launchChild = child;
-		fs.writeFileSync(path.join(f.jobRuns, "job-one.lock"), "pid=44 started_epoch=2\n");
+		fs.writeFileSync(path.join(f.jobRuns, "job-one.lock"), `pid=44 started_epoch=2 launch_token=${options.env.CONTROLLER_RUN_TOKEN}\n`);
 		fs.writeFileSync(path.join(f.jobRuns, "job-one.done"), "EXIT=0 OUTCOME=SUCCESS\n", { mode: 0o600 });
 	});
 	const result = await f.tools.get("start_job").execute("j1", jobParams(f));
@@ -1363,6 +1365,47 @@ test("start_job sends one end notice and excludes it from the saved original goa
 	assert.match(notices[0].message.content, /Run job-one ended with launcher exit code 0; EXIT=0 OUTCOME=SUCCESS/);
 	f.events.get("before_agent_start")({ messageType: "custom", message: { customType: "pi-ctl-job", content: notices[0].message.content } }, f.fakeContext);
 	assert.equal(f.sessionEntries.some((entry) => entry.customType === "pi-ctl-original-goal"), false);
+});
+
+test("start_job binds same-name launches to their own owner token", async (t) => {
+	const f = fixture();
+	t.after(f.cleanup);
+	const launchChildren = [];
+	configureJobSpawn(f, ({ options, child }) => {
+		launchChildren.push({ child, token: options.env.CONTROLLER_RUN_TOKEN });
+		if (launchChildren.length === 1) {
+			fs.writeFileSync(path.join(f.jobRuns, "job-one.lock"), `pid=60 launch_token=${options.env.CONTROLLER_RUN_TOKEN}\n`);
+		} else {
+			queueMicrotask(() => child.emit("close", 2, null));
+		}
+		return child;
+	});
+	const first = f.tools.get("start_job").execute("j1", jobParams(f));
+	const second = f.tools.get("start_job").execute("j1", jobParams(f));
+	const [firstResult, secondResult] = await Promise.all([first, second]);
+	assert.match(firstResult.content[0].text, /started with codex-impl/);
+	assert.match(secondResult.content[0].text, /exited before its owner record changed \(exit 2\)/);
+	assert.notEqual(launchChildren[0].token, launchChildren[1].token);
+	assert.equal(f.calls.filter(({ message }) => message.customType === "pi-ctl-job").length, 0,
+		"a losing same-name launch cannot send an end notice for the winner");
+	launchChildren[0].child.emit("close", 0, null);
+	assert.equal(f.calls.filter(({ message }) => message.customType === "pi-ctl-job").length, 1,
+		"the owner launch sends its own single end notice");
+});
+
+test("start_job reports a preflighted launch that exits without its owner record", async (t) => {
+	const f = fixture();
+	t.after(f.cleanup);
+	let launchChild;
+	configureJobSpawn(f, ({ child }) => { launchChild = child; });
+	const pending = f.tools.get("start_job").execute("j1", jobParams(f));
+	await f.flushPromises();
+	await f.fireTimeout(f.findTimeout(30_000));
+	assert.match((await pending).content[0].text, /still preflighting/);
+	launchChild.emit("close", 7, null);
+	const notices = f.calls.filter(({ message }) => message.customType === "pi-ctl-job");
+	assert.equal(notices.length, 1);
+	assert.match(notices[0].message.content, /exited without starting \(exit 7\)/);
 });
 
 function fakeApiNoop() {

@@ -1119,7 +1119,7 @@ export function createController(pi, injected = {}, overrides = {}) {
 		for (const key of Object.keys(childEnv)) {
 			if (key === "TMUX" || key === "TMUX_PANE" || key === "BASH_ENV" || key === "ENV" || key === "SHELLOPTS" || key === "BASHOPTS"
 				|| key.startsWith("BASH_FUNC_") || key.startsWith("PI_CTL_")
-				|| ["CONTROLLER_RUN_FORCE", "PI_ROUTE", "PI_MODEL", "PI_THINKING", "PI_SESSION_DIR", "PI_EXTRA_ARGS", "PI_RUN_MODE",
+				|| ["CONTROLLER_RUN_FORCE", "CONTROLLER_RUN_TOKEN", "PI_ROUTE", "PI_MODEL", "PI_THINKING", "PI_SESSION_DIR", "PI_EXTRA_ARGS", "PI_RUN_MODE",
 					"CODEX_ROUTE", "CODEX_MODEL", "CODEX_EFFORT", "CODEX_HOME_OVERRIDE", "CODEX_AUTO_CONTINUE"].includes(key)) {
 				delete childEnv[key];
 			}
@@ -1182,9 +1182,10 @@ export function createController(pi, injected = {}, overrides = {}) {
 		}
 	}
 
-	function jobOwnerChanged(runsDirectory, runName, priorOwner) {
+	function jobOwnsRecord(runsDirectory, runName, launchToken) {
 		try {
-			return readFirstLine(path.join(runsDirectory, `${runName}.lock`)) !== priorOwner;
+			const line = readFirstLine(path.join(runsDirectory, `${runName}.lock`));
+			return new RegExp(`(?:^| )launch_token=${launchToken}(?: |$)`).test(line);
 		} catch {
 			return false;
 		}
@@ -1277,7 +1278,8 @@ export function createController(pi, injected = {}, overrides = {}) {
 		if (params.launcher === "codex-impl") verifyWrapper("job");
 		const childEnv = startJobEnv(params);
 		const { runs, logs } = await controllerPaths(childEnv, controllerDirectory);
-		const priorOwner = readFirstLine(path.join(runs, `${params.run_name}.lock`));
+		const launchToken = makeId();
+		childEnv.CONTROLLER_RUN_TOKEN = launchToken;
 		const launchLog = path.join(logs, `${params.run_name}.launch.log`);
 		let logFd;
 		try {
@@ -1313,7 +1315,7 @@ export function createController(pi, injected = {}, overrides = {}) {
 		let child;
 		const job = {
 			name: params.run_name, launcher: params.launcher, runs, launchLog, logOffset,
-			priorOwner, closed: false, exitCode: null, signal: null, started: false,
+			launchToken, closed: false, exitCode: null, signal: null, started: false, preflightReported: false,
 			noticeSent: false, pollTimer: null, startTimeout: null, resolveStart: null,
 		};
 		try {
@@ -1324,7 +1326,7 @@ export function createController(pi, injected = {}, overrides = {}) {
 				job.closed = true;
 				job.exitCode = code;
 				job.signal = signal;
-				job.started = jobOwnerChanged(runs, job.name, priorOwner);
+				if (!job.started && jobOwnsRecord(runs, job.name, launchToken)) job.started = true;
 				try { log("job_exit", { run: job.name, launcher: job.launcher, code: code ?? null, signal: signal ?? null }); } catch { /* the child result still reaches pi */ }
 				if (job.resolveStart) job.resolveStart(job.started ? { started: true } : { earlyExit: true });
 				sendJobExitNotice(job);
@@ -1348,15 +1350,18 @@ export function createController(pi, injected = {}, overrides = {}) {
 			};
 			const poll = () => {
 				job.pollTimer = null;
-				const started = jobOwnerChanged(runs, job.name, priorOwner);
-				if (started) finish({ started: true });
+				if (!job.started && jobOwnsRecord(runs, job.name, launchToken)) job.started = true;
+				if (job.started) finish({ started: true });
 				else if (job.closed) finish({ earlyExit: true });
 				else job.pollTimer = timers.setTimeout(poll, 100);
 			};
 			job.resolveStart = finish;
 			poll();
 			if (job.resolveStart) {
-				job.startTimeout = timers.setTimeout(() => finish({ preflighting: true }), CONFIG_DEFAULTS.jobStartTimeoutMs);
+				job.startTimeout = timers.setTimeout(() => {
+					job.preflightReported = true;
+					finish({ preflighting: true });
+				}, CONFIG_DEFAULTS.jobStartTimeoutMs);
 			}
 		});
 		if (result.started) {
@@ -1370,11 +1375,14 @@ export function createController(pi, injected = {}, overrides = {}) {
 	}
 
 	function sendJobExitNotice(job) {
-		if (!job.started || job.noticeSent || stopped) return;
+		if ((!job.started && !job.preflightReported) || job.noticeSent || stopped) return;
 		job.noticeSent = true;
 		const done = readJobDone(job.runs, job.name);
 		try {
-			inject("pi-ctl-job", `job-${job.name}-${makeId()}`, `Run ${job.name} ended with launcher exit code ${job.exitCode === null ? "null" : job.exitCode}; ${done}`);
+			const message = job.started
+				? `Run ${job.name} ended with launcher exit code ${job.exitCode === null ? "null" : job.exitCode}; ${done}`
+				: `Run ${job.name} exited without starting (exit ${job.exitCode === null ? "null" : job.exitCode}); no owner record was written.`;
+			inject("pi-ctl-job", `job-${job.name}-${makeId()}`, message);
 			log("job_exit_notice", { run: job.name, code: job.exitCode ?? null, done });
 		} catch {
 			job.noticeSent = false;

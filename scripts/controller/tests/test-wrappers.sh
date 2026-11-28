@@ -1249,8 +1249,12 @@ printf ' 777\n' >> "$ROOT/self-stat"
 CONTROLLER_RUN_LOCK_PATH=$ROOT/self-stat-owner.lock
 # shellcheck disable=SC2034 # consumed by controller_run_record_owner from the sourced library
 CONTROLLER_SELF_STAT=$ROOT/self-stat
+# shellcheck disable=SC2034 # consumed by controller_run_record_owner from the sourced library
+CONTROLLER_RUN_TOKEN=launch-token-42
 controller_run_record_owner || fail 'owner record seam failed'
 contains "$ROOT/self-stat-owner.lock" 'pid=424242' 'owner record uses the procfs-visible pid'
 contains "$ROOT/self-stat-owner.lock" 'pid_start_ticks=777' 'owner record uses procfs start ticks'
+contains "$ROOT/self-stat-owner.lock" 'launch_token=launch-token-42' 'owner record binds the launch token'
+[[ ! ${CONTROLLER_RUN_TOKEN+x} ]] || fail 'owner record library leaves no launch token for nested launches'
 
 echo 'PASS wrappers: identity SSH, route handling, child exit markers, release archive, pipeline status'
