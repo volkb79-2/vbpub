@@ -108,7 +108,6 @@ def _minimal_git_environment(root: Path) -> dict[str, str]:
         name: os.environ[name]
         for name in (
             "PATH", "LANG", "LC_ALL", "LC_CTYPE", "TZ", "TERM",
-            "CGROUP_PARENT_DEV_GATES", "CGROUP_PARENT_DEV_BACKGROUND",
             "CMRU_TESTER_UNIFIED_IMAGE", "BUILDKIT_HOST", "BUILDX_BUILDER",
         )
         if os.environ.get(name)
@@ -178,19 +177,15 @@ def _load_release_config_copy(
     orchestration = tomllib.loads(source_config.read_text(encoding="utf-8"))
     destination.mkdir()
     text = source_config.read_text(encoding="utf-8")
-    # These host-owned admission facts are irrelevant to changelog planning;
-    # this disposable config copy never starts a tester or application stack.
-    text = "\n".join(
-        line for line in text.splitlines()
-        if "${CGROUP_PARENT_DEV_GATES}" not in line
-    ) + "\n"
     (destination / "cmru.orchestration.toml").write_text(text, encoding="utf-8")
     for entry in orchestration["orchestration"]["project"].values():
         relative = Path(entry["config"])
         target = destination / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(repo_root / relative, target)
-    with _isolated_process_environment(env):
+    private_env = dict(env)
+    private_env["CGROUP_PARENT_DEV_GATES"] = "assay-preflight-fake.slice"
+    with _isolated_process_environment(private_env):
         _, known_projects, *_ = load_config(destination / "cmru.orchestration.toml")
     known_project_names = frozenset(
         alias
@@ -248,9 +243,14 @@ def _run_docs_tests(
     )
     output = f"{result.stdout}{result.stderr}"
     if expect_failure:
-        assert result.returncode != 0, (
-            f"docs tests unexpectedly passed against the {state} changelog"
+        assert result.returncode == 1, (
+            f"docs tests did not produce a test assertion failure against the {state} changelog; "
+            f"exit status was {result.returncode}:\n{output}"
         )
+        assert (
+            f"FAILED {DOCS_TEST_PATH}::test_old_current_sections_shape" in output
+            and f"missing B577 note: {CURRENT_ONLY_NOTE!r}" in output
+        ), f"the expected B577 assertion did not fail against the {state} changelog:\n{output}"
     else:
         assert result.returncode == 0, (
             f"docs tests failed against the {state} CMRU-folded changelog; "
@@ -380,7 +380,7 @@ def _prove_current_sections_control_fails(
         "    heads = list(re.finditer(r'^## \\[([^\\]]+)\\](?: - \\d{4}-\\d{2}-\\d{2})?$', changes, re.M))\n"
         "    sections = [(m.group(1), changes[m.end(): heads[i+1].start() if i+1 < len(heads) else len(changes)]) for i,m in enumerate(heads)]\n"
         f"    note = {CURRENT_ONLY_NOTE!r}\n"
-        "    assert note in next((body for name, body in sections if name == 'Unreleased'), '') + next((body for name, body in sections if name != 'Unreleased'), '')\n",
+        "    assert note in next((body for name, body in sections if name == 'Unreleased'), '') + next((body for name, body in sections if name != 'Unreleased'), ''), f'missing B577 note: {note!r}'\n",
         encoding="utf-8",
     )
     _run_docs_tests(
@@ -407,11 +407,30 @@ def _checkout_snapshot(repo_root: Path, env: Mapping[str, str] | None = None) ->
     index_path = Path(git("rev-parse", "--git-path", "index"))
     if not index_path.is_absolute():
         index_path = repo_root / index_path
+    symbolic_head = subprocess.run(
+        ["git", *GIT_HARDENING, "-C", str(repo_root), "symbolic-ref", "-q", "HEAD"],
+        capture_output=True, text=True, check=False, env=isolated_env,
+    )
+    assert symbolic_head.returncode in (0, 1), symbolic_head.stderr
+    configured = subprocess.run(
+        ["git", *GIT_HARDENING, "-C", str(repo_root), "config", "--bool", "--get", "extensions.worktreeConfig"],
+        capture_output=True, text=True, check=False, env=isolated_env,
+    )
+    assert configured.returncode in (0, 1), configured.stderr
+    worktree_config = "disabled"
+    if configured.returncode == 0 and configured.stdout.strip() == "true":
+        config_path = Path(git("rev-parse", "--git-path", "config.worktree"))
+        if not config_path.is_absolute():
+            config_path = repo_root / config_path
+        worktree_config = (
+            hashlib.sha256(config_path.read_bytes()).hexdigest()
+            if config_path.exists() else "missing"
+        )
     return {
         "head": git("rev-parse", "HEAD"),
-        "refs": git("for-each-ref", "--format=%(refname) %(objectname) %(symref)"),
+        "head_ref": symbolic_head.stdout.strip() if symbolic_head.returncode == 0 else "detached",
         "index": hashlib.sha256(index_path.read_bytes()).hexdigest() if index_path.exists() else "missing",
-        "config": git("config", "--list", "--show-origin", "--show-scope"),
+        "worktree_config": worktree_config,
         "tracked": repr(file_state),
     }
 
@@ -495,6 +514,28 @@ def test_docs_tests_pass_before_and_after_two_real_cmru_folds(
             _run_docs_tests(copied_assay, "following-release")
 
 
+def test_unchanged_cmru_config_requires_gate_variable(tmp_path: Path, capsys):
+    (_, _, _, load_config, _, _) = _cmru_release_functions()
+    source_config = PROJECT_ROOT.parent / "cmru.orchestration.toml"
+    orchestration = tomllib.loads(source_config.read_text(encoding="utf-8"))
+    destination = tmp_path / "cmru-config"
+    destination.mkdir()
+    copied_config = destination / "cmru.orchestration.toml"
+    shutil.copy2(source_config, copied_config)
+    for entry in orchestration["orchestration"]["project"].values():
+        relative = Path(entry["config"])
+        target = destination / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(PROJECT_ROOT.parent / relative, target)
+    env = _minimal_git_environment(tmp_path / "environment")
+    assert "CGROUP_PARENT_DEV_GATES" not in env
+    with pytest.raises(SystemExit) as refused:
+        with _isolated_process_environment(env):
+            load_config(copied_config)
+    assert refused.value.code == 2
+    assert "CGROUP_PARENT_DEV_GATES" in capsys.readouterr().err
+
+
 @pytest.mark.parametrize("heading", ["empty", "absent"])
 def test_cmru_history_validation_accepts_empty_or_absent_unreleased(
     heading: str, tmp_path: Path
@@ -545,7 +586,7 @@ def test_git_preflight_environment_drops_hostile_repository_redirects(tmp_path: 
     assert _run_git(hostile, "rev-parse", "HEAD") == original_head
 
 
-@pytest.mark.parametrize("mutation", ["tracked-file", "ref"])
+@pytest.mark.parametrize("mutation", ["tracked-file", "head"])
 def test_checkout_immutability_guard_detects_file_and_ref_changes(tmp_path: Path, mutation: str):
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -554,9 +595,35 @@ def test_checkout_immutability_guard_detects_file_and_ref_changes(tmp_path: Path
     if mutation == "tracked-file":
         (repo / "tracked.txt").write_text("changed\n", encoding="utf-8")
     else:
-        _run_git(repo, "tag", "changed-ref")
+        _run_git(repo, "commit", "--quiet", "--allow-empty", "-m", "advance own HEAD")
     with pytest.raises(AssertionError, match="changed tracked files or Git state"):
         _assert_checkout_unchanged(before, _checkout_snapshot(repo))
+
+
+def test_checkout_immutability_guard_ignores_sibling_worktree_refs(tmp_path: Path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _initialize_fixture_git(repo, repo, "tracked.txt")
+    env = _minimal_git_environment(tmp_path / "environment")
+    sibling = tmp_path / "sibling"
+    _run_git(repo, "worktree", "add", "--quiet", "-b", "sibling-branch", str(sibling), "HEAD", env=env)
+    with _unchanged_checkout(repo, env):
+        (sibling / "sibling.txt").write_text("sibling worktree update\n", encoding="utf-8")
+        _run_git(sibling, "add", "sibling.txt", env=env)
+        _run_git(sibling, "commit", "--quiet", "-m", "advance sibling branch", env=env)
+        _run_git(sibling, "tag", "sibling-tag", env=env)
+
+
+def test_run_docs_tests_rejects_collection_error_as_negative_control(tmp_path: Path, monkeypatch):
+    assay_copy = tmp_path / "assay"
+    assay_copy.mkdir()
+
+    def collection_error(*args, **kwargs):
+        return subprocess.CompletedProcess(args[0], 2, "", "ERROR collecting test file\n")
+
+    monkeypatch.setattr(subprocess, "run", collection_error)
+    with pytest.raises(AssertionError, match="did not produce a test assertion failure"):
+        _run_docs_tests(assay_copy, "collection-error negative control", expect_failure=True)
 
 
 def test_checkout_immutability_guard_runs_when_an_early_step_raises(

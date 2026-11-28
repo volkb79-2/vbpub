@@ -2514,7 +2514,7 @@ def test_legacy_v1_generation_sidecar_is_unavailable(tmp_path: Path):
 
 @pytest.mark.parametrize("sidecar_kind", ["directory", "oversized"])
 def test_reader_refuses_nonregular_or_oversized_sidecars(
-    tmp_path: Path, sidecar_kind: str
+    tmp_path: Path, sidecar_kind: str, monkeypatch
 ):
     judge = "a" * 64
     components = None
@@ -2534,10 +2534,21 @@ def test_reader_refuses_nonregular_or_oversized_sidecars(
             + b" "
             * (mutation_store._JUDGE_COMPONENTS_LIMIT + 1 - sidecar.stat().st_size)
         )
+        real_fdopen = mutation_store.os.fdopen
+        read_boundary_calls = []
+
+        def record_fdopen(descriptor, mode="r", *args, **kwargs):
+            if os.readlink(f"/proc/self/fd/{descriptor}") == str(sidecar):
+                read_boundary_calls.append(descriptor)
+            return real_fdopen(descriptor, mode, *args, **kwargs)
+
+        monkeypatch.setattr(mutation_store.os, "fdopen", record_fdopen)
 
     assert mutation_store.read_judge_components(
         tmp_path, judge=judge
     ) is None
+    if sidecar_kind == "oversized":
+        assert read_boundary_calls == [], "oversized sidecar reached fdopen before refusal"
 
 
 def test_reader_rechecks_the_size_after_reading_a_growing_sidecar(
