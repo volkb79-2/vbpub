@@ -1287,6 +1287,7 @@ test("start_job launches codex through the PID namespace with a sanitized enviro
 test("start_job launches pi directly and reports an early exit with this launch's log tail", async (t) => {
 	const f = fixture({ DOCKER_HOST: "tcp://docker.example", PI_CTL_LOCK_FD: "12", PI_ROUTE: "old", CODEX_ROUTE: "old" });
 	t.after(f.cleanup);
+	fs.writeFileSync(path.join(f.jobLogs, "early.launch.log"), "old prior output\n");
 	configureJobSpawn(f, ({ command, args, options, child }) => {
 		assert.equal(command, "/bin/bash");
 		assert.deepEqual(args, [path.join(path.dirname(f.wrapper), "pi-impl.sh"), f.jobWorktree, f.promptFile, "early", "--report", path.join(f.temp, "report.md")]);
@@ -1296,7 +1297,7 @@ test("start_job launches pi directly and reports an early exit with this launch'
 		assert.equal(options.env.DOCKER_HOST, "tcp://docker.example");
 		assert.equal(Object.hasOwn(options.env, "PI_CTL_LOCK_FD"), false);
 		assert.equal(options.stdio[12], "ignore");
-		fs.writeFileSync(path.join(f.jobLogs, "early.launch.log"), "old prior output\nline 1\nline 2\n");
+		fs.appendFileSync(path.join(f.jobLogs, "early.launch.log"), "line 1\nline 2\n");
 		queueMicrotask(() => child.emit("close", 23, null));
 		return child;
 	});
