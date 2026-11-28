@@ -422,7 +422,7 @@ impl Backend for ProbeBackend {
         let count = usize::try_from(args.limit)
             .unwrap_or(usize::MAX)
             .saturating_add(1);
-        let mut items = Vec::with_capacity(count);
+        let mut retained = Vec::with_capacity(count);
         for (ordinal, event) in ring.with_ordinals() {
             if event.real_ns < args.from_real_ns
                 || event.real_ns >= args.to_real_ns
@@ -437,18 +437,21 @@ impl Backend for ProbeBackend {
             if cursor_key.is_some_and(|cursor| key < cursor) {
                 continue;
             }
-            let item = event_item_view(ordinal, event)?;
-            let position = items
-                .binary_search_by_key(&key, |held: &EventItem| (held.t_mono_ns, held.ordinal))
+            let position = retained
+                .binary_search_by_key(&key, |(held_key, _): &((u64, u64), &Event)| *held_key)
                 .unwrap_or_else(|position| position);
             if position >= count {
                 continue;
             }
-            items.insert(position, item);
-            if items.len() > count {
-                items.pop();
+            retained.insert(position, (key, event));
+            if retained.len() > count {
+                retained.pop();
             }
         }
+        let items = retained
+            .into_iter()
+            .map(|((_, ordinal), event)| event_item_view(ordinal, event))
+            .collect::<Result<Vec<_>, _>>()?;
         Ok(EventWindow {
             items,
             oldest_real_ns: ring.oldest_real_ns(),
