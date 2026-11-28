@@ -326,9 +326,16 @@ transfer limit. A held lease connection and a submit waiting for admission do
 not use that deadline.
 
 `HostJobExecutor` implements the `AgentExecutor` Protocol (`start`,
-`request_stop`, `read_state`) and is wired by `fleetd-agent` alongside the
-C3b-2a legacy-job and Docker inspection providers. This package does not install
-or enable host services. A lane's PASS is
+`request_stop`, `read_state`). `fleetd-agent` wires it alongside the C3b-2a
+legacy-job and Docker inspection providers only when the optional boolean
+`executor_enabled` key in `agent.toml` is exactly `true`. If the key is absent,
+the value is `false`; a present non-boolean refuses policy loading. When false,
+no executor is wired and submit, status and cancel retain the C3a refusal before
+writing a request or charging admission. Keep it false until FD-067 and FD-068
+are closed and Run-Gate revision 78 is released and deployed. Host-mode
+submissions additionally require FD-069 to close; exec-mode submissions require
+the live persistent-runner probe in FD-070. This package does not install or
+enable host services. A lane's PASS is
 accepted only when the request sha, host-authored checkout line, one exact
 `lane-verdict` event, exact-lane anchored summary, Run-Gate process status, and
 inspected container identity/mount all agree. It writes `result.json` from
@@ -336,6 +343,11 @@ those host-observed facts and collects the closed artifact set plus one
 `assay-store.tgz` and checksum. The admission and lease verbs still use the
 durable C2 book. A live lease connection holds its lease flock until disconnect;
 bind/reconnect verify the immutable container ID and host-inspected lease label.
+The checkout never imports `main` or `origin/main` from a host seed. It deletes
+those refs and uses an explicit request base when supplied. A lane requiring
+`main` or `origin/main` without that base is refused. A verified host seed that
+contains the request sha and required base is sufficient; retained uploads are
+consulted only when either commit is unavailable from that seed.
 The worker follows the event file during the lane, inspects each
 `lane-started` container while it is present, and durably saves that observation.
 A container already gone at observation is an ERROR. The final binding uses the
@@ -356,7 +368,37 @@ records that fact before TERM. When guard presence is true but the merged
 `deregister` callable is unavailable, cancellation remains `stopping` with the
 checkout and charge retained. Cancellation or an unproved end in persistent
 `exec` mode also remains `stopping` because the in-runner process cannot be
-proven stopped (FD-068).
+proven stopped (FD-068). A store archive pack failure is recorded as
+`collection.status = "failed"` and can proceed to terminal completion; the pack
+is not retried and the lane verdict is not rewritten. The prerequisite Docker
+container uses the host worker's `CGROUP_PARENT_DEV_GATES` value after verifying
+that it names a loaded systemd slice; a missing or unresolved tier refuses the
+job. Root Docker calls and the Run-Gate lane use the same fixed local Docker
+endpoint and closed environment.
+
+Repository- and lane-controlled inputs have explicit size and count ceilings.
+Exceeding one stops the lane through the normal stop path; after stop proofs the
+worker records a terminal ERROR. These ceilings do not impose a lane time limit.
+
+| Constant | Limit | Purpose |
+|---|---:|---|
+| `MAX_STATE_RECORD_BYTES` | 1 MiB | Bounds serialized/read executor state; an oversized state record is a permanent defect rather than a retry loop. |
+| `MAX_EVENT_LINE_BYTES` | 4 KiB | Bounds one incrementally read Run-Gate event line. |
+| `MAX_EVENT_FILE_BYTES` | 512 KiB | Bounds total event bytes read from the host-owned file. |
+| `MAX_EVENT_COUNT` | 128 | Bounds parsed events retained for verdict binding. |
+| `MAX_EVENT_OBSERVATIONS_BYTES` | 256 KiB | Bounds persisted `lane-started` observations and leaves room for other state fields below the state-record ceiling. |
+| `MAX_DOCKER_OUTPUT_BYTES` | 4 MiB per output stream | Bounds output from each shared Docker command. |
+| `MAX_DOCKER_JOB_CONTAINER_IDS` | 4,096 IDs | Bounds exact-label container IDs retained and inspected for one job. |
+| `MAX_RUNNER_QUERY_OUTPUT_BYTES` | 4 MiB per output stream | Bounds captured output for runner queries; timed-out queries use the bounded collector and reap path. |
+| `MAX_DIRECTORY_ENTRIES` | 4,096 entries | Bounds each repository-controlled directory listing. |
+| `MAX_TREE_ENTRIES` | 16,384 entries | Bounds traversed checkout, store and archive trees. |
+| `MAX_TREE_DEPTH` | 128 levels | Bounds recursive tree traversal depth. |
+| `MAX_ARCHIVE_MEMBERS` | 16,384 members | Bounds tar members visited or written. |
+| `MAX_ARCHIVE_FILE_BYTES` | 512 MiB | Bounds the compressed archive file size. |
+| `MAX_ARCHIVE_UNCOMPRESSED_BYTES` | 512 MiB | Bounds aggregate uncompressed archive payload. |
+| `_ARTIFACT_MAX_BYTES` | 50 MiB per file | Omits and rejects artifact files at or above this size. |
+| `_STORE_MAX_BYTES` | 512 MiB aggregate | Bounds total uncompressed store content collected into `assay-store.tgz`. |
+| `MAX_STORE_PATHS` | 128 paths | Bounds the number of requested store roots inspected. |
 
 Run-Gate's event file is outside the checkout and not writable by the lane
 container. A host-mode lane runs as the same uid that owns it and can modify it;

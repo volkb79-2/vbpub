@@ -86,7 +86,8 @@ directory and never creates or removes that directory. `fleetd-agent
 forced-command --group GROUP` serves one framed request on the ssh forced
 command's stdin/stdout. Package C3a supplies the protocol, admission wiring and
 CLI.
-C3b-1 adds the standard-library host executor and worker. After scope start is
+C3b-1 adds the standard-library host executor and worker, guarded by the optional
+`executor_enabled` key described below. When enabled, after scope start is
 confirmed, the worker owns the admission flock in one transient systemd scope
 per job. The root supervisor runs checkout, seed unpack, lane, collection and
 other repository-content operations as the required non-root `runner_user`.
@@ -94,6 +95,16 @@ C3b-2a adds the legacy-job and Docker inspection providers. C3b-1 does not
 install or enable host services; the systemd units, socket group and mounts
 belong to C3c. Executor/reboot recovery and upload garbage collection remain
 follow-up work.
+
+The optional closed-schema key `executor_enabled` accepts only a TOML boolean.
+If absent it is false; a present non-boolean refuses policy loading. While
+false, `fleetd-agent` wires no executor, and submit, status and cancel preserve
+the C3a no-executor refusal before any durable request record or admission
+charge. Keep it false until FD-067 and FD-068 are closed and Run-Gate revision
+78 is released and deployed. `mode = "host"` also requires FD-069 to close;
+`mode = "exec"` requires the live persistent-runner probe in FD-070. The
+executor uses the host worker's `CGROUP_PARENT_DEV_GATES` value for prerequisite
+containers and refuses unless it resolves to a loaded systemd slice.
 
 `/etc/fleetd/agent.toml` is a closed host-owned config. It requires
 `schema_version`, `idle_connection_s`, `query_timeout_s`, `runner_user`,
@@ -199,10 +210,14 @@ releases a charge. The granted-but-never-bound live-connection case has no
 deadline in §4.5; its held flock prevents pending reconciliation, so it remains
 charged until disconnect and exact-name reconciliation confirms absence.
 A missing or refusing local socket returns 3 with no fallback transport.
-C3b-1 wires the executor, while C3b-2a wires the legacy-job and Docker
-providers. C3b-1 does not install or enable host services. Executor submissions
-remain behind the FD-067 short-lane event-observation blocker; see the executor
-section below.
+C3b-1 conditionally wires the executor when `executor_enabled = true`, while
+C3b-2a wires the legacy-job and Docker providers. Keep the key false until
+FD-067 and FD-068 are closed and Run-Gate revision 78 is released and deployed;
+host-mode submissions additionally wait for FD-069. Exec-mode submissions
+require the FD-070 live persistent-runner probe. With the key absent or false,
+submit, status and cancel retain the C3a no-executor refusal before request
+record or charge. C3b-1 does not install or enable host services; see the
+executor section below.
 
 Lane declarations and progress files are opened from trusted directory
 descriptors with no-follow traversal of every component. Progress replies cap
