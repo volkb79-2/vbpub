@@ -690,7 +690,7 @@ entries.
 | CIU-215 | Linked-worktree exec runners rendered by CIU 7 lack the git common-dir mount, so every assay lane fails with GIT_FAILED | Major | FIXED 2026-11-18 in ciu 7.26.0 (opt-in `[<stack>.linked_worktree] git_common_dir`; live probe passed, see the entry) |
 | CIU-216 | `ciu worktree create` renders no `ciu.global.toml` when `DOCKER_HOST` is unset and the socket is at a non-default path | Minor | OPEN 2026-11-13 |
 | CIU-217 | The KSM ELF verifier accepts a program-header table whose declared entry size is zero (`e_phentsize = 0`) | Minor | OPEN 2026-11-13 (strict xfail `test_zero_program_header_entry_size_is_refused` records it) |
-| CIU-218 | `ciu host enroll` cannot install an opt-in forced-command key for the fleet campaign runner | Major | OPEN 2026-11-13 |
+| CIU-218 | `ciu host enroll` cannot install an opt-in forced-command key for the fleet campaign runner | Major | FIXED 2026-11-27 in this branch (CIU-218 fix round 1) |
 | CIU-219 | The packaged ciu skills have no grammar or coverage oracle, so a released verb can be absent from the text a consumer's agent reads | Minor | OPEN 2026-11-15 |
 | CIU-220 | Subprocess output loops wait for pipe EOF and can hang after the child has exited | High for unattended runs | FIXED IN THIS BRANCH (P-core-10) for `run_cmd` + Compose-up; CIU-233 owns the remaining 17 captured sites |
 | CIU-221 | `ciu up --dir` applies no profile `topology_overrides` to the per-stack render, unlike profile-mode `ciu up` after CIU-208 | Medium | OPEN 2026-11-18 |
@@ -708,6 +708,8 @@ entries.
 | CIU-233 | Seventeen deferred direct `subprocess.run(capture_output=True)` sites still have no bounded post-exit drain | Minor | OPEN 2026-11-24 (P-core-10 review) |
 | CIU-234 | `procutil.run_cmd`'s helper-thread branch leaves the child running when a main-thread `KeyboardInterrupt` or `SystemExit` interrupts `worker.join()` | Minor | OPEN 2026-11-24 (P-core-10 review r2, M2) |
 | CIU-235 | The CIU R2 lane's 5m per-candidate wall budget was shorter than the full suite, so an unkillable mutant was reported `BUDGET_EXCEEDED` and the lane could never report a survivor (now `budget_per_candidate = "auto"`, derived from the run's own baseline; liveness ends idle stalls only, and the working-candidate bound is the interim until Assay P4) | Major for CIU R2 evidence | FIXED IN THIS BRANCH (P-core-11 r2fix) |
+| CIU-236 | Restricted-mode enrollment lacks a real-sshd acceptance test; `TestEnrollAgainstRealSystem` covers only ordinary enrollment | Minor | OPEN 2026-11-28 |
+| CIU-237 | CIU's authorized_keys lock cannot serialize changes made by target-side writers that do not take the lock | Medium | OPEN 2026-11-28 |
 
 
 The approved milestone decisions and serial package order are in
@@ -7030,35 +7032,78 @@ test.
 
 **Close when.** A production fix makes the xfail pass, and a malformed-header oracle demonstrates that an undersized `e_phentsize` cannot be accepted as a dependency-free object.
 
-## CIU-218 — `ciu host enroll` cannot install an opt-in forced-command key for the fleet campaign runner
+## CIU-218 — opt-in restricted forced-command host enrollment
 
-**Status:** OPEN (filed 2026-11-13); severity: major for restricted fleet
-campaign access. Related: fleetd FD-009 and the compute-host campaign design,
-§3.7.
+**Status:** RESOLVED (2026-11-27, fix round 1). Related: CIU-93, fleetd FD-009
+and the compute-host campaign design, §3.7.
 
-**Observed gap.** CIU-93/CIU-P52 provides trusted host enrollment and a
-general-purpose SSH identity. It does not install a key restricted to the
-campaign runner's named-job protocol. fleetd MVP-B-lite correctly reuses the
-existing identity-checked hx transport, but a general-purpose account leaves
-the operator without the later least-privilege host-entry option.
+**Implemented.** `ciu host enroll --forced-command` is opt-in and requires an
+explicit absolute normalized `--agent-path` and a `--fleetd-group` accepted by
+fleetd; optional `--agent-policy` is explicit when supplied. The supplied
+public key is one bare supported type on one line, with strict canonical
+base64 and matching embedded key type. The target writes exactly
+`restrict,command="<agent> forced-command --group <group> [--policy <path>]"`
+with `restrict` mandatory and no option that can re-enable pty, forwarding or
+user-rc. CIU installs the fixed
+`<absolute agent path> forced-command --group <group>` argv, with `--policy
+PATH` only when supplied. CIU builds no wrapper and accepts or parses no SSH
+remote command. fleetd's `_parser` in
+`fleetd/src/fleetd/agent_entry.py` defines the command-line interface; the host
+agent enforces the operation-request grammar.
 
-**Wanted.** Add an explicit opt-in enrollment mode that writes a
-`restrict`/forced-command authorized-key entry for the runner wrapper while
-preserving the current general-purpose enrollment behavior. The forced command
-must accept only the documented list, start, probe/progress, and stop
-operations; reject arbitrary shell commands, extra arguments, and malformed
-input; and retain the existing pinned-host-identity checks. Key rotation and
-removal must identify only the enrolled restricted entry. Host aliases,
-addresses, public/private key material, and provider credentials remain local
-configuration and never enter repository files.
+Step 1 records restricted mode, path, group and optional policy with the
+pending key and prints a matching step-2 proof description. Step 2 retains the
+pinned host-key check on every remote step. For restricted mode it starts SSH
+without a remote command or PTY and sends no stdin bytes. It accepts only empty
+stderr and one well-formed `fleet-host-agent/1` length-prefixed JSON error
+frame (with a string `agent_version`, non-empty `error.reason` and
+`error.exit_code = 3`) plus matching SSH exit 3; empty stdin makes fleetd's
+`serve_connection` report the truncated-frame identity-or-transport error
+after group resolution. Unknown-group refusal, shell output, any extra or
+invalid frame, overflow, no output, timeout or status mismatch refuses before
+the inventory row is written. The 20-second/65,540-byte bounds are finite.
+This proves pinned login, forced-command execution and group resolution, not
+that an agent operation succeeds. Ordinary mode keeps its existing `ciu
+version` proof.
 
-**Close when.** Parser and authorized-key tests prove the exact allowed
-operation grammar and refusal of shell escape, malformed quoting, unknown
-verbs, and extra arguments. Round-trip tests preserve unrelated authorized-key
-bytes and a general enrollment. A fake hx transport reaches every allowed
-runner operation and no other operation. The registered CIU enrollment gate,
-SPEC, and consumer documentation pass; no live host is needed for the unit
-contract.
+Root-owned state at `/var/lib/ciu/enroll-state` records, per target uid/name,
+the exact written line hash, decoded key-blob hash and any separator LF CIU
+inserted. Rotation and removal act only on an exact record match present once.
+An unrecorded marker or restricted command shape is refused with its line;
+markers and line structure never establish ownership. The root-owned state
+directory/files use `0700`/`0600`. A lost state file must be restored from a
+trusted root-owned backup; without one, back up and manually inspect/recover
+`authorized_keys`, because CIU intentionally refuses to infer ownership.
+Prepared/committed state ordering and pending removal state make both crash
+halves recoverable by exact hashes, or refuse ambiguity without deleting a
+foreign entry. A shared root-protected lock serializes both enrollment modes
+and removal, and restricted replacement verifies file identity and contents
+before atomic commit. CIU follows no symlink planted at `.ssh` or
+`authorized_keys`; the parent directories of a nonstandard home path are
+trusted (SPEC).
+
+The one-blob/one-form rule compares decoded key bytes in both enrollment
+orders. Ordinary enrollment retains its previous output, messages, exit
+codes and append behavior, including past unparseable lines; its only added
+key refusal is a matching blob on a line with the visible restricted marker or
+fixed command shape, recorded or not. Add/remove restores original file bytes,
+including no-final-newline files. `get.py` is kept equal to the installer
+source render.
+
+The host agent's request grammar is tested in
+`fleetd/tests/test_agent_protocol.py::test_validate_request_covers_request_shape_argv_candidate_and_dev_errors`
+and `fleetd/tests/test_agent_verbs.py::test_agent_dispatch_returns_admission_documents_for_submit_status_and_cancel`;
+framing, group resolution and unknown-group refusal are covered by
+`fleetd/tests/test_agent_server.py::test_forced_command_uses_framed_stdin_stdout_and_transport_group`
+and `test_forced_command_refuses_unknown_transport_group_on_wire`. CIU's
+pending-mode/step-2 probe is tested in
+`ciu/tests/tests/test_ciu_host_enroll.py::TestStep1::test_forced_mode_persists_probe_inputs_and_prints_matching_step2`,
+`TestStep2::test_forced_step2_sends_empty_input_no_command_and_requires_matching_error_frame`,
+`test_forced_step2_refuses_nonmatching_agent_probe_without_inventory_row` and
+`test_forced_step2_timeout_refuses_without_inventory_row`. Installer ownership,
+serialization, decoded-key conflicts and byte preservation are covered by
+`ciu/tests/tests/test_getpy_enroll.py::TestFleetdForcedCommand`.
+No live host action is part of CIU-218.
 
 ## CIU-219 — the packaged ciu skills have no grammar or coverage oracle
 
@@ -7504,3 +7549,63 @@ survived, and **no candidate was ended as `hung` or `STALLED` while it was
 working**; the last-candidate lane window (M2) and resumed campaigns' per-run
 bound (L2) are documented with the store evidence. Not a per-test deadline —
 that remains CIU-212.
+
+## CIU-236 — restricted-mode enrollment lacks a real-sshd acceptance test
+
+**Status:** OPEN (filed 2026-11-28). Related: CIU-218, CIU-93.
+
+**Observed.** `TestEnrollAgainstRealSystem` exercises the ordinary enrollment
+path against a real sshd, but does not install a restricted forced-command key
+and prove the empty-stdin fleetd frame through sshd. CIU-218's restricted-mode
+coverage currently uses fake transports and temporary authorized-keys files.
+
+**Wanted.** Add an isolated real-sshd acceptance case for the restricted key:
+verify `restrict,command=...` blocks shell, pty and forwarding requests, and
+that step 2 accepts the expected framed identity-or-transport error for the
+configured fleetd group. Keep the existing fake-transport and temporary-file
+tests as deterministic contract coverage.
+
+**Close when.** The registered `enroll` lane runs the restricted-mode test
+against its isolated sshd fixture and proves both denial of general-purpose
+SSH capabilities and the restricted step-2 probe contract.
+
+## CIU-237 — CIU cannot serialize target-side authorized_keys writers
+
+**Status:** OPEN (filed 2026-11-28). Related: CIU-218, CIU-236.
+
+**Observed.** `/run/lock/ciu-enroll-authorized-keys.lock` serializes CIU's own
+ordinary/restricted enrollment and removal operations. The target account owns
+`.ssh` and can write `authorized_keys` without taking that lock. CIU checks the
+file identity and bytes immediately before restricted atomic replacement, but
+an outside write between that final check and `os.replace` can be lost. CIU
+does not promise exclusion against or preservation of uncoordinated writers.
+
+**Wanted.** Keep CIU-writer serialization and the last-moment identity/content
+check, and state this concurrency boundary in SPEC, CONSUMERS and CHANGES. A
+stronger protocol that excludes all target-side writers would require a
+separate ownership or coordination design.
+
+**Close when.** The docs state that CIU serializes CIU writers only, describe
+the final-check-to-replace race and its possible lost update, name the
+root-owned `/run/lock` host requirement, and avoid promising that no concurrent
+change can be lost.
+
+## CIU-238 — retry after a crashed first restricted add skips the unrecorded-line refusal
+
+**Status:** OPEN (filed 2026-11-28). Related: CIU-218. Severity: Medium.
+
+**Observed.** A first restricted add saves `prepared` state and crashes before
+replacing `authorized_keys`. An outside writer then adds an unrelated
+unrecorded CIU marker or fixed restricted-command line. On retry,
+`installer/enroll.py` clears the state (no old record, no new lines) and returns
+before either unrecorded-line refusal; the install path then checks only
+same-blob collisions and appends a managed line beside the unrecorded one. No
+foreign line is deleted, but the refusal SPEC promises is skipped. Found by
+source trace in the CIU-218 closure review; no test reproduces it yet.
+
+**Wanted.** Run the unrecorded-marker and unrecorded-shape scans before clearing
+this prepared state, allowing hashes recorded for other users and names.
+
+**Close when.** A deterministic first-add crash-before-replace test with an
+unrelated orphan marker line, and one with an orphan shape line, show a refusal
+that names the line and leaves the file unchanged.

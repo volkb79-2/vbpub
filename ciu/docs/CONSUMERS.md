@@ -2604,3 +2604,105 @@ image declarations are present in the rendered file. A fully interpolated
 project image reference with no literal repository path or tag separator
 also refuses; render enough of the image name in the CIU template for CIU to
 append the instance tag safely.
+
+## 27. Enroll a fleetd-only SSH key (CIU-218, S14.7e)
+
+Use `ciu host enroll`'s opt-in restricted mode when a fleetd client needs to
+reach the host agent without receiving a general-purpose SSH shell. The mode
+requires the installed agent path and authenticated group explicitly; there
+is no guessed executable path or group:
+
+```console
+$ ciu host enroll <host-name> --forced-command \
+    --agent-path <absolute-agent-path> --fleetd-group <fleetd-group>
+```
+
+`--agent-path` must be an absolute normalized path containing only ASCII
+letters, digits, `.`, `_`, `+`, `-`, and `/`. `--fleetd-group` follows
+fleetd's `[A-Za-z0-9][A-Za-z0-9._-]{0,127}` identifier grammar. Both reject
+quotes, backslashes, whitespace, controls and shell metacharacters. Add
+`--agent-policy <absolute-path>` only when the host agent should use an
+explicit policy file; otherwise the agent applies its own policy default.
+Restricted mode cannot be combined with `--from`. The public key must be one
+bare supported key type on one line; options, malformed/noncanonical base64,
+embedded type mismatches and a second line are refused.
+
+Step 1 prints the public key, the target-side enrollment command, and a
+target-side `remove-restricted` command. The target entry has exactly this
+shape:
+
+```text
+restrict,command="<agent-path> forced-command --group <fleetd-group> [--policy <policy-path>]" <type> <base64> <comment> <CIU marker>
+```
+
+OpenSSH's `restrict` option disables pty, forwarding and user-rc. CIU installs
+only fleetd's fixed `forced-command --group GROUP` argv, with `--policy PATH`
+when explicitly supplied. The command is exactly
+`<absolute agent path> forced-command --group <group> [--policy PATH]`;
+`fleetd/src/fleetd/agent_entry.py::_parser` defines its argument interface.
+CIU does not create a wrapper, accept a remote command, or parse one from the
+SSH connection. Fleetd's host agent owns the operation grammar over framed
+stdin/stdout. Its request grammar is tested in
+`fleetd/tests/test_agent_protocol.py::test_validate_request_covers_request_shape_argv_candidate_and_dev_errors`
+and `fleetd/tests/test_agent_verbs.py::test_agent_dispatch_returns_admission_documents_for_submit_status_and_cancel`;
+the forced-command framing, group binding and unknown-group refusal are tested
+in `fleetd/tests/test_agent_server.py::test_forced_command_uses_framed_stdin_stdout_and_transport_group`
+and `test_forced_command_refuses_unknown_transport_group_on_wire`.
+
+Step 1 records restricted mode, group, path and optional policy beside the
+pending key and prints what step 2 will do. Step 2 still scans and checks the
+host fingerprint and pins that identity on every SSH step. For restricted
+mode it starts SSH with no remote command, no PTY and empty stdin closed at
+EOF; no protocol request bytes are sent. The forced command's agent answers
+the truncated-frame condition with one length-prefixed JSON frame. Step 2
+accepts empty stderr and exactly one stdout `fleet-host-agent/1` frame with
+string `agent_version`, non-empty `error.reason`, `error.exit_code = 3`, and SSH
+exit status 3. The JSON object has exactly `schema`, `agent_version` and
+`error`; `error` has exactly `exit_code` and `reason`. Duplicate keys, extra
+or missing keys, and non-standard JSON constants are refused. That is
+the fleetd identity-or-transport error proving login, forced-command execution
+and group resolution. A refusal (including unknown group), stderr or plain
+shell output, extra/truncated/oversized bytes, no output, timeout or mismatched status
+refuses and writes no inventory row. The probe is bounded to 20 seconds and
+65,540 combined output bytes. It proves no fleetd operation. Ordinary step 2
+continues to run `ciu version`.
+
+The target writer preserves all unrelated `authorized_keys` bytes, including
+CRLF, unparseable records and a missing final newline. It uses installer-owned
+state in `/var/lib/ciu/enroll-state` (root-owned directory mode `0700`, state
+files mode `0600`) to identify the exact line bytes written for each target
+user and name, plus the decoded key blob and whether CIU inserted a separator
+LF. The comment marker alone does not prove ownership. Rotation and removal
+require that the exact recorded line be present exactly once. Any unrecorded
+marker or restricted forced-command shape is refused with its line number.
+The installer holds `/run/lock/ciu-enroll-authorized-keys.lock` across
+authorized-keys reads, checks and writes; ordinary enrollment does not read CIU
+ownership state. This lock serializes CIU writers only. The installing root
+host must have `/run/lock` and its parent directories available as real,
+root-owned directories not writable by group or other users, and must be able
+to create/use the root-owned mode-`0600` lock file. Lock acquisition retries
+nonblocking for at most 10 seconds before refusing with the lock path and
+recovery advice. Before atomic replacement,
+the restricted writer rechecks the original file identity and contents as its
+last step before `os.replace`. The target account owns `.ssh` and may edit
+`authorized_keys` without taking CIU's lock; an outside write between the
+final check and atomic replacement can be lost. CIU does not claim to exclude
+or preserve such an outside write. A restricted add or rotation records a
+prepared transaction before changing `authorized_keys`, then commits state;
+retries recover either side by exact hashes. Removal persists its pending
+record before replacement.
+Re-running is idempotent, and add/remove restores the original bytes even if
+the file initially had no final newline.
+
+If the state file is lost, restore a trusted root-owned backup. If none exists,
+back up `authorized_keys`, inspect and recover the entry manually, and rerun;
+CIU will not infer ownership from a marker or line shape. Equivalent base64
+spellings of one key blob are detected in either enrollment order, so a blob
+cannot exist in both restricted and unrestricted forms. Without the new
+flag, ordinary enrollment keeps its prior output, messages, exit codes and
+append behavior, including appending after unparseable lines; its only new
+key refusal is a same-type, same-decoded-blob key on a visible CIU restricted
+marker or fixed restricted-command-shape line, recorded or not. It names the
+line and leaves the file unchanged. Use the printed target-side `remove-restricted` command to remove a
+recorded restricted key; it leaves general enrollment keys and every other
+line in place.
