@@ -1995,8 +1995,8 @@ pi_ctl_mutant(
 )
 pi_ctl_mutant(
     "queued-wakeup-reinjected",
-    "\t\tif (entry.queued === true) {\n\t\t\t// pi accepted this wake-up and has not persisted it yet. A second",
-    "\t\tif (false) {\n\t\t\t// pi accepted this wake-up and has not persisted it yet. A second",
+    "\t\tif (entry.queued === true) {",
+    "\t\tif (false) {",
 )
 pi_ctl_mutant(
     "async-rejection-report-too-late",
