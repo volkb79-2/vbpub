@@ -81,6 +81,7 @@ together.
 | CTL-80 | `compact-resume.sh` can deliver `/compact` as pasted text and then send the resume prompt although no compaction ran | High | FIXED 2026-11-28 (P-plat-CTL80 r3) |
 | CTL-81 | A fresh pi controller session saves the previous session's monitor-restart notice as its original goal | Medium | FIXED 2026-11-28 (P-plat-CTL80) |
 | CTL-82 | An IDE selection chip in an empty Claude Code prompt row is read as typed input | Medium | OPEN 2026-11-28 (main smoke evidence) |
+| CTL-85 | `controller.local.env` overrides launcher routes and environment, including `start_job` values | Known limit | BY DESIGN 2026-11-28 (main decision) |
 
 ---
 
@@ -2099,9 +2100,13 @@ leave the call's PID namespace.
 `pi-impl.sh`, or `pi-review.sh` from the controller's own directory, with the
 validated arguments and route/effort environment. It detaches the process,
 closes the controller session-lock descriptor, logs to `<run>.launch.log`, and
-has no runtime cap or stop tool. It returns after the owner record changes, or
-reports an early exit / 30-second preflight. A live session receives one
-`pi-ctl-job` completion notice; after restart, use `job-check.sh <run_name>`.
+has no `start_job` runtime cap or stop tool for Codex and pi implementer jobs.
+`pi-review` keeps `PI_REVIEW_MAX_SECONDS` (default 7200) and
+`PI_REVIEW_MAX_STREAM_BYTES` (default 268435456 bytes), and stops its review
+when either limit is exceeded. The tool returns after the owner record changes,
+or reports an early exit / 30-second preflight. A live session receives one
+`pi-ctl-job` completion notice; after restart, use
+`job-check.sh '<run>' '<worktree>' '<route>' [ '<report>' ]`.
 
 Codex launches run through `pi-pidns-bash`. Pi launchers run directly because
 the wrapper cannot be nested: the attempted nested `bwrap` fails opening
@@ -2112,3 +2117,14 @@ and starts the agent's bash calls inside that wrapper.
 procfs-visible pid and start ticks, `job-check.sh` recognizes an outer procfs
 owner that `kill -0` cannot reach, and fake-pi tests pin the launcher and
 completion contract.
+
+## CTL-85 — controller.local.env overrides start_job route and environment
+
+**Status:** BY DESIGN 2026-11-28 (main decision); severity: known limit.
+
+`controller_init` sources `controller.local.env` as operator configuration.
+Its exported route and environment values therefore override the route and
+sanitized environment supplied by any launcher, including `start_job`. This
+precedence is an operator policy and is disclosed in the launcher documentation.
+
+**Where:** `scripts/controller/lib.sh` (`controller_init`) and launcher docs.

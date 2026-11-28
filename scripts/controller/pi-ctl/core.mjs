@@ -2072,7 +2072,7 @@ export function createController(pi, injected = {}, overrides = {}) {
 	const startJobTool = {
 		name: "start_job",
 		label: "Start detached controller job",
-		description: "Start one allowlisted Codex or pi controller launcher as a detached job. Use scripts/controller/job-check.sh <run> <worktree> <route> [report] to inspect its result.",
+		description: "Start one allowlisted Codex or pi controller launcher as a detached job. Codex and pi-impl jobs have no start_job lifetime cap or stop tool; pi-review keeps PI_REVIEW_MAX_SECONDS (default 7200) and PI_REVIEW_MAX_STREAM_BYTES (default 268435456 bytes), and stops its review when over either limit. Use scripts/controller/job-check.sh <run> <worktree> <route> [report] to inspect the result.",
 		parameters: objectSchema({
 			launcher: { type: "string", enum: ["codex-impl", "pi-impl", "pi-review"] },
 			worktree: { type: "string", minLength: 1, description: "Absolute worktree path under the repository's .worktrees directory." },

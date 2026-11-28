@@ -947,12 +947,17 @@ Use the pi-ctl `start_job` tool to launch `codex-impl.sh`, `pi-impl.sh`, or
 Codex implementation jobs run inside `pi-pidns-bash`; pi launchers start
 directly because nesting that wrapper fails, and `pi-impl.sh` puts its agent's
 bash calls inside the wrapper itself. Pi implementer jobs must be started with
-`start_job`, not from a bash tool call or under `start_monitor`. Jobs have no
-lifetime cap and no stop tool. Watch for the `pi-ctl-job` end notice, or use
+`start_job`, not from a bash tool call or under `start_monitor`. Codex and pi
+implementer jobs have no `start_job` lifetime cap or stop tool. `pi-review`
+keeps its own review budget: `PI_REVIEW_MAX_SECONDS` (default 7200) and the
+`PI_REVIEW_MAX_STREAM_BYTES` stream-size limit (default 268435456 bytes); it
+stops its review when either limit is exceeded. Watch for the `pi-ctl-job` end notice, or use
 `scripts/controller/job-check.sh '<run>' '<worktree>' '<route>' [ '<report>' ]`
 after a restart or when you need the recorded result. `start_job` prints this
 complete shell-quoted command; the route is the launcher's effective route, and
 the optional report argument is included when supplied.
+`controller.local.env` is operator configuration and overrides the route and
+environment of every launcher, `start_job` included.
 
 ```bash
 scripts/controller/pi-ctl-launch.sh hostobs
