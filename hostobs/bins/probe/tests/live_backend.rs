@@ -15,7 +15,7 @@ use hostobs_proto::event::{decode_event_frame, EventPayload};
 use hostobs_proto::frame::{decode_block, Block, FrameType};
 use hostobs_serve::backend::{
     AnnotateArgs, AnnotateCtxKey, AnnotateKind, AnnotateOutcome, AnnotateRefusal, Backend,
-    BackendError, Identity,
+    BackendError, EventsArgs, Identity,
 };
 use hostobs_serve::conn::{CgroupKey as PeerCgroupKey, Peer};
 use hostobs_serve::hub::ConnId;
@@ -778,6 +778,22 @@ fn production_events_pages_sort_ties_and_reject_displaced_continuations() {
     let first_body = body(&first[0]);
     assert_eq!(event_names(&first_body), ["page.b"]);
     assert_eq!(first_body.matches("\"name\":").count(), 1);
+    assert!(first_body.contains(r#""kind":"point""#), "{first_body}");
+    assert!(first_body.contains(r#""key":"page.b""#), "{first_body}");
+    let page_b_mono = base + 10;
+    let page_b_real = WALL + i64::try_from(page_b_mono - 1_000_000).expect("real time delta");
+    assert!(
+        first_body.contains(&format!(r#""t_mono_ns":{page_b_mono}"#)),
+        "{first_body}"
+    );
+    assert!(
+        first_body.contains(&format!(r#""real_ns":{page_b_real}"#)),
+        "{first_body}"
+    );
+    assert_eq!(
+        page_b_real - WALL,
+        i64::try_from(page_b_mono - 1_000_000).expect("time relation")
+    );
     let displaced_cursor = page_cursor(&first_body).expect("continuation cursor");
 
     let second = send(
@@ -865,6 +881,88 @@ fn production_events_pages_sort_ties_and_reject_displaced_continuations() {
     let continued_body = body(&continued[0]);
     assert_eq!(event_names(&continued_body), ["filler.39"]);
     assert_eq!(continued_body.matches("\"name\":").count(), 1);
+}
+
+#[test]
+fn production_cursor_minted_before_displacement_continues_at_surviving_event() {
+    let published = Arc::new(Published::new(1_000_000, WALL));
+    let temp = TempDir::new("live-backend-events-surviving-cursor");
+    let (mut server, id) = server_with_ring(Arc::clone(&published), 16, &temp, 4096);
+    let base = 1_003_000_000;
+    hello_frame(&mut server, id, base);
+    let observer = match server.accept(
+        Level::Observer,
+        Some(Peer {
+            uid: 1000,
+            pid: Some(8),
+            comm: None,
+            cgroup: None,
+        }),
+        base,
+    ) {
+        Accept::Accepted(id) => id,
+        Accept::Refused => panic!("observer connection refused"),
+    };
+    hello_frame(&mut server, observer, base);
+
+    server.backend_mut().begin_turn(base + 1);
+    append_point(&mut server, observer, base + 1, 2, "before");
+    server.backend_mut().begin_turn(base + 2);
+    append_point(&mut server, observer, base + 2, 3, "survivor");
+    let names = ["before", "survivor"];
+    let initial = send(
+        &mut server,
+        id,
+        base + 2,
+        &request(10, "events", &events_args(&names, None)),
+    );
+    assert_eq!(initial.len(), 1);
+    let initial_body = body(&initial[0]);
+    assert_eq!(event_names(&initial_body), ["before"]);
+    let original_cursor = page_cursor(&initial_body).expect("cursor minted before displacement");
+
+    let mut displaced_before_survivor = false;
+    for index in 0..100u64 {
+        let now = base + 100 + index;
+        server.backend_mut().begin_turn(now);
+        append_point(
+            &mut server,
+            observer,
+            now,
+            20 + index as u32,
+            &format!("filler.{index:02}"),
+        );
+        let snapshot = server
+            .backend_mut()
+            .events(&EventsArgs {
+                from_real_ns: WALL,
+                to_real_ns: WALL + 10_000_000_000,
+                names: Vec::new(),
+                limit: 1000,
+                cursor: None,
+            })
+            .expect("event snapshot");
+        if snapshot.displaced > 0 && snapshot.items.iter().any(|item| item.name == "survivor") {
+            displaced_before_survivor = true;
+            break;
+        }
+    }
+    assert!(
+        displaced_before_survivor,
+        "the older item must be displaced while survivor remains"
+    );
+
+    let continued = send(
+        &mut server,
+        id,
+        base + 300,
+        &request(11, "events", &events_args(&names, Some(&original_cursor))),
+    );
+    assert_eq!(continued.len(), 1);
+    let continued_body = body(&continued[0]);
+    assert_eq!(event_names(&continued_body), ["survivor"]);
+    assert_eq!(continued_body.matches("\"name\":").count(), 1);
+    assert!(page_cursor(&continued_body).is_none());
 }
 
 // ---- annotate: the probe's mapping from the checked arguments to stored event/1 records ---
