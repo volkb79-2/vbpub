@@ -202,8 +202,8 @@ send_chunks() { # literal UTF-8 text in <=400-character chunks (`--` stops flag 
     while (length $s) {
       my $n = length($s) > 400 ? 400 : length($s);
       if ($n < length($s)) { my $space = rindex(substr($s, 0, $n), " "); $n = $space + 1 if $space >= 0; }
-      $n-- if $n < length($s) && substr($s, $n - 1, 1) eq ";";
       my $out = substr($s, 0, $n, "");
+      $out =~ s/;\z/\\;/;
       utf8::encode($out);
       print $out, "\0";
     }

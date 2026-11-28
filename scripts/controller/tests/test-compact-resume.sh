@@ -43,8 +43,9 @@ case $1 in
       if [[ $5 == -- ]]; then t=$6; else t=$5; [[ $t == -* ]] && exit 1; fi
       n=$(( $(cat "$s/nsent" 2>/dev/null || echo 0) + 1 )); echo "$n" >"$s/nsent"
       printf '%s' "$t" >"$s/raw.$n"
-      # tmux treats an argument-ending semicolon as a command separator and drops it.
-      [[ $t == *';' ]] && t=${t%;}
+      # tmux drops an ending ";" but removes the backslash from an ending "\;".
+      if [[ ${t: -2} == '\;' ]]; then t=${t:0:${#t}-2}; t+=';'
+      elif [[ $t == *';' ]]; then t=${t%?}; fi
       printf '%s' "$t" >"$s/sent.$n"; printf '%s' "$t" >>"$s/sent-$phase"
       printf '%s' "$t" >>"$s/sent-chunks"
       echo "send-keys $3 -l <text $n>" >>"$s/calls.log"
@@ -184,8 +185,28 @@ COMPACT_RESUME_START_TRIES=3 run '%9' "$D/guidance.txt" "$D/prompt.txt" "$D/log"
 [[ $RC -eq 0 ]] || fail "chunked text exit $RC"
 cmp -s "$D/sent-start" "$D/expected-start.txt" || fail "chunked command/guidance changed text or lost a semicolon"
 for raw in "$D"/raw.*; do
-  perl -e 'local $/; my $s=<>; utf8::decode($s) or die "invalid UTF-8\n"; exit(length($s) <= 400 && $s !~ /;\z/ ? 0 : 1)' "$raw" || fail "chunk exceeds 400 characters, splits UTF-8, or ends in semicolon: $raw"
+  perl -e 'local $/; my $s=<>; utf8::decode($s) or die "invalid UTF-8\n"; exit(length($s) <= 400 && $s !~ /(?<!\\);\z/ ? 0 : 1)' "$raw" || fail "chunk exceeds 400 characters, splits UTF-8, or has an unescaped trailing semicolon: $raw"
 done
+# A semicolon-only chunk and a prompt ending in semicolon both arrive intact.
+scenario semicolons "I" "K K I I I"
+printf ';' >"$D/guidance.txt"
+printf '/compact ;' >"$D/expected-start.txt"
+printf 'resume;' >"$D/prompt.txt"
+printf 'resume;' >"$D/expected-resume.txt"
+COMPACT_RESUME_START_TRIES=3 run '%9' "$D/guidance.txt" "$D/prompt.txt" "$D/log"
+[[ $RC -eq 0 ]] || fail "semicolon text exit $RC"
+cmp -s "$D/sent-start" "$D/expected-start.txt" || fail "semicolon-only guidance was dropped"
+cmp -s "$D/sent-compact" "$D/expected-resume.txt" || fail "prompt-ending semicolon was dropped"
+cmp -s "$D/raw.2" <(printf '\\;') || fail "semicolon-only chunk was not escaped for tmux"
+cmp -s "$D/raw.3" <(printf 'resume\\;') || fail "prompt-ending semicolon was not escaped for tmux"
+# A literal backslash before the semicolon survives tmux's final-two-character handling.
+scenario escaped-semicolon "I" "K K I I I"
+printf 'literal\\;' >"$D/guidance.txt"
+printf '/compact literal\\;' >"$D/expected-start.txt"
+COMPACT_RESUME_START_TRIES=3 run '%9' "$D/guidance.txt" "$D/prompt.txt" "$D/log"
+[[ $RC -eq 0 ]] || fail "escaped semicolon text exit $RC"
+cmp -s "$D/sent-start" "$D/expected-start.txt" || fail "literal backslash-semicolon changed in tmux"
+cmp -s "$D/raw.2" <(printf 'literal\\\\;') || fail "literal backslash-semicolon was not escaped once for tmux"
 # Latin-1-range Unicode needs explicit UTF-8 encoding after Perl decodes the input.
 scenario latin1 "I" "K K I I I"
 printf 'éü§·' >"$D/guidance.txt"
