@@ -321,7 +321,8 @@ sufficient to make the reservation fit. A refused size or disk-floor request
 does not collect. Re-uploads are charged as new bytes and never trigger
 collection. `submit` serializes with collection and refuses by object name when
 an earlier upload was collected before its request was submitted. The client can
-upload the object again. Seed archive sidecars remain with any referenced seed.
+upload the object again. `have` remains the repo-checkout ref listing; it does
+not report upload presence. Seed archive sidecars remain with any referenced seed.
 The lock does not cover body streaming; a replay collected while its body is
 streaming is published again at commit or the `put` refuses. FD-076 tracks the
 upload-then-collection window.

@@ -1202,9 +1202,10 @@ Source: P-fd-05 C3a round 2 controller ruling (2026-11-27).
 
 An unreferenced object may be collected after a successful `put` and before the
 client submits a job naming it. `submit` refuses with the missing object name;
-the client must upload it again. Keep this window visible to controllers and
-consumers. A replay being streamed while collection removes its prior copy must
-be republished at commit or refused.
+the client must upload it again. `have` remains the repo-checkout ref listing
+and does not report upload presence. Keep this window visible to controllers
+and consumers. A replay being streamed while collection removes its prior copy
+must be republished at commit or refused.
 
 Source: P-fd-05 C3b-2 controller ruling (2026-11-28).
 

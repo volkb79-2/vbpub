@@ -104,7 +104,8 @@ objects named by durable job requests, and refuses the put without deleting
 anything if the reclaimable set cannot make it fit. Re-uploads count toward the
 cap and do not trigger collection. An uploaded object can be collected before a
 later submit names it; that submit refuses with the missing object name, and the
-controller can upload it again. A replay collected while its request body is
+controller can upload it again. `have` continues to list repo checkout refs and
+does not report upload presence. A replay collected while its request body is
 streaming is committed again or refused.
 
 The optional closed-schema key `executor_enabled` accepts only a TOML boolean.
