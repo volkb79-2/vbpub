@@ -1657,3 +1657,52 @@ this package.
 depends on it; keep its tests until the API is removed.
 
 Source: M3 B5.
+
+## HOB-110 — Accepted point has no idle-arm test
+
+**Where:** `crates/serve/src/conn.rs:939`.
+
+An accepted `point` is required to leave the idle timer armed, but no test observes the idle close
+after a point. The broken variant increments `open_spans` for a point and leaves the observer
+connection alive without a span.
+
+**Exit criteria.** Add a `Conn` fake-clock test that accepts a `point`, advances to `idle_ms + 1`,
+and asserts `Code::Idle`.
+
+Source: M3 B5 r2.
+
+## HOB-111 — Probe driver test cannot distinguish idle from EOF close
+
+**Where:** `bins/probe/src/driver.rs:1162-1250`.
+
+The EOF/idle test cannot tell an idle close from an EOF close, and its eventfd wait is unbounded.
+The inferred end timestamp can match either path, so the test does not prove that a server turn
+closed the still-connected client at its idle deadline.
+
+**Exit criteria.** Use the t1/t2 two-connection construction and a bounded eventfd wait.
+
+Source: M3 B5 r2.
+
+## HOB-112 — Lasting eviction fault repeats a note in both note rings
+
+**Where:** `crates/store/src/tier.rs` (`report`) and `crates/store/src/store.rs` (`keep_notes`).
+
+A lasting eviction fault can append the same note to both note rings on every append, against
+`notes()`'s documented once-each behavior. Repeated copies can crowd out other tier notes while
+the same fault episode continues.
+
+**Exit criteria.** Skip an equal note already held and add a two-append assertion that `notes()`
+holds the note once.
+
+Source: M3 B5 r2.
+
+## HOB-113 — Failed quarantine removal logs a false recovery
+
+**Where:** `bins/probe/src/live.rs:136-160`.
+
+A failed quarantine removal is treated like a recovered segment eviction episode, so the probe
+can print that eviction succeeded again while the quarantined file remains on disk.
+
+**Exit criteria.** Drive the episode only from the segment note and print the quarantine note once.
+
+Source: M3 B5 r2.
