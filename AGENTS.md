@@ -959,8 +959,11 @@ produce the durable report to main. Wake-ups follow the same rule.
 At each `agent_end`, the extension logs the count and queues one line when any
 claimed inbox messages are not yet found in pi's persisted entries. It does not start
 a turn, and the claim is never re-injected into the same live runtime because
-pi may still hold it or may have dropped it during abort. Restarting the session
-replays the durable claim. This abort-drop uncertainty is the known issue CTL-71.
+pi may still hold it or may have dropped it during abort. Polling also reports a
+queued id missing from persisted entries after two idle/no-pending observations at
+least 30 seconds apart; the claim stays on disk for a fresh runtime. Restarting
+the session replays the durable claim. Unobservable abort-drop uncertainty while
+busy remains tracked in CTL-71.
 
 At `session_start`, the extension arms one-time role context for the first model
 turn: a persistent context message with a bounded `PI_CTL_PRIME` excerpt and the

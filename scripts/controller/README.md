@@ -883,7 +883,11 @@ shows the type and id, or until a fresh session runtime (`startup`, `resume`,
 `new`, `fork`) proves the old queue is gone and re-delivers it exactly once. A
 `reload` keeps the live agent, so it re-delivers nothing. Only when pi refuses
 the call synchronously is the claim retried, with bounded attempts and a report
-to main on a real failure. Wake-ups follow the same rule: their persisted id
+to main on a real failure. If a queued id has no persisted entry while pi reports
+idle with no pending messages, two polls at least 30 seconds apart mark it
+accepted-but-unconfirmed. The extension logs and reports it once, sends the same
+one-line notice without starting a turn, and keeps the claim for a fresh runtime.
+Wake-ups follow the same rule: their persisted id
 survives until pi's entry arrives or a fresh runtime re-fires them once. Peer
 messages are untrusted and never auto-replied to; send and receive limits default to 10
 per peer per hour; inbox bodies default to 16 KiB and sends to 64 KiB; wake-ups
@@ -899,9 +903,10 @@ against a live provider.
 At each `agent_end`, the extension logs the count and queues one line when any
 inbox claims have not been persisted by pi. The notice does not start a turn, and
 the claim is never re-injected into the same live runtime: an abort can drop
-pi's accepted follow-up copy before it is saved. The claim is replayed after a
-session restart; until then, the notice says to restart or ask the sender to
-resend. This unresolved abort-drop case is tracked as CTL-71.
+pi's accepted follow-up copy before it is saved. Polling also detects a likely
+asynchronous send rejection after two idle/no-pending observations at least 30
+seconds apart; it reports once and retains the claim for a fresh runtime.
+Unobservable abort loss while a session remains busy is still tracked as CTL-71.
 
 At `session_start`, the extension arms a one-shot role context block. Before the
 session's first model turn, it adds a persistent context message with the bounded

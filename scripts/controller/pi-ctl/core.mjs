@@ -535,6 +535,9 @@ export function createController(pi, injected = {}, overrides = {}) {
 			stalled: state.stalled === true,
 			reported: state.reported === true,
 			reportAt: Number.isSafeInteger(state.reportAt) && state.reportAt >= 0 ? state.reportAt : 0,
+			unconfirmedSince: Number.isSafeInteger(state.unconfirmedSince) && state.unconfirmedSince >= 0 ? state.unconfirmedSince : 0,
+			unconfirmed: state.unconfirmed === true,
+			unconfirmedNoticeSent: state.unconfirmedNoticeSent === true,
 			queued: queuedFromRecord(state, attempts),
 		};
 	}
@@ -644,6 +647,47 @@ export function createController(pi, injected = {}, overrides = {}) {
 		pi.sendMessage({ customType: "pi-ctl-claim-notice", content, display: true, details: { piCtlId: makeId() } }, { triggerTurn: false, deliverAs: "followUp" });
 	}
 
+	function contextIsIdleWithoutPending(ctx) {
+		try {
+			return typeof ctx?.isIdle === "function" && ctx.isIdle() === true &&
+				typeof ctx?.hasPendingMessages === "function" && ctx.hasPendingMessages() === false;
+		} catch {
+			return false;
+		}
+	}
+
+	function observeAcceptedUnconfirmed(kind, id, state, persist, report) {
+		if (state.unconfirmed) {
+			report();
+			return;
+		}
+		const time = now();
+		if (state.unconfirmedSince === 0) {
+			state.unconfirmedSince = time;
+			persist();
+			return;
+		}
+		if (time - state.unconfirmedSince < 30_000) return;
+		state.unconfirmed = true;
+		persist();
+		log(`${kind}_unconfirmed`, { id });
+		if (!state.unconfirmedNoticeSent) {
+			state.unconfirmedNoticeSent = true;
+			persist();
+			try {
+				pi.sendMessage({
+					customType: "pi-ctl-claim-notice",
+					content: "1 inbox message(s) claimed but not confirmed; restart or ask the sender to resend",
+					display: true,
+					details: { piCtlId: `claim-notice-${name}-${createHash("sha256").update(id).digest("hex").slice(0, 24)}` },
+				}, { triggerTurn: false, deliverAs: "followUp" });
+			} catch {
+				log(`${kind}_notice_error`, { id });
+			}
+		}
+		report();
+	}
+
 	function hasPiConfirmation(entries, customType, id) {
 		return entries.some((entry) => entry?.type === "custom_message" && entry.customType === customType && entry.details?.piCtlId === id);
 	}
@@ -692,7 +736,10 @@ export function createController(pi, injected = {}, overrides = {}) {
 		const idDigest = createHash("sha256").update(envelope.id).digest("hex").slice(0, 32);
 		const messageId = `delivery-stalled-${name}-${idDigest}`;
 		try {
-			const result = writePeerMessage("main", `Delivery of peer message ${envelope.id} from ${envelope.from} is still unconfirmed after ${state.attempts} attempts. Its claim remains on disk; inspect the pi session and re-arm delivery if needed.`, { messageId });
+			const detail = state.unconfirmed
+				? `Delivery of peer message ${envelope.id} from ${envelope.from} was accepted by pi but was not persisted in the session while idle. Its claim remains on disk for a fresh runtime.`
+				: `Delivery of peer message ${envelope.id} from ${envelope.from} is still unconfirmed after ${state.attempts} attempts. Its claim remains on disk; inspect the pi session and re-arm delivery if needed.`;
+			const result = writePeerMessage("main", detail, { messageId });
 			if (result.ok) state.reported = true;
 			else state.reportAt = now() + 60_000;
 			writeClaimState(claimPath, state);
@@ -758,6 +805,11 @@ export function createController(pi, injected = {}, overrides = {}) {
 			return false;
 		}
 		if (acceptedCopyPending(state)) {
+			if (contextIsIdleWithoutPending(ctx)) {
+				observeAcceptedUnconfirmed("inbox_claim", envelope.id, state,
+					() => writeClaimState(claimPath, state),
+					() => reportClaimStalled(envelope, state, claimPath));
+			}
 			// pi holds this id in the live agent's follow-up queue. Re-injecting would
 			// duplicate a message the model may already have seen; the claim stays on
 			// disk and a fresh session runtime delivers it once more.
@@ -866,6 +918,9 @@ export function createController(pi, injected = {}, overrides = {}) {
 				queued: queuedFromRecord(entry, attempts),
 				reported: entry.reported === true,
 				reportAt: Number.isSafeInteger(entry.reportAt) && entry.reportAt >= 0 ? entry.reportAt : 0,
+				unconfirmedSince: Number.isSafeInteger(entry.unconfirmedSince) && entry.unconfirmedSince >= 0 ? entry.unconfirmedSince : 0,
+				unconfirmed: entry.unconfirmed === true,
+				unconfirmedNoticeSent: entry.unconfirmedNoticeSent === true,
 			};
 		});
 	}
@@ -877,7 +932,10 @@ export function createController(pi, injected = {}, overrides = {}) {
 	function reportWakeupStalled(entry) {
 		if (entry.reported || now() < entry.reportAt) return;
 		try {
-			const result = writePeerMessage("main", `Wake-up ${entry.id} for controller ${name} remains unconfirmed after ${entry.attempts} delivery attempts. The wake-up stays persisted; inspect the session and re-arm it if needed.`, { messageId: `wakeup-stalled-${name}-${entry.id}` });
+			const detail = entry.unconfirmed
+				? `Wake-up ${entry.id} for controller ${name} was accepted by pi but was not persisted in the session while idle. It stays persisted for a fresh runtime.`
+				: `Wake-up ${entry.id} for controller ${name} remains unconfirmed after ${entry.attempts} delivery attempts. The wake-up stays persisted; inspect the session and re-arm it if needed.`;
+			const result = writePeerMessage("main", detail, { messageId: `wakeup-stalled-${name}-${entry.id}` });
 			if (result.ok) entry.reported = true;
 			else entry.reportAt = now() + 60_000;
 			writeWakeups(readWakeups().map((item) => item.id === entry.id ? entry : item));
@@ -906,6 +964,11 @@ export function createController(pi, injected = {}, overrides = {}) {
 			return false;
 		}
 		if (entry.queued === true) {
+			if (contextIsIdleWithoutPending(ctx)) {
+				observeAcceptedUnconfirmed("wakeup", entry.id, entry,
+					() => writeWakeups(readWakeups().map((item) => item.id === entry.id ? entry : item)),
+					() => reportWakeupStalled(entry));
+			}
 			// pi accepted this wake-up and has not persisted it yet. A second
 			// injection would duplicate it; a fresh session runtime re-delivers it.
 			return false;
@@ -1792,6 +1855,9 @@ export function createController(pi, injected = {}, overrides = {}) {
 		pollTimer = timers.setInterval(() => {
 			void pollInbox(currentContext).catch(() => {
 				if (!stopped) log("inbox_poll_error", { reason: "poll failed" });
+			});
+			void armWakeups(currentContext).catch(() => {
+				if (!stopped) log("wakeup_reconcile_error", {});
 			});
 		}, config.pollMs);
 	});

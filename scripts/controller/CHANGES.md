@@ -14,7 +14,10 @@ no separate version number, so entries are grouped by the work that landed.
   a fresh session runtime (`startup`, `resume`, `new`, `fork`) re-delivers it
   exactly once; `/reload` keeps the live agent and re-delivers nothing. Only a
   synchronous `pi.sendMessage()` refusal counts as a failed attempt and reaches
-  the bounded report path. The fake pi API now models the agent-level queue,
+  the bounded report path. A queued id absent from persisted entries during two
+  idle/no-pending observations at least 30 seconds apart is reported as an
+  asynchronous rejection; the claim remains for a fresh runtime, with one
+  persisted one-line notice and one bounded delivery report. The fake pi API now models the agent-level queue,
   its persistence on consume and its loss on abort.
 - At each `agent_end` (F1b), unresolved inbox claims are recorded in the event
   log and get a one-line notice that does not start a turn. The notice cannot

@@ -1999,6 +1999,11 @@ pi_ctl_mutant(
     "\t\tif (false) {\n\t\t\t// pi accepted this wake-up and has not persisted it yet. A second",
 )
 pi_ctl_mutant(
+    "async-rejection-report-too-late",
+    "if (time - state.unconfirmedSince < 30_000) return;",
+    "if (time - state.unconfirmedSince < 30_001) return;",
+)
+pi_ctl_mutant(
     "queued-reset-skipped",
     "\t\t\ttry { resetQueuedForFreshSession(); } catch { log(\"delivery_queue_reset_error\", { reason: startReason }); }",
     "\t\t\t// mutant: a fresh session runtime does not re-deliver accepted copies",

@@ -28,10 +28,13 @@ function fixture(envExtra = {}) {
 	let queued = [];
 	let onSend = null;
 	let failInboxOpen = false;
+	let asyncRejects = 0;
 	let id = 0;
 	const fakeContext = {
 		sessionManager: { getEntries: () => sessionEntries },
 		getContextUsage: () => undefined,
+		isIdle: () => !busy,
+		hasPendingMessages: () => queued.length > 0,
 	};
 	// Model pi's AGENT-level follow-up queue: sendMessage() accepts a message into
 	// the queue, pi persists it only when a turn consumes it, and an abort
@@ -81,6 +84,14 @@ function fixture(envExtra = {}) {
 			}
 			onSend?.(message, options);
 			calls.push({ message, options });
+			if (asyncRejects > 0 && message.customType !== "pi-ctl-claim-notice") {
+				asyncRejects--;
+				// Pi's extension API accepts this void call, then reports the rejected
+				// sendCustomMessage promise through its own error event. No turn or
+				// queued copy exists in this modeled preflight failure.
+				setImmediate(() => events.get("extension_error")?.({ type: "extension_error", event: "send_message", error: "simulated asynchronous rejection" }, fakeContext));
+				return;
+			}
 			queued.push(message);
 			if (busy || options?.triggerTurn === false) return;
 			// Only the consuming run persists the message.
@@ -141,6 +152,7 @@ function fixture(envExtra = {}) {
 		setTime(value) { currentTime = value; },
 		now() { return currentTime; },
 		refuseOnSend(count = 1) { sendsBeforeRefusal = count; },
+		rejectNextSendAsync() { asyncRejects++; },
 		setBusy(value) { busy = value; },
 		get queuedCount() { return queued.length; },
 		consumeQueued() { return consumeQueued(); },
@@ -401,6 +413,9 @@ test("a queued peer message is delivered once however long the agent stays busy"
 		await f.flushPromises();
 	}
 	assert.equal(f.calls.length, 1, "no second injection while pi holds the accepted copy");
+	const eventLog = fs.readFileSync(path.join(f.root, "events", "receiver.jsonl"), "utf8");
+	assert.doesNotMatch(eventLog, /inbox_claim_unconfirmed/,
+		"a busy session with a live queued copy is never reported as an asynchronous rejection");
 	const state = JSON.parse(fs.readFileSync(path.join(f.root, "processing", "receiver", fs.readdirSync(path.join(f.root, "processing", "receiver")).find((file) => file.endsWith(".state.json"))), "utf8"));
 	assert.equal(state.attempts, 0, "only a refusal counts as an attempt; pi accepted this one");
 	assert.equal(state.queued, true);
@@ -446,6 +461,50 @@ test("agent_end reports claimed messages lost on abort without redelivery or a n
 	const log = fs.readFileSync(path.join(f.root, "events", "receiver.jsonl"), "utf8");
 	assert.match(log, /\"event\":\"inbox_claims_unconfirmed\",\"count\":1/);
 	assert.equal(f.queuedCount, 1, "the notice waits in the queue without starting a turn");
+});
+
+test("an idle async pi rejection reports an inbox claim after two spaced observations", async (t) => {
+	const f = fixture();
+	t.after(f.cleanup);
+	const sender = createController(fakeApiNoop(), {
+		env: { HOME: f.temp, PI_CTL_NAME: "peer", PI_CTL_ROOT: f.root },
+		cwd: f.repo,
+		pid: 987654322,
+		now: () => f.now(),
+		makeId: () => "async-rejected-inbox",
+		timers: f.timers,
+		verifySessionLock: () => 12,
+	}, { root: f.root, name: "peer" });
+	f.rejectNextSendAsync();
+	sender.writePeerMessage("receiver", "accepted but absent");
+	await f.controller.pollInbox();
+	await f.flushPromises();
+	assert.equal(f.calls.filter(({ message }) => message.customType === "pi-ctl-inbox").length, 1);
+	assert.equal(f.queuedCount, 0, "the simulated asynchronous rejection queued no message and started no turn");
+	let stateFile = path.join(f.root, "processing", "receiver", fs.readdirSync(path.join(f.root, "processing", "receiver")).find((file) => file.endsWith(".state.json")));
+	let state = JSON.parse(fs.readFileSync(stateFile, "utf8"));
+	assert.equal(state.unconfirmedSince, f.now(), "the first idle poll is persisted as the first observation");
+	assert.equal(f.calls.filter(({ message }) => message.customType === "pi-ctl-claim-notice").length, 0,
+		"a single observation is not enough to report a rejection");
+	f.setTime(f.now() + 30_000);
+	await f.controller.pollInbox();
+	await f.flushPromises();
+	state = JSON.parse(fs.readFileSync(stateFile, "utf8"));
+	assert.equal(state.unconfirmed, true);
+	assert.equal(state.unconfirmedNoticeSent, true);
+	assert.equal(state.reported, true, "the bounded report is persisted after its atomic inbox write");
+	const notices = f.calls.filter(({ message }) => message.customType === "pi-ctl-claim-notice");
+	assert.equal(notices.length, 1);
+	assert.equal(notices[0].message.content, "1 inbox message(s) claimed but not confirmed; restart or ask the sender to resend");
+	assert.equal(notices[0].options.triggerTurn, false);
+	assert.equal(fs.readdirSync(path.join(f.root, "inbox", "main")).filter((file) => file.endsWith(".msg")).length, 1,
+		"the existing bounded delivery report reaches main once");
+	f.setTime(f.now() + 60_000);
+	await f.controller.pollInbox();
+	assert.equal(f.calls.filter(({ message }) => message.customType === "pi-ctl-claim-notice").length, 1,
+		"later polls do not repeat the notice");
+	assert.equal(fs.readdirSync(path.join(f.root, "inbox", "main")).filter((file) => file.endsWith(".msg")).length, 1,
+		"later polls do not repeat a successful bounded report");
 });
 
 test("a queued peer message is delivered once more only after a fresh session start", async (t) => {
@@ -706,6 +765,32 @@ test("a queued wake-up fires once and is not re-injected while the agent stays b
 	await f.flushPromises();
 	assert.equal(JSON.parse(fs.readFileSync(path.join(f.root, "wakeups", "receiver.json"), "utf8")).length, 0,
 		"the persisted entry removes the wake-up");
+});
+
+test("an idle async pi rejection reports a wake-up after two spaced observations", async (t) => {
+	const f = fixture();
+	t.after(f.cleanup);
+	const wakeup = f.controller.scheduleWakeup(10, "wake rejected before run start");
+	f.setTime(wakeup.dueAt + 1);
+	f.rejectNextSendAsync();
+	await f.controller.armWakeups();
+	await f.flushPromises();
+	let pending = JSON.parse(fs.readFileSync(path.join(f.root, "wakeups", "receiver.json"), "utf8"));
+	assert.equal(pending[0].queued, true);
+	assert.equal(f.queuedCount, 0, "the simulated rejection leaves no queued copy or turn");
+	assert.equal(pending[0].unconfirmedSince, undefined, "the first arming call injects; the next idle poll observes absence");
+	await f.controller.armWakeups();
+	pending = JSON.parse(fs.readFileSync(path.join(f.root, "wakeups", "receiver.json"), "utf8"));
+	assert.equal(pending[0].unconfirmedSince, f.now(), "the first missing-entry observation is persisted");
+	f.setTime(f.now() + 30_000);
+	await f.controller.armWakeups();
+	await f.flushPromises();
+	pending = JSON.parse(fs.readFileSync(path.join(f.root, "wakeups", "receiver.json"), "utf8"));
+	assert.equal(pending[0].unconfirmed, true);
+	assert.equal(pending[0].unconfirmedNoticeSent, true);
+	assert.equal(pending[0].reported, true);
+	assert.equal(f.calls.filter(({ message }) => message.customType === "pi-ctl-claim-notice").length, 1);
+	assert.equal(fs.readdirSync(path.join(f.root, "inbox", "main")).filter((file) => file.endsWith(".msg")).length, 1);
 });
 
 test("monitor refuses at the start tool boundary until the PID namespace wrapper signals readiness", async (t) => {
