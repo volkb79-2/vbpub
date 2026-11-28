@@ -64,6 +64,17 @@ def _wait_gone(*pids: int) -> None:
     assert not any(_alive(pid) for pid in pids), f"still running: {[p for p in pids if _alive(p)]}"
 
 
+def _wait_tree_line(root_pid: int, line: str) -> list[procio.ProcessEntry]:
+    deadline = time.monotonic() + JOIN_LIMIT
+    tree = procio.process_tree(root_pid)
+    while time.monotonic() < deadline:
+        if tree and tree[-1].line == line:
+            return tree
+        time.sleep(0.05)
+        tree = procio.process_tree(root_pid)
+    return tree
+
+
 def _kill_quietly(pid: int | None) -> None:
     """Kill and reap a process this test started (an orphaned grandchild may be reparented)."""
     if pid is None:
@@ -1374,7 +1385,7 @@ def test_process_tree_lists_a_real_process_and_its_descendants(tmp_path, reap_or
     )
     try:
         child = _wait_pidfile(child_pidfile)
-        tree = procio.process_tree(process.pid)
+        tree = _wait_tree_line(process.pid, f"{child} {process.pid} S sleep 600")
         assert [entry.pid for entry in tree] == [process.pid, child]
         assert tree[0].ppid == os.getpid() and tree[1].ppid == process.pid
         assert tree[0].pgid == tree[1].pgid == process.pid
@@ -1382,6 +1393,38 @@ def test_process_tree_lists_a_real_process_and_its_descendants(tmp_path, reap_or
         assert procio.process_tree(2**30) == []
     finally:
         procio.reap_process_group(process, 5.0)
+
+
+def test_wait_tree_line_waits_until_expected_last_entry(monkeypatch):
+    before = [procio.ProcessEntry(20, 10, "R", 10, "bash -c sleep 600")]
+    after = [procio.ProcessEntry(20, 10, "S", 10, "sleep 600")]
+    reads = iter((before, before, after))
+    calls = 0
+
+    def process_tree(root_pid):
+        nonlocal calls
+        calls += 1
+        return next(reads)
+
+    monkeypatch.setattr(procio, "process_tree", process_tree)
+    tree = _wait_tree_line(10, "20 10 S sleep 600")
+    assert tree == after
+    assert calls > 1
+
+
+def test_wait_tree_line_returns_last_tree_on_expiry(monkeypatch):
+    before = [procio.ProcessEntry(20, 10, "R", 10, "bash -c sleep 600")]
+    reads = []
+
+    def process_tree(root_pid):
+        reads.append(before)
+        return before
+
+    monkeypatch.setattr(procio, "process_tree", process_tree)
+    monkeypatch.setattr(__import__(__name__), "JOIN_LIMIT", 0.11)
+    tree = _wait_tree_line(10, "20 10 S sleep 600")
+    assert tree is before
+    assert len(reads) > 1
 
 
 def _fake_proc(root: Path, pid: int, comm: str, state: str, ppid: int, pgid: int, cmdline: bytes):
