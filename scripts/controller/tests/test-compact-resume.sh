@@ -304,12 +304,12 @@ contains "$D/log" "ERROR UTF-8 chunker failed" "invalid prompt UTF-8 logged"
 # 5c. Text in the input row: nothing is sent until it is empty again, before the /compact and before the resume
 #     prompt (text typed DURING the compaction does not stall the compaction wait); the LAST input row counts
 #     (an older non-empty one in the scrollback does not); NBSP-only is empty.
-#     start: T T I I I + footer = 6; compact: I K K I T I I | T T I I I = 13.
+#     start: T T I I I + footer = 6; compact: I K K I T I I | T T I I I = 12.
 scenario typing "T T I I I" "I K K I T I I T T I I I"
 run '%9' "$D/guidance.txt" "$D/prompt.txt" "$D/log"
 [[ $RC -eq 0 ]] || fail "typing exit $RC"
 want=$( { echo "has-session %9"; rep 6 "capture start"; echo "send-keys %9 -l <text 1>"; echo "send-keys %9 -l <text 2>"; echo "send-keys %9 Enter"
-          rep 13 "capture compact"; echo "send-keys %9 -l <text 3>"; echo "send-keys %9 Enter"; echo "capture compact"; } )
+          rep 12 "capture compact"; echo "send-keys %9 -l <text 3>"; echo "send-keys %9 Enter"; echo "capture compact"; } )
 [[ $(calls) == "$want" ]] || { calls >&2; fail "typing: nothing may be sent before the input row is empty"; }
 scenario scroll "S" "K I I I"
 COMPACT_RESUME_START_TRIES=3 run '%9' "$D/guidance.txt" "$D/prompt.txt" "$D/log"
