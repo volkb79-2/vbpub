@@ -626,6 +626,10 @@ def _unique_json_object(pairs):
     return result
 
 
+def _reject_json_constant(value: str) -> None:
+    raise ValueError(f"non-standard JSON constant {value!r}")
+
+
 def prove_forced_command(
     host_cfg: dict, *, config: dict, repo_root: Path, name: str,
     restricted_probe_fn=None,
@@ -678,13 +682,16 @@ def prove_forced_command(
             raise ValueError("truncated frame or extra output")
         document = json.loads(
             stdout[4:].decode("utf-8"), object_pairs_hook=_unique_json_object,
+            parse_constant=_reject_json_constant,
         )
         error = document.get("error") if isinstance(document, dict) else None
         if (
             not isinstance(document, dict)
+            or set(document) != {"schema", "agent_version", "error"}
             or document.get("schema") != AGENT_SCHEMA
             or not isinstance(document.get("agent_version"), str)
             or not isinstance(error, dict)
+            or set(error) != {"exit_code", "reason"}
             or type(error.get("exit_code")) is not int
             or error.get("exit_code") != 3
             or not isinstance(error.get("reason"), str)
@@ -761,5 +768,20 @@ def enroll_step2(
     out("")
     out(rendered.rstrip("\n"))
     out("")
-    out(f"Verify: ciu ssh {name} -- ciu version")
+    if pending_mode is None:
+        out(f"Verify: ciu ssh {name} -- ciu version")
+    else:
+        verify = [
+            "ciu", "host", "enroll", name, "--ssh-host", ssh_host,
+            "--fingerprint", fingerprint_of(algo, blob),
+        ]
+        if user != "ciu":
+            verify.extend(("--user", user))
+        if port != 22:
+            verify.extend(("--port", str(port)))
+        verify.append("--replace")
+        out(
+            f"Verify: {shlex.join(verify)}; restricted mode repeats the pinned "
+            f"empty-stdin fleetd probe for group {pending_mode['group']}."
+        )
     return 0

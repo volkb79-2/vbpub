@@ -4604,7 +4604,10 @@ no callback, no listener; the private key never leaves the control host.
   empty stderr and exactly one stdout frame (4-byte big-endian length followed
   by JSON, at most 64 KiB) with `schema = "fleet-host-agent/1"`, a string `agent_version`, a
   non-empty `error.reason`, and integer `error.exit_code = 3`, plus matching
-  SSH exit 3. An unknown group returns a different refusal and does not pass.
+  SSH exit 3. The JSON object has exactly the keys `schema`, `agent_version`
+  and `error`; `error` has exactly `exit_code` and `reason`. Duplicate keys,
+  extra or missing keys and non-standard JSON constants are refused. An unknown
+  group returns a different refusal and does not pass.
   Any other outcome — refusal code, stderr output, `ciu version` or other shell
   text, missing/truncated frame, extra bytes, oversized output, no output, timeout,
   malformed schema, or a status mismatch — refuses before writing an
@@ -4668,24 +4671,38 @@ retry; CIU will not delete an entry from its marker or shape alone.
 
 One root-protected lock at `/run/lock/ciu-enroll-authorized-keys.lock` is held
 around read, conflict check, idempotency check, write and state update in both
-enrollment modes and removal. Before an atomic replacement, CIU verifies that
-`authorized_keys` is still the same file and has the same bytes as the version
-read. A restricted add or rotation persists a `prepared` state record, atomically
-replaces `authorized_keys`, then persists `committed`; recovery checks the exact
+enrollment modes and removal. Lock acquisition uses nonblocking attempts for
+at most 10 seconds, then refuses with the lock path and recovery advice. The
+lock serializes CIU writers only. The root
+installer requires `/run/lock` and its parents to be real, root-owned
+directories not writable by group or other users; the lock file is root-owned
+mode `0600`. Before an atomic replacement, CIU verifies that `authorized_keys`
+is still the same file and has the same bytes as the version read; this check
+is the last step before `os.replace`. The target account owns `.ssh` and may
+write `authorized_keys` without taking CIU's lock. An outside write between
+the final check and atomic replacement can be lost; CIU does not claim to
+prevent that race. A restricted add or rotation persists a `prepared` state
+record, atomically replaces `authorized_keys`, then persists `committed`;
+recovery checks the exact
 line hashes to determine whether the write happened and refuses ambiguous
 states without deleting another line. Removal records `pending-remove` before
 replacing the file. All state and key-file operations avoid following symlinks;
 authorized_keys replacement is atomic and uses the existing ownership and
 `0700`/`0600` mode rules. Unrelated bytes, including CRLF, unparseable lines and
 missing final newlines, are preserved; removal restores the original bytes
-when CIU had inserted a separator. Re-running is idempotent.
+when CIU had inserted a separator. CIU opens the passwd home path without
+following a symlink at its final component; it assumes the home path's parent
+directories are trusted and does not defend against a replaceable intermediate
+component. Re-running is idempotent.
 
 The installer refuses a decoded key blob in both restricted and unrestricted
-forms, including equivalent base64 spellings. Ordinary enrollment keeps its
-prior output, diagnostics, exit codes and append behavior (including past
-unparseable lines); its only new key refusal is a blob recorded in a CIU-
-restricted entry. Step 1 prints the matching step-2 proof description and a
-target-side removal command; removal does not touch general-purpose keys.
+forms, including equivalent base64 spellings. Ordinary enrollment never reads
+CIU ownership state. It keeps its prior output, diagnostics, exit codes and
+append behavior (including past unparseable lines), apart from refusing a
+same-type, same-decoded-blob key on a visible restricted marker or fixed
+restricted-command-shape line, recorded or not; it names the line and changes
+nothing. Step 1 prints the matching step-2 proof description and a target-side
+removal command; removal does not touch general-purpose keys.
 
 The forced-command operation grammar is enforced by fleetd, not CIU. The
 request grammar is covered by

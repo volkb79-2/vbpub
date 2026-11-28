@@ -709,6 +709,7 @@ entries.
 | CIU-234 | `procutil.run_cmd`'s helper-thread branch leaves the child running when a main-thread `KeyboardInterrupt` or `SystemExit` interrupts `worker.join()` | Minor | OPEN 2026-11-24 (P-core-10 review r2, M2) |
 | CIU-235 | The CIU R2 lane's 5m per-candidate wall budget was shorter than the full suite, so an unkillable mutant was reported `BUDGET_EXCEEDED` and the lane could never report a survivor (now `budget_per_candidate = "auto"`, derived from the run's own baseline; liveness ends idle stalls only, and the working-candidate bound is the interim until Assay P4) | Major for CIU R2 evidence | FIXED IN THIS BRANCH (P-core-11 r2fix) |
 | CIU-236 | Restricted-mode enrollment lacks a real-sshd acceptance test; `TestEnrollAgainstRealSystem` covers only ordinary enrollment | Minor | OPEN 2026-11-28 |
+| CIU-237 | CIU's authorized_keys lock cannot serialize changes made by target-side writers that do not take the lock | Medium | OPEN 2026-11-28 |
 
 
 The approved milestone decisions and serial package order are in
@@ -7564,3 +7565,24 @@ tests as deterministic contract coverage.
 **Close when.** The registered `enroll` lane runs the restricted-mode test
 against its isolated sshd fixture and proves both denial of general-purpose
 SSH capabilities and the restricted step-2 probe contract.
+
+## CIU-237 — CIU cannot serialize target-side authorized_keys writers
+
+**Status:** OPEN (filed 2026-11-28). Related: CIU-218, CIU-236.
+
+**Observed.** `/run/lock/ciu-enroll-authorized-keys.lock` serializes CIU's own
+ordinary/restricted enrollment and removal operations. The target account owns
+`.ssh` and can write `authorized_keys` without taking that lock. CIU checks the
+file identity and bytes immediately before restricted atomic replacement, but
+an outside write between that final check and `os.replace` can be lost. CIU
+does not promise exclusion against or preservation of uncoordinated writers.
+
+**Wanted.** Keep CIU-writer serialization and the last-moment identity/content
+check, and state this concurrency boundary in SPEC, CONSUMERS and CHANGES. A
+stronger protocol that excludes all target-side writers would require a
+separate ownership or coordination design.
+
+**Close when.** The docs state that CIU serializes CIU writers only, describe
+the final-check-to-replace race and its possible lost update, name the
+root-owned `/run/lock` host requirement, and avoid promising that no concurrent
+change can be lost.

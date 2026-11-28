@@ -2419,7 +2419,7 @@ def do_status(args: argparse.Namespace) -> None:
             warn(f"health check exited {result.returncode}.")
 
 
-# --- extension: installer/enroll.py sha256=5f8324513c790a357fea402fe9068df30072742c21568f989d08da7a4d470bd9 ---
+# --- extension: installer/enroll.py sha256=77cbf7fd4a28068625847baf0987e2bb12319e3f03075f8ff084f5803e77e8fc ---
 # ciu-owned host-enrollment fragment (CIU S14.7 / KI-24).
 #
 # This file is RENDER INPUT, not an importable module: cmru's `[project.installer]
@@ -2451,6 +2451,7 @@ import secrets
 import shutil
 import stat
 import subprocess
+import time
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -2478,6 +2479,16 @@ _ENROLL_NAME_PLACEHOLDER = "<NAME>"
 _ENROLL_ADDR_PLACEHOLDER = "<ADDRESS>"
 _ENROLL_STATE_DIR = Path("/var/lib/ciu/enroll-state")
 _ENROLL_LOCK_PATH = Path("/run/lock/ciu-enroll-authorized-keys.lock")
+_ENROLL_LOCK_TIMEOUT_SECONDS = 10.0
+_ENROLL_LOCK_RETRY_SECONDS = 0.1
+
+
+def _enroll_lock_clock() -> float:
+    return time.monotonic()
+
+
+def _enroll_lock_wait(seconds: float) -> None:
+    time.sleep(seconds)
 
 
 def _is_ssh_key_type(token: str) -> bool:
@@ -2767,11 +2778,14 @@ def _enroll_install_key_unlocked(
     supplied_blob = _try_decode_ssh_key_blob(ktype, b64)
     if supplied_blob is not None:
         existing_bytes = authorized.read_bytes() if authorized.exists() else b""
-        restricted_lines = _recorded_restricted_key_lines(entry, existing_bytes, supplied_blob)
+        restricted_lines = _restricted_key_collision_lines(
+            existing_bytes, ktype, supplied_blob,
+        )
         if restricted_lines:
             fatal(
-                f"{authorized} already contains this key blob in a CIU-restricted "
-                f"entry on line {', '.join(str(number) for number in restricted_lines)}; "
+                f"{authorized} already contains this key blob in a restricted marker "
+                f"or command-shape entry on line "
+                f"{', '.join(str(number) for number in restricted_lines)}; "
                 "refusing an unrestricted authorized_keys form.", EXIT_CONFIG,
             )
 
@@ -2928,7 +2942,24 @@ def _authorized_keys_lock():
         ):
             fatal(f"CIU authorized_keys lock {path} must be a single-link regular file "
                   "owned by the installer with mode 0600.", EXIT_CONFIG)
-        fcntl.flock(fd, fcntl.LOCK_EX)
+        deadline = _enroll_lock_clock() + _ENROLL_LOCK_TIMEOUT_SECONDS
+        while True:
+            remaining = deadline - _enroll_lock_clock()
+            if remaining <= 0:
+                fatal(
+                    f"Timed out waiting for CIU authorized_keys lock {path} after "
+                    f"{_ENROLL_LOCK_TIMEOUT_SECONDS:g} seconds; check whether another "
+                    "CIU enrollment is stuck, then retry.",
+                    EXIT_CONFIG,
+                )
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                remaining = deadline - _enroll_lock_clock()
+                _enroll_lock_wait(
+                    min(_ENROLL_LOCK_RETRY_SECONDS, max(0.0, remaining)),
+                )
         try:
             yield
         finally:
@@ -3161,41 +3192,19 @@ def _list_enroll_states_for_user(entry: "pwd.struct_passwd") -> List[dict]:
         os.close(directory_fd)
 
 
-def _recorded_restricted_key_lines(
-    entry: "pwd.struct_passwd", existing: bytes, key_blob: bytes,
+def _restricted_key_collision_lines(
+    existing: bytes, key_type: str, key_blob: bytes,
 ) -> List[int]:
-    wanted_key_hash = hashlib.sha256(key_blob).hexdigest()
-    has_recorded_key = False
-    for state in _list_enroll_states_for_user(entry):
-        status = state.get("status")
-        candidates = []
-        if status in ("committed", "pending-remove"):
-            candidates = [state.get("record")]
-        elif status == "prepared":
-            candidates = [state.get("old"), state.get("new")]
-        else:
-            continue
-        for record in candidates:
-            if isinstance(record, dict) and record.get("key_sha256") == wanted_key_hash:
-                has_recorded_key = True
-    if not has_recorded_key:
-        return []
-
+    """Find visible restricted forms without depending on CIU's ownership state."""
     matching_lines = []
     for line_number, (_whole, body) in enumerate(_authorized_key_records(existing), 1):
         parsed = _parse_authorized_key_record(body)
-        if parsed is not None:
-            _options, key_type, key_b64, _comment = parsed
-            if _try_decode_ssh_key_blob(key_type, key_b64) == key_blob:
-                matching_lines.append(line_number)
+        if parsed is None:
             continue
-        if body.lstrip().startswith(b"#"):
+        _options, have_type, have_b64, _comment = parsed
+        if have_type != key_type or _try_decode_ssh_key_blob(have_type, have_b64) != key_blob:
             continue
-        tokens = body.split()
-        if any(
-            _try_decode_ssh_key_blob(tokens[index], tokens[index + 1]) == key_blob
-            for index in range(len(tokens) - 1)
-        ):
+        if _has_restricted_marker(body) or _is_restricted_command_shape(parsed):
             matching_lines.append(line_number)
     return matching_lines
 
@@ -3412,6 +3421,9 @@ def _recover_enroll_state(
                   EXIT_CONFIG)
         lines = _record_line_numbers(records, record)
         if not lines:
+            recorded_hashes = _recorded_restricted_line_hashes_for_user(entry)
+            _refuse_unrecorded_markers(records, recorded_hashes, authorized)
+            _refuse_unrecorded_restricted_shapes(records, recorded_hashes, authorized)
             _save_enroll_state(entry, name, None)
             return None
         if len(lines) != 1:

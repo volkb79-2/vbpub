@@ -153,6 +153,10 @@ def _agent_error_frame(*, exit_code=3, schema="fleet-host-agent/1"):
     return struct.pack(">I", len(body)) + body
 
 
+def _raw_agent_frame(body: bytes) -> bytes:
+    return struct.pack(">I", len(body)) + body
+
+
 def _duplicate_agent_error_frame():
     body = (
         b'{"schema":"fleet-host-agent/1","schema":"fleet-host-agent/1",'
@@ -790,6 +794,43 @@ class TestStep2:
         assert max_output == 65540
         assert load_hosts(repo)["rs1002"]["known_host"] == f"{algo} {blob}"
 
+    @pytest.mark.parametrize("restricted", [False, True])
+    def test_step2_verification_instruction_matches_enrollment_mode(
+        self, repo, config, monkeypatch, real_host_key, restricted,
+    ):
+        algo, blob, fingerprint = real_host_key
+        if restricted:
+            _step1(
+                repo, config, forced_command=True,
+                agent_path="/usr/bin/fleetd-agent", fleetd_group="campaigns",
+            )
+        else:
+            self._prepared(repo, config)
+        _fake_keyscan(monkeypatch, algo, blob)
+        output = []
+        kwargs = {
+            "repo_root": repo, "name": "rs1002", "config": config,
+            "ssh_host": "rs1002.example", "port": 2222, "user": "ops",
+            "fingerprint": fingerprint, "out": output.append,
+            "exec_fn": lambda *a, **k: 0,
+        }
+        if restricted:
+            kwargs["restricted_probe_fn"] = lambda *a, **k: (3, _agent_error_frame(), b"")
+
+        assert host_enroll.enroll_step2(**kwargs) == 0
+
+        verify_lines = [line for line in output if line.startswith("Verify:")]
+        if restricted:
+            assert verify_lines == [
+                "Verify: ciu host enroll rs1002 --ssh-host rs1002.example "
+                f"--fingerprint {fingerprint} --user ops --port 2222 --replace; "
+                "restricted mode repeats the pinned empty-stdin fleetd probe "
+                "for group campaigns."
+            ]
+            assert "ciu ssh rs1002 -- ciu version" not in "\n".join(output)
+        else:
+            assert verify_lines == ["Verify: ciu ssh rs1002 -- ciu version"]
+
     @pytest.mark.parametrize("status,output", [
         (2, b""),
         (3, b"ciu version 7.11.0\n"),
@@ -821,6 +862,43 @@ class TestStep2:
                 fingerprint=fingerprint, out=lambda *_: None,
                 restricted_probe_fn=lambda *a, **k: (status, output, b""),
             )
+        assert hosts_file.read_bytes() == before
+        assert "rs1002" not in load_hosts(repo)
+
+    @pytest.mark.parametrize("body", [
+        b'{"schema":"fleet-host-agent/1","agent_version":"fixture",'
+        b'"error":{"exit_code":3,"reason":"truncated frame"},"extra":null}',
+        b'{"schema":"fleet-host-agent/1",'
+        b'"error":{"exit_code":3,"reason":"truncated frame"}}',
+        b'{"schema":"fleet-host-agent/1","agent_version":"fixture",'
+        b'"error":{"exit_code":3,"reason":"truncated frame","extra":null}}',
+        b'{"schema":"fleet-host-agent/1","agent_version":"fixture",'
+        b'"error":{"exit_code":3}}',
+        b'{"schema":"fleet-host-agent/1","agent_version":"fixture",'
+        b'"error":{"exit_code":3,"reason":"truncated frame"},"extra":NaN}',
+    ])
+    def test_forced_step2_requires_the_exact_fleetd_error_object(
+        self, repo, config, monkeypatch, real_host_key, body,
+    ):
+        algo, blob, fingerprint = real_host_key
+        hosts_file = self._prepared(repo, config, HOSTILE_FIXTURE)
+        mode_path = host_enroll.key_paths(repo, "rs1002")[0].with_name(
+            "ssh_key.mode.json"
+        )
+        mode_path.write_text(json.dumps({
+            "mode": "forced-command", "agent_path": "/usr/bin/fleetd-agent",
+            "group": "campaigns", "policy_path": None,
+        }), encoding="utf-8")
+        before = hosts_file.read_bytes()
+        _fake_keyscan(monkeypatch, algo, blob)
+
+        with pytest.raises(EnrollError, match="fleetd.*probe|forced-command.*probe"):
+            host_enroll.enroll_step2(
+                repo, "rs1002", config=config, ssh_host="rs1002.example",
+                fingerprint=fingerprint, out=lambda *_: None,
+                restricted_probe_fn=lambda *a, **k: (3, _raw_agent_frame(body), b""),
+            )
+
         assert hosts_file.read_bytes() == before
         assert "rs1002" not in load_hosts(repo)
 
@@ -1515,6 +1593,22 @@ class TestRenderedInstaller:
         assert self.GET_PY.is_file()
         assert self.GET_PY.stat().st_mode & stat.S_IXUSR
 
+    def test_enroll_extension_digest_matches_its_render_input(self):
+        import hashlib
+
+        rendered = self.GET_PY.read_text(encoding="utf-8")
+        marker = re.search(
+            r"^# --- extension: installer/enroll\.py sha256=([0-9a-f]{64}) ---$",
+            rendered, re.MULTILINE,
+        )
+        source = (CIU_ROOT / "installer" / "enroll.py").read_bytes()
+        expected = hashlib.sha256(source).hexdigest()
+
+        assert marker is not None
+        assert marker.group(1) == expected, (
+            f"get.py extension marker is {marker.group(1)}, render input is {expected}"
+        )
+
     def test_ciu218_spec_names_the_real_fleetd_parser_symbol(self):
         spec = (CIU_ROOT / "docs" / "SPEC.md").read_text(encoding="utf-8")
         agent_entry = (
@@ -1524,6 +1618,29 @@ class TestRenderedInstaller:
         assert "def _parser()" in agent_entry
         assert "fleetd/src/fleetd/agent_entry.py::_parser" in spec
         assert "fleetd/src/fleetd/agent_entry.py::build_parser" not in spec
+
+    def test_ciu218_documents_external_writer_limit_lock_requirement_and_home_trust(
+        self,
+    ):
+        spec = re.sub(
+            r"\s+", " ", (CIU_ROOT / "docs" / "SPEC.md").read_text(encoding="utf-8"),
+        )
+        consumers = re.sub(
+            r"\s+", " ",
+            (CIU_ROOT / "docs" / "CONSUMERS.md").read_text(encoding="utf-8"),
+        )
+        changes = (CIU_ROOT / "CHANGES.md").read_text(encoding="utf-8")
+        backlog = (CIU_ROOT / "KNOWN_ISSUES_TODO_BACKLOG.md").read_text(encoding="utf-8")
+
+        for document in (spec, consumers):
+            assert "serializes CIU writers only" in document
+            assert "between the final check and atomic replacement" in document
+            assert "can be lost" in document
+        assert "home path's parent directories are trusted" in spec
+        assert "/run/lock/ciu-enroll-authorized-keys.lock" in consumers
+        assert "root-owned" in consumers and "writable" in consumers
+        assert "/run/lock/ciu-enroll-authorized-keys.lock" in changes
+        assert "CIU-237" in backlog
 
     def test_enroll_help_lists_exactly_the_ki24_flag_set(self):
         result = subprocess.run(
@@ -1828,6 +1945,14 @@ class TestHostVerbDispatch:
         out = " ".join(capsys.readouterr().out.split())
         assert "ciu host enroll" in out
         assert "CIU_SSH_INSECURE_TOFU is never set by this verb" in out
+
+    def test_verb_help_describes_both_step2_proofs(self, monkeypatch, capsys):
+        assert _cli(monkeypatch, ["host", "enroll", "--help"]) == 0
+        out = " ".join(capsys.readouterr().out.split())
+        assert "ordinary keys run `ciu version`" in out
+        assert "restricted keys send empty stdin" in out
+        assert "one fleet-host-agent/1 frame with error.exit_code 3" in out
+        assert "does not prove any fleetd operation works" in out
 
     def test_the_verb_never_sets_the_tofu_escape_hatch(
         self, repo, monkeypatch, capsys, real_host_key

@@ -247,11 +247,22 @@ def _ssh_probe_subprocess(
     timeout: float,
     max_output: int,
 ) -> tuple[int, bytes, bytes]:
-    cmd = ["ssh", "-i", key_path, "-p", ssh_port]
-    cmd += ["-o", "StrictHostKeyChecking=yes",
-            "-o", f"UserKnownHostsFile={known_hosts_path}",
-            "-o", "BatchMode=yes"]
+    cmd = ["ssh", "-T", "-i", key_path, "-p", ssh_port]
+    cmd += [
+        "-o", "StrictHostKeyChecking=yes",
+        "-o", f"UserKnownHostsFile={known_hosts_path}",
+        "-o", "BatchMode=yes",
+        "-o", "RequestTTY=no",
+        "-o", "RemoteCommand=none",
+        "-o", "ForwardAgent=no",
+        "-o", "ForwardX11=no",
+        "-o", "ClearAllForwardings=yes",
+        "-o", "PermitLocalCommand=no",
+        "-o", "ControlMaster=no",
+        "-o", "ControlPath=none",
+    ]
     cmd.append(f"{ssh_user}@{ssh_host}")
+    deadline = time.monotonic() + timeout
     process = subprocess.Popen(
         cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
     )
@@ -259,23 +270,35 @@ def _ssh_probe_subprocess(
     stdout = bytearray()
     stderr = bytearray()
     streams = ((process.stdout, stdout), (process.stderr, stderr))
+
+    def timeout_probe() -> None:
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+        raise TimeoutError(f"SSH probe exceeded {timeout}s")
+
+    def remaining_time() -> float:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            timeout_probe()
+        return remaining
+
+    def check_deadline() -> None:
+        if deadline - time.monotonic() <= 0:
+            timeout_probe()
+
     try:
         if process.stdin is not None:
             process.stdin.close()
         for stream, target in streams:
             if stream is not None:
                 selector.register(stream, selectors.EVENT_READ, target)
-        deadline = time.monotonic() + timeout
         while selector.get_map():
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                process.kill()
-                process.wait()
-                raise TimeoutError(f"SSH probe exceeded {timeout}s")
-            ready = selector.select(remaining)
+            ready = selector.select(remaining_time())
             if not ready and process.poll() is None:
                 continue
             for key, _mask in ready:
+                check_deadline()
                 remaining_output = max_output - len(stdout) - len(stderr)
                 chunk = os.read(key.fd, min(65536, remaining_output + 1))
                 if not chunk:
@@ -288,17 +311,13 @@ def _ssh_probe_subprocess(
                     process.kill()
                     process.wait()
                     raise ValueError(f"SSH probe output exceeded {max_output} bytes")
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            process.kill()
-            process.wait()
-            raise TimeoutError(f"SSH probe exceeded {timeout}s")
         try:
-            status = process.wait(timeout=remaining)
+            status = process.wait(timeout=remaining_time())
         except subprocess.TimeoutExpired as exc:
             process.kill()
             process.wait()
             raise TimeoutError(f"SSH probe exceeded {timeout}s") from exc
+        check_deadline()
         return status, bytes(stdout), bytes(stderr)
     finally:
         selector.close()
@@ -324,49 +343,73 @@ def _ssh_probe_paramiko(
     import select
 
     client = paramiko.SSHClient()
-    client.set_missing_host_key_policy(paramiko.RejectPolicy())
-    if known_hosts_path:
-        client.load_host_keys(known_hosts_path)
     channel = None
+    deadline = time.monotonic() + timeout
+
+    def remaining_time() -> float:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError(f"SSH probe exceeded {timeout}s")
+        return remaining
+
+    def check_deadline() -> None:
+        if deadline - time.monotonic() <= 0:
+            raise TimeoutError(f"SSH probe exceeded {timeout}s")
+
     try:
+        client.set_missing_host_key_policy(paramiko.RejectPolicy())
+        if known_hosts_path:
+            client.load_host_keys(known_hosts_path)
         client.connect(
             hostname=ssh_host, port=ssh_port, username=ssh_user,
-            key_filename=key_path, timeout=timeout, banner_timeout=timeout,
-            auth_timeout=timeout,
+            key_filename=key_path, timeout=remaining_time(),
+            banner_timeout=remaining_time(), auth_timeout=remaining_time(),
         )
         transport = client.get_transport()
         if transport is None:
             raise OSError("SSH transport did not start")
-        channel = transport.open_session(timeout=timeout)
+        channel = transport.open_session(timeout=remaining_time())
         channel.invoke_shell()  # no get_pty(): restrict forbids PTY allocation
         channel.shutdown_write()  # empty request stdin, then EOF
-        deadline = time.monotonic() + timeout
         stdout = bytearray()
         stderr = bytearray()
         while True:
+            check_deadline()
             if channel.recv_ready():
-                target, chunk = stdout, channel.recv(65536)
+                target = stdout
+                check_deadline()
+                chunk = channel.recv(65536)
             elif channel.recv_stderr_ready():
-                target, chunk = stderr, channel.recv_stderr(65536)
+                target = stderr
+                check_deadline()
+                chunk = channel.recv_stderr(65536)
             elif channel.exit_status_ready():
+                check_deadline()
                 break
             else:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    raise TimeoutError(f"SSH probe exceeded {timeout}s")
-                select.select([channel], [], [], remaining)
+                select.select([channel], [], [], remaining_time())
                 continue
             target.extend(chunk)
             if len(stdout) + len(stderr) > max_output:
                 raise ValueError(f"SSH probe output exceeded {max_output} bytes")
-        while channel.recv_ready() or channel.recv_stderr_ready():
-            if channel.recv_ready():
+        while True:
+            check_deadline()
+            stdout_ready = channel.recv_ready()
+            stderr_ready = channel.recv_stderr_ready()
+            if not stdout_ready and not stderr_ready:
+                break
+            if stdout_ready:
+                check_deadline()
                 stdout.extend(channel.recv(65536))
-            if channel.recv_stderr_ready():
+            if stderr_ready:
+                check_deadline()
                 stderr.extend(channel.recv_stderr(65536))
             if len(stdout) + len(stderr) > max_output:
                 raise ValueError(f"SSH probe output exceeded {max_output} bytes")
-        return channel.recv_exit_status(), bytes(stdout), bytes(stderr)
+        check_deadline()
+        status = channel.recv_exit_status()
+        check_deadline()
+        return status, bytes(stdout), bytes(stderr)
     except (TimeoutError, ValueError, OSError):
         raise
     except Exception as exc:

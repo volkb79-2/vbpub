@@ -261,20 +261,27 @@ class TestEnrollCLIShape:
         assert args.fleetd_group == "campaigns"
         assert args.agent_policy == "/etc/fleetd/agent.toml"
 
-    @pytest.mark.parametrize("args,needle", [
-        (_enroll_args(authorized_key=None, controller=None), "--controller is required"),
-        (_enroll_args(controller="control.example.net", authorized_key=None),
-         "--authorized-key is empty"),
-    ])
-    def test_regular_enrollment_still_requires_key_and_controller_at_runtime(
-        self, monkeypatch, args, needle,
+    def test_regular_enrollment_parser_requires_controller_with_valid_key(self, capsys):
+        ns = _render_enroll_ns()
+        argv = ["get.py", "enroll", "--authorized-key", ENROLL_TEST_KEY]
+        with mock.patch.object(sys, "argv", argv):
+            with pytest.raises(SystemExit) as exc:
+                ns["main"]()
+
+        assert exc.value.code == 2
+        assert "--controller" in capsys.readouterr().err
+
+    def test_regular_enrollment_still_requires_nonempty_key_at_runtime(
+        self, monkeypatch, capsys,
     ):
         ns = _render_enroll_ns()
+        args = _enroll_args(authorized_key="", controller="control.example.net")
         monkeypatch.setattr(ns["os"], "geteuid", lambda: 0)
         ns["_find_sshd"] = lambda: "/usr/sbin/sshd"
         with pytest.raises(SystemExit) as exc:
             ns["do_enroll"](args, None)
         assert exc.value.code == 2
+        assert "--authorized-key is empty" in capsys.readouterr().err
 
     def test_get_py_cli_render_carries_enroll(self, tmp_path, monkeypatch):
         """The `cmru installer render ciu` path renders a script whose enroll flags match.
@@ -595,6 +602,112 @@ class TestFleetdForcedCommand:
             f'from="10.0.0.0/8" '
         )
 
+    @pytest.mark.parametrize("marked", [False, True])
+    def test_ordinary_install_refuses_decoded_key_on_restricted_line_without_state(
+        self, ns, tmp_path, capsys, marked,
+    ):
+        key_type, _blob, canonical, alternate = _fake_ecdsa_key_encodings()
+        home = tmp_path / "home"
+        ssh_dir = home / ".ssh"
+        ssh_dir.mkdir(parents=True)
+        authorized = ssh_dir / "authorized_keys"
+        command = "/usr/bin/fleetd-agent forced-command --group campaigns"
+        marker = f" {ns['_restricted_marker']('web-01')}" if marked else ""
+        original = (
+            f'restrict,command="{command}" {key_type} {canonical} operator{marker}\n'
+        ).encode()
+        authorized.write_bytes(original)
+        ns["_ENROLL_STATE_DIR"] = tmp_path / "missing-state"
+        entry = argparse.Namespace(pw_dir=str(home), pw_uid=os.getuid(), pw_gid=os.getgid())
+
+        with pytest.raises(SystemExit) as exc:
+            ns["_enroll_install_key"](entry, (key_type, alternate, "ordinary"), None)
+
+        assert exc.value.code == 2
+        assert f"line 1" in capsys.readouterr().err
+        assert authorized.read_bytes() == original
+
+    @pytest.mark.parametrize("mismatch", ["type", "blob"])
+    def test_ordinary_install_allows_unrelated_restricted_key_material(
+        self, ns, tmp_path, capsys, mismatch,
+    ):
+        command = "/usr/bin/fleetd-agent forced-command --group campaigns"
+        if mismatch == "type":
+            existing = ENROLL_TEST_KEY
+            supplied_type, _blob, supplied_b64, _alias = _fake_ecdsa_key_encodings()
+        else:
+            existing = ENROLL_TEST_KEY_2
+            supplied_type, supplied_b64 = ENROLL_TEST_KEY_TYPE, ENROLL_TEST_KEY_B64
+        restricted = f'restrict,command="{command}" {existing}\n'.encode()
+        home = tmp_path / "home"
+        ssh_dir = home / ".ssh"
+        ssh_dir.mkdir(parents=True)
+        authorized = ssh_dir / "authorized_keys"
+        authorized.write_bytes(restricted)
+        entry = argparse.Namespace(pw_dir=str(home), pw_uid=os.getuid(), pw_gid=os.getgid())
+
+        ns["_enroll_install_key"](
+            entry, (supplied_type, supplied_b64, "ordinary"), None,
+        )
+
+        captured = capsys.readouterr()
+        assert captured.out == f"  ok Key appended to {authorized}.\n"
+        existing_comment = existing.rsplit(" ", 1)[-1]
+        assert captured.err == (
+            f"warn {authorized} already has 1 other key(s) for this user "
+            f"({existing_comment}) — appending this one ALONGSIDE them, not replacing. "
+            "If this was meant to be a rotation, remove the old key by hand.\n"
+        )
+        assert authorized.read_bytes() == restricted + (
+            f"{supplied_type} {supplied_b64} ordinary\n".encode()
+        )
+
+    @pytest.mark.parametrize("state_kind", ["not-directory", "symlink", "unreadable"])
+    def test_ordinary_install_does_not_read_restricted_state_and_keeps_legacy_bytes(
+        self, ns, tmp_path, monkeypatch, capsys, state_kind,
+    ):
+        state_path = tmp_path / "ciu-state"
+        if state_kind == "not-directory":
+            state_path.write_bytes(b"invalid state directory")
+        elif state_kind == "symlink":
+            target = tmp_path / "state-target"
+            target.mkdir()
+            state_path.symlink_to(target, target_is_directory=True)
+        else:
+            state_path.mkdir()
+            state_path.chmod(0)
+        ns["_ENROLL_STATE_DIR"] = state_path
+        monkeypatch.setitem(
+            ns, "_open_enroll_state_dir",
+            lambda **_kwargs: pytest.fail("ordinary mode must not inspect CIU state"),
+        )
+
+        home = tmp_path / "home"
+        ssh_dir = home / ".ssh"
+        ssh_dir.mkdir(parents=True)
+        authorized = ssh_dir / "authorized_keys"
+        original = b"not parseable by CIU\xff"
+        authorized.write_bytes(original)
+        entry = argparse.Namespace(pw_dir=str(home), pw_uid=os.getuid(), pw_gid=os.getgid())
+
+        try:
+            ns["_enroll_install_key"](
+                entry, (ENROLL_TEST_KEY_TYPE, ENROLL_TEST_KEY_B64, "ciu@control.example"),
+                None,
+            )
+        except SystemExit as exc:
+            status = exc.code
+        else:
+            status = 0
+
+        captured = capsys.readouterr()
+        assert status == 0
+        assert captured.out == f"  ok Key appended to {authorized}.\n"
+        assert captured.err == ""
+        assert authorized.read_bytes() == original + (
+            b"\n" if not original.endswith(b"\n") else b""
+        ) + f"{ENROLL_TEST_KEY_TYPE} {ENROLL_TEST_KEY_B64} ciu@control.example\n".encode()
+
     def test_restricted_line_is_atomic_idempotent_and_preserves_unrelated_bytes(
         self, ns, tmp_path,
     ):
@@ -847,6 +960,173 @@ class TestFleetdForcedCommand:
         assert "line 1" in capsys.readouterr().err
         assert authorized.read_bytes() == original
 
+    @pytest.mark.parametrize("orphan_kind", ["marker", "shape"])
+    def test_pending_remove_missing_record_refuses_unrecorded_marker_or_shape(
+        self, ns, tmp_path, capsys, orphan_kind,
+    ):
+        home = tmp_path / "home"
+        ssh_dir = home / ".ssh"
+        ssh_dir.mkdir(parents=True)
+        authorized = ssh_dir / "authorized_keys"
+        entry = argparse.Namespace(pw_dir=str(home), pw_uid=os.getuid(), pw_gid=os.getgid())
+        command = "/usr/bin/fleetd-agent forced-command --group campaigns"
+        ns["_enroll_install_restricted_key"](
+            entry, (ENROLL_TEST_KEY_TYPE, ENROLL_TEST_KEY_B64, "recorded"),
+            "web-01", command,
+        )
+        committed = ns["_load_enroll_state"](entry, "web-01")
+        pending = ns["_make_enroll_state"](
+            entry, "web-01", "pending-remove", record=committed["record"],
+        )
+        ns["_save_enroll_state"](entry, "web-01", pending)
+        if orphan_kind == "marker":
+            orphan = (
+                f"not-a-key {ns['_restricted_marker']('web-01')}\n"
+            ).encode()
+        else:
+            other_type, other_b64, _other_comment = ENROLL_TEST_KEY_2.split(maxsplit=2)
+            orphan = (
+                f'restrict,command="{command}" {other_type} {other_b64} orphan\n'
+            ).encode()
+        authorized.write_bytes(orphan)
+
+        with pytest.raises(SystemExit) as exc:
+            ns["_enroll_remove_restricted_keys"](entry, "web-01")
+
+        assert exc.value.code == 2
+        assert "line 1" in capsys.readouterr().err
+        assert authorized.read_bytes() == orphan
+        assert ns["_load_enroll_state"](entry, "web-01")["status"] == "pending-remove"
+
+    def test_remove_crash_before_key_replace_retries_without_losing_record(
+        self, ns, tmp_path, monkeypatch,
+    ):
+        home = tmp_path / "home"
+        ssh_dir = home / ".ssh"
+        ssh_dir.mkdir(parents=True)
+        authorized = ssh_dir / "authorized_keys"
+        entry = argparse.Namespace(pw_dir=str(home), pw_uid=os.getuid(), pw_gid=os.getgid())
+        ns["_enroll_install_restricted_key"](
+            entry, (ENROLL_TEST_KEY_TYPE, ENROLL_TEST_KEY_B64, "fixture"),
+            "web-01", "/usr/bin/fleetd-agent forced-command --group campaigns",
+        )
+        before = authorized.read_bytes()
+        real_write = ns["_write_restricted_authorized_keys"]
+
+        def crash_before_replace(*_args, **_kwargs):
+            raise RuntimeError("simulated removal crash before key replacement")
+
+        monkeypatch.setitem(ns, "_write_restricted_authorized_keys", crash_before_replace)
+        with pytest.raises(RuntimeError, match="before key replacement"):
+            ns["_enroll_remove_restricted_keys"](entry, "web-01")
+        assert authorized.read_bytes() == before
+        assert ns["_load_enroll_state"](entry, "web-01")["status"] == "pending-remove"
+
+        monkeypatch.setitem(ns, "_write_restricted_authorized_keys", real_write)
+        assert ns["_enroll_remove_restricted_keys"](entry, "web-01") == 1
+        assert authorized.read_bytes() == b""
+        assert ns["_load_enroll_state"](entry, "web-01") is None
+
+    def test_remove_crash_after_key_replace_clears_pending_state_on_retry(
+        self, ns, tmp_path, monkeypatch,
+    ):
+        home = tmp_path / "home"
+        ssh_dir = home / ".ssh"
+        ssh_dir.mkdir(parents=True)
+        authorized = ssh_dir / "authorized_keys"
+        entry = argparse.Namespace(pw_dir=str(home), pw_uid=os.getuid(), pw_gid=os.getgid())
+        ns["_enroll_install_restricted_key"](
+            entry, (ENROLL_TEST_KEY_TYPE, ENROLL_TEST_KEY_B64, "fixture"),
+            "web-01", "/usr/bin/fleetd-agent forced-command --group campaigns",
+        )
+        real_save = ns["_save_enroll_state"]
+        saves = 0
+
+        def crash_when_clearing(*args, **kwargs):
+            nonlocal saves
+            saves += 1
+            if saves == 2:
+                raise RuntimeError("simulated removal crash after key replacement")
+            return real_save(*args, **kwargs)
+
+        monkeypatch.setitem(ns, "_save_enroll_state", crash_when_clearing)
+        with pytest.raises(RuntimeError, match="after key replacement"):
+            ns["_enroll_remove_restricted_keys"](entry, "web-01")
+        assert authorized.read_bytes() == b""
+        assert ns["_load_enroll_state"](entry, "web-01")["status"] == "pending-remove"
+
+        monkeypatch.setitem(ns, "_save_enroll_state", real_save)
+        assert ns["_enroll_remove_restricted_keys"](entry, "web-01") == 0
+        assert authorized.read_bytes() == b""
+        assert ns["_load_enroll_state"](entry, "web-01") is None
+
+    def test_rotation_crash_before_key_replace_retries_with_old_line_intact(
+        self, ns, tmp_path, monkeypatch,
+    ):
+        home = tmp_path / "home"
+        ssh_dir = home / ".ssh"
+        ssh_dir.mkdir(parents=True)
+        authorized = ssh_dir / "authorized_keys"
+        entry = argparse.Namespace(pw_dir=str(home), pw_uid=os.getuid(), pw_gid=os.getgid())
+        command = "/usr/bin/fleetd-agent forced-command --group campaigns"
+        ns["_enroll_install_restricted_key"](
+            entry, (ENROLL_TEST_KEY_TYPE, ENROLL_TEST_KEY_B64, "original"), "web-01", command,
+        )
+        before = authorized.read_bytes()
+        real_write = ns["_write_restricted_authorized_keys"]
+        rotated = ns["_parse_authorized_key"](ENROLL_TEST_KEY_2)
+
+        def crash_before_replace(*_args, **_kwargs):
+            raise RuntimeError("simulated rotation crash before key replacement")
+
+        monkeypatch.setitem(ns, "_write_restricted_authorized_keys", crash_before_replace)
+        with pytest.raises(RuntimeError, match="before key replacement"):
+            ns["_enroll_install_restricted_key"](entry, rotated, "web-01", command)
+        assert authorized.read_bytes() == before
+        assert ns["_load_enroll_state"](entry, "web-01")["status"] == "prepared"
+
+        monkeypatch.setitem(ns, "_write_restricted_authorized_keys", real_write)
+        ns["_enroll_install_restricted_key"](entry, rotated, "web-01", command)
+        assert authorized.read_bytes().count(rotated[1].encode()) == 1
+        assert ENROLL_TEST_KEY_B64.encode() not in authorized.read_bytes()
+        assert ns["_load_enroll_state"](entry, "web-01")["status"] == "committed"
+
+    def test_rotation_crash_after_key_replace_finishes_from_prepared_state(
+        self, ns, tmp_path, monkeypatch,
+    ):
+        home = tmp_path / "home"
+        ssh_dir = home / ".ssh"
+        ssh_dir.mkdir(parents=True)
+        authorized = ssh_dir / "authorized_keys"
+        entry = argparse.Namespace(pw_dir=str(home), pw_uid=os.getuid(), pw_gid=os.getgid())
+        command = "/usr/bin/fleetd-agent forced-command --group campaigns"
+        ns["_enroll_install_restricted_key"](
+            entry, (ENROLL_TEST_KEY_TYPE, ENROLL_TEST_KEY_B64, "original"), "web-01", command,
+        )
+        real_save = ns["_save_enroll_state"]
+        saves = 0
+        rotated = ns["_parse_authorized_key"](ENROLL_TEST_KEY_2)
+
+        def crash_when_committing(*args, **kwargs):
+            nonlocal saves
+            saves += 1
+            if saves == 2:
+                raise RuntimeError("simulated rotation crash after key replacement")
+            return real_save(*args, **kwargs)
+
+        monkeypatch.setitem(ns, "_save_enroll_state", crash_when_committing)
+        with pytest.raises(RuntimeError, match="after key replacement"):
+            ns["_enroll_install_restricted_key"](entry, rotated, "web-01", command)
+        after_replace = authorized.read_bytes()
+        assert after_replace.count(rotated[1].encode()) == 1
+        assert ENROLL_TEST_KEY_B64.encode() not in after_replace
+        assert ns["_load_enroll_state"](entry, "web-01")["status"] == "prepared"
+
+        monkeypatch.setitem(ns, "_save_enroll_state", real_save)
+        ns["_enroll_install_restricted_key"](entry, rotated, "web-01", command)
+        assert authorized.read_bytes() == after_replace
+        assert ns["_load_enroll_state"](entry, "web-01")["status"] == "committed"
+
     def test_duplicate_recorded_line_refuses_removal_without_changing_bytes(
         self, ns, tmp_path, capsys,
     ):
@@ -1025,6 +1305,89 @@ class TestFleetdForcedCommand:
                 None,
             )
         assert saw_locked == [True]
+
+    def test_authorized_keys_lock_retries_nonblocking_until_lock_is_available(
+        self, ns, tmp_path, monkeypatch,
+    ):
+        import fcntl
+
+        real_flock = ns["fcntl"].flock
+        attempts = []
+        waits = []
+        now = [0.0]
+
+        def contended_then_acquired(fd, operation):
+            attempts.append(operation)
+            if operation == fcntl.LOCK_UN:
+                return real_flock(fd, operation)
+            if len([op for op in attempts if op != fcntl.LOCK_UN]) < 3:
+                raise BlockingIOError()
+            return real_flock(fd, operation)
+
+        monkeypatch.setattr(ns["fcntl"], "flock", contended_then_acquired)
+        monkeypatch.setitem(ns, "_ENROLL_LOCK_TIMEOUT_SECONDS", 2.0)
+        monkeypatch.setitem(ns, "_ENROLL_LOCK_RETRY_SECONDS", 0.5)
+        monkeypatch.setitem(ns, "_enroll_lock_clock", lambda: now[0])
+
+        def advance_clock(seconds):
+            waits.append(seconds)
+            now[0] += seconds
+
+        monkeypatch.setitem(ns, "_enroll_lock_wait", advance_clock)
+        with ns["_authorized_keys_lock"]():
+            assert Path(ns["_ENROLL_LOCK_PATH"]).exists()
+
+        assert [op for op in attempts if op != fcntl.LOCK_UN] == [
+            fcntl.LOCK_EX | fcntl.LOCK_NB,
+            fcntl.LOCK_EX | fcntl.LOCK_NB,
+            fcntl.LOCK_EX | fcntl.LOCK_NB,
+        ]
+        assert waits == [0.5, 0.5]
+
+    def test_authorized_keys_lock_timeout_names_recovery_and_changes_nothing(
+        self, ns, tmp_path, monkeypatch, capsys,
+    ):
+        import fcntl
+
+        home = tmp_path / "home"
+        ssh_dir = home / ".ssh"
+        ssh_dir.mkdir(parents=True)
+        authorized = ssh_dir / "authorized_keys"
+        original = b"# existing operator entry\r\n"
+        authorized.write_bytes(original)
+        entry = argparse.Namespace(pw_dir=str(home), pw_uid=os.getuid(), pw_gid=os.getgid())
+        lock_path = Path(ns["_ENROLL_LOCK_PATH"])
+        now = [0.0]
+        waits = []
+
+        def always_contended(_fd, operation):
+            if operation == fcntl.LOCK_UN:
+                pytest.fail("a lock that was never acquired must not be unlocked")
+            raise BlockingIOError()
+
+        monkeypatch.setattr(ns["fcntl"], "flock", always_contended)
+        monkeypatch.setitem(ns, "_ENROLL_LOCK_TIMEOUT_SECONDS", 1.0)
+        monkeypatch.setitem(ns, "_ENROLL_LOCK_RETRY_SECONDS", 0.25)
+        monkeypatch.setitem(ns, "_enroll_lock_clock", lambda: now[0])
+
+        def advance_clock(seconds):
+            waits.append(seconds)
+            now[0] += seconds
+
+        monkeypatch.setitem(ns, "_enroll_lock_wait", advance_clock)
+        with pytest.raises(SystemExit) as exc:
+            ns["_enroll_install_key"](
+                entry, (ENROLL_TEST_KEY_TYPE, ENROLL_TEST_KEY_B64, "ciu@control.example"),
+                None,
+            )
+
+        assert exc.value.code == 2
+        error = capsys.readouterr().err
+        assert str(lock_path) in error
+        assert "timed out" in error.lower()
+        assert "check" in error.lower() and "retry" in error.lower()
+        assert waits == [0.25, 0.25, 0.25, 0.25]
+        assert authorized.read_bytes() == original
 
     @pytest.mark.parametrize("key_type,key_b64", [
         (ENROLL_TEST_KEY_TYPE, "AAAA"),

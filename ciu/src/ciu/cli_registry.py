@@ -409,8 +409,9 @@ def _host_cli() -> Any:
         value("--installer-url", "override the pinned release-asset URL (a mirror or a "
                                  "commit-pinned raw URL); nothing ever falls back to `latest`; "
                                  "REQUIRED on an unreleased (.dev) ciu", "URL", group="STEP 1"),
-        value("--ssh-host", "ssh-keyscan ADDR, verify the fingerprint, prove the login and "
-                            "write the inventory row (step 2)", "ADDR", group="STEP 2"),
+        value("--ssh-host", "ssh-keyscan ADDR, verify the fingerprint, run the mode-specific "
+                            "login proof and write the inventory row (step 2)", "ADDR",
+              group="STEP 2"),
         value("--fingerprint", "the SHA256 fingerprint read on the target's console (TOFU "
                                "with a second channel)", "SHA256:...", group="STEP 2"),
         flag("--replace", "rotate: regenerate the key and overwrite an existing row's "
@@ -424,9 +425,13 @@ def _host_cli() -> Any:
             "Enroll a bare remote host into .ciu.hosts.toml (S14.7 / CIU-93). Two steps, one "
             "verb: without --ssh-host it generates an ed25519 key pair and PRINTS the public key "
             "plus the one command the target's admin runs (nothing is written to the inventory); "
-            "with --ssh-host/--fingerprint it verifies the host key, proves the login with "
-            "`ciu version` on the target, and only then writes [deploy.hosts.<name>]. "
-            "Opt-in --forced-command installs fleetd-agent's fixed forced-command entry; "
+            "with --ssh-host/--fingerprint it verifies and pins the host key, then proves the "
+            "login before writing [deploy.hosts.<name>]: ordinary keys run `ciu version`; "
+            "restricted keys send empty stdin with no remote command and accept exactly one "
+            "fleet-host-agent/1 frame with error.exit_code 3 and matching SSH status. The "
+            "restricted proof confirms login, forced-command dispatch and group resolution; it "
+            "does not prove any fleetd operation works. Opt-in --forced-command installs "
+            "fleetd-agent's fixed forced-command entry; "
             "CIU_SSH_INSECURE_TOFU is never set by this verb."
         ),
         group=VerbGroup.MODIFICATION.value, mutating=True, include_confirmation=False,

@@ -658,8 +658,9 @@ class TestSshExecSubprocess:
             tssh_mod.subprocess, "Popen",
             lambda *_args, **_kwargs: NoStreamProcess(),
         )
-        ticks = iter((0.0, 0.0))
-        monkeypatch.setattr(tssh_mod, "time", SimpleNamespace(monotonic=lambda: next(ticks)))
+        monkeypatch.setattr(
+            tssh_mod, "time", SimpleNamespace(monotonic=lambda: 0.0),
+        )
 
         assert tssh_mod._ssh_probe_subprocess(
             "host.example.invalid", "deploy", "22", "/fake/key", None,
@@ -905,6 +906,9 @@ class TestSshExecSubprocess:
         client = FakeClient()
         fake_paramiko = SimpleNamespace(SSHClient=lambda: client, RejectPolicy=lambda: "reject")
         monkeypatch.setitem(sys.modules, "paramiko", fake_paramiko)
+        monkeypatch.setattr(
+            tssh_mod, "time", SimpleNamespace(monotonic=lambda: 0.0),
+        )
         host_cfg = {
             "ssh_host": "host.example.invalid", "ssh_user": "deploy", "ssh_port": 22,
             "known_host": "ssh-ed25519 AAAA fixture", "ssh_key": "/fake/key",
@@ -1147,6 +1151,47 @@ class TestSshExecSubprocess:
             )
         assert channel.closed and client.closed
 
+    def test_paramiko_empty_stdin_probe_checks_deadline_before_connect(self, monkeypatch):
+        clock = {"calls": 0}
+
+        def monotonic():
+            value = 0.0 if clock["calls"] == 0 else 121.0
+            clock["calls"] += 1
+            return value
+
+        class FakeClient:
+            def __init__(self):
+                self.closed = False
+                self.connect_calls = 0
+
+            def set_missing_host_key_policy(self, _policy):
+                pass
+
+            def connect(self, **_kwargs):
+                self.connect_calls += 1
+
+            def get_transport(self):
+                pytest.fail("expired probe must not open a transport")
+
+            def close(self):
+                self.closed = True
+
+        client = FakeClient()
+        monkeypatch.setitem(sys.modules, "paramiko", SimpleNamespace(
+            SSHClient=lambda: client, RejectPolicy=lambda: "reject",
+        ))
+        monkeypatch.setattr(tssh_mod, "time", SimpleNamespace(monotonic=monotonic))
+
+        with pytest.raises(TimeoutError, match="SSH probe exceeded 120s"):
+            tssh_mod._ssh_probe_paramiko(
+                "host.example.invalid", "deploy", 22, "/fake/key", None,
+                timeout=120, max_output=64,
+            )
+
+        assert clock["calls"] == 2
+        assert client.connect_calls == 0
+        assert client.closed
+
     def test_paramiko_empty_stdin_probe_times_out_without_waiting_in_real_time(
         self, monkeypatch,
     ):
@@ -1195,10 +1240,17 @@ class TestSshExecSubprocess:
         monkeypatch.setitem(sys.modules, "paramiko", SimpleNamespace(
             SSHClient=lambda: client, RejectPolicy=lambda: "reject",
         ))
-        ticks = iter((0.0, 0.0, 120.0))
-        monkeypatch.setattr(tssh_mod, "time", SimpleNamespace(monotonic=lambda: next(ticks)))
+        clock = {"now": 0.0}
+
+        def wait_until_deadline(*_args):
+            clock["now"] = 121.0
+            return ([], [], [])
+
+        monkeypatch.setattr(
+            tssh_mod, "time", SimpleNamespace(monotonic=lambda: clock["now"]),
+        )
         monkeypatch.setitem(sys.modules, "select", SimpleNamespace(
-            select=lambda *_args: ([], [], []),
+            select=wait_until_deadline,
         ))
 
         with pytest.raises(TimeoutError, match="SSH probe exceeded 120s"):
@@ -1260,6 +1312,426 @@ class TestSshExecSubprocess:
                 timeout=120, max_output=64,
             )
         assert client.closed
+
+    def test_subprocess_empty_stdin_probe_checks_deadline_after_ready_select_before_read(
+        self, monkeypatch,
+    ):
+        clock = {"now": 0.0}
+        read_times = []
+
+        class FakeStream:
+            def __init__(self, fd):
+                self.fd = fd
+                self.closed = False
+
+            def fileno(self):
+                return self.fd
+
+            def close(self):
+                self.closed = True
+
+        class FakeProcess:
+            def __init__(self):
+                self.stdin = io.BytesIO()
+                self.stdout = FakeStream(101)
+                self.stderr = FakeStream(102)
+                self.killed = 0
+
+            def poll(self):
+                return -9 if self.killed else None
+
+            def wait(self, timeout=None):
+                return -9
+
+            def kill(self):
+                self.killed += 1
+
+        class ReadySelector:
+            def __init__(self):
+                self.entries = {}
+
+            def register(self, stream, _events, data):
+                self.entries[stream] = SimpleNamespace(
+                    fileobj=stream, fd=stream.fileno(), data=data,
+                )
+
+            def get_map(self):
+                return self.entries
+
+            def select(self, _timeout):
+                clock["now"] = 121.0
+                return [(key, 1) for key in self.entries.values()]
+
+            def close(self):
+                pass
+
+        process = FakeProcess()
+        monkeypatch.setattr(
+            tssh_mod.subprocess, "Popen", lambda *_args, **_kwargs: process,
+        )
+        monkeypatch.setattr(tssh_mod.selectors, "DefaultSelector", ReadySelector)
+        monkeypatch.setattr(
+            tssh_mod.os, "read",
+            lambda _fd, _count: read_times.append(clock["now"]) or b"x",
+        )
+        monkeypatch.setattr(
+            tssh_mod, "time", SimpleNamespace(monotonic=lambda: clock["now"]),
+        )
+
+        with pytest.raises(TimeoutError, match="SSH probe exceeded 120s"):
+            tssh_mod._ssh_probe_subprocess(
+                "host.example.invalid", "deploy", "22", "/fake/key", None,
+                timeout=120, max_output=64,
+            )
+
+        assert read_times == []
+        assert process.killed == 1
+
+    def test_subprocess_empty_stdin_probe_checks_deadline_after_wait_before_status(
+        self, monkeypatch,
+    ):
+        clock = {"now": 0.0}
+
+        class FinishedProcess:
+            stdin = None
+            stdout = None
+            stderr = None
+
+            def __init__(self):
+                self.waited = 0
+                self.killed = 0
+
+            def poll(self):
+                return 3
+
+            def wait(self, timeout=None):
+                self.waited += 1
+                clock["now"] = 121.0
+                return 3
+
+            def kill(self):
+                self.killed += 1
+
+        process = FinishedProcess()
+        monkeypatch.setattr(
+            tssh_mod.subprocess, "Popen", lambda *_args, **_kwargs: process,
+        )
+        monkeypatch.setattr(
+            tssh_mod, "time", SimpleNamespace(monotonic=lambda: clock["now"]),
+        )
+
+        with pytest.raises(TimeoutError, match="SSH probe exceeded 120s"):
+            tssh_mod._ssh_probe_subprocess(
+                "host.example.invalid", "deploy", "22", "/fake/key", None,
+                timeout=120, max_output=64,
+            )
+
+        assert process.waited == 1
+        assert process.killed == 0
+
+    def test_paramiko_empty_stdin_probe_checks_deadline_while_output_stays_ready(
+        self, monkeypatch,
+    ):
+        class BusyChannel:
+            def __init__(self):
+                self.received = 0
+                self.closed = False
+                self.shell_started = False
+
+            def invoke_shell(self):
+                self.shell_started = True
+
+            def shutdown_write(self):
+                pass
+
+            def recv_ready(self):
+                return True
+
+            def recv_stderr_ready(self):
+                return False
+
+            def recv(self, _size):
+                self.received += 1
+                return b"x"
+
+            def exit_status_ready(self):
+                return False
+
+            def close(self):
+                self.closed = True
+
+        channel = BusyChannel()
+
+        class FakeTransport:
+            def open_session(self, *, timeout):
+                return channel
+
+        class FakeClient:
+            def set_missing_host_key_policy(self, _policy):
+                pass
+
+            def load_host_keys(self, _path):
+                pass
+
+            def connect(self, **_kwargs):
+                pass
+
+            def get_transport(self):
+                return FakeTransport()
+
+            def close(self):
+                self.closed = True
+
+        client = FakeClient()
+        monkeypatch.setitem(sys.modules, "paramiko", SimpleNamespace(
+            SSHClient=lambda: client, RejectPolicy=lambda: "reject",
+        ))
+        clock = {"calls": 0}
+
+        def monotonic():
+            if not channel.shell_started:
+                return 0.0
+            value = clock["calls"] * 30.0
+            clock["calls"] += 1
+            return value
+
+        monkeypatch.setattr(tssh_mod, "time", SimpleNamespace(monotonic=monotonic))
+
+        with pytest.raises(TimeoutError, match="SSH probe exceeded 120s"):
+            tssh_mod._ssh_probe_paramiko(
+                "host.example.invalid", "deploy", 22, "/fake/key", None,
+                timeout=120, max_output=64,
+            )
+
+        assert 0 < channel.received < 64
+        assert channel.closed and client.closed
+
+    def test_paramiko_empty_stdin_probe_checks_deadline_during_post_exit_drain(
+        self, monkeypatch,
+    ):
+        clock = {"now": 0.0}
+
+        class DrainChannel:
+            def __init__(self):
+                self.after_exit = False
+                self.received = 0
+                self.status_reads = 0
+                self.closed = False
+
+            def invoke_shell(self):
+                pass
+
+            def shutdown_write(self):
+                pass
+
+            def recv_ready(self):
+                return self.after_exit
+
+            def recv_stderr_ready(self):
+                return False
+
+            def exit_status_ready(self):
+                self.after_exit = True
+                return True
+
+            def recv(self, _size):
+                self.received += 1
+                clock["now"] += 40.0
+                return b"x"
+
+            def recv_exit_status(self):
+                self.status_reads += 1
+                return 3
+
+            def close(self):
+                self.closed = True
+
+        channel = DrainChannel()
+
+        class FakeTransport:
+            def open_session(self, *, timeout):
+                return channel
+
+        class FakeClient:
+            def set_missing_host_key_policy(self, _policy):
+                pass
+
+            def load_host_keys(self, _path):
+                pass
+
+            def connect(self, **_kwargs):
+                pass
+
+            def get_transport(self):
+                return FakeTransport()
+
+            def close(self):
+                self.closed = True
+
+        client = FakeClient()
+        monkeypatch.setitem(sys.modules, "paramiko", SimpleNamespace(
+            SSHClient=lambda: client, RejectPolicy=lambda: "reject",
+        ))
+        monkeypatch.setattr(
+            tssh_mod, "time", SimpleNamespace(monotonic=lambda: clock["now"]),
+        )
+
+        with pytest.raises(TimeoutError, match="SSH probe exceeded 120s"):
+            tssh_mod._ssh_probe_paramiko(
+                "host.example.invalid", "deploy", 22, "/fake/key", None,
+                timeout=120, max_output=64,
+            )
+
+        assert channel.received > 0
+        assert channel.status_reads == 0
+        assert channel.closed and client.closed
+
+    def test_paramiko_empty_stdin_probe_checks_deadline_before_exit_status(self, monkeypatch):
+        clock = {"now": 0.0}
+
+        class ExitReadyChannel:
+            def __init__(self):
+                self.status_reads = 0
+                self.closed = False
+
+            def invoke_shell(self):
+                pass
+
+            def shutdown_write(self):
+                pass
+
+            def recv_ready(self):
+                return False
+
+            def recv_stderr_ready(self):
+                return False
+
+            def exit_status_ready(self):
+                clock["now"] = 121.0
+                return True
+
+            def recv_exit_status(self):
+                self.status_reads += 1
+                return 3
+
+            def close(self):
+                self.closed = True
+
+        channel = ExitReadyChannel()
+
+        class FakeTransport:
+            def open_session(self, *, timeout):
+                return channel
+
+        class FakeClient:
+            def set_missing_host_key_policy(self, _policy):
+                pass
+
+            def load_host_keys(self, _path):
+                pass
+
+            def connect(self, **_kwargs):
+                pass
+
+            def get_transport(self):
+                return FakeTransport()
+
+            def close(self):
+                self.closed = True
+
+        client = FakeClient()
+        monkeypatch.setitem(sys.modules, "paramiko", SimpleNamespace(
+            SSHClient=lambda: client, RejectPolicy=lambda: "reject",
+        ))
+        monkeypatch.setattr(
+            tssh_mod, "time", SimpleNamespace(monotonic=lambda: clock["now"]),
+        )
+
+        with pytest.raises(TimeoutError, match="SSH probe exceeded 120s"):
+            tssh_mod._ssh_probe_paramiko(
+                "host.example.invalid", "deploy", 22, "/fake/key", None,
+                timeout=120, max_output=64,
+            )
+
+        assert channel.status_reads == 0
+        assert channel.closed and client.closed
+
+    def test_paramiko_empty_stdin_probe_closes_client_when_known_hosts_load_fails(
+        self, monkeypatch,
+    ):
+        class KnownHostsFailureClient:
+            def __init__(self):
+                self.closed = False
+
+            def set_missing_host_key_policy(self, _policy):
+                pass
+
+            def load_host_keys(self, _path):
+                raise OSError("fixture known-hosts failure")
+
+            def close(self):
+                self.closed = True
+
+        client = KnownHostsFailureClient()
+        monkeypatch.setitem(sys.modules, "paramiko", SimpleNamespace(
+            SSHClient=lambda: client, RejectPolicy=lambda: "reject",
+        ))
+
+        with pytest.raises(OSError, match="fixture known-hosts failure"):
+            tssh_mod._ssh_probe_paramiko(
+                "host.example.invalid", "deploy", 22, "/fake/key", "/fake/known",
+                timeout=120, max_output=64,
+            )
+
+        assert client.closed
+
+    def test_subprocess_empty_stdin_probe_uses_all_restrictive_ssh_options(
+        self, monkeypatch,
+    ):
+        captured = {}
+
+        class FinishedProcess:
+            stdin = io.BytesIO()
+            stdout = None
+            stderr = None
+
+            def poll(self):
+                return 3
+
+            def wait(self, timeout=None):
+                return 3
+
+        def fake_popen(argv, **kwargs):
+            captured["argv"] = argv
+            captured["kwargs"] = kwargs
+            return FinishedProcess()
+
+        monkeypatch.setattr(tssh_mod.subprocess, "Popen", fake_popen)
+        monkeypatch.setattr(
+            tssh_mod, "time", SimpleNamespace(monotonic=lambda: 0.0),
+        )
+
+        result = tssh_mod._ssh_probe_subprocess(
+            "host.example.invalid", "deploy", "2222", "/fake/key", "/fake/known",
+            timeout=120, max_output=64,
+        )
+
+        assert result == (3, b"", b"")
+        assert captured["argv"] == [
+            "ssh", "-T", "-i", "/fake/key", "-p", "2222",
+            "-o", "StrictHostKeyChecking=yes",
+            "-o", "UserKnownHostsFile=/fake/known",
+            "-o", "BatchMode=yes",
+            "-o", "RequestTTY=no",
+            "-o", "RemoteCommand=none",
+            "-o", "ForwardAgent=no",
+            "-o", "ForwardX11=no",
+            "-o", "ClearAllForwardings=yes",
+            "-o", "PermitLocalCommand=no",
+            "-o", "ControlMaster=no",
+            "-o", "ControlPath=none",
+            "deploy@host.example.invalid",
+        ]
 
     def test_subprocess_call_interactive_adds_dash_t(self, tmp_path, monkeypatch):
         monkeypatch.delenv("CIU_SSH_INSECURE_TOFU", raising=False)

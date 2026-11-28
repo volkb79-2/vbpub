@@ -2657,7 +2657,9 @@ EOF; no protocol request bytes are sent. The forced command's agent answers
 the truncated-frame condition with one length-prefixed JSON frame. Step 2
 accepts empty stderr and exactly one stdout `fleet-host-agent/1` frame with
 string `agent_version`, non-empty `error.reason`, `error.exit_code = 3`, and SSH
-exit status 3. That is
+exit status 3. The JSON object has exactly `schema`, `agent_version` and
+`error`; `error` has exactly `exit_code` and `reason`. Duplicate keys, extra
+or missing keys, and non-standard JSON constants are refused. That is
 the fleetd identity-or-transport error proving login, forced-command execution
 and group resolution. A refusal (including unknown group), stderr or plain
 shell output, extra/truncated/oversized bytes, no output, timeout or mismatched status
@@ -2673,11 +2675,22 @@ user and name, plus the decoded key blob and whether CIU inserted a separator
 LF. The comment marker alone does not prove ownership. Rotation and removal
 require that the exact recorded line be present exactly once. Any unrecorded
 marker or restricted forced-command shape is refused with its line number.
-The installer holds `/run/lock/ciu-enroll-authorized-keys.lock` across both
-ordinary and restricted reads, checks and writes; atomic replacement rechecks
-the original file identity and contents. It records a prepared transaction
-before changing `authorized_keys`, then commits state; retries recover either
-side by exact hashes. Removal persists its pending record before replacement.
+The installer holds `/run/lock/ciu-enroll-authorized-keys.lock` across
+authorized-keys reads, checks and writes; ordinary enrollment does not read CIU
+ownership state. This lock serializes CIU writers only. The installing root
+host must have `/run/lock` and its parent directories available as real,
+root-owned directories not writable by group or other users, and must be able
+to create/use the root-owned mode-`0600` lock file. Lock acquisition retries
+nonblocking for at most 10 seconds before refusing with the lock path and
+recovery advice. Before atomic replacement,
+the restricted writer rechecks the original file identity and contents as its
+last step before `os.replace`. The target account owns `.ssh` and may edit
+`authorized_keys` without taking CIU's lock; an outside write between the
+final check and atomic replacement can be lost. CIU does not claim to exclude
+or preserve such an outside write. A restricted add or rotation records a
+prepared transaction before changing `authorized_keys`, then commits state;
+retries recover either side by exact hashes. Removal persists its pending
+record before replacement.
 Re-running is idempotent, and add/remove restores the original bytes even if
 the file initially had no final newline.
 
@@ -2687,8 +2700,9 @@ CIU will not infer ownership from a marker or line shape. Equivalent base64
 spellings of one key blob are detected in either enrollment order, so a blob
 cannot exist in both restricted and unrestricted forms. Without the new
 flag, ordinary enrollment keeps its prior output, messages, exit codes and
-append behavior, including appending after unparseable lines; the only new
-ordinary-mode key refusal is a blob already recorded in a CIU-restricted
-entry. Use the printed target-side `remove-restricted` command to remove a
+append behavior, including appending after unparseable lines; its only new
+key refusal is a same-type, same-decoded-blob key on a visible CIU restricted
+marker or fixed restricted-command-shape line, recorded or not. It names the
+line and leaves the file unchanged. Use the printed target-side `remove-restricted` command to remove a
 recorded restricted key; it leaves general enrollment keys and every other
 line in place.
