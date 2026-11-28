@@ -18,6 +18,7 @@ from cmru import transaction
 
 BASE = "a" * 40
 BRANCH = "cmru-release-20261128_120000-demo-ab12cd"
+pytestmark = pytest.mark.usefixtures("git_isolation")
 
 
 def _repo(tmp_path: Path) -> Path:
