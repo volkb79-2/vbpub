@@ -32,12 +32,12 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
      the `fix(cmru): ...` commit subject. -->
 
 <!-- cmru: pending release notes begin -->
-- tests(cmru): batch 2 adds caller-visible transaction survivor coverage. Review
-  reopened KI-224 after finding three invalid directory-state assumptions and a
-  missing rollback interleaving. Two recursive-mkdir resurrection paths are filed
-  as KI-225; final 30-ID counts are pending. The ref parser witness for
-  `14a2f1be5a86` is `[trailing-dot]`; `[trailing-slash]` is caught by a later
-  component check. No product code changed.
+- tests(cmru): batch 2 review fixes add deterministic scope-removal and rollback
+  interleavings. The final 30-ID probe killed 25; two survivors are equivalent and
+  three remain open under KI-224/KI-225 because recursive mkdir can recreate a
+  removed Git common directory or project-root path. The `14a2f1be5a86` witness is
+  `[trailing-dot]`; `[trailing-slash]` is caught by a later component check. No
+  product code changed.
 - tests: cmru's gate judges cmru again. The tester-unified image suite moved to
   `tester-unified/tests/` (KI-194), the real-estate dependency and bootstrap-doc
   order checks moved to the new `estate-lint/` project, and

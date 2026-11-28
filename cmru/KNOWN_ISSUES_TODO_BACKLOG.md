@@ -14,7 +14,7 @@
 
 | ID | Status | Fix commit |
 | --- | --- | --- |
-| KI-224 | OPEN (review 2026-11-28: five prior equivalence claims rejected or unresolved; final probe pending) | — |
+| KI-224 | OPEN (review fix final probe: 25 KILLED, two equivalent, three unresolved under KI-225) | — |
 | KI-225 | OPEN (review 2026-11-28: recursive transaction mkdir can recreate a removed Git common directory or project root during an in-flight operation) | — |
 | KI-220 | CLOSED BY DESIGN (2026-11-27; controller ruling clarified the timeout contract, and the test now checks group disappearance with bounded polling) | branch |
 | KI-215 | CLOSED BY DESIGN (prose claims are checked by review; the structural test pins each CMRU Assay lane's mode and absence of `judge.base_source`) | — |
@@ -204,7 +204,8 @@ manifest syntax/source forms outside its supported registry subset.
 
 ### KI-224 — batch 2 transaction R2 survivors
 
-**Status:** OPEN pending the corrected final probe. `ddc55befcd6f` is killed by
+**Status:** OPEN. The corrected final probe measured 25 KILLED and five SURVIVED.
+`ddc55befcd6f` is killed by
 `test_origin_branch_error_prefers_stdout_when_git_has_no_stderr`. `d25580fc963e` and
 `45f04d579d01` now have deterministic interleaving tests in
 `test_transaction_r2_survivors_b2.py`. Three prior recursive-mkdir equivalence claims are
@@ -225,14 +226,15 @@ Two equivalence proofs remain:
   the preceding handler. Reachable return/yield and exception behavior, files and modes are
   unchanged; no caller stderr or undecodable subprocess output is involved.
 
-The seven existing survivors are therefore split into two proven equivalents and three open
-product-behavior cases; `ddc55befcd6f` is newly killed, while d255 and 45f are pending final
-probe confirmation. The earlier attribution for `14a2f1be5a86` is corrected: its witness is the
+The final probe confirms `d25580fc963e` and `45f04d579d01` are killed by the new interleaving
+tests. Of the five survivors, `9dd13b6f41a9` and `4a724fcc7a5b` remain equivalent for the
+specific cases proved above; `70c7796b6763`, `c2e3338fe004`, and `01735170cf8a` remain open under
+KI-225. The earlier attribution for `14a2f1be5a86` is corrected: its witness is the
 `[trailing-dot]` case. `[trailing-slash]` is still rejected by the later component check.
 
 The original batch probe ran all 30 candidates against the two existing test files. The final
-probe must cover all 30 against those files and `tests/test_transaction_r2_survivors_b2.py`;
-update this entry and CHANGES from that measured result. No product source was changed.
+probe covered all 30 against those files and `tests/test_transaction_r2_survivors_b2.py`:
+25 KILLED, two equivalent survivors, and three open survivors. No product source was changed.
 
 ### KI-225 — transaction directory creation can resurrect removed roots
 
