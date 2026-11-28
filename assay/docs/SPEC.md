@@ -517,9 +517,10 @@ with `ERROR/BAD_LANE_CONFIG` on any other lane. `src/assay/cli.py:2394`,
   and its event stream remains intact, `budget_per_candidate` is advisory and
   emits one warning when first exceeded. If the watch cannot arm, the candidate
   CPU is never readable, or the event stream breaks at runtime, a duration
-  budget binds as `budget_exceeded`; with `none`, the lane deadline remains
-  the bound. A broken stream also disarms the event-derived CPU bounds and
-  no-progress wall stop. The `plan` progress record states the watch regime.
+  budget binds as `budget_exceeded` unless the no-progress wall stop in LIV-145
+  fires first. With `none`, the lane deadline remains the duration bound. A
+  broken stream disarms the event-derived CPU bounds and no-progress wall stop.
+  The `plan` progress record states the watch regime.
   `src/assay/runner.py:6067`,
   `src/assay/runner.py:6082`, `src/assay/mutation.py:2528`,
   `src/assay/mutation.py:2965`, `src/assay/liveness.py:1621`,
@@ -530,6 +531,17 @@ with `ERROR/BAD_LANE_CONFIG` on any other lane. `src/assay/cli.py:2394`,
   two samples remain unmerged, and an unknown resource interval starts a new
   trace. `src/assay/liveness.py:1808`, `src/assay/liveness.py:1852`,
   `src/assay/liveness.py:2627`
+- **LIV-145** With an intact event stream and a calibrated CPU-without-progress
+  bound, a no-progress wall stop fires at four times that bound if no completed
+  event or first `session_finish` re-dates its window first. Before any
+  comparable resource interval, the window uses monotonic wall time; afterward
+  it uses pressure-adjusted eligible time. A lane deadline or earlier stop can
+  end the attempt first. The wall stop is unclassified
+  `BUDGET_EXCEEDED/LANE_TIMEOUT`, stores no candidate bucket, and the candidate
+  is retried on resume; it never produces `hung`. `src/assay/liveness.py:738`,
+  `src/assay/liveness.py:2698`, `src/assay/liveness.py:2900`,
+  `src/assay/liveness.py:2929`, `src/assay/mutation.py:4204`,
+  `src/assay/mutation.py:4220`, `src/assay/mutation.py:5131`
 - **LIV-150** Every liveness stop currently classified as a hang is `hung`,
   never `killed`. CPU-bound and per-test stops carry their CPU evidence;
   idle and session-finish stops require their pressure-adjusted trace.
