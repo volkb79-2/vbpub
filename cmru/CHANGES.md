@@ -32,6 +32,9 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
      the `fix(cmru): ...` commit subject. -->
 
 <!-- cmru: pending release notes begin -->
+- test(cmru): the shared Git isolation helper disables the receiving side's
+  automatic maintenance in its global config file, so a push into a local bare
+  repository leaves no maintenance process behind (KI-227). No product change.
 - fix(cmru): transaction directory creation verifies its existing common or caller
   checkout root and creates descendants one level at a time. Retention creates a
   missing project directory below the resolved caller checkout and preserves an

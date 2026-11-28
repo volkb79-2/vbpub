@@ -317,17 +317,23 @@ after each push/delete (`--no-detach` with system config visible). The guard obs
 exact detached command. Receiver `receive.autogc` was unset, so Git's default enabled it.
 
 The control with bare-repository `receive.autogc=false` reported no descendants and passed its own
-guard boundary. Thus the 24 batch-3 open mutations can be witnessed with the smallest local setup:
-set `receive.autogc=false` in each bare test remote before the push. The existing `_git_isolation`
-fixture deliberately blanks system config, so its client-side maintenance values alone are not a
-receiver-side safeguard. In product use, the same local-process behavior is possible for a local
-path/file remote when the caller sets `GIT_CONFIG_NOSYSTEM=1` and the bare remote leaves
-`receive.autogc` enabled; a network remote runs receive-side maintenance on the remote host, outside
-the client process tree. No product-code defect was identified; the smallest next step is to restore
-the survivor witnesses with the bare-repository setting above. The probe evidence is recorded in
-`/home/vscode/core-runs/cmru-ki227-report.md`. Batch 3's 24 mutations remain open pending those
-witnesses.
+guard boundary. **Fixed for tests that use `tests/_git_isolation.py`:** `isolate_git` writes
+`receive.autogc=false` into the isolated global config file, which the local receiving side reads
+(an entry in `GIT_CONFIG_COUNT` does not reach it). `tests/test_git_isolation_ki227.py` checks that a
+push and a lease delete run the receiving side and start no maintenance. Tests that push into a local
+bare repository without that helper while system config is hidden still need the setting themselves.
+In product use, the same local-process behavior is possible for a local path/file remote when the
+caller sets `GIT_CONFIG_NOSYSTEM=1` and the bare remote leaves `receive.autogc` enabled; a network
+remote runs receive-side maintenance on the remote host, outside the client process tree. No
+product-code defect was identified. The probe evidence is recorded in
+`/home/vscode/core-runs/cmru-ki227-report.md`.
 `12657b6dd362` (above) is in the same window.
+
+**Open, parked (main controller, 2026-11-28):** the 24 batch-3 mutation ids stay open until the
+volker route is available again or a cheaper route exists. A further attempt that day resolved no
+id: one probe run over all 24 reported every one as surviving the transaction survivor tests of
+that time. Its later, unprobed tests (one fails on a wrong call signature) are on the local branch
+`core-cmru-ki227-b3b-wip`. No id has a proven obstacle, so none is filed as unkillable.
 
 Source window 3467–3590 was not reached in batch 3: no witness or equivalence proof was attempted for
 `7a35e32b950c`, `0b184cf5f680`, `e69a3326b517`, `7a4e19814420`, `661d77d8a79d`, `f9a0fdd5dad2`,
