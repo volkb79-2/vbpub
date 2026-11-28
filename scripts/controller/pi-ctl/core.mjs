@@ -1182,6 +1182,15 @@ export function createController(pi, injected = {}, overrides = {}) {
 		}
 	}
 
+	function jobCheckCommand(params) {
+		const route = params.launcher === "codex-impl" ? (params.route ?? "luna")
+			: params.launcher === "pi-impl" ? (params.route ?? "deepseek-pi")
+				: params.account ? `deepseek-pi-${params.account}` : "any";
+		const args = ["scripts/controller/job-check.sh", params.run_name, params.worktree, route];
+		if (params.report !== undefined) args.push(params.report);
+		return args.map(shellQuote).join(" ");
+	}
+
 	function jobOwnsRecord(runsDirectory, runName, launchToken) {
 		try {
 			const line = readFirstLine(path.join(runsDirectory, `${runName}.lock`));
@@ -1315,7 +1324,7 @@ export function createController(pi, injected = {}, overrides = {}) {
 		let child;
 		const job = {
 			name: params.run_name, launcher: params.launcher, runs, launchLog, logOffset,
-			launchToken, closed: false, exitCode: null, signal: null, started: false, preflightReported: false,
+			launchToken, checkCommand: jobCheckCommand({ ...params, worktree }), closed: false, exitCode: null, signal: null, started: false, preflightReported: false,
 			noticeSent: false, pollTimer: null, startTimeout: null, resolveStart: null,
 		};
 		try {
@@ -1366,12 +1375,12 @@ export function createController(pi, injected = {}, overrides = {}) {
 		});
 		if (result.started) {
 			job.started = true;
-			return `Job ${params.run_name} started with ${params.launcher}; watch for its end notice or run job-check.sh ${params.run_name}.`;
+			return `Job ${params.run_name} started with ${params.launcher}; watch for its end notice or run ${job.checkCommand}.`;
 		}
-		if (result.preflighting) return `Job ${params.run_name} is still preflighting; use job-check.sh ${params.run_name}.`;
+		if (result.preflighting) return `Job ${params.run_name} is still preflighting; use ${job.checkCommand}.`;
 		const tail = readLaunchLogTail(launchLog, logOffset);
 		const code = job.exitCode === null ? `null${job.signal ? ` (signal ${job.signal})` : ""}` : String(job.exitCode);
-		return `Job ${params.run_name} exited before its owner record changed (exit ${code}).${tail ? `\nLast launch log lines:\n${tail}` : ""}`;
+		return `Job ${params.run_name} exited before its owner record changed (exit ${code}). Check with ${job.checkCommand}.${tail ? `\nLast launch log lines:\n${tail}` : ""}`;
 	}
 
 	function sendJobExitNotice(job) {
@@ -1380,7 +1389,7 @@ export function createController(pi, injected = {}, overrides = {}) {
 		const done = readJobDone(job.runs, job.name);
 		try {
 			const message = job.started
-				? `Run ${job.name} ended with launcher exit code ${job.exitCode === null ? "null" : job.exitCode}; ${done}`
+				? `Run ${job.name} ended with launcher exit code ${job.exitCode === null ? "null" : job.exitCode}; ${done}. Check with ${job.checkCommand}`
 				: `Run ${job.name} exited without starting (exit ${job.exitCode === null ? "null" : job.exitCode}); no owner record was written.`;
 			inject("pi-ctl-job", `job-${job.name}-${makeId()}`, message);
 			log("job_exit_notice", { run: job.name, code: job.exitCode ?? null, done });
@@ -2063,7 +2072,7 @@ export function createController(pi, injected = {}, overrides = {}) {
 	const startJobTool = {
 		name: "start_job",
 		label: "Start detached controller job",
-		description: "Start one allowlisted Codex or pi controller launcher as a detached job. Jobs have no lifetime cap or stop tool; watch for the end notice or use job-check.sh.",
+		description: "Start one allowlisted Codex or pi controller launcher as a detached job. Use scripts/controller/job-check.sh <run> <worktree> <route> [report] to inspect its result.",
 		parameters: objectSchema({
 			launcher: { type: "string", enum: ["codex-impl", "pi-impl", "pi-review"] },
 			worktree: { type: "string", minLength: 1, description: "Absolute worktree path under the repository's .worktrees directory." },

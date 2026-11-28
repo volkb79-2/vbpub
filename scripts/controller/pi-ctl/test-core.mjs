@@ -1280,6 +1280,7 @@ test("start_job launches codex through the PID namespace with a sanitized enviro
 	});
 	const result = await f.tools.get("start_job").execute("j1", jobParams(f, { route: "sol", effort: "xhigh", resume: "session-A" }));
 	assert.match(result.content[0].text, /started with codex-impl/);
+	assert.ok(result.content[0].text.includes(`'scripts/controller/job-check.sh' 'job-one' '${f.jobWorktree}' 'sol'`));
 	assert.equal(calls.length, 2, "the library path lookup precedes the detached launcher");
 	assert.equal(calls[1].child.unrefCalls, 1);
 });
@@ -1326,6 +1327,7 @@ test("start_job launches pi-review directly with exactly its report and account 
 		launcher: "pi-review", run_name: "review-one", report: path.join(f.temp, "review.md"), account: "volker", effort: "high",
 	}));
 	assert.match(result.content[0].text, /started with pi-review/);
+	assert.ok(result.content[0].text.includes(`'scripts/controller/job-check.sh' 'review-one' '${f.jobWorktree}' 'deepseek-pi-volker' '${path.join(f.temp, "review.md")}'`));
 });
 
 test("start_job returns after 30 seconds of preflight and never stops a detached job on shutdown", async (t) => {
@@ -1339,7 +1341,7 @@ test("start_job returns after 30 seconds of preflight and never stops a detached
 	assert.ok(timeout, "the preflight response has a 30 second bound");
 	await f.fireTimeout(timeout);
 	const result = await pending;
-	assert.match(result.content[0].text, /still preflighting; use job-check\.sh job-one/);
+	assert.ok(result.content[0].text.includes(`still preflighting; use 'scripts/controller/job-check.sh' 'job-one' '${f.jobWorktree}' 'luna'`));
 	assert.equal(launchChild.signals.length, 0);
 	f.events.get("session_shutdown")({});
 	launchChild.emit("close", 0, null);
@@ -1364,6 +1366,7 @@ test("start_job sends one end notice and excludes it from the saved original goa
 	const notices = f.calls.filter(({ message }) => message.customType === "pi-ctl-job");
 	assert.equal(notices.length, 1);
 	assert.match(notices[0].message.content, /Run job-one ended with launcher exit code 0; EXIT=0 OUTCOME=SUCCESS/);
+	assert.ok(notices[0].message.content.includes(`'scripts/controller/job-check.sh' 'job-one' '${f.jobWorktree}' 'luna'`));
 	f.events.get("before_agent_start")({ messageType: "custom", message: { customType: "pi-ctl-job", content: notices[0].message.content } }, f.fakeContext);
 	assert.equal(f.sessionEntries.some((entry) => entry.customType === "pi-ctl-original-goal"), false);
 });

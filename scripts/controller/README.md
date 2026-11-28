@@ -811,8 +811,10 @@ directly because nesting that wrapper fails, and `pi-impl.sh` puts its agent's
 bash calls inside the wrapper itself. Pi implementer jobs must be started with
 `start_job`, not from a bash tool call or under `start_monitor`. Jobs have no
 lifetime cap and no stop tool. Watch for the `pi-ctl-job` end notice, or use
-`scripts/controller/job-check.sh <run_name>` after a restart or when you need
-the recorded result.
+`scripts/controller/job-check.sh '<run>' '<worktree>' '<route>' [ '<report>' ]`
+after a restart or when you need the recorded result. `start_job` prints this
+complete shell-quoted command; the route is the launcher's effective route, and
+the optional report argument is included when supplied.
 
 ```bash
 scripts/controller/pi-ctl-launch.sh hostobs
