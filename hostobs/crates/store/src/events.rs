@@ -706,12 +706,19 @@ impl core::fmt::Display for EventKind {
 /// can count it ([`EventsStats::displaced`]).
 #[derive(Clone, Debug)]
 pub struct EventRing {
-    events: std::collections::VecDeque<(Event, u64)>,
+    events: std::collections::VecDeque<RingEntry>,
     bytes: u64,
     capacity: u64,
     displaced: u64,
     displaced_bytes: u64,
     accepted: u64,
+}
+
+#[derive(Clone, Debug)]
+struct RingEntry {
+    event: Event,
+    bytes: u64,
+    ordinal: u64,
 }
 
 impl EventRing {
@@ -769,7 +776,20 @@ impl EventRing {
 
     /// The events the ring holds, oldest first.
     pub fn events(&self) -> impl Iterator<Item = &Event> {
-        self.events.iter().map(|(event, _)| event)
+        self.events.iter().map(|entry| &entry.event)
+    }
+
+    /// The held events with their stable acceptance ordinals, oldest first.
+    pub fn with_ordinals(&self) -> impl Iterator<Item = (u64, &Event)> {
+        self.events
+            .iter()
+            .map(|entry| (entry.ordinal, &entry.event))
+    }
+
+    /// The wall time of the oldest event still held by the ring.
+    #[must_use]
+    pub fn oldest_real_ns(&self) -> Option<i64> {
+        self.events.front().map(|entry| entry.event.real_ns)
     }
 
     /// The newest `count` events, oldest first.
@@ -779,7 +799,7 @@ impl EventRing {
         self.events
             .iter()
             .skip(skip)
-            .map(|(event, _)| event.clone())
+            .map(|entry| entry.event.clone())
             .collect()
     }
 
@@ -798,18 +818,23 @@ impl EventRing {
         let bytes = event.bytes();
         let mut evicted = Vec::new();
         while self.bytes.saturating_add(bytes) > self.capacity {
-            let Some((old, old_bytes)) = self.events.pop_front() else {
+            let Some(old) = self.events.pop_front() else {
                 break;
             };
-            self.bytes = self.bytes.saturating_sub(old_bytes);
+            self.bytes = self.bytes.saturating_sub(old.bytes);
             self.displaced = self.displaced.saturating_add(1);
-            self.displaced_bytes = self.displaced_bytes.saturating_add(old_bytes);
+            self.displaced_bytes = self.displaced_bytes.saturating_add(old.bytes);
             evicted.push(EvictedEvent {
-                event: old,
-                bytes: old_bytes,
+                event: old.event,
+                bytes: old.bytes,
             });
         }
-        self.events.push_back((event, bytes));
+        let ordinal = self.accepted;
+        self.events.push_back(RingEntry {
+            event,
+            bytes,
+            ordinal,
+        });
         self.bytes = self.bytes.saturating_add(bytes);
         self.accepted = self.accepted.saturating_add(1);
         evicted
@@ -1426,6 +1451,23 @@ mod tests {
 
     fn begin(name: &str, key: &str, issuer: &str, t: i64) -> Event {
         Event::new(EventKind::Begin, name, Some(key), issuer, t, None).expect("begin")
+    }
+
+    fn point_at(real_ns: i64) -> Event {
+        Event::new_record(
+            EventKind::Point,
+            "probe.point",
+            None,
+            1,
+            real_ns,
+            real_ns,
+            None,
+            0,
+            None,
+            BTreeMap::new(),
+            BTreeMap::new(),
+        )
+        .expect("point event")
     }
 
     fn end(name: &str, key: &str, issuer: &str, t: i64, outcome: Outcome) -> Event {
@@ -2182,6 +2224,28 @@ mod tests {
             })
         );
         assert!(small.is_empty(), "a refused push changed nothing");
+    }
+
+    #[test]
+    fn ring_ordinals_survive_displacement_and_oldest_time_tracks_the_floor() {
+        let sample = point_at(10);
+        let mut ring = EventRing::new(sample.bytes() * 2).expect("ring");
+        assert_eq!(ring.oldest_real_ns(), None);
+        ring.push(point_at(10)).expect("first");
+        ring.push(point_at(20)).expect("second");
+        let first: Vec<_> = ring.with_ordinals().map(|(ordinal, _)| ordinal).collect();
+        assert_eq!(first, [0, 1]);
+        assert_eq!(ring.oldest_real_ns(), Some(10));
+        ring.push(point_at(30)).expect("third");
+        ring.push(point_at(40)).expect("fourth");
+        let displaced: Vec<_> = ring.with_ordinals().map(|(ordinal, _)| ordinal).collect();
+        assert_eq!(displaced, [2, 3]);
+        assert_eq!(ring.accepted(), 4);
+        assert_eq!(ring.displaced(), 2);
+        assert_eq!(ring.oldest_real_ns(), Some(30));
+        let started_real_ns = 5;
+        assert!(ring.displaced() > 0);
+        assert!(ring.oldest_real_ns().expect("nonempty") > started_real_ns);
     }
 
     #[test]
