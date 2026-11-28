@@ -237,31 +237,34 @@ probe covered all 30 against those files and `tests/test_transaction_r2_survivor
 
 ### KI-225 — transaction directory creation can resurrect removed roots
 
-**Status:** OPEN. Source windows and effects:
+**Status:** OPEN (partial fix in `core-cmru-ki225`; 01735170cf8a remains open, along with the separately audited release-lock, result-record and release-output sites). One private root-checking helper now validates the common/project root with `lstat` and creates descendants one level at a time at the changed sites. The d25580fc963e, 70c7796b6763 and c2e3338fe004 windows have behavioral witnesses; the c2 witness records why staging fails before the destination mkdir once its containing project root is removed. Existing tests explicitly depend on recursive creation from a missing root at `release_lock`, the result writer, and release-output retention. Per the task instruction those sites and tests were left unchanged; no test was weakened or replaced.
 
-- `d25580fc963e`: after `clear_release_tag_absence()` returns and before the attempt sidecar's
-  `path.parent.mkdir(parents=True, exist_ok=True)`, removing the Git common directory allows
-  that mkdir to recreate the common directory and scope directory; the attempt sidecar can then
-  be written. The recovery witness was withdrawn; no test blesses this recreation.
+Source windows and effects:
+
+- `d25580fc963e` — **fixed**: after `clear_release_tag_absence()` returns and before the attempt
+  sidecar directory creation, removing the Git common directory raises
+  `TransactionDirectoryRootError`; the common directory remains absent.
 - `70c7796b6763`: after the absence-record read and before the absence sidecar's
-  `path.parent.mkdir(parents=True, exist_ok=True)`, removal of the Git common directory allows
-  the mkdir to recreate the common directory and scope directory before writing the absence
-  sidecar.
-- `c2e3338fe004`: after output staging and before the first retention mkdir for
-  `target_logs.parent`, removing the project root allows recursive mkdir calls to recreate the
-  project root plus `logs` and `artifacts`; the later stale staging operation fails.
-- `01735170cf8a`: removal must occur between the `target_logs.parent.mkdir(...)` and
-  `target_artifacts.parent.mkdir(...)` calls. The first `logs` directory is removed with the
-  root; the second recursive mkdir can recreate the project root and `artifacts`, while the
-  stale staging operation fails. It does not recreate `logs` after that removal.
+  **fixed**: removing the Git common directory after the absence-record read raises
+  `TransactionDirectoryRootError`; the common directory remains absent.
+- `c2e3338fe004` — **fixed**: build-retention destination parents use the checked project root.
+  Removing the project root also removes the function's staging tree, so its next staged-log
+  integrity read raises the existing `RuntimeError` before destination creation; the root
+  remains absent.
+- `01735170cf8a` — **OPEN**: release-output retention still uses recursive parent creation.
+  The existing release-retention tests start with a missing project root and depend on that
+  behavior, so this site was stopped rather than changing or weakening those tests.
 - `e2fcfc263ad8`: during release-output rollback with a newly created evidence parent, the
   loop that removes empty evidence parents changes from `current != project_root and
   current.exists()` to `or`. It can continue when `current` is the project root and attempt
   to remove that root if empty. This harmful root-removal behavior is not asserted; the
   candidate remains open here.
 
-These original behaviors need a product decision and safe implementation before a test can
-assert them as desirable. No test blesses directory recreation; no product source was changed.
+`e2fcfc263ad8` remains open and untested. The audit also found preexisting creation behavior
+outside those four windows: `release_lock` creates its common-dir parent recursively, and the
+release-result writer creates its scope parent recursively. Their existing tests require this
+when the mocked common directory is missing, so those items were also stopped. No test asserts
+root recreation as desirable.
 
 
 ### KI-226 — batch 3 transaction R2 equivalence proof

@@ -101,6 +101,30 @@ def test_build_retention_does_not_recreate_removed_project_root(monkeypatch, tmp
 
 
 @pytest.mark.parametrize("root_kind", ["symlink", "file"])
+def test_build_retention_refuses_non_directory_project_root(monkeypatch, tmp_path, root_kind):
+    root = _repo(tmp_path)
+    project_root = root / "demo"
+    if root_kind == "symlink":
+        target = tmp_path / "real-project"
+        target.mkdir()
+        project_root.symlink_to(target, target_is_directory=True)
+    else:
+        project_root.write_text("file", encoding="utf-8")
+    workspace = _workspace(root)
+    monkeypatch.setattr(
+        transaction, "build_output_id",
+        lambda _workspace: ("20261128T000000Z_" + BASE, BASE, "date"),
+    )
+    monkeypatch.setattr(transaction, "_git", lambda *_args, **_kwargs: "")
+    project = SimpleNamespace(project_root=project_root, artifact_dirs=("dist",))
+
+    with pytest.raises(transaction.TransactionDirectoryRootError, match="build project root"):
+        transaction.retain_successful_build_outputs(
+            root, workspace, {"demo": project}, ["demo"], source_mode="origin-main",
+        )
+
+
+@pytest.mark.parametrize("root_kind", ["symlink", "file"])
 def test_tag_attempt_writer_refuses_non_directory_root(monkeypatch, tmp_path, root_kind):
     root = _repo(tmp_path)
     workspace = _workspace(root)

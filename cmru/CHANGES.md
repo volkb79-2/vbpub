@@ -32,6 +32,12 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
      the `fix(cmru): ...` commit subject. -->
 
 <!-- cmru: pending release notes begin -->
+- fix(cmru): transaction sidecar and build-retention directory creation now
+  verifies the existing common/project root and creates descendants one level at a time. The
+  d25580fc963e, 70c7796b6763 and c2e3338fe004 removal windows now leave the
+  removed root absent. KI-225 remains open for 01735170cf8a and the separately
+  listed release-lock/result/release-retention creation sites; existing tests
+  depend on their current missing-root behavior and were left intact.
 - tests(cmru): batch 3 adds cleanup, release-output retention and rollback witnesses
   over the next 30 transaction mutation survivors: 5 killed (one of them already by an
   earlier test), 1 recorded as equivalent (KI-226), 24 open (KI-225, KI-226, KI-227).

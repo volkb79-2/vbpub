@@ -2306,6 +2306,11 @@ def retain_successful_build_outputs(
                 f"{name}: cmru build requires project.release.artifact_dirs so it can retain "
                 "the successful local output"
             )
+        declared_project_root = Path(getattr(project, "project_root"))
+        _mkdir_below(
+            declared_project_root, declared_project_root,
+            "validate retained build project root",
+        )
         main_project_root, child_project_root = _project_roots_for_retention(
             repo_root, workspace, project, name,
         )
