@@ -30,29 +30,44 @@ pytestmark = pytest.mark.usefixtures("git_isolation")
 
 
 def test_a_hostile_global_git_configuration_has_no_effect_on_this_module(monkeypatch, tmp_path):
-    """The shared isolation masks hostile signing and hook settings."""
+    """The shared isolation blocks a hostile global hook setting."""
     hostile = tmp_path / "hostile-gitconfig"
     marker = tmp_path / "hook-ran"
-    hook = tmp_path / "hostile-hook"
-    hook.write_text(f"#!/bin/sh\n: > '{marker}'\n", encoding="utf-8")
-    hook.chmod(0o755)
     hostile_hooks = tmp_path / "hostile-hookdir"
     hostile_hooks.mkdir()
-    hostile.write_text(
-        "[commit]\n\tgpgsign = true\n[tag]\n\tgpgsign = true\n"
-        "[gpg]\n\tprogram = /nonexistent/definitely-not-a-signer\n"
-        f"[core]\n\thooksPath = {hostile_hooks}\n",
-        encoding="utf-8",
-    )
+    hook = hostile_hooks / "pre-commit"
+    hook.write_text(f"#!/bin/sh\n: > '{marker}'\nexit 1\n", encoding="utf-8")
+    hook.chmod(0o755)
+    hostile.write_text(f"[core]\n\thooksPath = {hostile_hooks}\n", encoding="utf-8")
+    root = _repo(tmp_path)
+
+    # Prove the executable hook is active with isolation disabled, then restore it.
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(hostile))
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "0")
+    unisolated = transaction.run_local_git(
+        root, "commit", "--allow-empty", "-m", "without-isolation",
+        capture_output=True, text=True, check=False,
+    )
+    assert unisolated.returncode != 0
+    assert marker.is_file()
+
+    marker.unlink()
+    monkeypatch.setenv("GIT_CONFIG_PARAMETERS", f"core.hooksPath={hostile_hooks}")
+    monkeypatch.setenv("GIT_EXEC_PATH", str(hostile_hooks))
     isolated_hooks = isolate_git(monkeypatch, tmp_path)
+    assert "GIT_CONFIG_PARAMETERS" not in os.environ
+    assert "GIT_EXEC_PATH" not in os.environ
     assert os.environ["GIT_CONFIG_GLOBAL"] != str(hostile)
     assert isolated_hooks != hostile_hooks
-    root = tmp_path / "hostile-repo"
-    subprocess.run(["git", "init", "-q", "-b", "main", str(root)], check=True)
-    (root / "source.py").write_text("x = 1\n", encoding="utf-8")
-    _git(root, "add", ".")
-    _git(root, "commit", "-q", "-m", "initial")
+
+    isolated_parent = tmp_path / "isolated"
+    isolated_parent.mkdir()
+    root = _repo(isolated_parent)
+    isolated_commit = transaction.run_local_git(
+        root, "commit", "--allow-empty", "-m", "with-isolation",
+        capture_output=True, text=True, check=False,
+    )
+    assert isolated_commit.returncode == 0, isolated_commit.stderr
     assert not marker.exists()
 
 

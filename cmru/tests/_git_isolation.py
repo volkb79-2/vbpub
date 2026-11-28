@@ -13,10 +13,21 @@ _GIT_PATH_KEYS = (
     "GIT_TRACE_PERFORMANCE", "GIT_TRACE_SETUP", "GIT_TRACE_CURL",
     "GIT_TRACE_CURL_NO_DATA", "GIT_TRACE_SHALLOW", "GIT_TRACE2",
     "GIT_TRACE2_EVENT", "GIT_TRACE2_PERF", "GIT_CONFIG",
+    "GIT_CONFIG_PARAMETERS", "GIT_EXEC_PATH", "GIT_SSH", "GIT_SSH_COMMAND",
+    "GIT_PROXY_COMMAND", "GIT_ASKPASS", "GIT_EDITOR", "GIT_SEQUENCE_EDITOR",
+    "GIT_PAGER", "GIT_EXTERNAL_DIFF",
 )
 
 
 def isolate_git(monkeypatch, tmp_path: Path) -> Path:
+    """Clear inherited Git config and helper overrides before setting test policy.
+
+    Removing ``GIT_CONFIG_PARAMETERS`` prevents command-scope ``-c`` pairs from
+    overriding the isolated config. Removing ``GIT_EXEC_PATH`` restores Git's
+    compiled-in helper lookup; PATH remains intact for Git and its normal
+    system-program lookup. SSH, proxy, askpass, editor, pager, and diff helper
+    overrides select external programs, so those host inputs are cleared too.
+    """
     isolation = tmp_path / "git-isolation"
     isolation.mkdir(exist_ok=True)
     config = isolation / "gitconfig"
