@@ -11951,6 +11951,7 @@ def test_lane_log_drain_caps_bytes_and_marks_overflow_for_normal_stop(tmp_path):
     process.stdout.close()
     writer.join()
     stop_calls = []
+    worker.runner_process = process
     worker._request_worker_stop = lambda process: stop_calls.append(process)
     worker._check_lane_log_limit(process)
     assert log_path.stat().st_size == 1048576
