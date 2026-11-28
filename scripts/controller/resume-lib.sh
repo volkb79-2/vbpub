@@ -192,7 +192,7 @@ lock_pane() { # one lock per pane id, shared with ctl-keepalive.sh (it pings a p
 }
 check_pane() { tmux has-session -t "$pane" 2>/dev/null || { say "ERROR no pane $pane"; exit 2; }; }
 send_chunks() { # literal UTF-8 text in <=400-character chunks (`--` stops flag parsing); failure exits 6
-  local text=$1 chunk
+  local text=$1 chunk chunker_pid
   while IFS= read -r -d '' chunk; do
     tmux send-keys -t "$pane" -l -- "$chunk" || { say "ERROR send-keys failed (text)"; exit 6; }
     sleep "$type_pause"
@@ -208,6 +208,8 @@ send_chunks() { # literal UTF-8 text in <=400-character chunks (`--` stops flag 
       print $out, "\0";
     }
   ')
+  chunker_pid=$!
+  wait "$chunker_pid" || { say "ERROR UTF-8 chunker failed; nothing more sent"; exit 6; }
 }
 send_text() { # literal text, a pause, then Enter
   send_chunks "$1"

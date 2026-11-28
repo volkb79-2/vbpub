@@ -216,6 +216,24 @@ contains "$D/log" "ERROR send-keys failed (text)" "send failure logged"
 [[ ! -e $D/sent.1 ]] || fail "send failure: something was recorded as sent"
 not_contains "$D/log" "compaction running" "send failure: went on waiting for a compaction"
 
+# Invalid UTF-8 in guidance fails the chunker before Enter can submit /compact.
+scenario invalid-guidance "I" "I"
+printf '\377' >"$D/guidance.txt"
+run '%9' "$D/guidance.txt" "$D/prompt.txt" "$D/log"
+[[ $RC -eq 6 ]] || fail "invalid guidance UTF-8 exit $RC (want 6)"
+contains "$D/log" "ERROR UTF-8 chunker failed" "invalid guidance UTF-8 logged"
+[[ $(calls | grep -c '^send-keys') -eq 1 ]] || fail "invalid guidance: Enter or more text was sent"
+[[ $(<"$D/nsent") -eq 1 ]] || fail "invalid guidance: chunker sent text after its decode failed"
+
+# Invalid UTF-8 in the resume prompt fails before send_text can submit it.
+scenario invalid-prompt "I" "K K I I I"
+printf '\377' >"$D/prompt.txt"
+COMPACT_RESUME_START_TRIES=3 run '%9' "$D/guidance.txt" "$D/prompt.txt" "$D/log"
+[[ $RC -eq 6 ]] || fail "invalid prompt UTF-8 exit $RC (want 6)"
+contains "$D/log" "ERROR UTF-8 chunker failed" "invalid prompt UTF-8 logged"
+[[ $(<"$D/nsent") -eq 2 ]] || fail "invalid prompt: prompt text was sent"
+[[ $(calls | grep -c 'send-keys %9 Enter') -eq 1 ]] || fail "invalid prompt: an Enter followed the failed chunker"
+
 # 5c. Text in the input row: nothing is sent until it is empty again, before the /compact and before the resume
 #     prompt (text typed DURING the compaction does not stall the compaction wait); the LAST input row counts
 #     (an older non-empty one in the scrollback does not); NBSP-only is empty.
