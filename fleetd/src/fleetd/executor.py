@@ -373,6 +373,8 @@ class HostJobExecutor:
         return identity
 
     def start(self, request: Mapping[str, object], admission: AdmissionHandle) -> Mapping[str, object]:
+        if self.policy.executor_enabled is not True:
+            raise AdmissionError(ExitCode.REFUSAL, "executor-disabled-by-agent-policy")
         job_id, _repo_root = validate_job_request(request, self.policy)
         if not admission.live:
             raise AdmissionError(ExitCode.REFUSAL, "executor start requires a live admission handle")

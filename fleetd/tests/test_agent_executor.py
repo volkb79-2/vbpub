@@ -522,6 +522,9 @@ def test_worker_main_verifies_flock_before_handshake_and_execution(tmp_path, mon
     real_flock = fcntl.flock
     real_write = os.write
 
+    class _Policy:
+        executor_enabled = True
+
     class _Worker:
         def __init__(self, _state_dir, _policy, _job_id, _lock_fd):
             pass
@@ -538,7 +541,7 @@ def test_worker_main_verifies_flock_before_handshake_and_execution(tmp_path, mon
         order.append("write")
         return real_write(fd, body)
 
-    monkeypatch.setattr(executor_worker_module, "load_agent_policy", lambda _path: object())
+    monkeypatch.setattr(executor_worker_module, "load_agent_policy", lambda _path: _Policy())
     monkeypatch.setattr(executor_worker_module, "HostJobWorker", _Worker)
     monkeypatch.setattr(executor_worker_module.fcntl, "flock", flock)
     monkeypatch.setattr(executor_worker_module.os, "write", write)
@@ -570,6 +573,9 @@ def test_worker_main_settles_interruption_after_handshake_before_run(tmp_path, m
     settled = []
     real_write = os.write
 
+    class _Policy:
+        executor_enabled = True
+
     class _Worker:
         def __init__(self, *_args):
             self.interruption_settled = False
@@ -587,7 +593,7 @@ def test_worker_main_settles_interruption_after_handshake_before_run(tmp_path, m
             raise KeyboardInterrupt("after handshake")
         return written
 
-    monkeypatch.setattr(executor_worker_module, "load_agent_policy", lambda _path: object())
+    monkeypatch.setattr(executor_worker_module, "load_agent_policy", lambda _path: _Policy())
     monkeypatch.setattr(executor_worker_module, "HostJobWorker", _Worker)
     monkeypatch.setattr(executor_worker_module.os, "write", write)
     try:
@@ -598,6 +604,55 @@ def test_worker_main_settles_interruption_after_handshake_before_run(tmp_path, m
             ])
         assert os.read(read_fd, 64) == f"{os.getpid()}\n".encode()
         assert settled == ["after handshake"]
+    finally:
+        for fd in (lock_fd, read_fd, write_fd):
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+
+def test_worker_main_refuses_disabled_policy_before_touching_confirmed_worker(tmp_path, monkeypatch, capsys):
+    _policy, _checkout = _protocol_policy(tmp_path)
+    state_dir = tmp_path / "state"
+    job_dir = state_dir / "jobs" / "controller-run-1"
+    job_dir.mkdir(parents=True)
+    durable_state = {
+        "schema": "fleet-host-job-state/1", "job_id": "controller-run-1",
+        "state": "running", "start_confirmed": True,
+    }
+    state_path = job_dir / "state.json"
+    state_path.write_text(json.dumps(durable_state), encoding="utf-8")
+    original_state = state_path.read_bytes()
+    lock_path = state_dir / "admission.lock"
+    lock_path.touch()
+    lock_fd = os.open(lock_path, os.O_RDWR)
+    read_fd, write_fd = os.pipe()
+    calls = []
+
+    class _Worker:
+        def __init__(self, *_args):
+            calls.append("constructed")
+
+        def run(self):
+            calls.append("run")
+            return 0
+
+    monkeypatch.setattr(executor_worker_module, "HostJobWorker", _Worker)
+    flags = fcntl.fcntl(read_fd, fcntl.F_GETFL)
+    fcntl.fcntl(read_fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
+    try:
+        status = worker_main([
+            "worker", "--state-dir", str(state_dir), "--policy", str(tmp_path / "agent.toml"),
+            "--job-id", "controller-run-1", "--lock-fd", str(lock_fd), "--handshake-fd", str(write_fd),
+        ])
+        captured = capsys.readouterr()
+        assert status == int(ExitCode.REFUSAL)
+        assert "executor-disabled-by-agent-policy" in captured.err
+        assert calls == []
+        assert state_path.read_bytes() == original_state
+        with pytest.raises(BlockingIOError):
+            os.read(read_fd, 64)
     finally:
         for fd in (lock_fd, read_fd, write_fd):
             try:
@@ -3760,6 +3815,30 @@ def test_executor_start_requires_a_live_admission_handle_and_valid_request_recor
     (job_dir / "request.json").mkdir()
     with pytest.raises(AdmissionError, match="not a regular file"):
         executor.start(request, handle)
+
+
+def test_executor_start_refuses_disabled_policy_before_state_or_scope_changes(tmp_path):
+    policy, _checkout = _protocol_policy(tmp_path)
+    state_dir = tmp_path / "executor-state"
+    jobs_dir = state_dir / "jobs"
+    jobs_dir.mkdir(parents=True)
+    jobs_dir.chmod(0o700)
+    scope = _Scope()
+    executor = HostJobExecutor(
+        state_dir, policy, scope_launcher=scope,
+        user_resolver=lambda _name: pytest.fail("disabled executor must not resolve a runner"),
+    )
+    request = _submit()
+    request["sha"] = SHA
+    job_dir = _durable_job(state_dir, request)
+    handle = _Handle()
+
+    with pytest.raises(AdmissionError, match="executor-disabled-by-agent-policy"):
+        executor.start(request, handle)
+
+    assert handle.live and not handle.handed_off
+    assert not (job_dir / "state.json").exists()
+    assert scope.calls == []
 
 
 def _ready_worker(tmp_path, runner=None, *, request=None, docker=None, waiter=lambda _seconds: None):

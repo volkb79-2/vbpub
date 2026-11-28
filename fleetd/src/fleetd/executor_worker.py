@@ -3922,6 +3922,8 @@ def _worker_main(argv: Sequence[str]) -> int:
     worker: HostJobWorker | None = None
     try:
         policy = load_agent_policy(args.policy)
+        if policy.executor_enabled is not True:
+            raise AdmissionError(ExitCode.REFUSAL, "executor-disabled-by-agent-policy")
         lock_info = os.fstat(args.lock_fd)
         if not stat.S_ISREG(lock_info.st_mode):
             raise AdmissionError(ExitCode.RUNNER_FAILURE, "inherited admission lock is not a regular file")
