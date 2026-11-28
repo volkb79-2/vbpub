@@ -488,6 +488,9 @@ with `ERROR/BAD_LANE_CONFIG` on any other lane. `src/assay/cli.py:2394`,
   `src/assay/runner.py:1179`. R3 additionally emits `canary_attempt` records
   after R2's mutation `end`; the vocabulary remains diagnostic and does not
   change verdicts or budgets (`src/assay/mutation.py:1234`).
+  A half that raises after its `started` record has no `finished` record; the
+  raised error remains the run's terminal result. In particular, expiry while
+  materializing a half does not synthesize a completion or control diagnostic.
 
 ### 6.2 Implemented liveness bounds
 
