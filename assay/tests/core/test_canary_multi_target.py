@@ -1069,3 +1069,49 @@ def test_budget_expiry_after_half_start_has_no_finish_record(git_repo: GitRepo, 
     phases = [event for event in recorder.events if event.get("event") == "canary_attempt"]
     assert [(event["phase"], event["state"]) for event in phases] == [("control", "started")]
     assert result.attempts[0].not_attempted_reason == "budget_exhausted"
+
+
+@pytest.mark.parametrize("phase", ["control", "transform"])
+def test_post_judgment_snapshot_cleanup_failure_has_no_finished_record(
+    git_repo: GitRepo, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, phase: str
+):
+    from contextlib import contextmanager
+
+    head_rev = _seed(git_repo)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    recorder = _ProgressRecorder()
+    stream = mutation.ProgressStream(recorder, clock=_clock)
+    with prepared_snapshot(git_repo, commit=head_rev, scratch_root=scratch) as prepared:
+        method_name = "materialize" if phase == "control" else "materialize_replacement"
+        original = getattr(prepared, method_name)
+
+        @contextmanager
+        def fail_after_cleanup(**kwargs):
+            with original(**kwargs) as snapshot:
+                yield snapshot
+            raise RuntimeError("injected snapshot cleanup failure")
+
+        monkeypatch.setattr(prepared, method_name, fail_after_cleanup)
+        with pytest.raises(RuntimeError, match="snapshot cleanup failure"):
+            run_isolated_canaries(
+                _lane(git_repo, targets=(TARGETS[0],), aggregation=None),
+                prepared=prepared,
+                plan=make_plan(_lane(git_repo, targets=(TARGETS[0],), aggregation=None)),
+                deadline=make_deadline(budget_seconds=60.0),
+                project_root=git_repo.path,
+                resolved_base=None,
+                mechanism="import-break",
+                targets=(TARGETS[0],),
+                aggregation=None,
+                adapter=PythonAdapter(),
+                process_runner=_Gate(catches=False),
+                clock=_clock,
+                progress_stream=stream,
+            )
+
+    phases = [
+        (event["phase"], event["state"])
+        for event in recorder.events if event.get("event") == "canary_attempt"
+    ]
+    assert phases == [(phase, "started")]
